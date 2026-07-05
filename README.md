@@ -1,9 +1,13 @@
 # .github
 
-<!-- BEGIN LIT_SHARED_RELEASE_MODEL -->
+<!-- BEGIN LIT_QUALITY_BADGES -->
 
+[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=main)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lightning-it/.github/badge)](https://scorecard.dev/viewer/?uri=github.com/lightning-it/.github)
-[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=develop)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
+
+<!-- END LIT_QUALITY_BADGES -->
+
+<!-- BEGIN LIT_SHARED_RELEASE_MODEL -->
 
 ## Release and Quality Model
 
@@ -21,5 +25,12 @@ See [RELEASE.md](./RELEASE.md) for:
 Repository classification: **Repository Profile**.
 Required test profiles: `markdown, repository-profile`.
 Publishing targets: `none`.
+
+## Supported and Tested Platforms
+
+| Platform / Product | Status | Validation |
+|---|---:|---|
+| ubuntu-latest | Supported | Repository quality |
+| github-profile | Tested where applicable | Repository quality |
 
 <!-- END LIT_SHARED_RELEASE_MODEL -->
