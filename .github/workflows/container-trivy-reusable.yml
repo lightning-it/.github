@@ -59,7 +59,7 @@ jobs:
           tags: ${{ inputs.image_name }}:${{ github.sha }}
           build-args: ${{ inputs.build_args }}
 
-      - name: Run Trivy vulnerability gate
+      - name: Generate Trivy SARIF
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ inputs.image_name }}:${{ github.sha }}
@@ -68,10 +68,19 @@ jobs:
           vuln-type: os,library
           ignore-unfixed: true
           severity: ${{ inputs.severity }}
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload Trivy SARIF
-        if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
+
+      - name: Run Trivy vulnerability gate
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ inputs.image_name }}:${{ github.sha }}
+          format: table
+          vuln-type: os,library
+          ignore-unfixed: true
+          severity: ${{ inputs.severity }}
+          exit-code: "1"
