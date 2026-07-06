@@ -1,23 +1,25 @@
+---
 schema_version: 1
-managed_by: lightning-it/shared-assets
+managed_by: lightning-it/shared-assets-lit
 repository: .github
 visibility: public
+license_spdx: MIT
 repository_type: repository_profile
 release_type: none
 artifact_type: none
 test_profiles:
-- markdown
-- repository-profile
+  - markdown
+  - repository-profile
 os_matrix:
-- ubuntu-latest
+  - ubuntu-latest
 product_matrix:
-- github-profile
+  - github-profile
 publishing_targets: []
 galaxy_publish: false
 quay_publish: false
 release_evidence: false
 heavy_incus_required: false
 readme_badges:
-- license
+  - license
 workflows:
   ci: repository-quality.yml
