@@ -30,9 +30,8 @@ Publishing targets: `none`.
 
 <!-- BEGIN LIT_QUALITY_BADGES -->
 
-[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=main)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
+[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=develop)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lightning-it/.github/badge)](https://scorecard.dev/viewer/?uri=github.com/lightning-it/.github)
-[![Trivy](https://github.com/lightning-it/.github/actions/workflows/container-trivy-reusable.yml/badge.svg?branch=main)](https://github.com/lightning-it/.github/actions/workflows/container-trivy-reusable.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 <!-- END LIT_QUALITY_BADGES -->
