@@ -1,0 +1,71 @@
+name: Task, documentation, decision, or migration
+description: Track bounded maintenance, documentation, technical debt, research, or migration work.
+title: "task: "
+labels:
+  - chore
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a public issue. Keep internal operations, customer context, audit evidence, risk decisions, and vulnerabilities in approved private systems. Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      options:
+        - Task
+        - Documentation
+        - Technical debt
+        - Research or decision
+        - Migration
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem, question, or source
+      description: State the gap, decision question, maintenance need, or public migration source.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Define the bounded deliverable and canonical owner.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List measurable completion and closure conditions.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and decision criteria
+      description: Required for research or decision work; otherwise add relevant implementation options or write "Not applicable."
+    validations:
+      required: true
+  - type: textarea
+    id: traceability
+    attributes:
+      label: Dependencies and traceability
+      description: Link only public source records, decisions, related issues, and exclusions. Do not include identifiers or links from private trackers.
+    validations:
+      required: false
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Explain how reviewers will verify the outcome.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-content confirmation
+      options:
+        - label: I confirm this issue contains no secrets, personal or customer data, private infrastructure, protected evidence, or undisclosed vulnerability information.
+          required: true

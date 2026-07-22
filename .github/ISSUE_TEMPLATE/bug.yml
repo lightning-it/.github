@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible behavior that differs from a supported contract.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a public issue. Sanitize reproduction data and logs. Do not report vulnerabilities here; email [security@l-it.io](mailto:security@l-it.io?subject=Security%20Report) privately and follow the repository SECURITY.md. Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current behavior
+      description: Describe what happens and the user or system impact.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected behavior
+      description: Describe the supported behavior you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Safe reproduction steps
+      description: Use only sanitized values such as example.com and reserved documentation addresses.
+      placeholder: |
+        1. Configure...
+        2. Run...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide public product versions and platform details. Do not include real hosts, inventories, or customer context.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Define the expected fix, regression protection, and documentation outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Add minimal public-safe output or links. Do not attach raw logs, dumps, or unreviewed screenshots.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-content confirmation
+      options:
+        - label: I confirm this issue contains no secrets, personal or customer data, private infrastructure, protected evidence, or undisclosed vulnerability information.
+          required: true

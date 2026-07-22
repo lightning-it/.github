@@ -1,0 +1,53 @@
+name: Security or OpenSSF readiness
+description: Track public hardening and readiness work that does not disclose a vulnerability.
+title: "security: "
+labels:
+  - security
+  - openssf
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form only for public readiness work. Report suspected vulnerabilities privately to [security@l-it.io](mailto:security@l-it.io?subject=Security%20Report) and follow the repository SECURITY.md. Do not disclose exploit details, findings, affected private systems, or risk decisions. Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Public readiness gap
+      description: Describe the requirement or improvement without exposing an exploitable condition or protected evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired security outcome
+      description: Define the secure, observable result and affected component.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List measurable hardening, testing, documentation, and closure conditions.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Public requirement source
+      description: Link an official standard, public policy, vendor advisory, or OpenSSF criterion. Do not attach internal control mappings.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification and public-safe evidence
+      description: Define tests and sanitized evidence links. Keep audit records, findings, and risk acceptance private.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-content confirmation
+      options:
+        - label: I confirm this is readiness work, not a vulnerability report, and contains no secrets, personal or customer data, private infrastructure, protected evidence, or exploit details.
+          required: true

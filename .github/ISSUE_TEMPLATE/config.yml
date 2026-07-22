@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: "mailto:security@l-it.io?subject=Security%20Report"
+    about: Report vulnerabilities and unsafe disclosure privately according to SECURITY.md. Do not open a public issue.
+  - name: GitHub issue guidelines
+    url: https://docs.l-it.io/contributing/github-issues/
+    about: Review issue types, public-content rules, readiness, completion, and traceability requirements.
