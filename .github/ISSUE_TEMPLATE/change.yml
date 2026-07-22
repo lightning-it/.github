@@ -1,0 +1,67 @@
+name: Controlled change
+description: Propose a change to behavior, configuration, interfaces, or operations.
+title: "change: "
+labels:
+  - chore
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a public issue. Describe only public-safe change information. Authorization, protected evidence, customer context, and vulnerability details remain in approved private systems. Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Reason for change
+      description: Describe the current constraint, defect, lifecycle event, or requirement.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Change outcome and scope
+      description: Define what will change, what will not change, and the affected component.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List measurable completion and closure conditions.
+    validations:
+      required: true
+  - type: textarea
+    id: risk
+    attributes:
+      label: Risk and impact assessment
+      description: Cover security, privacy, availability, compatibility, and operational impact without publishing protected findings.
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: Verification plan
+      description: Define preflight checks, tests, success measures, and public-safe evidence links.
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Safe stop, rollback, and recovery
+      description: Define stop conditions and restoration steps, or explain why rollback is not applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and approvals
+      description: Identify linked public work and the roles that must authorize implementation, release, or deployment.
+    validations:
+      required: false
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-content confirmation
+      options:
+        - label: I confirm this issue contains no secrets, personal or customer data, private infrastructure, protected evidence, or undisclosed vulnerability information.
+          required: true
+

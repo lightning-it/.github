@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/lightning-it/.github/security/advisories/new
+    about: Report vulnerabilities and unsafe disclosure privately. Do not open a public issue.
+  - name: GitHub issue guidelines
+    url: https://docs.l-it.io/contributing/github-issues/
+    about: Review issue types, public-content rules, readiness, completion, and traceability requirements.
