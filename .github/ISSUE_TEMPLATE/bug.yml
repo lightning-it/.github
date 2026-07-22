@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        This is a public issue. Sanitize reproduction data and logs. Do not report vulnerabilities here; use [private vulnerability reporting](https://github.com/lightning-it/.github/security/advisories/new). Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
+        This is a public issue. Sanitize reproduction data and logs. Do not report vulnerabilities here; email [security@l-it.io](mailto:security@l-it.io?subject=Security%20Report) privately and follow the repository SECURITY.md. Read the [GitHub issue guidelines](https://docs.l-it.io/contributing/github-issues/).
   - type: textarea
     id: problem
     attributes:
