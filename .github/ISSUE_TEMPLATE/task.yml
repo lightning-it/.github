@@ -52,7 +52,7 @@ body:
     id: traceability
     attributes:
       label: Dependencies and traceability
-      description: Link public source records, Jira IDs, decisions, related issues, and exclusions.
+      description: Link only public source records, decisions, related issues, and exclusions. Do not include identifiers or links from private trackers.
     validations:
       required: false
   - type: textarea
