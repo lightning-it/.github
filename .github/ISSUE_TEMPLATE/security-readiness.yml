@@ -51,4 +51,3 @@ body:
       options:
         - label: I confirm this is readiness work, not a vulnerability report, and contains no secrets, personal or customer data, private infrastructure, protected evidence, or exploit details.
           required: true
-

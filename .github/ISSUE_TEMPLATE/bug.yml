@@ -61,4 +61,3 @@ body:
       options:
         - label: I confirm this issue contains no secrets, personal or customer data, private infrastructure, protected evidence, or undisclosed vulnerability information.
           required: true
-
