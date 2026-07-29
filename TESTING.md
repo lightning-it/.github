@@ -23,8 +23,6 @@ Products and runtimes:
 - Renovate and verified shared-assets or repository-quality synchronization pull requests target `develop` and may auto-merge only after required checks pass.
 - `develop` to `main` promotion pull requests run the strongest validation profile for this repository.
 - Trusted `main` release workflows build and publish artifacts only after validation succeeds.
-- Protected `main` ancestry is synchronized through a reviewed temporary
-  backmerge branch before a diverged `develop` branch is promoted.
 
 ## Local Commands
 
