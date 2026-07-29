@@ -5,7 +5,10 @@
 - Every pull request must request review from GitHub Copilot (`copilot-pull-request-reviewer[bot]`).
 - Treat Copilot findings as actionable review comments: reproduce the issue, fix it, and add a regression test where practical.
 - Do not dismiss a finding without documenting why it is a false positive in the pull request.
-- A pull request is mergeable only after the required human CODEOWNER approval and all automated checks pass.
+- A pull request is mergeable only after all required automated checks pass and
+  all review conversations are resolved. Lightning IT currently requires zero
+  human or CODEOWNER approvals under LIT-ENG-ADR-REP-70; do not infer a human
+  approval requirement from CODEOWNERS presence.
 - Keep changes scoped; do not make unrelated formatting or dependency changes while addressing review feedback.
 
 ## Security and fail-closed behavior
