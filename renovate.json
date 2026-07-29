@@ -21,7 +21,9 @@
   "packageRules": [
     {
       "description": "Do not update Renovate configuration presets as dependencies",
-      "matchManagers": ["renovate-config"],
+      "matchManagers": [
+        "renovate-config"
+      ],
       "enabled": false
     },
     {
