@@ -1,5 +1,13 @@
 # .github
 
+These organization-wide controls implement the accepted
+[repository topology ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878636297),
+[branching and release governance ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878603438),
+[mandatory CI and artifact assurance ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878636340),
+[secure SDLC standard](https://lit.atlassian.net/wiki/spaces/LIT/pages/2887778335),
+[quality gates](https://lit.atlassian.net/wiki/spaces/LIT/pages/2887123058), and
+[software supply-chain assurance standard](https://lit.atlassian.net/wiki/spaces/LIT/pages/2887024876).
+
 <!-- BEGIN LIT_SHARED_RELEASE_MODEL -->
 
 ## Release and Quality Model
@@ -21,18 +29,17 @@ Publishing targets: `none`.
 
 ## Supported and Tested Platforms
 
-| Platform / Product | Status | Validation |
-|---|---:|---|
-| ubuntu-latest | Supported | Repository quality |
-| github-profile | Tested where applicable | Repository quality |
+| Platform / Product |                  Status | Validation         |
+| ------------------ | ----------------------: | ------------------ |
+| ubuntu-latest      |               Supported | Repository quality |
+| github-profile     | Tested where applicable | Repository quality |
 
 <!-- END LIT_SHARED_RELEASE_MODEL -->
 
 <!-- BEGIN LIT_QUALITY_BADGES -->
 
-[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=main)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
+[![CI](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml/badge.svg?branch=develop)](https://github.com/lightning-it/.github/actions/workflows/repository-quality.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lightning-it/.github/badge)](https://scorecard.dev/viewer/?uri=github.com/lightning-it/.github)
-[![Trivy](https://github.com/lightning-it/.github/actions/workflows/container-trivy-reusable.yml/badge.svg?branch=main)](https://github.com/lightning-it/.github/actions/workflows/container-trivy-reusable.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 <!-- END LIT_QUALITY_BADGES -->
