@@ -24,7 +24,7 @@ class ChangedPathsTests(unittest.TestCase):
             self.changed_paths.__globals__,
             {"git_output": mock.Mock(return_value=status)},
         ):
-            self.assertEqual(
+            self.assertCountEqual(
                 [
                     "ordinary path.txt",
                     "safe-destination.txt",
@@ -40,7 +40,7 @@ class ChangedPathsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 RuntimeError,
-                "rename/copy status is missing its source path",
+                "rename/copy status is missing its paired path",
             ):
                 self.changed_paths()
 

@@ -165,7 +165,7 @@ def changed_paths() -> list[str]:
         paths.append(entry[3:])
         if "R" in status or "C" in status:
             if index >= len(values) or not values[index]:
-                raise RuntimeError("rename/copy status is missing its source path")
+                raise RuntimeError("rename/copy status is missing its paired path")
             paths.append(values[index])
             index += 1
     return paths
