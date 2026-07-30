@@ -29,7 +29,9 @@ Products and runtimes:
 Run the managed repository-policy checks:
 
 ```bash
-python3 scripts/lit-repository-quality.py
+python3 -m venv .venv
+.venv/bin/python -m pip install PyYAML==6.0.3
+.venv/bin/python scripts/lit-repository-quality.py
 ```
 
 Run the repository-specific commands declared in
