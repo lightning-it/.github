@@ -28,6 +28,11 @@ Products and runtimes:
 
 Run the managed repository-policy checks:
 
+The canonical CI entry point is `scripts/lit-ci-profile.sh repository-quality`;
+it resolves the pinned Devtool image and owns the profile dependencies. The
+repository does not maintain a separate Python dependency lockfile for this
+workflow.
+
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install PyYAML==6.0.3
