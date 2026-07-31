@@ -1,6 +1,6 @@
 # ModuLix validation lanes
 
-This organization guidance applies to ModuLix source repositories and central
+This organization-wide guidance applies to ModuLix source repositories and central
 validation. It does not change the `.github` repository's own
 `repository_profile` classification, test profiles, or release behavior.
 
@@ -18,6 +18,11 @@ The authoritative decisions are:
 - Releases verify evidence for the exact immutable candidate instead of synchronously repeating Heavy and Application Acceptance.
 - Missing, expired, revoked, or mismatched evidence fails closed and requires central manual validation.
 - Pull-request authors identify affected profiles, but the validated central policy is authoritative and the declaration never authorizes privileged execution of untrusted code.
+
+Required GitHub Actions checks provide technical gate evidence; they cannot
+approve a pull-request review. REP-70 applies to protected deployment
+environments and does not replace the human review requirements on protected
+branches.
 
 Source repositories keep reusable role tests and environment-neutral scenarios.
 They do not add source-owned Heavy or Application Acceptance schedules.
