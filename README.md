@@ -55,6 +55,7 @@ Publishing targets: `none`.
 
 - [RELEASE.md](./RELEASE.md)
 - [TESTING.md](./TESTING.md)
+- [ModuLix validation lanes](./MODULIX-VALIDATION.md)
 - [SECURITY.md](./SECURITY.md)
 
 ## Security
