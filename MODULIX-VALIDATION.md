@@ -22,8 +22,8 @@ The authoritative decisions are:
 Required GitHub Actions checks provide technical gate evidence; they cannot
 approve a pull-request review. REP-70 applies to protected deployment
 environments and does not change pull-request review policy. Required human
-approval counts may be zero, while review findings and conversation-resolution
-rules remain independently enforced.
+approval counts may be zero; required conversation resolution remains a
+separate branch/ruleset control.
 
 Source repositories keep reusable role tests and environment-neutral scenarios.
 They do not add source-owned Heavy or Application Acceptance schedules.
