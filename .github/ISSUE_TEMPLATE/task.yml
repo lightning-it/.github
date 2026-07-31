@@ -62,6 +62,14 @@ body:
       description: Explain how reviewers will verify the outcome.
     validations:
       required: true
+  - type: textarea
+    id: ai_task_profile
+    attributes:
+      label: AI task profile (when AI assistance is used)
+      description: "State risk (low/normal/high), the smallest sufficient model/reasoning choice, rationale, and the concrete escalation condition. Never use Speed Mode. See LIT-GEN-GDR-GOV-30."
+      placeholder: "Risk: normal; model/reasoning: balanced / low; rationale: bounded implementation with tests; escalate only if: dependency analysis is inconclusive."
+    validations:
+      required: false
   - type: checkboxes
     id: safety
     attributes:
