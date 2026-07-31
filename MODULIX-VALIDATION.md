@@ -41,6 +41,8 @@ Acceptance executed. Those profile names belong to real central runs in
 `modulix-validation`. Temporary migration aliases must be identifiable as
 compatibility checks and removed after the stable aggregates report on both
 protected branches.
+A compatibility alias communicates migration state only; it is never release
+evidence and must not imply that a protected profile executed.
 
 ## Evidence and exceptions
 
