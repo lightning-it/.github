@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = (
+    ROOT
+    / ".github"
+    / "workflows"
+    / "supplementary-current-revision-required.yml"
+)
+
+
+class SupplementaryRequiredWorkflowTests(unittest.TestCase):
+    def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("pull_request_target:", workflow)
+        self.assertNotIn("types:", workflow)
+        self.assertNotIn("actions/checkout@", workflow)
+        self.assertNotIn("openai/codex-action@", workflow)
+        self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", workflow)
+        self.assertIn("@refs/heads/main'", workflow)
+        self.assertIn('test "${WORKFLOW_SHA}" = "${source_sha}"', workflow)
+
+    def test_required_workflow_validates_exact_neutral_producer(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Protected current-revision verifier", workflow)
+        self.assertIn(
+            "rep60-required-workflow:v1:${PR_NUMBER}:${EVENT_HEAD}", workflow
+        )
+        self.assertIn(".app.id == 15368", workflow)
+        self.assertIn(
+            '.path == ".github/workflows/release-bot-exact-head-review.yml"',
+            workflow,
+        )
+        self.assertIn('.path == ".github/workflows/copilot-review.yml"', workflow)
+        self.assertIn(".run_attempt == 1", workflow)
+        self.assertIn(".triggering_actor.login == $actor", workflow)
+        self.assertIn(".input_sha256 | test", workflow)
+
+    def test_draft_open_reserves_a_single_later_rerun(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        reservation = workflow.index("reservation_external_id=")
+        trap = workflow.index("trap finalize_failure ERR")
+        draft = workflow.index('test "$(jq -r .draft <<<"${pr}")" = false')
+        self.assertLess(reservation, trap)
+        self.assertLess(trap, draft)
+        self.assertIn(
+            'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || '
+            'test "${GITHUB_RUN_ATTEMPT}" -eq 2',
+            workflow,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
