@@ -44,6 +44,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("and .display_title == $title", workflow)
         self.assertIn('.event == "pull_request_target"', workflow)
         self.assertIn('.name == "Current revision review gate"', workflow)
+        self.assertIn(
+            "mlx90-current-revision:copilot:v3:${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn("and .base_sha == $base", workflow)
         self.assertIn(".run_attempt == 1", workflow)
         self.assertIn(".triggering_actor.login == $actor", workflow)
         self.assertIn(".input_sha256 | test", workflow)

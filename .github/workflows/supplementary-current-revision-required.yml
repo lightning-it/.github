@@ -194,16 +194,18 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            test "${external_id}" = "mlx90-current-revision:copilot:v3:${EVENT_HEAD}"
+            test "${external_id}" = "mlx90-current-revision:copilot:v3:${EVENT_BASE}:${EVENT_HEAD}"
             jq -e '
               .event == "pull_request_target"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
             ' <<<"${producer}" >/dev/null
             jq -e \
+              --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
               --arg run_url "${details_url}" '
                 .schema == 3
+                and .base_sha == $base
                 and .head_sha == $head
                 and .run_url == $run_url
                 and .review_path == "applicable Copilot or governed automation exemption"
