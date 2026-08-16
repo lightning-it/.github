@@ -57,6 +57,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            '[[ "${head_repository}" =~ '
+            '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]',
+            workflow,
+        )
+        self.assertIn(
             'target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"',
             workflow,
         )
@@ -86,6 +91,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || '
             'test "${GITHUB_RUN_ATTEMPT}" -eq 2',
+            workflow,
+        )
+        self.assertIn(
+            'reservation_id="$(jq -er \'.[0].id | '
+            'select(type == "number" and . > 0)\'',
             workflow,
         )
 

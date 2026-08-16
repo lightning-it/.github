@@ -74,6 +74,7 @@ jobs:
           author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
           draft="$(jq -er '.draft | select(type == "boolean")' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
+          [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"
           target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"
           test "$(jq -r .sha <<<"${head_commit}")" = "${EVENT_HEAD}"
@@ -101,7 +102,7 @@ jobs:
           fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           if [ "${reservation_count}" -eq 1 ]; then
-            reservation_id="$(jq -r '.[0].id' <<<"${reservations}")"
+            reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f details_url="${run_url}" \
