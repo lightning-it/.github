@@ -52,7 +52,17 @@ jobs:
             'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
           source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
-          test "${WORKFLOW_SHA}" = "${source_sha}"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          source_compare="$(gh api \
+            "repos/lightning-it/.github/compare/${WORKFLOW_SHA}...${source_sha}")"
+          jq -e \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --arg source_sha "${source_sha}" '
+              (.status == "ahead" or .status == "identical")
+              and .base_commit.sha == $workflow_sha
+              and .merge_base_commit.sha == $workflow_sha
+              and .head_commit.sha == $source_sha
+            ' <<<"${source_compare}" >/dev/null
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
@@ -117,7 +127,7 @@ jobs:
               -f details_url="${run_url}" \
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
-            reservation_id="$(jq -er .id <<<"${reservation}")"
+            reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
           fi
 
           finalize_failure() {

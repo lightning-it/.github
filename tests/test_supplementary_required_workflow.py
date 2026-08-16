@@ -22,8 +22,12 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", workflow)
-        self.assertIn("@refs/heads/main'", workflow)
-        self.assertIn('test "${WORKFLOW_SHA}" = "${source_sha}"', workflow)
+        self.assertIn("@refs/heads/main", workflow)
+        self.assertIn(
+            '"repos/lightning-it/.github/compare/${WORKFLOW_SHA}...${source_sha}"',
+            workflow,
+        )
+        self.assertIn("and .merge_base_commit.sha == $workflow_sha", workflow)
 
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -101,6 +105,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0)\'',
+            workflow,
+        )
+        self.assertIn(
+            'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
             workflow,
         )
 
