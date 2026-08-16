@@ -24,6 +24,7 @@ concurrency:
 jobs:
   verify-protected-current-revision-evidence:
     name: Verify protected current-revision evidence
+    if: github.repository == 'lightning-it/ansible-collection-supplementary'
     permissions:
       actions: read
       checks: write

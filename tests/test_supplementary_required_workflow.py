@@ -20,6 +20,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("types:", workflow)
         self.assertNotIn("actions/checkout@", workflow)
         self.assertNotIn("openai/codex-action@", workflow)
+        self.assertIn(
+            "if: github.repository == "
+            "'lightning-it/ansible-collection-supplementary'",
+            workflow,
+        )
         self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", workflow)
         self.assertIn("@refs/heads/main'", workflow)
         self.assertIn('test "${WORKFLOW_SHA}" = "${source_sha}"', workflow)
