@@ -70,7 +70,8 @@ jobs:
               and (.base.ref == "develop" or .base.ref == "main")
             ' <<<"${pr}" >/dev/null
           base_ref="$(jq -r .base.ref <<<"${pr}")"
-          author="$(jq -r .user.login <<<"${pr}")"
+          author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
+          draft="$(jq -er '.draft | select(type == "boolean")' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
           head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"
           target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"
@@ -127,7 +128,7 @@ jobs:
           }
           trap finalize_failure ERR
 
-          test "$(jq -r .draft <<<"${pr}")" = false
+          test "${draft}" = false
           neutral_pages="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
           neutral="$(jq -c '

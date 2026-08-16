@@ -57,11 +57,25 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('test "${head_repository}" = "${REPOSITORY}"', workflow)
 
+    def test_api_identity_and_draft_types_fail_closed(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "author=\"$(jq -er '.user.login | "
+            'select(type == "string" and length > 0)\'',
+            workflow,
+        )
+        self.assertIn(
+            "draft=\"$(jq -er '.draft | select(type == \"boolean\")'",
+            workflow,
+        )
+        self.assertIn('test "${draft}" = false', workflow)
+        self.assertNotIn('jq -r .draft <<<"${pr}"', workflow)
+
     def test_draft_open_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reservation = workflow.index("reservation_external_id=")
         trap = workflow.index("trap finalize_failure ERR")
-        draft = workflow.index('test "$(jq -r .draft <<<"${pr}")" = false')
+        draft = workflow.index('test "${draft}" = false')
         self.assertLess(reservation, trap)
         self.assertLess(trap, draft)
         self.assertIn(
