@@ -40,6 +40,23 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".triggering_actor.login == $actor", workflow)
         self.assertIn(".input_sha256 | test", workflow)
 
+    def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            'head_repository="$(jq -er \'.head.repo.full_name | '
+            'select(type == "string" and length > 0)\'',
+            workflow,
+        )
+        self.assertIn(
+            'head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"',
+            workflow,
+        )
+        self.assertIn(
+            'target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"',
+            workflow,
+        )
+        self.assertIn('test "${head_repository}" = "${REPOSITORY}"', workflow)
+
     def test_draft_open_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reservation = workflow.index("reservation_external_id=")
