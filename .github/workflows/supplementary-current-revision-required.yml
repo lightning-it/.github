@@ -266,15 +266,20 @@ jobs:
               scripts/materialize-exact-revision-review.py \
               f394a820a9c0922d8e7187dbd1b8aca3bf13db61
 
-            reviews="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews")"
+            review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
             jq -e '
-              all(.[].user.login;
+              all(.[][]?.user.login;
                 . != "copilot-pull-request-reviewer[bot]"
                 and . != "github-copilot[bot]")
-            ' <<<"${reviews}" >/dev/null
-            exact_checks="$(gh api \
+            ' <<<"${review_pages}" >/dev/null
+            exact_check_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"
-            test "$(jq '.check_runs | length' <<<"${exact_checks}")" -eq 0
+            exact_checks="$(jq -c '
+              [.[].check_runs[]? |
+                select(.name == "Protected Exact-Revision Codex result")]
+            ' <<<"${exact_check_pages}")"
+            test "$(jq 'length' <<<"${exact_checks}")" -eq 0
             transition_summary="$(jq -cn \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \

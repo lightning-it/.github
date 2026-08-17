@@ -195,7 +195,6 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             'local file_name="$1" expected_blob="$2" observed_blob',
             transition,
         )
-        self.assertIn("all(.[].user.login;", transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
         self.assertIn('acceptance_evidence: false', transition)
@@ -204,6 +203,15 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("-f name='Current revision review'", transition)
         self.assertIn(
             'neutral_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn(
+            'review_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn("all(.[][]?.user.login;", transition)
+        self.assertIn(
+            'exact_check_pages="$(gh api --paginate --slurp',
             transition,
         )
         self.assertIn('if [ "${neutral_count}" -gt 1 ]; then', transition)
