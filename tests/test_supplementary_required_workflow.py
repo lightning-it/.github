@@ -49,11 +49,18 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.event == "pull_request_target"', workflow)
         self.assertIn('.name == "Current revision review gate"', workflow)
         self.assertIn(
-            "mlx90-current-revision:copilot:v3:${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:copilot:v4:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn("producer_run_id=\"${BASH_REMATCH[1]}\"", workflow)
+        self.assertIn(".producer_run_id == $run_id", workflow)
+        self.assertIn(".schema == 4", workflow)
+        self.assertIn(
+            'test "${details_url}" = "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"',
             workflow,
         )
         self.assertIn("and .base_sha == $base", workflow)
-        self.assertIn(".run_attempt == 1", workflow)
+        self.assertNotIn("and .run_attempt == 1", workflow)
         self.assertIn(".triggering_actor.login == $actor", workflow)
         self.assertIn(".input_sha256 | test", workflow)
 

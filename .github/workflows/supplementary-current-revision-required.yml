@@ -110,12 +110,23 @@ jobs:
             echo "Multiple protected verifier reservations exist for the same PR/head." >&2
             exit 1
           fi
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
+            reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
+            jq -e \
+              --arg external_id "${reservation_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg url "${reservation_url}" \
+              --argjson check_id "${reservation_id}" '
+                .[0].id == $check_id
+                and .[0].head_sha == $head
+                and .[0].details_url == $url
+                and .[0].external_id == $external_id
+                and .[0].app.id == 15368
+                and .[0].app.slug == "github-actions"
+              ' <<<"${reservations}" >/dev/null
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
-              -f details_url="${run_url}" \
               -f 'output[title]=Protected verifier is re-evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}." >/dev/null
           else
@@ -124,10 +135,23 @@ jobs:
               -f head_sha="${EVENT_HEAD}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
-              -f details_url="${run_url}" \
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+            reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
+            jq -e \
+              --arg external_id "${reservation_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg url "${reservation_url}" \
+              --argjson check_id "${reservation_id}" '
+                .id == $check_id
+                and .head_sha == $head
+                and .details_url == $url
+                and .external_id == $external_id
+                and .status == "in_progress"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+              ' <<<"${reservation}" >/dev/null
           fi
 
           finalize_failure() {
@@ -154,49 +178,44 @@ jobs:
             and .status == "completed"
             and .conclusion == "success"
           ' <<<"${check}" >/dev/null
+          check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${check}")"
           details_url="$(jq -r '.details_url // empty' <<<"${check}")"
-          expected_prefix="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/"
-          case "${details_url}" in
-            "${expected_prefix}"[1-9][0-9]*) ;;
-            *) echo "Current revision result does not reference a repository Actions run." >&2; false ;;
-          esac
-          producer_run_id="${details_url#"${expected_prefix}"}"
-          [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-          jq -e \
-            --arg base_ref "${base_ref}" \
-            --arg base_sha "${EVENT_BASE}" \
-            --arg details_url "${details_url}" '
-              .status == "completed"
-              and .conclusion == "success"
-              and .head_branch == $base_ref
-              and .head_sha == $base_sha
-              and .html_url == $details_url
-              and .run_attempt == 1
-            ' <<<"${producer}" >/dev/null
-
+          test "${details_url}" = "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
           external_id="$(jq -r '.external_id // empty' <<<"${check}")"
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
           if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
-            [[ "${external_id}" =~ ^mlx90-current-revision:v3:[0-9a-f]{64}$ ]]
+            [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
+            producer_run_id="${BASH_REMATCH[1]}"
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
+            producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
+            producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e \
               --arg actor "${author}" \
+              --arg base_ref "${base_ref}" \
+              --arg base_sha "${EVENT_BASE}" \
+              --arg run_url "${producer_run_url}" \
               --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
+                and .status == "completed"
+                and .conclusion == "success"
+                and .head_branch == $base_ref
+                and .head_sha == $base_sha
                 and .path == ".github/workflows/release-bot-exact-head-review.yml"
                 and .display_title == $title
+                and .html_url == $run_url
                 and .actor.login == $actor
                 and .triggering_actor.login == $actor
               ' <<<"${producer}" >/dev/null
             jq -e \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
-              --arg run_url "${details_url}" '
-                .schema == 3
+              --arg run_url "${producer_run_url}" \
+              --argjson run_id "${producer_run_id}" '
+                .schema == 4
                 and .base_sha == $base
                 and .head_sha == $head
+                and .producer_run_id == $run_id
                 and .run_url == $run_url
                 and (.merge_base_sha | test("^[0-9a-f]{40}$"))
                 and (.integration_tree_sha | test("^[0-9a-f]{40}$"))
@@ -204,19 +223,34 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            test "${external_id}" = "mlx90-current-revision:copilot:v3:${EVENT_BASE}:${EVENT_HEAD}"
+            [[ "${external_id}" =~ ^mlx90-current-revision:copilot:v4:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+            producer_run_id="${BASH_REMATCH[1]}"
+            producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
+            producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e '
               .event == "pull_request_target"
+              and .status == "completed"
+              and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
             ' <<<"${producer}" >/dev/null
             jq -e \
+              --arg base_ref "${base_ref}" \
+              --arg base_sha "${EVENT_BASE}" \
+              --arg run_url "${producer_run_url}" '
+                .head_branch == $base_ref
+                and .head_sha == $base_sha
+                and .html_url == $run_url
+              ' <<<"${producer}" >/dev/null
+            jq -e \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
-              --arg run_url "${details_url}" '
-                .schema == 3
+              --arg run_url "${producer_run_url}" \
+              --argjson run_id "${producer_run_id}" '
+                .schema == 4
                 and .base_sha == $base
                 and .head_sha == $head
+                and .producer_run_id == $run_id
                 and .run_url == $run_url
                 and .review_path == "applicable Copilot or governed automation exemption"
               ' <<<"${summary}" >/dev/null
@@ -227,4 +261,4 @@ jobs:
             -f status=completed \
             -f conclusion=success \
             -f 'output[title]=Protected current-revision evidence verified' \
-            -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${details_url}." >/dev/null
+            -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${producer_run_url}." >/dev/null
