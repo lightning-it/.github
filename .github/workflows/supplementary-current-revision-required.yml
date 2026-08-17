@@ -247,7 +247,7 @@ jobs:
               ' <<<"${compare}" >/dev/null
 
             verify_blob() {
-              local file_name="$1" expected_blob="$2"
+              local file_name="$1" expected_blob="$2" observed_blob
               observed_blob="$(gh api \
                 "repos/${REPOSITORY}/contents/${file_name}?ref=${EVENT_HEAD}" \
                 --jq .sha)"

@@ -191,6 +191,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".merge_commit_sha ==", transition)
         self.assertIn("and .ahead_by == 62", transition)
         self.assertIn("and .commits[-1].sha == $head", transition)
+        self.assertIn(
+            'local file_name="$1" expected_blob="$2" observed_blob',
+            transition,
+        )
         self.assertIn("all(.[].user.login;", transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
