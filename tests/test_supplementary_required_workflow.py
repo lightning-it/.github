@@ -161,6 +161,9 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         }
         self.assertEqual(observed_stages, expected_stages)
         self.assertIn("stage ${failure_stage}; fail-closed", workflow)
+        self.assertIn("trap - ERR", workflow)
+        self.assertIn('exit "${exit_code}"', workflow)
+        self.assertNotIn('return "${exit_code}"', workflow)
 
     def test_draft_open_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

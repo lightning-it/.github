@@ -207,13 +207,14 @@ jobs:
 
           finalize_failure() {
             local exit_code="$?"
+            trap - ERR
             set +e
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=completed \
               -f conclusion=failure \
               -f 'output[title]=Protected current-revision evidence is absent or invalid' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
-            return "${exit_code}"
+            exit "${exit_code}"
           }
           trap finalize_failure ERR
 
