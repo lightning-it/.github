@@ -30,7 +30,7 @@ This record covers only the first promotion of the protected Supplementary
 current-revision controller from `develop` to `main` in
 `lightning-it/ansible-collection-supplementary`.
 
-The live promotion is pull request `#776`, authored by
+The live promotion is pull request `#777`, authored by
 `lightning-it-release-automation[bot]`, and is frozen to:
 
 - base `01afb46890e6d7ac6008e8ed478aa6af91e1b19b`;
@@ -102,13 +102,27 @@ then converts the value to the literal string `false` or `true` before the
 separate ready-state assertion. Both failed attempts remain non-acceptance
 evidence and did not authorize a merge.
 
+After those corrections reached the protected source, required-workflow run
+`32030767687` verified the immutable transition for PR `#776` and created
+exactly one temporary neutral check. Its evidence explicitly recorded
+`temporary=true`, `acceptance_evidence=false`, and `no AI`; no Copilot review
+or Exact-Revision Codex result existed. The PR was not merged because its
+normal promotion Environment run had been triggered by `litroc`, while the
+Environment correctly enforces `prevent_self_review=true`. PR `#776` was
+closed without merge. Protected workflow run `32031952789` then used the
+Release App to open replacement PR `#777` with the identical immutable base,
+head, tree, and bot author. The transition is now additionally bound to that
+exact PR number and to the Release App as both workflow actor and triggering
+actor. The PR `#776` check remains historical non-acceptance evidence and
+cannot authorize PR `#777`.
+
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.
 
 ## Mandatory completion
 
-After `#776` reaches protected `main` through a normal merge commit:
+After `#777` reaches protected `main` through a normal merge commit:
 
 1. remove the temporary transition and its regression assertions;
 2. retain the neutral `Current revision review` ruleset requirement and the
