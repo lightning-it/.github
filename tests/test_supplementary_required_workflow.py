@@ -118,6 +118,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
             workflow,
         )
+        self.assertEqual(
+            workflow.count('-f "details_url=${reservation_url}"'),
+            2,
+        )
 
 
 if __name__ == "__main__":
