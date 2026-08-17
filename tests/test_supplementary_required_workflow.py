@@ -155,7 +155,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "permanent-finalization",
         }
         observed_stages = {
-            line.strip().split("=", 1)[1]
+            line.strip().split("=", 1)[1].strip("'")
             for line in workflow.splitlines()
             if line.strip().startswith("failure_stage=")
         }

@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          failure_stage=initialization
+          failure_stage='initialization'
           report_failure_stage() {
             local exit_code="$?"
             if [ "${exit_code}" -ne 0 ]; then
@@ -57,7 +57,7 @@ jobs:
           }
           trap report_failure_stage EXIT
 
-          failure_stage=protected-source-binding
+          failure_stage='protected-source-binding'
           test "${REPOSITORY}" = lightning-it/ansible-collection-supplementary
           test "${WORKFLOW_REF}" = \
             'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
@@ -86,14 +86,14 @@ jobs:
               )
             ' <<<"${source_compare}" >/dev/null
 
-          failure_stage=event-metadata-binding
+          failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
 
-          failure_stage=live-pr-binding
+          failure_stage='live-pr-binding'
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EVENT_BASE}" \
@@ -112,7 +112,7 @@ jobs:
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
           [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 
-          failure_stage=live-commit-binding
+          failure_stage='live-commit-binding'
           head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"
           target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"
           test "$(jq -r .sha <<<"${head_commit}")" = "${EVENT_HEAD}"
@@ -121,7 +121,7 @@ jobs:
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
-          failure_stage=reservation-inventory
+          failure_stage='reservation-inventory'
           reservation_external_id="rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}"
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
@@ -150,7 +150,7 @@ jobs:
             echo "Multiple protected verifier reservations exist for the same PR/head." >&2
             exit 1
           fi
-          failure_stage=reservation-materialization
+          failure_stage='reservation-materialization'
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
@@ -217,7 +217,7 @@ jobs:
           }
           trap finalize_failure ERR
 
-          failure_stage=producer-evidence-selection
+          failure_stage='producer-evidence-selection'
           # One immutable transition is needed because the first main promotion
           # carries the protected v4 producer that future Release-App PRs use.
           # The exception is deliberately exact (PR, base, head, merge, tree,
@@ -234,7 +234,7 @@ jobs:
             test "${base_ref}" = main
             test "${head_repository}" = "${REPOSITORY}"
 
-            failure_stage=transition-static-provenance
+            failure_stage='transition-static-provenance'
             jq -e '
               .sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
               and .commit.tree.sha == "7c19ce8303b313b2911e2f8abd075a7b5b2fecd6"
@@ -299,7 +299,7 @@ jobs:
               scripts/materialize-exact-revision-review.py \
               f394a820a9c0922d8e7187dbd1b8aca3bf13db61
 
-            failure_stage=transition-ai-absence
+            failure_stage='transition-ai-absence'
             review_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
             jq -e '
@@ -335,7 +335,7 @@ jobs:
               ')"
             transition_external_id="rep60-main-bootstrap:v1:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
             transition_title='One-time immutable main-controller bootstrap verified'
-            failure_stage=transition-neutral-check
+            failure_stage='transition-neutral-check'
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
             neutral_checks="$(jq -c '
@@ -407,7 +407,7 @@ jobs:
                 and .output.summary == $evidence
               ' <<<"${transition_check}" >/dev/null
 
-            failure_stage=transition-finalization
+            failure_stage='transition-finalization'
             gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=completed \
@@ -419,7 +419,7 @@ jobs:
             exit 0
           fi
 
-          failure_stage=permanent-producer-inventory
+          failure_stage='permanent-producer-inventory'
           test "${draft}" = false
           neutral_pages="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
@@ -440,7 +440,7 @@ jobs:
           external_id="$(jq -r '.external_id // empty' <<<"${check}")"
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
-          failure_stage=permanent-producer-binding
+          failure_stage='permanent-producer-binding'
           if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
             producer_run_id="${BASH_REMATCH[1]}"
@@ -534,7 +534,7 @@ jobs:
               ' <<<"${summary}" >/dev/null
           fi
 
-          failure_stage=permanent-finalization
+          failure_stage='permanent-finalization'
           gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
             -f status=completed \
             -f conclusion=success \
