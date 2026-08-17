@@ -98,7 +98,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('test "${head_repository}" = "${REPOSITORY}"', workflow)
 
-    def test_human_producer_is_bound_to_the_protected_default_controller(self) -> None:
+    def test_human_producer_separates_event_head_from_protected_controller(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         author_paths = workflow.split(
             "          if [ \"${author}\" = 'lightning-it-release-automation[bot]' ]; then\n"
@@ -109,12 +109,14 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".controller_sha", human_path)
         self.assertIn('test "${controller_branch}" = develop', human_path)
         self.assertIn("compare/${controller_sha}...${controller_head}", human_path)
-        self.assertIn(".head_branch == $controller_branch", human_path)
-        self.assertIn(".head_sha == $controller_sha", human_path)
+        self.assertIn('--arg head_ref "${head_ref}"', human_path)
+        self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
+        self.assertIn(".head_branch == $head_ref", human_path)
+        self.assertIn(".head_sha == $head_sha", human_path)
         self.assertIn("and .controller_sha == $controller", human_path)
         self.assertIn("PR base_ref remains independently valid as main or", human_path)
-        self.assertNotIn(".head_branch == $base_ref", human_path)
-        self.assertNotIn(".head_sha == $base_sha", human_path)
+        self.assertNotIn(".head_branch == $controller_branch", human_path)
+        self.assertNotIn(".head_sha == $controller_sha", human_path)
 
     def test_api_identity_and_draft_types_fail_closed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -150,6 +152,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "transition-ai-absence",
             "transition-neutral-check",
             "transition-finalization",
+            "human-transition-static-provenance",
+            "human-transition-review",
+            "human-transition-neutral-check",
+            "human-transition-finalization",
             "permanent-producer-inventory",
             "permanent-producer-binding",
             "permanent-finalization",
@@ -214,8 +220,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "          # One immutable transition is needed because the first main promotion",
             1,
         )[1].split(
-            '          test "${draft}" = false\n'
-            '          neutral_pages="$(gh api --paginate --slurp',
+            "          # One exact protected transition repairs the human producer's",
             1,
         )[0]
         self.assertIn('[ "${PR_NUMBER}" = 777 ]', transition)
@@ -297,6 +302,43 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             ),
             permanent.index("trap - ERR"),
         )
+
+    def test_one_time_human_provenance_transition_is_exact_and_review_bound(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "          # One exact protected transition repairs the human producer's",
+            1,
+        )[1].split("          failure_stage='permanent-producer-inventory'", 1)[0]
+        self.assertIn('[ "${PR_NUMBER}" = 779 ]', transition)
+        self.assertIn("7a6cadc2c1048daec4a69ff0f71441b6ff257416", transition)
+        self.assertIn("c354f0199b3b8beb9fd8eccc25de367e4a7dfe50", transition)
+        self.assertIn("a232c2282ba142bf44829e78d2ebbce6a8af299e", transition)
+        self.assertIn("fix/rep60-current-revision-provenance-rearm-20260817", transition)
+        self.assertNotIn("Rene Osorio", transition)
+        self.assertNotIn("ro@l-it.io", transition)
+        self.assertIn("and .ahead_by == 1", transition)
+        self.assertIn("and .total_commits == 1", transition)
+        self.assertIn("pulls/779/files?per_page=100", transition)
+        for blob in (
+            "d0c403f0185ade0637c2820af3d4abe2f99cefd0",
+            "ec93b568838aee70214d2c02b73a67b870d82ab8",
+            "d463e75bb1667ac08465aeb78dcf7692b93dd696",
+            "e29cf8ab2c1a0311030fc059497604287f291df9",
+            "a7b62d83649c3561d20dd1b07a0536a62f38361c",
+            "8f7e69631b0b5181b61c91c0e1a5f5b55d685ee6",
+        ):
+            self.assertIn(blob, transition)
+        self.assertIn("copilot-pull-request-reviewer[bot]", transition)
+        self.assertIn("and .commit_id == $head", transition)
+        self.assertIn('test "$(jq \'length\' <<<"${accepted_reviews}")" -eq 1', transition)
+        self.assertIn("reviewThreads(first:100,after:$after)", transition)
+        self.assertIn('test "${unresolved}" -eq 0', transition)
+        self.assertIn('review_path: "exact current-head Copilot review"', transition)
+        self.assertIn("rep60-human-provenance-transition:v1:", transition)
+        self.assertIn("-f name='Current revision review'", transition)
+        self.assertIn("acceptance_evidence: true", transition)
+        self.assertNotIn("openai/codex-action@", transition)
+        self.assertNotIn("copilot-requests", transition)
 
 
 if __name__ == "__main__":
