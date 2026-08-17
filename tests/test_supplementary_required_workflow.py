@@ -312,20 +312,21 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('[ "${PR_NUMBER}" = 779 ]', transition)
         self.assertIn("7a6cadc2c1048daec4a69ff0f71441b6ff257416", transition)
         self.assertIn("c354f0199b3b8beb9fd8eccc25de367e4a7dfe50", transition)
-        self.assertIn("a232c2282ba142bf44829e78d2ebbce6a8af299e", transition)
+        self.assertIn("5699b29778899a4dff52adea7c2c2916a5a539e6", transition)
+        self.assertIn("05e298252c806ff234421cc51557c61c11cd3dfe", transition)
         self.assertIn("fix/rep60-current-revision-provenance-rearm-20260817", transition)
         self.assertNotIn("Rene Osorio", transition)
         self.assertNotIn("ro@l-it.io", transition)
-        self.assertIn("and .ahead_by == 1", transition)
-        self.assertIn("and .total_commits == 1", transition)
+        self.assertIn("and .ahead_by == 2", transition)
+        self.assertIn("and .total_commits == 2", transition)
         self.assertIn("pulls/779/files?per_page=100", transition)
         for blob in (
             "d0c403f0185ade0637c2820af3d4abe2f99cefd0",
             "ec93b568838aee70214d2c02b73a67b870d82ab8",
-            "d463e75bb1667ac08465aeb78dcf7692b93dd696",
+            "532eff112b41df329cd6bfda56378230572c0988",
             "e29cf8ab2c1a0311030fc059497604287f291df9",
             "a7b62d83649c3561d20dd1b07a0536a62f38361c",
-            "8f7e69631b0b5181b61c91c0e1a5f5b55d685ee6",
+            "127dded9897d9058de8757322876af20663aed87",
         ):
             self.assertIn(blob, transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)

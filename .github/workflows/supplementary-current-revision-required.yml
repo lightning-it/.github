@@ -432,7 +432,7 @@ jobs:
           # with no unresolved Copilot thread. Remove it after PR #779 merges.
           if [ "${PR_NUMBER}" = 779 ] \
             && [ "${EVENT_BASE}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ] \
-            && [ "${EVENT_HEAD}" = c354f0199b3b8beb9fd8eccc25de367e4a7dfe50 ]; then
+            && [ "${EVENT_HEAD}" = 5699b29778899a4dff52adea7c2c2916a5a539e6 ]; then
             test "${GITHUB_ACTOR}" = litroc
             test "${GITHUB_TRIGGERING_ACTOR}" = litroc
             test "${draft}" = false
@@ -443,16 +443,16 @@ jobs:
 
             failure_stage='human-transition-static-provenance'
             jq -e '
-              .sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
-              and .commit.tree.sha == "a232c2282ba142bf44829e78d2ebbce6a8af299e"
+              .sha == "5699b29778899a4dff52adea7c2c2916a5a539e6"
+              and .commit.tree.sha == "05e298252c806ff234421cc51557c61c11cd3dfe"
               and .commit.verification.verified == false
               and .commit.verification.reason == "unsigned"
               and .author.login == "litroc"
               and .committer.login == "litroc"
               and [.parents[].sha] == [
-                "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+                "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
               ]
-              and .commit.message == "fix(rep60): bind current-revision run provenance"
+              and .commit.message == "fix(rep60): minimize bootstrap token permissions"
             ' <<<"${target_commit}" >/dev/null
 
             source_pr="$(gh api "repos/${REPOSITORY}/pulls/779")"
@@ -466,7 +466,7 @@ jobs:
                 and .base.sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
                 and .base.repo.full_name == $repository
                 and .head.ref == "fix/rep60-current-revision-provenance-rearm-20260817"
-                and .head.sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+                and .head.sha == "5699b29778899a4dff52adea7c2c2916a5a539e6"
                 and .head.repo.full_name == $repository
                 and .title == "fix(rep60): bind current-revision run provenance"
               ' <<<"${source_pr}" >/dev/null
@@ -478,12 +478,13 @@ jobs:
               --arg head "${EVENT_HEAD}" '
                 .status == "ahead"
                 and .behind_by == 0
-                and .ahead_by == 1
-                and .total_commits == 1
-                and (.commits | length) == 1
+                and .ahead_by == 2
+                and .total_commits == 2
+                and (.commits | length) == 2
                 and .base_commit.sha == $base
                 and .merge_base_commit.sha == $base
-                and .commits[0].sha == $head
+                and .commits[0].sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+                and .commits[1].sha == $head
               ' <<<"${compare}" >/dev/null
 
             source_files="$(gh api --paginate --slurp \
@@ -512,10 +513,10 @@ jobs:
                 {
                   filename: ".github/workflows/rep60-bootstrap-app-rearm.yml",
                   status: "added",
-                  sha: "d463e75bb1667ac08465aeb78dcf7692b93dd696",
-                  additions: 149,
+                  sha: "532eff112b41df329cd6bfda56378230572c0988",
+                  additions: 148,
                   deletions: 0,
-                  changes: 149
+                  changes: 148
                 },
                 {
                   filename: "changelogs/fragments/rep60-current-revision-provenance-rearm.yml",
@@ -536,10 +537,10 @@ jobs:
                 {
                   filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
                   status: "added",
-                  sha: "8f7e69631b0b5181b61c91c0e1a5f5b55d685ee6",
-                  additions: 64,
+                  sha: "127dded9897d9058de8757322876af20663aed87",
+                  additions: 65,
                   deletions: 0,
-                  changes: 64
+                  changes: 65
                 }
               ]
             ' <<<"${source_files}" >/dev/null
