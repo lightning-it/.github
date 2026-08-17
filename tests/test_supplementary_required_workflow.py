@@ -218,7 +218,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             'review_pages="$(gh api --paginate --slurp',
             transition,
         )
-        self.assertIn("all(.[][]?.user.login;", transition)
+        self.assertIn("all(.[][]?;", transition)
+        self.assertIn(
+            '(.user.login | type == "string" and length > 0)',
+            transition,
+        )
         self.assertIn(
             'exact_check_pages="$(gh api --paginate --slurp',
             transition,

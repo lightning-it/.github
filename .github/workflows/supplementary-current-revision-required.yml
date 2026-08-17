@@ -280,9 +280,10 @@ jobs:
             review_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
             jq -e '
-              all(.[][]?.user.login;
-                . != "copilot-pull-request-reviewer[bot]"
-                and . != "github-copilot[bot]")
+              all(.[][]?;
+                (.user.login | type == "string" and length > 0)
+                and .user.login != "copilot-pull-request-reviewer[bot]"
+                and .user.login != "github-copilot[bot]")
             ' <<<"${review_pages}" >/dev/null
             exact_check_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"
