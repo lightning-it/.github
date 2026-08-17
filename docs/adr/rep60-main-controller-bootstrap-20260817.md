@@ -74,6 +74,15 @@ is allowed only when its GitHub Actions app identity, head, external binding,
 successful conclusion, title, and complete evidence summary match exactly;
 multiple or mismatched checks fail closed.
 
+The first live preflight, required-workflow run `32026210862`, stopped before
+creating transition evidence because GitHub's compare API returns a null
+`head_commit` for an identical comparison. The controller therefore accepts a
+null `head_commit` only when the protected source and workflow SHAs are equal,
+the status is `identical`, and both ahead/behind counts are zero. For an
+`ahead` result it still requires a positive ahead count, zero behind count,
+and the exact source SHA as `head_commit`. The failed preflight is not
+acceptance evidence and did not authorize a merge.
+
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.

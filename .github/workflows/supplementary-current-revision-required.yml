@@ -58,10 +58,21 @@ jobs:
           jq -e \
             --arg workflow_sha "${WORKFLOW_SHA}" \
             --arg source_sha "${source_sha}" '
-              (.status == "ahead" or .status == "identical")
-              and .base_commit.sha == $workflow_sha
+              .base_commit.sha == $workflow_sha
               and .merge_base_commit.sha == $workflow_sha
-              and .head_commit.sha == $source_sha
+              and (
+                (.status == "identical"
+                  and $source_sha == $workflow_sha
+                  and .ahead_by == 0
+                  and .behind_by == 0
+                  and .head_commit == null)
+                or
+                (.status == "ahead"
+                  and $source_sha != $workflow_sha
+                  and .ahead_by > 0
+                  and .behind_by == 0
+                  and .head_commit.sha == $source_sha)
+              )
             ' <<<"${source_compare}" >/dev/null
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
