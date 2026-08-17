@@ -234,32 +234,47 @@ jobs:
             producer_run_id="${BASH_REMATCH[1]}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+              <<<"${summary}")"
+            default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            test "${default_branch}" = develop
+            default_head="$(gh api "repos/${REPOSITORY}/branches/${default_branch}" --jq .commit.sha)"
+            controller_ancestry="$(gh api \
+              "repos/${REPOSITORY}/compare/${controller_sha}...${default_head}")"
             jq -e \
-              --arg actor "${author}" '
+              --arg controller "${controller_sha}" '
+                .status == "identical"
+                or (.status == "ahead" and .behind_by == 0
+                    and .merge_base_commit.sha == $controller)
+              ' <<<"${controller_ancestry}" >/dev/null
+            jq -e \
+              --arg actor "${author}" \
+              --arg controller_sha "${controller_sha}" \
+              --arg default_branch "${default_branch}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
+              and .head_branch == $default_branch
+              and .head_sha == $controller_sha
               and .actor.login == $actor
               and .triggering_actor.login == $actor
             ' <<<"${producer}" >/dev/null
             jq -e \
-              --arg base_ref "${base_ref}" \
-              --arg base_sha "${EVENT_BASE}" \
               --arg run_url "${producer_run_url}" '
-                .head_branch == $base_ref
-                and .head_sha == $base_sha
-                and .html_url == $run_url
+                .html_url == $run_url
               ' <<<"${producer}" >/dev/null
             jq -e \
               --arg base "${EVENT_BASE}" \
+              --arg controller "${controller_sha}" \
               --arg head "${EVENT_HEAD}" \
               --arg run_url "${producer_run_url}" \
               --argjson run_id "${producer_run_id}" '
                 .schema == 4
                 and .base_sha == $base
                 and .head_sha == $head
+                and .controller_sha == $controller
                 and .producer_run_id == $run_id
                 and .run_url == $run_url
                 and .review_path == "applicable Copilot or governed automation exemption"

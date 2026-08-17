@@ -89,6 +89,23 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('test "${head_repository}" = "${REPOSITORY}"', workflow)
 
+    def test_human_producer_is_bound_to_the_protected_default_controller(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        author_paths = workflow.split(
+            "          if [ \"${author}\" = 'lightning-it-release-automation[bot]' ]; then\n"
+            '            [[ "${external_id}" =~ ^mlx90-current-revision:v4:',
+            1,
+        )[1]
+        human_path = author_paths.split("          else", 1)[1].split("          fi", 1)[0]
+        self.assertIn(".controller_sha", human_path)
+        self.assertIn('test "${default_branch}" = develop', human_path)
+        self.assertIn("compare/${controller_sha}...${default_head}", human_path)
+        self.assertIn(".head_branch == $default_branch", human_path)
+        self.assertIn(".head_sha == $controller_sha", human_path)
+        self.assertIn("and .controller_sha == $controller", human_path)
+        self.assertNotIn(".head_branch == $base_ref", human_path)
+        self.assertNotIn(".head_sha == $base_sha", human_path)
+
     def test_api_identity_and_draft_types_fail_closed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn(
