@@ -143,6 +143,15 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow.count('-f "details_url=${reservation_url}"'),
             2,
         )
+        reservation_selection = workflow.split('reservations="$(jq -c', 1)[1].split(
+            'reservation_count="$(jq', 1
+        )[0]
+        self.assertIn("select(.head_sha == $head)", reservation_selection)
+        self.assertNotIn("select(.external_id == $external_id)", reservation_selection)
+        self.assertEqual(
+            workflow.count('-f external_id="${reservation_external_id}"'),
+            3,
+        )
 
 
 if __name__ == "__main__":

@@ -99,12 +99,12 @@ jobs:
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"
           reservations="$(jq -c \
-            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
             --arg name "${reservation_name}" '
               [.[].check_runs[]? |
                 select(.name == $name) |
                 select(.app.id == 15368 and .app.slug == "github-actions") |
-                select(.external_id == $external_id)]
+                select(.head_sha == $head)]
             ' <<<"${reservation_checks}")"
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${reservation_count}" -gt 1 ]; then
@@ -116,6 +116,7 @@ jobs:
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
               -f 'output[title]=Protected verifier is re-evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
@@ -143,6 +144,7 @@ jobs:
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
