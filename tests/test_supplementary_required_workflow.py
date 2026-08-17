@@ -103,6 +103,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".head_branch == $default_branch", human_path)
         self.assertIn(".head_sha == $controller_sha", human_path)
         self.assertIn("and .controller_sha == $controller", human_path)
+        self.assertIn("PR base_ref remains independently valid as main or", human_path)
         self.assertNotIn(".head_branch == $base_ref", human_path)
         self.assertNotIn(".head_sha == $base_sha", human_path)
 
@@ -151,6 +152,14 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(
             workflow.count('-f external_id="${reservation_external_id}"'),
             3,
+        )
+        self.assertIn(
+            "^rep60-required-workflow:v2:[1-9][0-9]*:${PR_NUMBER}:${EVENT_HEAD}$",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index('prior_external_id="$(jq -er'),
+            workflow.index('-f external_id="${reservation_external_id}"'),
         )
 
 

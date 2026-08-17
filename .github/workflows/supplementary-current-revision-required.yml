@@ -113,6 +113,8 @@ jobs:
           fi
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
+            prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
+            [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:[1-9][0-9]*:${PR_NUMBER}:${EVENT_HEAD}$ ]]
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
@@ -238,6 +240,9 @@ jobs:
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${summary}")"
+            # pull_request_target always runs the protected default-branch
+            # controller. PR base_ref remains independently valid as main or
+            # develop and is already bound to EVENT_BASE above.
             default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
             test "${default_branch}" = develop
             default_head="$(gh api "repos/${REPOSITORY}/branches/${default_branch}" --jq .commit.sha)"
