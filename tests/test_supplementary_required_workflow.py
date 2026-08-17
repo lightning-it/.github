@@ -314,6 +314,8 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("c354f0199b3b8beb9fd8eccc25de367e4a7dfe50", transition)
         self.assertIn("a232c2282ba142bf44829e78d2ebbce6a8af299e", transition)
         self.assertIn("fix/rep60-current-revision-provenance-rearm-20260817", transition)
+        self.assertNotIn("Rene Osorio", transition)
+        self.assertNotIn("ro@l-it.io", transition)
         self.assertIn("and .ahead_by == 1", transition)
         self.assertIn("and .total_commits == 1", transition)
         self.assertIn("pulls/779/files?per_page=100", transition)

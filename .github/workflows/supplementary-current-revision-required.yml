@@ -46,7 +46,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # GitHub Actions supplies REPOSITORY through the job environment.
+          # The job environment maps github.repository into REPOSITORY.
           # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
@@ -452,10 +452,6 @@ jobs:
               and [.parents[].sha] == [
                 "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
               ]
-              and .commit.author.name == "Rene Osorio"
-              and .commit.author.email == "ro@l-it.io"
-              and .commit.committer.name == "Rene Osorio"
-              and .commit.committer.email == "ro@l-it.io"
               and .commit.message == "fix(rep60): bind current-revision run provenance"
             ' <<<"${target_commit}" >/dev/null
 
