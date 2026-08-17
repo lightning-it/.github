@@ -164,6 +164,43 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow.index('-f external_id="${reservation_external_id}"'),
         )
 
+    def test_one_time_main_bootstrap_is_immutable_ai_free_and_not_acceptance(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "          # One immutable transition is needed because the first main promotion",
+            1,
+        )[1].split(
+            '          test "${draft}" = false\n'
+            '          neutral_pages="$(gh api --paginate --slurp',
+            1,
+        )[0]
+        self.assertIn('[ "${PR_NUMBER}" = 776 ]', transition)
+        self.assertIn(
+            "01afb46890e6d7ac6008e8ed478aa6af91e1b19b",
+            transition,
+        )
+        self.assertIn(
+            "7a6cadc2c1048daec4a69ff0f71441b6ff257416",
+            transition,
+        )
+        self.assertIn(
+            "7c19ce8303b313b2911e2f8abd075a7b5b2fecd6",
+            transition,
+        )
+        self.assertIn(".commit.verification.verified == true", transition)
+        self.assertIn(".merge_commit_sha ==", transition)
+        self.assertIn("and .ahead_by == 62", transition)
+        self.assertIn("and .commits[-1].sha == $head", transition)
+        self.assertIn("all(.[].user.login;", transition)
+        self.assertIn("copilot-pull-request-reviewer[bot]", transition)
+        self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
+        self.assertIn('acceptance_evidence: false', transition)
+        self.assertIn('review_path: "immutable one-time controller bootstrap; no AI"', transition)
+        self.assertIn("rep60-main-bootstrap:v1:", transition)
+        self.assertIn("-f name='Current revision review'", transition)
+        self.assertNotIn("openai/codex-action@", transition)
+        self.assertNotIn("copilot-requests", transition)
+
 
 if __name__ == "__main__":
     unittest.main()
