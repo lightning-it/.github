@@ -14,6 +14,23 @@ The live promotion is pull request `#776`, authored by
 - head tree `7c19ce8303b313b2911e2f8abd075a7b5b2fecd6`;
 - source pull request `#759` and its signed merge commit at the frozen head.
 
+The protected controller assets at that immutable head are:
+
+- `.github/workflows/copilot-review.yml` blob
+  `47a6579c29beb9a8cb452da7f3715fb50c6c7933`;
+- `.github/workflows/release-bot-exact-head-review.yml` blob
+  `4332028591a4f251f213b6aba35106ea95c4ac01`;
+- `.github/workflows/current-revision-rerun.yml` blob
+  `22ceb959bcafdc1a2c215261b2622c8aa1fc743d`;
+- `scripts/materialize-exact-revision-review.py` blob
+  `f394a820a9c0922d8e7187dbd1b8aca3bf13db61`.
+
+Before promoting the organization trust-root change, protected `.github`
+`main` commit `b671844d753f504dc2ef731e9411669d755d530b` is recorded as the second parent
+of ancestry merge `db63df9825d3b7c209cc328615f63bf44777eeb3`. That merge has the same tree as
+its protected `develop` first parent:
+`4e7831ac3d962efc6abcaa94bf6d1650cffe3919`.
+
 ## One-time transition
 
 The organization-owned required workflow contains a temporary transition that
