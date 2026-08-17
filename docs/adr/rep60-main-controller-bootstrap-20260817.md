@@ -69,6 +69,11 @@ The transition performs no AI call. Its neutral check evidence states:
 - `acceptance_evidence=false`;
 - `review_path="immutable one-time controller bootstrap; no AI"`.
 
+At most one retry of the same workflow run may reuse that neutral check. Reuse
+is allowed only when its GitHub Actions app identity, head, external binding,
+successful conclusion, title, and complete evidence summary match exactly;
+multiple or mismatched checks fail closed.
+
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.

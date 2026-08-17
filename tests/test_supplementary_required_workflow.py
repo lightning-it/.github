@@ -202,6 +202,16 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('review_path: "immutable one-time controller bootstrap; no AI"', transition)
         self.assertIn("rep60-main-bootstrap:v1:", transition)
         self.assertIn("-f name='Current revision review'", transition)
+        self.assertIn(
+            'neutral_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn('if [ "${neutral_count}" -gt 1 ]; then', transition)
+        self.assertIn('if [ "${neutral_count}" -eq 1 ]; then', transition)
+        self.assertIn('and .external_id == $external_id', transition)
+        self.assertIn('and .output.title == $title', transition)
+        self.assertIn('and .output.summary == $evidence', transition)
+        self.assertEqual(transition.count('-f name=\'Current revision review\''), 1)
         self.assertNotIn("openai/codex-action@", transition)
         self.assertNotIn("copilot-requests", transition)
 
