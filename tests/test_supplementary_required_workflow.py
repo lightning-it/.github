@@ -32,7 +32,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Protected current-revision verifier", workflow)
-        self.assertIn("rep60-required-workflow:v1:${PR_NUMBER}:${EVENT_HEAD}", workflow)
+        self.assertIn(
+            "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
+            workflow,
+        )
         self.assertIn(".app.id == 15368", workflow)
         self.assertIn(
             '.path == ".github/workflows/release-bot-exact-head-review.yml"',
@@ -49,12 +52,20 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.event == "pull_request_target"', workflow)
         self.assertIn('.name == "Current revision review gate"', workflow)
         self.assertIn(
-            "mlx90-current-revision:copilot:v3:${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:copilot:v4:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn("producer_run_id=\"${BASH_REMATCH[1]}\"", workflow)
+        self.assertIn(".producer_run_id == $run_id", workflow)
+        self.assertIn(".schema == 4", workflow)
+        self.assertIn(
+            'test "${details_url}" = "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"',
             workflow,
         )
         self.assertIn("and .base_sha == $base", workflow)
-        self.assertIn(".run_attempt == 1", workflow)
-        self.assertIn(".triggering_actor.login == $actor", workflow)
+        self.assertNotIn("and .run_attempt == 1", workflow)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 2)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
@@ -110,6 +121,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
             workflow,
+        )
+        self.assertEqual(
+            workflow.count('-f "details_url=${reservation_url}"'),
+            2,
         )
 
 
