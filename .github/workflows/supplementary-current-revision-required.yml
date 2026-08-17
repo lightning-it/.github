@@ -223,13 +223,13 @@ jobs:
           # carries the protected v4 producer that future Release-App PRs use.
           # The exception is deliberately exact (PR, base, head, merge, tree,
           # source PR, and controller blobs), contains no AI call, and is removed
-          # immediately after PR #776 reaches main. It is not MLX-90 acceptance
+          # immediately after PR #777 reaches main. It is not MLX-90 acceptance
           # evidence and cannot match any later revision.
-          if [ "${PR_NUMBER}" = 776 ] \
+          if [ "${PR_NUMBER}" = 777 ] \
             && [ "${EVENT_BASE}" = 01afb46890e6d7ac6008e8ed478aa6af91e1b19b ] \
             && [ "${EVENT_HEAD}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ]; then
-            test "${GITHUB_ACTOR}" = litroc
-            test "${GITHUB_TRIGGERING_ACTOR}" = litroc
+            test "${GITHUB_ACTOR}" = 'lightning-it-release-automation[bot]'
+            test "${GITHUB_TRIGGERING_ACTOR}" = 'lightning-it-release-automation[bot]'
             test "${draft}" = false
             test "${author}" = 'lightning-it-release-automation[bot]'
             test "${base_ref}" = main
