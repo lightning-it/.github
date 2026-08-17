@@ -108,7 +108,7 @@ jobs:
             ' <<<"${pr}" >/dev/null
           base_ref="$(jq -r .base.ref <<<"${pr}")"
           author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
-          draft="$(jq -er '.draft | select(type == "boolean")' <<<"${pr}")"
+          draft="$(jq -er '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
           [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 
