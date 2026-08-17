@@ -66,6 +66,7 @@ jobs:
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
 
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -93,7 +94,7 @@ jobs:
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
-          reservation_external_id="rep60-required-workflow:v1:${PR_NUMBER}:${EVENT_HEAD}"
+          reservation_external_id="rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}"
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"
@@ -113,22 +114,23 @@ jobs:
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
+            reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=in_progress \
+              -f "details_url=${reservation_url}" \
+              -f 'output[title]=Protected verifier is re-evaluating the live revision' \
+              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             jq -e \
               --arg external_id "${reservation_external_id}" \
               --arg head "${EVENT_HEAD}" \
               --arg url "${reservation_url}" \
               --argjson check_id "${reservation_id}" '
-                .[0].id == $check_id
-                and .[0].head_sha == $head
-                and .[0].details_url == $url
-                and .[0].external_id == $external_id
-                and .[0].app.id == 15368
-                and .[0].app.slug == "github-actions"
-              ' <<<"${reservations}" >/dev/null
-            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=in_progress \
-              -f 'output[title]=Protected verifier is re-evaluating the live revision' \
-              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}." >/dev/null
+                .id == $check_id
+                and .head_sha == $head
+                and .details_url == $url
+                and .external_id == $external_id
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+              ' <<<"${reservation}" >/dev/null
           else
             reservation="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
               -f name="${reservation_name}" \
@@ -139,6 +141,11 @@ jobs:
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
+            reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=in_progress \
+              -f "details_url=${reservation_url}" \
+              -f 'output[title]=Protected verifier is evaluating the live revision' \
+              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             jq -e \
               --arg external_id "${reservation_external_id}" \
               --arg head "${EVENT_HEAD}" \
@@ -227,12 +234,15 @@ jobs:
             producer_run_id="${BASH_REMATCH[1]}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-            jq -e '
+            jq -e \
+              --arg actor "${author}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
+              and .actor.login == $actor
+              and .triggering_actor.login == $actor
             ' <<<"${producer}" >/dev/null
             jq -e \
               --arg base_ref "${base_ref}" \
