@@ -38,6 +38,13 @@ an ancestor of `develop`, repair ancestry in a separately reviewed two-parent
 merge before promotion. A zero-file or unavailable AI response is not a review
 PASS.
 
+For protected current-revision evidence, a custom check's canonical
+`/runs/<check-id>` URL identifies only that check object; it is not sufficient
+producer provenance. Schema-v4 evidence also binds the exact GitHub Actions
+producer run ID in the external ID and summary. The organization-owned required
+workflow must query that run and verify its repository, event, workflow path,
+protected base, candidate head, actor, conclusion, and schema before it can pass.
+
 ## Local Commands
 
 Run the managed repository-policy checks:
