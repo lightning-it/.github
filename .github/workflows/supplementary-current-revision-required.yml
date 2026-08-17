@@ -46,6 +46,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # GitHub Actions supplies REPOSITORY through the job environment.
+          # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
           report_failure_stage() {
@@ -109,6 +111,7 @@ jobs:
           base_ref="$(jq -r .base.ref <<<"${pr}")"
           author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
           draft="$(jq -er '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
+          head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
           [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
 
@@ -420,6 +423,352 @@ jobs:
             exit 0
           fi
 
+          # One exact protected transition repairs the human producer's
+          # pull_request_target run-metadata binding. GitHub reports the event
+          # PR branch and revision in Actions run head_branch/head_sha; the
+          # independently protected workflow_ref/workflow_sha remain the
+          # controller provenance. This transition accepts only PR #779's
+          # immutable six-blob change after one real exact-head Copilot review
+          # with no unresolved Copilot thread. Remove it after PR #779 merges.
+          if [ "${PR_NUMBER}" = 779 ] \
+            && [ "${EVENT_BASE}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ] \
+            && [ "${EVENT_HEAD}" = c354f0199b3b8beb9fd8eccc25de367e4a7dfe50 ]; then
+            test "${GITHUB_ACTOR}" = litroc
+            test "${GITHUB_TRIGGERING_ACTOR}" = litroc
+            test "${draft}" = false
+            test "${author}" = litroc
+            test "${base_ref}" = develop
+            test "${head_ref}" = fix/rep60-current-revision-provenance-rearm-20260817
+            test "${head_repository}" = "${REPOSITORY}"
+
+            failure_stage='human-transition-static-provenance'
+            jq -e '
+              .sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+              and .commit.tree.sha == "a232c2282ba142bf44829e78d2ebbce6a8af299e"
+              and .commit.verification.verified == false
+              and .commit.verification.reason == "unsigned"
+              and .author.login == "litroc"
+              and .committer.login == "litroc"
+              and [.parents[].sha] == [
+                "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+              ]
+              and .commit.author.name == "Rene Osorio"
+              and .commit.author.email == "ro@l-it.io"
+              and .commit.committer.name == "Rene Osorio"
+              and .commit.committer.email == "ro@l-it.io"
+              and .commit.message == "fix(rep60): bind current-revision run provenance"
+            ' <<<"${target_commit}" >/dev/null
+
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/779")"
+            jq -e \
+              --arg repository "${REPOSITORY}" '
+                .number == 779
+                and .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .base.ref == "develop"
+                and .base.sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+                and .base.repo.full_name == $repository
+                and .head.ref == "fix/rep60-current-revision-provenance-rearm-20260817"
+                and .head.sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+                and .head.repo.full_name == $repository
+                and .title == "fix(rep60): bind current-revision run provenance"
+              ' <<<"${source_pr}" >/dev/null
+
+            compare="$(gh api \
+              "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" '
+                .status == "ahead"
+                and .behind_by == 0
+                and .ahead_by == 1
+                and .total_commits == 1
+                and (.commits | length) == 1
+                and .base_commit.sha == $base
+                and .merge_base_commit.sha == $base
+                and .commits[0].sha == $head
+              ' <<<"${compare}" >/dev/null
+
+            source_files="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/779/files?per_page=100")"
+            jq -e '
+              [.[].[] |
+                {filename, status, sha, additions, deletions, changes}]
+              | sort_by(.filename)
+              == [
+                {
+                  filename: ".github/workflows/copilot-review.yml",
+                  status: "modified",
+                  sha: "d0c403f0185ade0637c2820af3d4abe2f99cefd0",
+                  additions: 6,
+                  deletions: 4,
+                  changes: 10
+                },
+                {
+                  filename: ".github/workflows/current-revision-rerun.yml",
+                  status: "modified",
+                  sha: "ec93b568838aee70214d2c02b73a67b870d82ab8",
+                  additions: 5,
+                  deletions: 4,
+                  changes: 9
+                },
+                {
+                  filename: ".github/workflows/rep60-bootstrap-app-rearm.yml",
+                  status: "added",
+                  sha: "d463e75bb1667ac08465aeb78dcf7692b93dd696",
+                  additions: 149,
+                  deletions: 0,
+                  changes: 149
+                },
+                {
+                  filename: "changelogs/fragments/rep60-current-revision-provenance-rearm.yml",
+                  status: "added",
+                  sha: "e29cf8ab2c1a0311030fc059497604287f291df9",
+                  additions: 5,
+                  deletions: 0,
+                  changes: 5
+                },
+                {
+                  filename: "tests/unit/test_exact_revision_review.py",
+                  status: "modified",
+                  sha: "a7b62d83649c3561d20dd1b07a0536a62f38361c",
+                  additions: 13,
+                  deletions: 5,
+                  changes: 18
+                },
+                {
+                  filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
+                  status: "added",
+                  sha: "8f7e69631b0b5181b61c91c0e1a5f5b55d685ee6",
+                  additions: 64,
+                  deletions: 0,
+                  changes: 64
+                }
+              ]
+            ' <<<"${source_files}" >/dev/null
+
+            failure_stage='human-transition-review'
+            review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+            accepted_reviews="$(jq -c \
+              --arg head "${EVENT_HEAD}" '
+                def normalized:
+                  ascii_downcase
+                  | gsub("wasn[\u0027\u2019]t"; "was not")
+                  | gsub("\\s"; "");
+                [.[].[] |
+                  select(
+                    (.user.login == "copilot-pull-request-reviewer[bot]"
+                     or .user.login == "copilot-pull-request-reviewer")
+                    and .commit_id == $head
+                    and (.state == "COMMENTED" or .state == "APPROVED")
+                    and ((.body // "") | gsub("\\s"; "") | length > 0)
+                    and (((.body // "") | normalized | contains("wasnotabletoreviewanyfiles")) | not)
+                    and (((.body // "") | normalized | contains("unabletoreviewthispullrequest")) | not)
+                    and (((.body // "") | normalized | contains("quotaexhausted")) | not)
+                    and (((.body // "") | normalized | contains("quotaexceeded")) | not)
+                    and (((.body // "") | normalized | contains("encounteredanerror")) | not)
+                  )]
+              ' <<<"${review_pages}")"
+            test "$(jq 'length' <<<"${accepted_reviews}")" -eq 1
+            review_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' \
+              <<<"${accepted_reviews}")"
+
+            # GraphQL variable names must remain literal for gh.
+            # shellcheck disable=SC2016
+            thread_query='query($owner:String!,$repository:String!,$number:Int!,$after:String) {
+              repository(owner:$owner,name:$repository) {
+                pullRequest(number:$number) {
+                  headRefOid
+                  reviewThreads(first:100,after:$after) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      isResolved
+                      comments(first:1) { nodes { author { login } } }
+                    }
+                  }
+                }
+              }
+            }'
+
+            owner="${REPOSITORY%%/*}"
+            repository="${REPOSITORY#*/}"
+            after=""
+            unresolved=0
+            while true; do
+              arguments=(
+                -f query="${thread_query}"
+                -F owner="${owner}"
+                -F repository="${repository}"
+                -F number="${PR_NUMBER}"
+              )
+              if [ -n "${after}" ]; then
+                arguments+=(-f after="${after}")
+              fi
+              response="$(gh api graphql "${arguments[@]}")"
+              jq -e --arg head "${EVENT_HEAD}" \
+                '.data.repository.pullRequest.headRefOid == $head' \
+                <<<"${response}" >/dev/null
+              page_unresolved="$(jq '
+                [.data.repository.pullRequest.reviewThreads.nodes[]
+                  | select(.isResolved == false)
+                  | select(
+                      .comments.nodes[0].author.login == "copilot-pull-request-reviewer[bot]"
+                      or .comments.nodes[0].author.login == "copilot-pull-request-reviewer"
+                    )]
+                | length
+              ' <<<"${response}")"
+              unresolved=$((unresolved + page_unresolved))
+              has_next="$(jq -r \
+                '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' \
+                <<<"${response}")"
+              if [ "${has_next}" != true ]; then
+                break
+              fi
+              after="$(jq -er \
+                '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor
+                 | select(type == "string" and length > 0)' \
+                <<<"${response}")"
+            done
+            test "${unresolved}" -eq 0
+
+            post_review_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg repository "${REPOSITORY}" '
+                .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .base.ref == "develop"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == "fix/rep60-current-revision-provenance-rearm-20260817"
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+              ' <<<"${post_review_pr}" >/dev/null
+
+            transition_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            transition_summary="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg transition_run_url "${transition_run_url}" \
+              --arg workflow_sha "${WORKFLOW_SHA}" \
+              --argjson review_id "${review_id}" \
+              --argjson run_id "${GITHUB_RUN_ID}" '
+                {
+                  schema: 1,
+                  temporary: true,
+                  acceptance_evidence: true,
+                  review_path: "exact current-head Copilot review",
+                  base_sha: $base,
+                  head_sha: $head,
+                  review_id: $review_id,
+                  producer_run_id: $run_id,
+                  run_url: $transition_run_url,
+                  workflow_sha: $workflow_sha
+                }
+              ')"
+            transition_external_id="rep60-human-provenance-transition:v1:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
+            transition_title='Exact human producer transition reviewed'
+            failure_stage='human-transition-neutral-check'
+            neutral_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
+            neutral_checks="$(jq -c '
+              [.[].check_runs[]? | select(.name == "Current revision review")]
+            ' <<<"${neutral_pages}")"
+            neutral_count="$(jq 'length' <<<"${neutral_checks}")"
+            if [ "${neutral_count}" -gt 1 ]; then
+              echo "Multiple neutral review checks exist for the immutable human transition head." >&2
+              exit 1
+            fi
+            if [ "${neutral_count}" -eq 1 ]; then
+              transition_check="$(jq -c '.[0]' <<<"${neutral_checks}")"
+              jq -e \
+                --arg evidence "${transition_summary}" \
+                --arg external_id "${transition_external_id}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg title "${transition_title}" '
+                  .name == "Current revision review"
+                  and .head_sha == $head
+                  and .external_id == $external_id
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and .app.id == 15368
+                  and .app.slug == "github-actions"
+                  and .output.title == $title
+                  and .output.summary == $evidence
+                ' <<<"${transition_check}" >/dev/null
+              transition_check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' \
+                <<<"${neutral_checks}")"
+            else
+              transition_check="$(gh api --method POST \
+                "repos/${REPOSITORY}/check-runs" \
+                -f name='Current revision review' \
+                -f head_sha="${EVENT_HEAD}" \
+                -f status=completed \
+                -f conclusion=success \
+                -f external_id="${transition_external_id}" \
+                -f "output[title]=${transition_title}" \
+                -f "output[summary]=${transition_summary}")"
+              transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+                <<<"${transition_check}")"
+            fi
+            transition_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${transition_check_id}"
+            transition_check="$(gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${transition_check_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f external_id="${transition_external_id}" \
+              -f "details_url=${transition_check_url}" \
+              -f "output[title]=${transition_title}" \
+              -f "output[summary]=${transition_summary}")"
+            jq -e \
+              --arg evidence "${transition_summary}" \
+              --arg external_id "${transition_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg title "${transition_title}" \
+              --arg url "${transition_check_url}" \
+              --argjson check_id "${transition_check_id}" '
+                .id == $check_id
+                and .name == "Current revision review"
+                and .head_sha == $head
+                and .details_url == $url
+                and .external_id == $external_id
+                and .status == "completed"
+                and .conclusion == "success"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .output.title == $title
+                and .output.summary == $evidence
+              ' <<<"${transition_check}" >/dev/null
+
+            failure_stage='human-transition-finalization'
+            final_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg repository "${REPOSITORY}" '
+                .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+              ' <<<"${final_pr}" >/dev/null
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f 'output[title]=Exact human producer transition verified' \
+              -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; review ${review_id}." \
+              >/dev/null
+            trap - ERR
+            exit 0
+          fi
+
           failure_stage='permanent-producer-inventory'
           test "${draft}" = false
           neutral_pages="$(gh api --paginate --slurp \
@@ -503,15 +852,15 @@ jobs:
               ' <<<"${controller_ancestry}" >/dev/null
             jq -e \
               --arg actor "${author}" \
-              --arg controller_branch "${controller_branch}" \
-              --arg controller_sha "${controller_sha}" '
+              --arg head_ref "${head_ref}" \
+              --arg head_sha "${EVENT_HEAD}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
-              and .head_branch == $controller_branch
-              and .head_sha == $controller_sha
+              and .head_branch == $head_ref
+              and .head_sha == $head_sha
               and .actor.login == $actor
               and .triggering_actor.login == $actor
             ' <<<"${producer}" >/dev/null
