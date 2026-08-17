@@ -66,6 +66,7 @@ jobs:
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
 
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -93,7 +94,7 @@ jobs:
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
-          reservation_external_id="rep60-required-workflow:v1:${PR_NUMBER}:${EVENT_HEAD}"
+          reservation_external_id="rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}"
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"

@@ -44,6 +44,8 @@ for producer provenance. Schema-v4 evidence also binds the exact GitHub Actions
 producer run ID in the external ID and summary. The organization-owned required
 workflow must query that run and verify its repository, event, workflow path,
 protected base, candidate head, actor, conclusion, and schema before it can pass.
+The verifier reservation separately embeds its own required-workflow run ID in
+a v2 external ID; its details URL remains the canonical `/runs/<check-id>` URL.
 
 ## Local Commands
 

@@ -32,7 +32,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Protected current-revision verifier", workflow)
-        self.assertIn("rep60-required-workflow:v1:${PR_NUMBER}:${EVENT_HEAD}", workflow)
+        self.assertIn(
+            "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
+            workflow,
+        )
         self.assertIn(".app.id == 15368", workflow)
         self.assertIn(
             '.path == ".github/workflows/release-bot-exact-head-review.yml"',
