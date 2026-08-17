@@ -212,8 +212,26 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .output.title == $title', transition)
         self.assertIn('and .output.summary == $evidence', transition)
         self.assertEqual(transition.count('-f name=\'Current revision review\''), 1)
+        self.assertLess(
+            transition.index(
+                "output[title]=Immutable one-time main-controller bootstrap verified"
+            ),
+            transition.index("trap - ERR"),
+        )
         self.assertNotIn("openai/codex-action@", transition)
         self.assertNotIn("copilot-requests", transition)
+
+        permanent = workflow.split(
+            '          test "${draft}" = false\n'
+            '          neutral_pages="$(gh api --paginate --slurp',
+            1,
+        )[1]
+        self.assertLess(
+            permanent.index(
+                "output[title]=Protected current-revision evidence verified"
+            ),
+            permanent.index("trap - ERR"),
+        )
 
 
 if __name__ == "__main__":

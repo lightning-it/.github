@@ -366,7 +366,6 @@ jobs:
                 and .output.summary == $evidence
               ' <<<"${transition_check}" >/dev/null
 
-            trap - ERR
             gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=completed \
@@ -374,6 +373,7 @@ jobs:
               -f 'output[title]=Immutable one-time main-controller bootstrap verified' \
               -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; no AI; not acceptance evidence." \
               >/dev/null
+            trap - ERR
             exit 0
           fi
 
@@ -490,9 +490,9 @@ jobs:
               ' <<<"${summary}" >/dev/null
           fi
 
-          trap - ERR
           gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
             -f status=completed \
             -f conclusion=success \
             -f 'output[title]=Protected current-revision evidence verified' \
             -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${producer_run_url}." >/dev/null
+          trap - ERR
