@@ -83,6 +83,15 @@ the status is `identical`, and both ahead/behind counts are zero. For an
 and the exact source SHA as `head_commit`. The failed preflight is not
 acceptance evidence and did not authorize a merge.
 
+After that correction reached the protected source, required-workflow run
+`32027540880` also failed closed before creating a reservation or transition
+check on both its initial attempt and its single permitted retry. Because the
+original monolithic step exposed no safe stage marker, the controller now
+emits only a fixed, non-sensitive failure-stage name and records the same stage
+in a failed reservation summary when one already exists. It never prints bound
+payloads, credentials, prompts, or review content. Both attempts remain
+non-acceptance evidence and did not authorize a merge.
+
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.
