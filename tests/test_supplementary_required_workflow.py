@@ -130,6 +130,41 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('test "${draft}" = false', workflow)
         self.assertNotIn('jq -r .draft <<<"${pr}"', workflow)
 
+    def test_failure_diagnostics_are_fixed_stage_names_only(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("trap report_failure_stage EXIT", workflow)
+        self.assertIn(
+            "::error title=REP-60 verifier failed closed::stage=%s",
+            workflow,
+        )
+        expected_stages = {
+            "initialization",
+            "protected-source-binding",
+            "event-metadata-binding",
+            "live-pr-binding",
+            "live-commit-binding",
+            "reservation-inventory",
+            "reservation-materialization",
+            "producer-evidence-selection",
+            "transition-static-provenance",
+            "transition-ai-absence",
+            "transition-neutral-check",
+            "transition-finalization",
+            "permanent-producer-inventory",
+            "permanent-producer-binding",
+            "permanent-finalization",
+        }
+        observed_stages = {
+            line.strip().split("=", 1)[1].strip("'")
+            for line in workflow.splitlines()
+            if line.strip().startswith("failure_stage=")
+        }
+        self.assertEqual(observed_stages, expected_stages)
+        self.assertIn("stage ${failure_stage}; fail-closed", workflow)
+        self.assertIn("trap - ERR", workflow)
+        self.assertIn('exit "${exit_code}"', workflow)
+        self.assertNotIn('return "${exit_code}"', workflow)
+
     def test_draft_open_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reservation = workflow.index("reservation_external_id=")
