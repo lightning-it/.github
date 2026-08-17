@@ -186,6 +186,161 @@ jobs:
           }
           trap finalize_failure ERR
 
+          # One immutable transition is needed because the first main promotion
+          # carries the protected v4 producer that future Release-App PRs use.
+          # The exception is deliberately exact (PR, base, head, merge, tree,
+          # source PR, and controller blobs), contains no AI call, and is removed
+          # immediately after PR #776 reaches main. It is not MLX-90 acceptance
+          # evidence and cannot match any later revision.
+          if [ "${PR_NUMBER}" = 776 ] \
+            && [ "${EVENT_BASE}" = 01afb46890e6d7ac6008e8ed478aa6af91e1b19b ] \
+            && [ "${EVENT_HEAD}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ]; then
+            test "${GITHUB_ACTOR}" = litroc
+            test "${GITHUB_TRIGGERING_ACTOR}" = litroc
+            test "${draft}" = false
+            test "${author}" = 'lightning-it-release-automation[bot]'
+            test "${base_ref}" = main
+            test "${head_repository}" = "${REPOSITORY}"
+
+            jq -e '
+              .sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+              and .commit.tree.sha == "7c19ce8303b313b2911e2f8abd075a7b5b2fecd6"
+              and .commit.verification.verified == true
+              and .commit.verification.reason == "valid"
+              and .author.login == "litroc"
+              and .committer.login == "web-flow"
+              and [.parents[].sha] == [
+                "b6c40eb461dd858d26d38d0ddfba2bde3afe4108",
+                "be17b987bf1e00e4b5b68f160274ee635e776e2c"
+              ]
+              and .commit.message == "Merge pull request #759 from lightning-it/agent/mlx90-exact-revision-codex-pilot-20260816\n\nfix(mlx90): enforce pipeline-only current-revision review"
+            ' <<<"${target_commit}" >/dev/null
+
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/759")"
+            jq -e '
+              .number == 759
+              and .state == "closed"
+              and .merged == true
+              and .user.login == "litroc"
+              and .merged_by.login == "litroc"
+              and .base.ref == "develop"
+              and .base.sha == "b6c40eb461dd858d26d38d0ddfba2bde3afe4108"
+              and .head.ref == "agent/mlx90-exact-revision-codex-pilot-20260816"
+              and .head.sha == "be17b987bf1e00e4b5b68f160274ee635e776e2c"
+              and .merge_commit_sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+              and .title == "fix(mlx90): enforce pipeline-only current-revision review"
+            ' <<<"${source_pr}" >/dev/null
+
+            compare="$(gh api \
+              "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" '
+                .status == "ahead"
+                and .behind_by == 0
+                and .ahead_by == 62
+                and .total_commits == 62
+                and (.commits | length) == 62
+                and .base_commit.sha == $base
+                and .merge_base_commit.sha == $base
+                and .commits[-1].sha == $head
+              ' <<<"${compare}" >/dev/null
+
+            verify_blob() {
+              local file_name="$1" expected_blob="$2" observed_blob
+              observed_blob="$(gh api \
+                "repos/${REPOSITORY}/contents/${file_name}?ref=${EVENT_HEAD}" \
+                --jq .sha)"
+              test "${observed_blob}" = "${expected_blob}"
+            }
+            verify_blob \
+              .github/workflows/copilot-review.yml \
+              47a6579c29beb9a8cb452da7f3715fb50c6c7933
+            verify_blob \
+              .github/workflows/release-bot-exact-head-review.yml \
+              4332028591a4f251f213b6aba35106ea95c4ac01
+            verify_blob \
+              .github/workflows/current-revision-rerun.yml \
+              22ceb959bcafdc1a2c215261b2622c8aa1fc743d
+            verify_blob \
+              scripts/materialize-exact-revision-review.py \
+              f394a820a9c0922d8e7187dbd1b8aca3bf13db61
+
+            reviews="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews")"
+            jq -e '
+              all(.[].user.login;
+                . != "copilot-pull-request-reviewer[bot]"
+                and . != "github-copilot[bot]")
+            ' <<<"${reviews}" >/dev/null
+            exact_checks="$(gh api \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"
+            test "$(jq '.check_runs | length' <<<"${exact_checks}")" -eq 0
+            neutral_checks="$(gh api \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
+            test "$(jq '.check_runs | length' <<<"${neutral_checks}")" -eq 0
+
+            transition_summary="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg source_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/759" \
+              --arg transition_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER}" \
+              --arg verifier_run_url "${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '
+                {
+                  schema: 1,
+                  temporary: true,
+                  acceptance_evidence: false,
+                  review_path: "immutable one-time controller bootstrap; no AI",
+                  base_sha: $base,
+                  head_sha: $head,
+                  source_pr_url: $source_pr_url,
+                  transition_pr_url: $transition_pr_url,
+                  verifier_run_url: $verifier_run_url
+                }
+              ')"
+            transition_external_id="rep60-main-bootstrap:v1:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
+            transition_check="$(gh api --method POST \
+              "repos/${REPOSITORY}/check-runs" \
+              -f name='Current revision review' \
+              -f head_sha="${EVENT_HEAD}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f external_id="${transition_external_id}" \
+              -f 'output[title]=One-time immutable main-controller bootstrap verified' \
+              -f "output[summary]=${transition_summary}")"
+            transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+              <<<"${transition_check}")"
+            transition_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${transition_check_id}"
+            transition_check="$(gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${transition_check_id}" \
+              -f "details_url=${transition_check_url}")"
+            jq -e \
+              --arg evidence "${transition_summary}" \
+              --arg external_id "${transition_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg url "${transition_check_url}" \
+              --argjson check_id "${transition_check_id}" '
+                .id == $check_id
+                and .head_sha == $head
+                and .details_url == $url
+                and .external_id == $external_id
+                and .status == "completed"
+                and .conclusion == "success"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .output.summary == $evidence
+              ' <<<"${transition_check}" >/dev/null
+
+            trap - ERR
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f 'output[title]=Immutable one-time main-controller bootstrap verified' \
+              -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; no AI; not acceptance evidence." \
+              >/dev/null
+            exit 0
+          fi
+
           test "${draft}" = false
           neutral_pages="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
