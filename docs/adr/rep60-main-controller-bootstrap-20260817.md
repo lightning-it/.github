@@ -92,6 +92,16 @@ in a failed reservation summary when one already exists. It never prints bound
 payloads, credentials, prompts, or review content. Both attempts remain
 non-acceptance evidence and did not authorize a merge.
 
+Required-workflow run `32029954436` then failed closed at the fixed
+`live-pr-binding` stage on both its initial attempt and its single permitted
+retry. The live PR fields were correctly typed and still matched the immutable
+base and head. The failure came from applying `jq -e` directly to the valid
+boolean value `false` for a ready PR's draft field: `jq -e` reports that value
+with a failing process status. The binding now validates the boolean type and
+then converts the value to the literal string `false` or `true` before the
+separate ready-state assertion. Both failed attempts remain non-acceptance
+evidence and did not authorize a merge.
+
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.

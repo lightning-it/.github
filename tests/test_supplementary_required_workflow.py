@@ -124,7 +124,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            'draft="$(jq -er \'.draft | select(type == "boolean")\'',
+            'draft="$(jq -er \'.draft | select(type == "boolean") | tostring\'',
             workflow,
         )
         self.assertIn('test "${draft}" = false', workflow)
