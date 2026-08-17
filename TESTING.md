@@ -24,6 +24,20 @@ Products and runtimes:
 - `develop` to `main` promotion pull requests run the strongest validation profile for this repository.
 - Trusted `main` release workflows build and publish artifacts only after validation succeeds.
 
+## Protected Trust-Root Promotion
+
+Promote an organization-owned required-workflow source in this order: merge the
+source change normally to protected `develop`, promote it normally to protected
+`main`, verify the exact `main` source commit, and only then activate a ruleset
+that requires it. A candidate branch or an unpromoted `develop` workflow must
+never validate itself.
+
+Promotion uses exact current branch heads and normal merge commits, without a
+bypass, force-push, or direct protected-branch write. If `main` is not already
+an ancestor of `develop`, repair ancestry in a separately reviewed two-parent
+merge before promotion. A zero-file or unavailable AI response is not a review
+PASS.
+
 ## Local Commands
 
 Run the managed repository-policy checks:
