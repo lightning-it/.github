@@ -98,7 +98,7 @@ jobs:
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"
-          reservations="$(jq -c \
+          all_reservations="$(jq -c \
             --arg head "${EVENT_HEAD}" \
             --arg name "${reservation_name}" '
               [.[].check_runs[]? |
@@ -106,6 +106,17 @@ jobs:
                 select(.app.id == 15368 and .app.slug == "github-actions") |
                 select(.head_sha == $head)]
             ' <<<"${reservation_checks}")"
+          reservations="$(jq -c \
+            --arg prefix 'rep60-required-workflow:v2:' \
+            --arg suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
+              [.[] |
+                select((.external_id | type) == "string") |
+                select(.external_id | startswith($prefix) and endswith($suffix))]
+            ' <<<"${all_reservations}")"
+          if [ "$(jq 'length' <<<"${all_reservations}")" -ne "$(jq 'length' <<<"${reservations}")" ]; then
+            echo "A protected verifier reservation for this commit belongs to a different PR/head binding." >&2
+            exit 1
+          fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${reservation_count}" -gt 1 ]; then
             echo "Multiple protected verifier reservations exist for the same PR/head." >&2
@@ -243,11 +254,11 @@ jobs:
             # pull_request_target always runs the protected default-branch
             # controller. PR base_ref remains independently valid as main or
             # develop and is already bound to EVENT_BASE above.
-            default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
-            test "${default_branch}" = develop
-            default_head="$(gh api "repos/${REPOSITORY}/branches/${default_branch}" --jq .commit.sha)"
+            controller_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            test "${controller_branch}" = develop
+            controller_head="$(gh api "repos/${REPOSITORY}/branches/${controller_branch}" --jq .commit.sha)"
             controller_ancestry="$(gh api \
-              "repos/${REPOSITORY}/compare/${controller_sha}...${default_head}")"
+              "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
             jq -e \
               --arg controller "${controller_sha}" '
                 .status == "identical"
@@ -256,14 +267,14 @@ jobs:
               ' <<<"${controller_ancestry}" >/dev/null
             jq -e \
               --arg actor "${author}" \
-              --arg controller_sha "${controller_sha}" \
-              --arg default_branch "${default_branch}" '
+              --arg controller_branch "${controller_branch}" \
+              --arg controller_sha "${controller_sha}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
-              and .head_branch == $default_branch
+              and .head_branch == $controller_branch
               and .head_sha == $controller_sha
               and .actor.login == $actor
               and .triggering_actor.login == $actor
