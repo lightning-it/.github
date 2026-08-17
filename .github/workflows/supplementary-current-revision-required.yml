@@ -427,48 +427,48 @@ jobs:
           # pull_request_target run-metadata binding. GitHub reports the event
           # PR branch and revision in Actions run head_branch/head_sha; the
           # independently protected workflow_ref/workflow_sha remain the
-          # controller provenance. This transition accepts only PR #779's
-          # immutable six-blob change after one real exact-head Copilot review
-          # with no unresolved Copilot thread. Remove it after PR #779 merges.
-          if [ "${PR_NUMBER}" = 779 ] \
-            && [ "${EVENT_BASE}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ] \
-            && [ "${EVENT_HEAD}" = 5699b29778899a4dff52adea7c2c2916a5a539e6 ]; then
+          # controller provenance. This transition accepts only PR #780's
+          # immutable five-blob change after one real exact-head Copilot review
+          # with no unresolved Copilot thread. Remove it after PR #780 merges.
+          if [ "${PR_NUMBER}" = 780 ] \
+            && [ "${EVENT_BASE}" = 80464dc3ea21c01ee5fd32e6e49675b0dfa5a513 ] \
+            && [ "${EVENT_HEAD}" = c74faddfa9955f6d8d4b27a074df3ebc664236d7 ]; then
             test "${GITHUB_ACTOR}" = litroc
             test "${GITHUB_TRIGGERING_ACTOR}" = litroc
             test "${draft}" = false
             test "${author}" = litroc
             test "${base_ref}" = develop
-            test "${head_ref}" = fix/rep60-current-revision-provenance-rearm-20260817
+            test "${head_ref}" = fix/rep60-rearm-protected-environment-20260817
             test "${head_repository}" = "${REPOSITORY}"
 
             failure_stage='human-transition-static-provenance'
             jq -e '
-              .sha == "5699b29778899a4dff52adea7c2c2916a5a539e6"
-              and .commit.tree.sha == "05e298252c806ff234421cc51557c61c11cd3dfe"
+              .sha == "c74faddfa9955f6d8d4b27a074df3ebc664236d7"
+              and .commit.tree.sha == "7e043c4ee90e62ce6c880935117c64105042d063"
               and .commit.verification.verified == false
               and .commit.verification.reason == "unsigned"
               and .author.login == "litroc"
               and .committer.login == "litroc"
               and [.parents[].sha] == [
-                "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+                "7979767770cee1951df4772b3f82a3b7090c3582"
               ]
-              and .commit.message == "fix(rep60): minimize bootstrap token permissions"
+              and .commit.message == "fix(rep60): accept asynchronous review requests"
             ' <<<"${target_commit}" >/dev/null
 
-            source_pr="$(gh api "repos/${REPOSITORY}/pulls/779")"
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/780")"
             jq -e \
               --arg repository "${REPOSITORY}" '
-                .number == 779
+                .number == 780
                 and .state == "open"
                 and .draft == false
                 and .user.login == "litroc"
                 and .base.ref == "develop"
-                and .base.sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
+                and .base.sha == "80464dc3ea21c01ee5fd32e6e49675b0dfa5a513"
                 and .base.repo.full_name == $repository
-                and .head.ref == "fix/rep60-current-revision-provenance-rearm-20260817"
-                and .head.sha == "5699b29778899a4dff52adea7c2c2916a5a539e6"
+                and .head.ref == "fix/rep60-rearm-protected-environment-20260817"
+                and .head.sha == "c74faddfa9955f6d8d4b27a074df3ebc664236d7"
                 and .head.repo.full_name == $repository
-                and .title == "fix(rep60): bind current-revision run provenance"
+                and .title == "fix(rep60): use protected rearm environment"
               ' <<<"${source_pr}" >/dev/null
 
             compare="$(gh api \
@@ -483,12 +483,12 @@ jobs:
                 and (.commits | length) == 2
                 and .base_commit.sha == $base
                 and .merge_base_commit.sha == $base
-                and .commits[0].sha == "c354f0199b3b8beb9fd8eccc25de367e4a7dfe50"
+                and .commits[0].sha == "7979767770cee1951df4772b3f82a3b7090c3582"
                 and .commits[1].sha == $head
               ' <<<"${compare}" >/dev/null
 
             source_files="$(gh api --paginate --slurp \
-              "repos/${REPOSITORY}/pulls/779/files?per_page=100")"
+              "repos/${REPOSITORY}/pulls/780/files?per_page=100")"
             jq -e '
               [.[].[] |
                 {filename, status, sha, additions, deletions, changes}]
@@ -497,50 +497,42 @@ jobs:
                 {
                   filename: ".github/workflows/copilot-review.yml",
                   status: "modified",
-                  sha: "d0c403f0185ade0637c2820af3d4abe2f99cefd0",
-                  additions: 6,
-                  deletions: 4,
-                  changes: 10
-                },
-                {
-                  filename: ".github/workflows/current-revision-rerun.yml",
-                  status: "modified",
-                  sha: "ec93b568838aee70214d2c02b73a67b870d82ab8",
-                  additions: 5,
-                  deletions: 4,
-                  changes: 9
+                  sha: "c605c6eea57d1bd679fbae7621b68c0dcafc4c76",
+                  additions: 7,
+                  deletions: 24,
+                  changes: 31
                 },
                 {
                   filename: ".github/workflows/rep60-bootstrap-app-rearm.yml",
-                  status: "added",
-                  sha: "532eff112b41df329cd6bfda56378230572c0988",
-                  additions: 148,
-                  deletions: 0,
-                  changes: 148
-                },
-                {
-                  filename: "changelogs/fragments/rep60-current-revision-provenance-rearm.yml",
-                  status: "added",
-                  sha: "e29cf8ab2c1a0311030fc059497604287f291df9",
-                  additions: 5,
-                  deletions: 0,
-                  changes: 5
+                  status: "modified",
+                  sha: "bb60842524d15e6a296f24c7733b6f55877bae38",
+                  additions: 1,
+                  deletions: 1,
+                  changes: 2
                 },
                 {
                   filename: "tests/unit/test_exact_revision_review.py",
                   status: "modified",
-                  sha: "a7b62d83649c3561d20dd1b07a0536a62f38361c",
-                  additions: 13,
-                  deletions: 5,
-                  changes: 18
+                  sha: "8d17aa893612e06bb7c2a26f2d39d0f54f72bf17",
+                  additions: 8,
+                  deletions: 0,
+                  changes: 8
                 },
                 {
                   filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
-                  status: "added",
-                  sha: "127dded9897d9058de8757322876af20663aed87",
-                  additions: 65,
+                  status: "modified",
+                  sha: "958b6832f109580642c7641027a2eac8b297db01",
+                  additions: 2,
                   deletions: 0,
-                  changes: 65
+                  changes: 2
+                },
+                {
+                  filename: "tests/unit/test_workflow_security.py",
+                  status: "modified",
+                  sha: "d3e38bb335401bdcb72e3599b2222f4b36e3060f",
+                  additions: 6,
+                  deletions: 5,
+                  changes: 11
                 }
               ]
             ' <<<"${source_files}" >/dev/null
@@ -641,7 +633,7 @@ jobs:
                 and .base.ref == "develop"
                 and .base.sha == $base
                 and .base.repo.full_name == $repository
-                and .head.ref == "fix/rep60-current-revision-provenance-rearm-20260817"
+                and .head.ref == "fix/rep60-rearm-protected-environment-20260817"
                 and .head.sha == $head
                 and .head.repo.full_name == $repository
               ' <<<"${post_review_pr}" >/dev/null
@@ -682,13 +674,18 @@ jobs:
             fi
             if [ "${neutral_count}" -eq 1 ]; then
               transition_check="$(jq -c '.[0]' <<<"${neutral_checks}")"
-              jq -e \
+              transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+                <<<"${transition_check}")"
+              existing_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${transition_check_id}"
+              if jq -e \
                 --arg evidence "${transition_summary}" \
                 --arg external_id "${transition_external_id}" \
                 --arg head "${EVENT_HEAD}" \
-                --arg title "${transition_title}" '
+                --arg title "${transition_title}" \
+                --arg url "${existing_check_url}" '
                   .name == "Current revision review"
                   and .head_sha == $head
+                  and .details_url == $url
                   and .external_id == $external_id
                   and .status == "completed"
                   and .conclusion == "success"
@@ -696,9 +693,40 @@ jobs:
                   and .app.slug == "github-actions"
                   and .output.title == $title
                   and .output.summary == $evidence
-                ' <<<"${transition_check}" >/dev/null
-              transition_check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' \
-                <<<"${neutral_checks}")"
+                ' <<<"${transition_check}" >/dev/null; then
+                :
+              else
+                prior_external_id="mlx90-current-revision:copilot:v4:32077652920:${EVENT_BASE}:${EVENT_HEAD}"
+                jq -e \
+                  --arg external_id "${prior_external_id}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg url "${existing_check_url}" '
+                    .name == "Current revision review"
+                    and .head_sha == $head
+                    and .details_url == $url
+                    and .external_id == $external_id
+                    and .status == "completed"
+                    and .conclusion == "success"
+                    and .app.id == 15368
+                    and .app.slug == "github-actions"
+                    and .output.title == "Current revision review passed"
+                  ' <<<"${transition_check}" >/dev/null
+                prior_summary="$(jq -er '.output.summary | fromjson | select(type == "object")' \
+                  <<<"${transition_check}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg controller "${EVENT_BASE}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg run_url "${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/32077652920" '
+                    .schema == 4
+                    and .base_sha == $base
+                    and .head_sha == $head
+                    and .controller_sha == $controller
+                    and .producer_run_id == 32077652920
+                    and .run_url == $run_url
+                    and .review_path == "applicable Copilot or governed automation exemption"
+                  ' <<<"${prior_summary}" >/dev/null
+              fi
             else
               transition_check="$(gh api --method POST \
                 "repos/${REPOSITORY}/check-runs" \
