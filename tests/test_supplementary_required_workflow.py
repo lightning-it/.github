@@ -28,6 +28,15 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("and .merge_base_commit.sha == $workflow_sha", workflow)
+        source_compare = workflow.split('source_compare="$(gh api', 1)[1].split(
+            '          test "${GITHUB_RUN_ATTEMPT}"', 1
+        )[0]
+        self.assertIn('(.status == "identical"', source_compare)
+        self.assertIn('and $source_sha == $workflow_sha', source_compare)
+        self.assertIn('and .head_commit == null', source_compare)
+        self.assertIn('(.status == "ahead"', source_compare)
+        self.assertIn('and $source_sha != $workflow_sha', source_compare)
+        self.assertIn('and .head_commit.sha == $source_sha', source_compare)
 
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -195,15 +204,55 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             'local file_name="$1" expected_blob="$2" observed_blob',
             transition,
         )
-        self.assertIn("all(.[].user.login;", transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
         self.assertIn('acceptance_evidence: false', transition)
         self.assertIn('review_path: "immutable one-time controller bootstrap; no AI"', transition)
         self.assertIn("rep60-main-bootstrap:v1:", transition)
         self.assertIn("-f name='Current revision review'", transition)
+        self.assertIn(
+            'neutral_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn(
+            'review_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn("all(.[][]?;", transition)
+        self.assertIn(
+            '(.user.login | type == "string" and length > 0)',
+            transition,
+        )
+        self.assertIn(
+            'exact_check_pages="$(gh api --paginate --slurp',
+            transition,
+        )
+        self.assertIn('if [ "${neutral_count}" -gt 1 ]; then', transition)
+        self.assertIn('if [ "${neutral_count}" -eq 1 ]; then', transition)
+        self.assertIn('and .external_id == $external_id', transition)
+        self.assertIn('and .output.title == $title', transition)
+        self.assertIn('and .output.summary == $evidence', transition)
+        self.assertEqual(transition.count('-f name=\'Current revision review\''), 1)
+        self.assertLess(
+            transition.index(
+                "output[title]=Immutable one-time main-controller bootstrap verified"
+            ),
+            transition.index("trap - ERR"),
+        )
         self.assertNotIn("openai/codex-action@", transition)
         self.assertNotIn("copilot-requests", transition)
+
+        permanent = workflow.split(
+            '          test "${draft}" = false\n'
+            '          neutral_pages="$(gh api --paginate --slurp',
+            1,
+        )[1]
+        self.assertLess(
+            permanent.index(
+                "output[title]=Protected current-revision evidence verified"
+            ),
+            permanent.index("trap - ERR"),
+        )
 
 
 if __name__ == "__main__":

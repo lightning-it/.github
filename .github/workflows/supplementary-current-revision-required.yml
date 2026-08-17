@@ -58,10 +58,21 @@ jobs:
           jq -e \
             --arg workflow_sha "${WORKFLOW_SHA}" \
             --arg source_sha "${source_sha}" '
-              (.status == "ahead" or .status == "identical")
-              and .base_commit.sha == $workflow_sha
+              .base_commit.sha == $workflow_sha
               and .merge_base_commit.sha == $workflow_sha
-              and .head_commit.sha == $source_sha
+              and (
+                (.status == "identical"
+                  and $source_sha == $workflow_sha
+                  and .ahead_by == 0
+                  and .behind_by == 0
+                  and .head_commit == null)
+                or
+                (.status == "ahead"
+                  and $source_sha != $workflow_sha
+                  and .ahead_by > 0
+                  and .behind_by == 0
+                  and .head_commit.sha == $source_sha)
+              )
             ' <<<"${source_compare}" >/dev/null
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
@@ -266,19 +277,21 @@ jobs:
               scripts/materialize-exact-revision-review.py \
               f394a820a9c0922d8e7187dbd1b8aca3bf13db61
 
-            reviews="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews")"
+            review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
             jq -e '
-              all(.[].user.login;
-                . != "copilot-pull-request-reviewer[bot]"
-                and . != "github-copilot[bot]")
-            ' <<<"${reviews}" >/dev/null
-            exact_checks="$(gh api \
+              all(.[][]?;
+                (.user.login | type == "string" and length > 0)
+                and .user.login != "copilot-pull-request-reviewer[bot]"
+                and .user.login != "github-copilot[bot]")
+            ' <<<"${review_pages}" >/dev/null
+            exact_check_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"
-            test "$(jq '.check_runs | length' <<<"${exact_checks}")" -eq 0
-            neutral_checks="$(gh api \
-              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
-            test "$(jq '.check_runs | length' <<<"${neutral_checks}")" -eq 0
-
+            exact_checks="$(jq -c '
+              [.[].check_runs[]? |
+                select(.name == "Protected Exact-Revision Codex result")]
+            ' <<<"${exact_check_pages}")"
+            test "$(jq 'length' <<<"${exact_checks}")" -eq 0
             transition_summary="$(jq -cn \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
@@ -298,28 +311,67 @@ jobs:
                 }
               ')"
             transition_external_id="rep60-main-bootstrap:v1:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
-            transition_check="$(gh api --method POST \
-              "repos/${REPOSITORY}/check-runs" \
-              -f name='Current revision review' \
-              -f head_sha="${EVENT_HEAD}" \
-              -f status=completed \
-              -f conclusion=success \
-              -f external_id="${transition_external_id}" \
-              -f 'output[title]=One-time immutable main-controller bootstrap verified' \
-              -f "output[summary]=${transition_summary}")"
-            transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
-              <<<"${transition_check}")"
+            transition_title='One-time immutable main-controller bootstrap verified'
+            neutral_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
+            neutral_checks="$(jq -c '
+              [.[].check_runs[]? | select(.name == "Current revision review")]
+            ' <<<"${neutral_pages}")"
+            neutral_count="$(jq 'length' <<<"${neutral_checks}")"
+            if [ "${neutral_count}" -gt 1 ]; then
+              echo "Multiple neutral review checks exist for the immutable transition head." >&2
+              exit 1
+            fi
+            if [ "${neutral_count}" -eq 1 ]; then
+              transition_check="$(jq -c '.[0]' <<<"${neutral_checks}")"
+              jq -e \
+                --arg evidence "${transition_summary}" \
+                --arg external_id "${transition_external_id}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg title "${transition_title}" '
+                  .name == "Current revision review"
+                  and .head_sha == $head
+                  and .external_id == $external_id
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and .app.id == 15368
+                  and .app.slug == "github-actions"
+                  and .output.title == $title
+                  and .output.summary == $evidence
+                ' <<<"${transition_check}" >/dev/null
+              transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+                <<<"${transition_check}")"
+            else
+              transition_check="$(gh api --method POST \
+                "repos/${REPOSITORY}/check-runs" \
+                -f name='Current revision review' \
+                -f head_sha="${EVENT_HEAD}" \
+                -f status=completed \
+                -f conclusion=success \
+                -f external_id="${transition_external_id}" \
+                -f "output[title]=${transition_title}" \
+                -f "output[summary]=${transition_summary}")"
+              transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+                <<<"${transition_check}")"
+            fi
             transition_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${transition_check_id}"
             transition_check="$(gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${transition_check_id}" \
-              -f "details_url=${transition_check_url}")"
+              -f status=completed \
+              -f conclusion=success \
+              -f external_id="${transition_external_id}" \
+              -f "details_url=${transition_check_url}" \
+              -f "output[title]=${transition_title}" \
+              -f "output[summary]=${transition_summary}")"
             jq -e \
               --arg evidence "${transition_summary}" \
               --arg external_id "${transition_external_id}" \
               --arg head "${EVENT_HEAD}" \
+              --arg title "${transition_title}" \
               --arg url "${transition_check_url}" \
               --argjson check_id "${transition_check_id}" '
                 .id == $check_id
+                and .name == "Current revision review"
                 and .head_sha == $head
                 and .details_url == $url
                 and .external_id == $external_id
@@ -327,10 +379,10 @@ jobs:
                 and .conclusion == "success"
                 and .app.id == 15368
                 and .app.slug == "github-actions"
+                and .output.title == $title
                 and .output.summary == $evidence
               ' <<<"${transition_check}" >/dev/null
 
-            trap - ERR
             gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=completed \
@@ -338,6 +390,7 @@ jobs:
               -f 'output[title]=Immutable one-time main-controller bootstrap verified' \
               -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; no AI; not acceptance evidence." \
               >/dev/null
+            trap - ERR
             exit 0
           fi
 
@@ -454,9 +507,9 @@ jobs:
               ' <<<"${summary}" >/dev/null
           fi
 
-          trap - ERR
           gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
             -f status=completed \
             -f conclusion=success \
             -f 'output[title]=Protected current-revision evidence verified' \
             -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${producer_run_url}." >/dev/null
+          trap - ERR
