@@ -28,6 +28,15 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("and .merge_base_commit.sha == $workflow_sha", workflow)
+        source_compare = workflow.split('source_compare="$(gh api', 1)[1].split(
+            '          test "${GITHUB_RUN_ATTEMPT}"', 1
+        )[0]
+        self.assertIn('(.status == "identical"', source_compare)
+        self.assertIn('and $source_sha == $workflow_sha', source_compare)
+        self.assertIn('and .head_commit == null', source_compare)
+        self.assertIn('(.status == "ahead"', source_compare)
+        self.assertIn('and $source_sha != $workflow_sha', source_compare)
+        self.assertIn('and .head_commit.sha == $source_sha', source_compare)
 
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -209,7 +218,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             'review_pages="$(gh api --paginate --slurp',
             transition,
         )
-        self.assertIn("all(.[][]?.user.login;", transition)
+        self.assertIn("all(.[][]?;", transition)
+        self.assertIn(
+            '(.user.login | type == "string" and length > 0)',
+            transition,
+        )
         self.assertIn(
             'exact_check_pages="$(gh api --paginate --slurp',
             transition,
