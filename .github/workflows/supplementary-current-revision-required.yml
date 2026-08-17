@@ -233,12 +233,15 @@ jobs:
             producer_run_id="${BASH_REMATCH[1]}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-            jq -e '
+            jq -e \
+              --arg actor "${author}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
+              and .actor.login == $actor
+              and .triggering_actor.login == $actor
             ' <<<"${producer}" >/dev/null
             jq -e \
               --arg base_ref "${base_ref}" \

@@ -61,7 +61,8 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("and .base_sha == $base", workflow)
         self.assertNotIn("and .run_attempt == 1", workflow)
-        self.assertIn(".triggering_actor.login == $actor", workflow)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 2)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
