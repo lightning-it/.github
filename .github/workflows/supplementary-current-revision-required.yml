@@ -98,14 +98,25 @@ jobs:
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"
-          reservations="$(jq -c \
-            --arg external_id "${reservation_external_id}" \
+          all_reservations="$(jq -c \
+            --arg head "${EVENT_HEAD}" \
             --arg name "${reservation_name}" '
               [.[].check_runs[]? |
                 select(.name == $name) |
                 select(.app.id == 15368 and .app.slug == "github-actions") |
-                select(.external_id == $external_id)]
+                select(.head_sha == $head)]
             ' <<<"${reservation_checks}")"
+          reservations="$(jq -c \
+            --arg prefix 'rep60-required-workflow:v2:' \
+            --arg suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
+              [.[] |
+                select((.external_id | type) == "string") |
+                select(.external_id | startswith($prefix) and endswith($suffix))]
+            ' <<<"${all_reservations}")"
+          if [ "$(jq 'length' <<<"${all_reservations}")" -ne "$(jq 'length' <<<"${reservations}")" ]; then
+            echo "A protected verifier reservation for this commit belongs to a different PR/head binding." >&2
+            exit 1
+          fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${reservation_count}" -gt 1 ]; then
             echo "Multiple protected verifier reservations exist for the same PR/head." >&2
@@ -113,9 +124,12 @@ jobs:
           fi
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
+            prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
+            [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:[1-9][0-9]*:${PR_NUMBER}:${EVENT_HEAD}$ ]]
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
               -f 'output[title]=Protected verifier is re-evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
@@ -143,6 +157,7 @@ jobs:
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
@@ -234,32 +249,50 @@ jobs:
             producer_run_id="${BASH_REMATCH[1]}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+              <<<"${summary}")"
+            # pull_request_target always runs the protected default-branch
+            # controller. PR base_ref remains independently valid as main or
+            # develop and is already bound to EVENT_BASE above.
+            controller_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            test "${controller_branch}" = develop
+            controller_head="$(gh api "repos/${REPOSITORY}/branches/${controller_branch}" --jq .commit.sha)"
+            controller_ancestry="$(gh api \
+              "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
             jq -e \
-              --arg actor "${author}" '
+              --arg controller "${controller_sha}" '
+                .status == "identical"
+                or (.status == "ahead" and .behind_by == 0
+                    and .merge_base_commit.sha == $controller)
+              ' <<<"${controller_ancestry}" >/dev/null
+            jq -e \
+              --arg actor "${author}" \
+              --arg controller_branch "${controller_branch}" \
+              --arg controller_sha "${controller_sha}" '
               .event == "pull_request_target"
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
               and .name == "Current revision review gate"
+              and .head_branch == $controller_branch
+              and .head_sha == $controller_sha
               and .actor.login == $actor
               and .triggering_actor.login == $actor
             ' <<<"${producer}" >/dev/null
             jq -e \
-              --arg base_ref "${base_ref}" \
-              --arg base_sha "${EVENT_BASE}" \
               --arg run_url "${producer_run_url}" '
-                .head_branch == $base_ref
-                and .head_sha == $base_sha
-                and .html_url == $run_url
+                .html_url == $run_url
               ' <<<"${producer}" >/dev/null
             jq -e \
               --arg base "${EVENT_BASE}" \
+              --arg controller "${controller_sha}" \
               --arg head "${EVENT_HEAD}" \
               --arg run_url "${producer_run_url}" \
               --argjson run_id "${producer_run_id}" '
                 .schema == 4
                 and .base_sha == $base
                 and .head_sha == $head
+                and .controller_sha == $controller
                 and .producer_run_id == $run_id
                 and .run_url == $run_url
                 and .review_path == "applicable Copilot or governed automation exemption"
