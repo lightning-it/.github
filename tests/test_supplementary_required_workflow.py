@@ -218,7 +218,16 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             '          neutral_pages="$(gh api --paginate --slurp',
             1,
         )[0]
-        self.assertIn('[ "${PR_NUMBER}" = 776 ]', transition)
+        self.assertIn('[ "${PR_NUMBER}" = 777 ]', transition)
+        self.assertIn(
+            'test "${GITHUB_ACTOR}" = \'lightning-it-release-automation[bot]\'',
+            transition,
+        )
+        self.assertIn(
+            'test "${GITHUB_TRIGGERING_ACTOR}" = '
+            '\'lightning-it-release-automation[bot]\'',
+            transition,
+        )
         self.assertIn(
             "01afb46890e6d7ac6008e8ed478aa6af91e1b19b",
             transition,
