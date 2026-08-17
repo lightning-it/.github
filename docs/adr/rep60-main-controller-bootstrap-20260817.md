@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.1"
+  version: "1.2"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -125,6 +125,13 @@ therefore refreshed to the final signed merge
 72-commit ancestry from the unchanged `main` base, source PR `#781`, and the
 five final controller blobs above. Earlier frozen heads no longer match and
 cannot authorize PR `#777`.
+
+Before promoting this refreshed organization trust-root, protected `.github`
+`main` commit `4fd42d4ce2de3d09c317c530e875bf8670adbe46` is recorded as the second parent
+of ancestry merge `b4947507bc2ecec7a14650476649cd09fd9f525d`. Its first parent is protected
+`develop` commit `49c0a80776a407d09850c431ac135cd46b954d80`; the merge preserves that first
+parent's exact tree `e373262d5a661fe8c1caa5e7a321aa8a39a4c812`. The ancestry merge is promoted
+only through a normal reviewed pull request.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
