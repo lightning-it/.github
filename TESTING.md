@@ -40,7 +40,7 @@ PASS.
 
 For protected current-revision evidence, a custom check's canonical
 `/runs/<check-id>` URL identifies only that check object; it is not sufficient
-producer provenance. Schema-v4 evidence also binds the exact GitHub Actions
+for producer provenance. Schema-v4 evidence also binds the exact GitHub Actions
 producer run ID in the external ID and summary. The organization-owned required
 workflow must query that run and verify its repository, event, workflow path,
 protected base, candidate head, actor, conclusion, and schema before it can pass.
