@@ -60,7 +60,7 @@ its protected `develop` first parent:
 The organization-owned required workflow contains a temporary transition that
 can match only the immutable pull request, base, head, tree, merge provenance,
 source pull request, and four controller blob IDs listed in its source. It also
-requires zero Copilot reviews and zero Exact-Revision Codex result for the
+requires zero Copilot reviews and zero Exact-Revision Codex results for the
 transition head.
 
 The transition performs no AI call. Its neutral check evidence states:
