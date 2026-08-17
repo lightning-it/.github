@@ -1,4 +1,28 @@
-# REP-60 protected-main controller bootstrap — 2026-08-17
+---
+id: adr-rep60-main-controller-bootstrap-20260817
+title: REP-60 protected-main controller bootstrap
+description: Records the immutable one-time transition that installs the protected current-revision controller on main.
+slug: /adr/rep60-main-controller-bootstrap-20260817/
+document:
+  status: maintained
+  approval_status: approved
+  version: "1.0"
+  classification: PUBLIC
+  owner: Lightning IT Documentation Maintainers
+  approver: Lightning IT Product Owners
+  audience:
+    - repository maintainers
+    - platform engineers
+    - security reviewers
+  last_reviewed: "2026-08-17"
+  review_cadence: annual
+---
+
+# ADR: REP-60 protected-main controller bootstrap
+
+- Status: Accepted for one-time transition
+- Date: 2026-08-17
+- Scope: Supplementary protected current-revision controller bootstrap
 
 ## Scope
 
