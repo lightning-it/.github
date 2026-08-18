@@ -316,6 +316,7 @@ jobs:
             test -n "${controller_branch_uri}"
             controller_head="$(gh api \
               "repos/${REPOSITORY}/branches/${controller_branch_uri}" --jq .commit.sha)"
+            [[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]
             controller_ancestry="$(gh api \
               "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
             jq -e \
