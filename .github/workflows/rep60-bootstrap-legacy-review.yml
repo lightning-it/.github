@@ -1,0 +1,279 @@
+# Repository-owned, temporary REP-60 bootstrap controller.
+# It exists only long enough to replace the legacy required check atomically.
+# The protected rollout PR must delete this file before it can receive evidence.
+# yamllint disable rule:truthy rule:line-length
+---
+name: REP-60 bootstrap legacy review bridge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions: {}
+
+concurrency:
+  group: rep60-bootstrap-legacy-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  publish-legacy-review:
+    name: Publish protected legacy review evidence
+    if: >-
+      contains(fromJSON('["lightning-it/github-management-lit","lightning-it/.github"]'), github.repository) &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login == 'litroc' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'develop' &&
+      github.event.pull_request.head.ref == 'fix/rep60-current-revision-rollout-20260818-v1' &&
+      github.event.pull_request.title == 'fix(rep60): adopt protected current-revision controller'
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Verify current-head Copilot review and publish legacy evidence
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EVENT_TITLE: ${{ github.event.pull_request.title }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+
+          bridge_path='.github/workflows/rep60-bootstrap-legacy-review.yml'
+          check_id=''
+          check_finalized=false
+          check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          finalize_failed_check() {
+            local result=$?
+            trap - EXIT
+            if [ -n "${check_id}" ] && [ "${check_finalized}" != true ]; then
+              set +e
+              gh api --method PATCH \
+                -H 'Accept: application/vnd.github+json' \
+                "repos/${REPOSITORY}/check-runs/${check_id}" \
+                -f status=completed \
+                -f conclusion=failure \
+                -f completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                -f 'output[title]=REP-60 bootstrap bridge failed closed' \
+                -f 'output[summary]=The protected bootstrap controller did not accept this exact revision.' \
+                >/dev/null
+            fi
+            exit "${result}"
+          }
+          trap finalize_failed_check EXIT
+
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${DEFAULT_BRANCH}" = develop
+          test "${WORKFLOW_REF}" = \
+            "${REPOSITORY}/${bridge_path}@refs/heads/${DEFAULT_BRANCH}"
+          test "${WORKFLOW_SHA}" = "${EVENT_BASE}"
+          test "${GITHUB_SHA}" = "${WORKFLOW_SHA}"
+
+          live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "${EVENT_HEAD_REF}" \
+            --arg repository "${REPOSITORY}" \
+            --arg title "${EVENT_TITLE}" '
+              .state == "open"
+              and .draft == false
+              and .user.login == "litroc"
+              and .base.sha == $base
+              and .base.ref == "develop"
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.ref == $head_ref
+              and .head.repo.full_name == $repository
+              and .title == $title
+            ' <<<"${live_pr}" >/dev/null
+
+          head_commit="$(gh api "repos/${REPOSITORY}/git/commits/${EVENT_HEAD}")"
+          head_tree="$(jq -er '.tree.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<<"${head_commit}")"
+          tree="$(gh api "repos/${REPOSITORY}/git/trees/${head_tree}?recursive=1")"
+          jq -e \
+            --arg bridge "${bridge_path}" '
+              .truncated == false
+              and ([.tree[] | select(.path == $bridge)] | length) == 0
+              and ([.tree[] | select(.path == ".github/workflows/copilot-review.yml" and .type == "blob")] | length) == 1
+            ' <<<"${tree}" >/dev/null
+
+          external_id="rep60-bootstrap-legacy:v1:${WORKFLOW_SHA}:${EVENT_HEAD}"
+          reservation="$(
+            gh api --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${REPOSITORY}/check-runs" \
+              -f name='Successful Copilot review' \
+              -f head_sha="${EVENT_HEAD}" \
+              -f status=in_progress \
+              -f started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -f details_url="${check_url}" \
+              -f external_id="${external_id}" \
+              -f 'output[title]=REP-60 protected bootstrap review pending' \
+              -f 'output[summary]=Verifying the exact current revision from the protected base controller.'
+          )"
+          check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+          jq -e \
+            --arg external_id "${external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg url "${check_url}" '
+              .name == "Successful Copilot review"
+              and .head_sha == $head
+              and .details_url == $url
+              and .external_id == $external_id
+              and .status == "in_progress"
+              and .app.id == 15368
+            ' <<<"${reservation}" >/dev/null
+
+          read -r -d '' thread_query <<'GRAPHQL' || true
+          query($owner:String!,$repository:String!,$number:Int!,$after:String) {
+            repository(owner:$owner,name:$repository) {
+              pullRequest(number:$number) {
+                headRefOid
+                reviewThreads(first:100,after:$after) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    isResolved
+                    comments(first:100) { nodes { author { login } } }
+                  }
+                }
+              }
+            }
+          }
+          GRAPHQL
+
+          owner="${REPOSITORY%%/*}"
+          repository="${REPOSITORY#*/}"
+          accepted=false
+          for attempt in $(seq 1 60); do
+            current_head="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)"
+            test "${current_head}" = "${EVENT_HEAD}"
+
+            reviews="$(
+              gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100"
+            )"
+            accepted_reviews="$(
+              jq \
+                --arg head "${EVENT_HEAD}" '
+                  def normalized:
+                    ascii_downcase
+                    | gsub("wasn[\u0027\u2019]t"; "was not")
+                    | gsub("\\s"; "");
+                  [
+                    .[][]
+                    | select(
+                        (.user.login == "copilot-pull-request-reviewer[bot]"
+                         or .user.login == "copilot-pull-request-reviewer")
+                        and .commit_id == $head
+                        and (.state == "COMMENTED" or .state == "APPROVED")
+                        and ((.body // "") | gsub("\\s"; "") | length > 0)
+                        and (((.body // "") | normalized | contains("wasnotabletoreviewanyfiles")) | not)
+                        and (((.body // "") | normalized | contains("unabletoreviewthispullrequest")) | not)
+                        and (((.body // "") | normalized | contains("quotaexhausted")) | not)
+                        and (((.body // "") | normalized | contains("quotaexceeded")) | not)
+                      )
+                  ] | length
+                ' <<<"${reviews}"
+            )"
+
+            after=''
+            unresolved=0
+            while true; do
+              arguments=(
+                -f query="${thread_query}"
+                -F owner="${owner}"
+                -F repository="${repository}"
+                -F number="${PR_NUMBER}"
+              )
+              if [ -n "${after}" ]; then
+                arguments+=(-f after="${after}")
+              fi
+              response="$(gh api graphql "${arguments[@]}")"
+              jq -e --arg head "${EVENT_HEAD}" \
+                '.data.repository.pullRequest.headRefOid == $head' \
+                <<<"${response}" >/dev/null
+              page_unresolved="$(
+                jq '
+                  [
+                    .data.repository.pullRequest.reviewThreads.nodes[]
+                    | select(.isResolved == false)
+                    | select(any(.comments.nodes[];
+                        .author.login == "copilot-pull-request-reviewer[bot]"
+                        or .author.login == "copilot-pull-request-reviewer"))
+                  ] | length
+                ' <<<"${response}"
+              )"
+              unresolved=$((unresolved + page_unresolved))
+              has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"${response}")"
+              if [ "${has_next}" != true ]; then
+                break
+              fi
+              after="$(jq -er '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor | select(type == "string" and length > 0)' <<<"${response}")"
+            done
+
+            if [ "${accepted_reviews}" -gt 0 ] && [ "${unresolved}" -eq 0 ]; then
+              accepted=true
+              break
+            fi
+            if [ "${attempt}" -eq 60 ]; then
+              echo "No acceptable, fully resolved Copilot review exists for exact head ${EVENT_HEAD}." >&2
+              false
+            fi
+            sleep 15
+          done
+          test "${accepted}" = true
+
+          post_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" '
+              .state == "open"
+              and .draft == false
+              and .user.login == "litroc"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+            ' <<<"${post_pr}" >/dev/null
+
+          summary="Protected workflow ${WORKFLOW_SHA}; base ${EVENT_BASE}; head ${EVENT_HEAD}; current-head Copilot review accepted; unresolved findings 0; transition file absent from candidate."
+          completed="$(
+            gh api --method PATCH \
+              -H 'Accept: application/vnd.github+json' \
+              "repos/${REPOSITORY}/check-runs/${check_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -f 'output[title]=REP-60 protected bootstrap review passed' \
+              -f "output[summary]=${summary}"
+          )"
+          jq -e \
+            --arg external_id "${external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg url "${check_url}" '
+              .name == "Successful Copilot review"
+              and .head_sha == $head
+              and .details_url == $url
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == "success"
+              and .app.id == 15368
+            ' <<<"${completed}" >/dev/null
+          check_finalized=true
+          echo "Published protected legacy evidence for exact head ${EVENT_HEAD}."
