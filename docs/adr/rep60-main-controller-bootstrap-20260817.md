@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.11"
+  version: "1.12"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -230,6 +230,17 @@ no Exact-Revision Codex result on PR `#786`'s current head. Its evidence is
 always `temporary=true`, `acceptance_evidence=false`, and
 `review_path="immutable one-time result-parser bootstrap; no AI"`. The failed
 older Codex input remains historical evidence and is not retried.
+
+Immediately before promoting this recovery transition, protected
+`lightning-it/.github` `main` commit
+`015cdd6f90db3ea7cb015bbeb845e4510d5c375a` is recorded as the second parent
+of ancestry merge `1f514290972382af4ad4c08072a560547643af90`. Its first
+parent is protected `develop` commit
+`fd95ccfe26c695e836e86b72e5dd08feddbcfe56`; the merge tree
+`8fd9ec37123ebce8d65b29a07f2abcbf7997893a` is byte-identical to that first
+parent's tree. This ADR update is the sole tree change layered on the ancestry
+commit and provides a real current-head review surface. The sync and its later
+promotion use only normal merge commits.
 
 ## Mandatory completion
 
