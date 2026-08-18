@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.5"
+  version: "1.6"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -155,11 +155,16 @@ selected every same-named check before validating their own external ID. A
 native Required-Workflow job therefore prevented either producer from
 publishing its evidence. PR `#782` is frozen to base
 `5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`, head
-`fa0952617cfd6954f2b21e4466eaf05266b42ba6`, tree
-`9ddae320409b963936ab6ea0b4505502915798e4`, its exact three-commit ancestry,
-and its six changed blob IDs. Copilot review `4956145369` reviewed that exact
-head and reported no new comments; the earlier finding is fixed and its thread
-is resolved.
+`73156874fd8bfd1560e340c0cd470bebfe6c35f8`, tree
+`f9f953cabdeaea4a106c3390cf9cabbacfbad574`, its exact four-commit ancestry,
+and its six changed blob IDs. Copilot review `4956145369` reviewed the prior
+functional head and reported no new comments; the earlier finding is fixed and
+its thread is resolved. The final commit contains only Ruff's canonical quote
+normalization. Copilot review `4956284255` reviewed that exact final head and
+reported no new review comments. Its two suppressed observations about the
+`rep60-main-bootstrap:v1:` namespace are disproved by protected live check
+`95552404766` and the organization Required Workflow, which respectively use
+and produce that exact external-ID prefix. No unresolved Copilot thread exists.
 
 The organization-owned Required Workflow reuses the one-time human transition
 only for that immutable PR/base/head/tree/files/review tuple. It creates
