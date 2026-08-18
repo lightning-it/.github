@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.8"
+  version: "1.10"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -179,6 +179,17 @@ and its frozen Supplementary base/head/controller provenance. Neither
 transition can match another PR or revision. Remove both transitions and
 their regression assertions immediately after PR `#777` reaches `main`. No
 local AI is used.
+
+Before promoting this final transition, protected `lightning-it/.github`
+`main` `997b074aee07f9975a8a90608a9b306dc62911f8` is reintroduced into protected
+`lightning-it/.github` `develop` through `lightning-it/.github` PR `#168`.
+Its ancestry commit
+`14bafdf422df9c8da471ce047625ec4493ca1ed0` has first parent
+`edcfecedc8797ae0c07283aeb8b39ce0b45494a7`, second parent
+`997b074aee07f9975a8a90608a9b306dc62911f8`, and tree
+`ddaf4b22514a7970912f05627666e384fa0376a3`, byte-identical to the first-parent
+tree. This ADR update is the only content change layered on that ancestry
+commit and receives the normal current-head review before the PR can merge.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
