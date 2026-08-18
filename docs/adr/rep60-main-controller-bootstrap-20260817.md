@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.2"
+  version: "1.3"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -51,11 +51,12 @@ The protected controller assets at that immutable head are:
 - `scripts/materialize-exact-revision-review.py` blob
   `f394a820a9c0922d8e7187dbd1b8aca3bf13db61`.
 
-Before promoting the organization trust-root change, protected `.github`
-`main` commit `b671844d753f504dc2ef731e9411669d755d530b` is recorded as the second parent
-of ancestry merge `db63df9825d3b7c209cc328615f63bf44777eeb3`. That merge has the same tree as
-its protected `develop` first parent:
-`4e7831ac3d962efc6abcaa94bf6d1650cffe3919`.
+The superseded pre-refresh staging attempt recorded protected `.github` `main`
+commit `b671844d753f504dc2ef731e9411669d755d530b` as the second parent of ancestry
+merge `db63df9825d3b7c209cc328615f63bf44777eeb3`, with protected `develop` tree
+`4e7831ac3d962efc6abcaa94bf6d1650cffe3919`. Those identifiers are retained
+only as historical evidence. They are not the authoritative ancestry repair
+for the refreshed transition and cannot authorize its promotion.
 
 ## One-time transition
 
