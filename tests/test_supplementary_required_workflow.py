@@ -238,21 +238,22 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             transition,
         )
         self.assertIn(
-            "7a6cadc2c1048daec4a69ff0f71441b6ff257416",
+            "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c",
             transition,
         )
         self.assertIn(
-            "7c19ce8303b313b2911e2f8abd075a7b5b2fecd6",
+            "4827a18733b36d38784c9a72e16bb759515c43ab",
             transition,
         )
         self.assertIn(".commit.verification.verified == true", transition)
         self.assertIn(".merge_commit_sha ==", transition)
-        self.assertIn("and .ahead_by == 62", transition)
+        self.assertIn("and .ahead_by == 72", transition)
         self.assertIn("and .commits[-1].sha == $head", transition)
         self.assertIn(
             'local file_name="$1" expected_blob="$2" observed_blob',
             transition,
         )
+        self.assertIn(".github/workflows/rep60-bootstrap-app-rearm.yml", transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
         self.assertIn('acceptance_evidence: false', transition)

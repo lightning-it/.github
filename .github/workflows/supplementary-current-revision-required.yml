@@ -230,7 +230,7 @@ jobs:
           # evidence and cannot match any later revision.
           if [ "${PR_NUMBER}" = 777 ] \
             && [ "${EVENT_BASE}" = 01afb46890e6d7ac6008e8ed478aa6af91e1b19b ] \
-            && [ "${EVENT_HEAD}" = 7a6cadc2c1048daec4a69ff0f71441b6ff257416 ]; then
+            && [ "${EVENT_HEAD}" = 5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c ]; then
             test "${GITHUB_ACTOR}" = 'lightning-it-release-automation[bot]'
             test "${GITHUB_TRIGGERING_ACTOR}" = 'lightning-it-release-automation[bot]'
             test "${draft}" = false
@@ -240,32 +240,32 @@ jobs:
 
             failure_stage='transition-static-provenance'
             jq -e '
-              .sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
-              and .commit.tree.sha == "7c19ce8303b313b2911e2f8abd075a7b5b2fecd6"
+              .sha == "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c"
+              and .commit.tree.sha == "4827a18733b36d38784c9a72e16bb759515c43ab"
               and .commit.verification.verified == true
               and .commit.verification.reason == "valid"
               and .author.login == "litroc"
               and .committer.login == "web-flow"
               and [.parents[].sha] == [
-                "b6c40eb461dd858d26d38d0ddfba2bde3afe4108",
-                "be17b987bf1e00e4b5b68f160274ee635e776e2c"
+                "3149d2d6e47f653e6381a0fc446f894ba65d30a5",
+                "44885dd2a32ad3f0f91f06ec61619c3c6329c99e"
               ]
-              and .commit.message == "Merge pull request #759 from lightning-it/agent/mlx90-exact-revision-codex-pilot-20260816\n\nfix(mlx90): enforce pipeline-only current-revision review"
+              and .commit.message == "Merge pull request #781 from lightning-it/fix/rep60-rearm-success-dedupe-20260817\n\nfix(rep60): ignore failed rearm reservations"
             ' <<<"${target_commit}" >/dev/null
 
-            source_pr="$(gh api "repos/${REPOSITORY}/pulls/759")"
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/781")"
             jq -e '
-              .number == 759
+              .number == 781
               and .state == "closed"
               and .merged == true
               and .user.login == "litroc"
               and .merged_by.login == "litroc"
               and .base.ref == "develop"
-              and .base.sha == "b6c40eb461dd858d26d38d0ddfba2bde3afe4108"
-              and .head.ref == "agent/mlx90-exact-revision-codex-pilot-20260816"
-              and .head.sha == "be17b987bf1e00e4b5b68f160274ee635e776e2c"
-              and .merge_commit_sha == "7a6cadc2c1048daec4a69ff0f71441b6ff257416"
-              and .title == "fix(mlx90): enforce pipeline-only current-revision review"
+              and .base.sha == "3149d2d6e47f653e6381a0fc446f894ba65d30a5"
+              and .head.ref == "fix/rep60-rearm-success-dedupe-20260817"
+              and .head.sha == "44885dd2a32ad3f0f91f06ec61619c3c6329c99e"
+              and .merge_commit_sha == "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c"
+              and .title == "fix(rep60): ignore failed rearm reservations"
             ' <<<"${source_pr}" >/dev/null
 
             compare="$(gh api \
@@ -275,9 +275,9 @@ jobs:
               --arg head "${EVENT_HEAD}" '
                 .status == "ahead"
                 and .behind_by == 0
-                and .ahead_by == 62
-                and .total_commits == 62
-                and (.commits | length) == 62
+                and .ahead_by == 72
+                and .total_commits == 72
+                and (.commits | length) == 72
                 and .base_commit.sha == $base
                 and .merge_base_commit.sha == $base
                 and .commits[-1].sha == $head
@@ -292,13 +292,16 @@ jobs:
             }
             verify_blob \
               .github/workflows/copilot-review.yml \
-              47a6579c29beb9a8cb452da7f3715fb50c6c7933
+              c605c6eea57d1bd679fbae7621b68c0dcafc4c76
             verify_blob \
               .github/workflows/release-bot-exact-head-review.yml \
               4332028591a4f251f213b6aba35106ea95c4ac01
             verify_blob \
               .github/workflows/current-revision-rerun.yml \
-              22ceb959bcafdc1a2c215261b2622c8aa1fc743d
+              30640b54850481349d3fbd3f80d2ebe513c7e1e4
+            verify_blob \
+              .github/workflows/rep60-bootstrap-app-rearm.yml \
+              492aec2a302d50eb96293080dbd5d5cb6a97dd79
             verify_blob \
               scripts/materialize-exact-revision-review.py \
               f394a820a9c0922d8e7187dbd1b8aca3bf13db61
@@ -322,7 +325,7 @@ jobs:
             transition_summary="$(jq -cn \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
-              --arg source_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/759" \
+              --arg source_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/781" \
               --arg transition_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER}" \
               --arg verifier_run_url "${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '
                 {

@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.0"
+  version: "1.3"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -34,32 +34,35 @@ The live promotion is pull request `#777`, authored by
 `lightning-it-release-automation[bot]`, and is frozen to:
 
 - base `01afb46890e6d7ac6008e8ed478aa6af91e1b19b`;
-- head `7a6cadc2c1048daec4a69ff0f71441b6ff257416`;
-- head tree `7c19ce8303b313b2911e2f8abd075a7b5b2fecd6`;
-- source pull request `#759` and its signed merge commit at the frozen head.
+- head `5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`;
+- head tree `4827a18733b36d38784c9a72e16bb759515c43ab`;
+- source pull request `#781` and its signed merge commit at the frozen head.
 
 The protected controller assets at that immutable head are:
 
 - `.github/workflows/copilot-review.yml` blob
-  `47a6579c29beb9a8cb452da7f3715fb50c6c7933`;
+  `c605c6eea57d1bd679fbae7621b68c0dcafc4c76`;
 - `.github/workflows/release-bot-exact-head-review.yml` blob
   `4332028591a4f251f213b6aba35106ea95c4ac01`;
 - `.github/workflows/current-revision-rerun.yml` blob
-  `22ceb959bcafdc1a2c215261b2622c8aa1fc743d`;
+  `30640b54850481349d3fbd3f80d2ebe513c7e1e4`;
+- `.github/workflows/rep60-bootstrap-app-rearm.yml` blob
+  `492aec2a302d50eb96293080dbd5d5cb6a97dd79`;
 - `scripts/materialize-exact-revision-review.py` blob
   `f394a820a9c0922d8e7187dbd1b8aca3bf13db61`.
 
-Before promoting the organization trust-root change, protected `.github`
-`main` commit `b671844d753f504dc2ef731e9411669d755d530b` is recorded as the second parent
-of ancestry merge `db63df9825d3b7c209cc328615f63bf44777eeb3`. That merge has the same tree as
-its protected `develop` first parent:
-`4e7831ac3d962efc6abcaa94bf6d1650cffe3919`.
+The superseded pre-refresh staging attempt recorded protected `.github` `main`
+commit `b671844d753f504dc2ef731e9411669d755d530b` as the second parent of ancestry
+merge `db63df9825d3b7c209cc328615f63bf44777eeb3`, with protected `develop` tree
+`4e7831ac3d962efc6abcaa94bf6d1650cffe3919`. Those identifiers are retained
+only as historical evidence. They are not the authoritative ancestry repair
+for the refreshed transition and cannot authorize its promotion.
 
 ## One-time transition
 
 The organization-owned required workflow contains a temporary transition that
 can match only the immutable pull request, base, head, tree, merge provenance,
-source pull request, and four controller blob IDs listed in its source. It also
+source pull request, and five controller blob IDs listed in its source. It also
 requires zero Copilot reviews and zero Exact-Revision Codex results for the
 transition head.
 
@@ -115,6 +118,21 @@ head, tree, and bot author. The transition is now additionally bound to that
 exact PR number and to the Release App as both workflow actor and triggering
 actor. The PR `#776` check remains historical non-acceptance evidence and
 cannot authorize PR `#777`.
+
+The protected `develop` head subsequently advanced only through normally
+reviewed staging fixes `#779`, `#780`, and `#781`. The frozen transition was
+therefore refreshed to the final signed merge
+`5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`, its complete tree, exact
+72-commit ancestry from the unchanged `main` base, source PR `#781`, and the
+five final controller blobs above. Earlier frozen heads no longer match and
+cannot authorize PR `#777`.
+
+Before promoting this refreshed organization trust-root, protected `.github`
+`main` commit `4fd42d4ce2de3d09c317c530e875bf8670adbe46` is recorded as the second parent
+of ancestry merge `b4947507bc2ecec7a14650476649cd09fd9f525d`. Its first parent is protected
+`develop` commit `49c0a80776a407d09850c431ac135cd46b954d80`; the merge preserves that first
+parent's exact tree `e373262d5a661fe8c1caa5e7a321aa8a39a4c812`. The ancestry merge is promoted
+only through a normal reviewed pull request.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
