@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.12"
+  version: "1.13"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -241,6 +241,16 @@ parent is protected `develop` commit
 parent's tree. This ADR update is the sole tree change layered on the ancestry
 commit and provides a real current-head review surface. The sync and its later
 promotion use only normal merge commits.
+
+The first protected re-evaluation after that promotion, Required-Workflow run
+`32100678046`, failed closed at fixed stage
+`parser-transition-static-provenance`. One removed-file blob ID in the exact
+17-file compare inventory had been transcribed with an additional trailing
+`e`: the recorded 41-character value ended in `cc8e`, while GitHub's immutable
+blob ID is `620e6af830b722178e4f601de467253563115cc8`. No transition evidence was
+created. A dedicated protected hotfix corrects that one value and adds a
+regression assertion that requires the 40-character ID and rejects the stale
+41-character spelling before the single permitted re-evaluation.
 
 ## Mandatory completion
 
