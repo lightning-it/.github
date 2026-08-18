@@ -164,7 +164,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
         fail("Protected file writing requires O_NOFOLLOW support.")
     if len(payload) <= 0 or len(payload) > MAX_PROTECTED_ASSET_BYTES:
         fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | no_follow
+    flags = os.O_WRONLY | os.O_CREAT | no_follow
     flags |= getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags, 0o600)
@@ -176,6 +176,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
             fail(f"Protected {name} must be one regular non-symlink file.")
         if details.st_uid != os.geteuid():
             fail(f"Protected {name} must be owned by the current user.")
+        os.ftruncate(descriptor, 0)
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb", closefd=False) as protected_file:
             written = protected_file.write(payload)

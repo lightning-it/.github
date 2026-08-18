@@ -71,6 +71,19 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 self.module.write_owned_regular_file(link, b"replacement", "test")
             self.assertEqual("unchanged", target.read_text(encoding="utf-8"))
 
+    def test_protected_writer_rejects_hardlink_without_truncating_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "target"
+            target.write_text("unchanged", encoding="utf-8")
+            link = Path(temporary) / "link"
+            os.link(target, link)
+            with self.assertRaisesRegex(
+                self.module.MaterializationError,
+                "one regular non-symlink file",
+            ):
+                self.module.write_owned_regular_file(link, b"replacement", "test")
+            self.assertEqual("unchanged", target.read_text(encoding="utf-8"))
+
     def test_protected_writer_overrides_restrictive_umask(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "asset"
