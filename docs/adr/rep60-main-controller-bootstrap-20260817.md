@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.7"
+  version: "1.8"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -168,14 +168,17 @@ reported no new review comments. Its two suppressed observations about the
 `95552404766` and the organization Required Workflow, which respectively use
 and produce that exact external-ID prefix. No unresolved Copilot thread exists.
 
-The organization-owned Required Workflow reuses the one-time human transition
-only for that immutable PR/base/head/tree/files/review tuple. It creates
-temporary, explicitly review-bound evidence and cannot match another PR or
-revision. This transition exists solely to install the producer-side
-external-ID filtering; it supersedes the already completed PR `#780` repair
-and can no longer match after `#782` merged because the transition requires an
-open PR. Remove it together with the remaining bootstrap transitions
-immediately after `#777` reaches `main`. No local AI is used.
+The organization-owned Required Workflow retains two distinct, immutable
+bootstrap transitions. The human transition for PR `#782` is bound only to
+that PR/base/head/tree/files/review tuple. It created temporary,
+review-bound evidence solely to install the producer-side external-ID
+filtering and superseded the completed PR `#780` repair. It can no longer
+match because PR `#782` is merged while that transition requires PR `#782` to
+remain open. The separate Release-App transition is bound only to PR `#777`
+and its frozen Supplementary base/head/controller provenance. Neither
+transition can match another PR or revision. Remove both transitions and
+their regression assertions immediately after PR `#777` reaches `main`. No
+local AI is used.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
