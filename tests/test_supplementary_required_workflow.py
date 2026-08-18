@@ -125,6 +125,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("'$value | @uri'", human_path)
         self.assertIn("branches/${controller_branch_uri}", human_path)
         self.assertNotIn("branches/${controller_branch}\"", human_path)
+        self.assertIn(
+            '[[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]', human_path
+        )
         self.assertIn("compare/${controller_sha}...${controller_head}", human_path)
         self.assertIn('--arg head_ref "${head_ref}"', human_path)
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
