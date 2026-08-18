@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.6"
+  version: "1.10"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -34,20 +34,20 @@ The live promotion is pull request `#777`, authored by
 `lightning-it-release-automation[bot]`, and is frozen to:
 
 - base `01afb46890e6d7ac6008e8ed478aa6af91e1b19b`;
-- head `5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`;
-- head tree `4827a18733b36d38784c9a72e16bb759515c43ab`;
-- source pull request `#781` and its signed merge commit at the frozen head.
+- head `2070d78360b497ed954cfe8de3fb616b99841943`;
+- head tree `f9f953cabdeaea4a106c3390cf9cabbacfbad574`;
+- source pull request `#782` and its signed merge commit at the frozen head.
 
 The protected controller assets at that immutable head are:
 
 - `.github/workflows/copilot-review.yml` blob
-  `c605c6eea57d1bd679fbae7621b68c0dcafc4c76`;
+  `32eafe4b11587356b74f89d7aa88177a4578608b`;
 - `.github/workflows/release-bot-exact-head-review.yml` blob
-  `4332028591a4f251f213b6aba35106ea95c4ac01`;
+  `9566f3d997d41274c7e2e7c01ffb0b7711b842ba`;
 - `.github/workflows/current-revision-rerun.yml` blob
   `30640b54850481349d3fbd3f80d2ebe513c7e1e4`;
 - `.github/workflows/rep60-bootstrap-app-rearm.yml` blob
-  `492aec2a302d50eb96293080dbd5d5cb6a97dd79`;
+  `dff67484aca33e111657c233c799c55a9a089321`;
 - `scripts/materialize-exact-revision-review.py` blob
   `f394a820a9c0922d8e7187dbd1b8aca3bf13db61`.
 
@@ -120,12 +120,14 @@ actor. The PR `#776` check remains historical non-acceptance evidence and
 cannot authorize PR `#777`.
 
 The protected `develop` head subsequently advanced only through normally
-reviewed staging fixes `#779`, `#780`, and `#781`. The frozen transition was
-therefore refreshed to the final signed merge
-`5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`, its complete tree, exact
-72-commit ancestry from the unchanged `main` base, source PR `#781`, and the
-five final controller blobs above. Earlier frozen heads no longer match and
-cannot authorize PR `#777`.
+reviewed staging fixes `#779`, `#780`, `#781`, and `#782`. The frozen
+transition is therefore refreshed to signed merge
+`2070d78360b497ed954cfe8de3fb616b99841943`, its complete tree, exact
+77-commit ancestry from the unchanged `main` base, source PR `#782`, and the
+five final controller blobs above. PR `#782` was reviewed on exact head
+`73156874fd8bfd1560e340c0cd470bebfe6c35f8` by Copilot review `4956284255`,
+passed protected Required-Workflow run `32089403801`, and merged normally.
+Earlier frozen heads no longer match and cannot authorize PR `#777`.
 
 Before promoting this refreshed organization trust-root, protected `.github`
 `main` commit `4fd42d4ce2de3d09c317c530e875bf8670adbe46` is recorded as the second parent
@@ -166,12 +168,28 @@ reported no new review comments. Its two suppressed observations about the
 `95552404766` and the organization Required Workflow, which respectively use
 and produce that exact external-ID prefix. No unresolved Copilot thread exists.
 
-The organization-owned Required Workflow reuses the one-time human transition
-only for that immutable PR/base/head/tree/files/review tuple. It creates
-temporary, explicitly review-bound evidence and cannot match another PR or
-revision. This transition exists solely to install the producer-side
-external-ID filtering; it supersedes the already completed PR `#780` repair
-and must be removed after `#782` merges. No local AI is used.
+The organization-owned Required Workflow retains two distinct, immutable
+bootstrap transitions. The human transition for PR `#782` is bound only to
+that PR/base/head/tree/files/review tuple. It created temporary,
+review-bound evidence solely to install the producer-side external-ID
+filtering and superseded the completed PR `#780` repair. It can no longer
+match because PR `#782` is merged while that transition requires PR `#782` to
+remain open. The separate Release-App transition is bound only to PR `#777`
+and its frozen Supplementary base/head/controller provenance. Neither
+transition can match another PR or revision. Remove both transitions and
+their regression assertions immediately after PR `#777` reaches `main`. No
+local AI is used.
+
+Before promoting this final transition, protected `lightning-it/.github`
+`main` `997b074aee07f9975a8a90608a9b306dc62911f8` is reintroduced into protected
+`lightning-it/.github` `develop` through `lightning-it/.github` PR `#168`.
+Its ancestry commit
+`14bafdf422df9c8da471ce047625ec4493ca1ed0` has first parent
+`edcfecedc8797ae0c07283aeb8b39ce0b45494a7`, second parent
+`997b074aee07f9975a8a90608a9b306dc62911f8`, and tree
+`ddaf4b22514a7970912f05627666e384fa0376a3`, byte-identical to the first-parent
+tree. This ADR update is the only content change layered on that ancestry
+commit and receives the normal current-head review before the PR can merge.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
