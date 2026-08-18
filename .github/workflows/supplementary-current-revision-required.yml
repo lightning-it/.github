@@ -553,7 +553,7 @@ jobs:
                   {
                     filename: ".github/workflows/rep60-develop-bootstrap-review-alias.yml",
                     status: "removed",
-                    sha: "620e6af830b722178e4f601de467253563115cc8e",
+                    sha: "620e6af830b722178e4f601de467253563115cc8",
                     additions: 0,
                     deletions: 372,
                     changes: 372

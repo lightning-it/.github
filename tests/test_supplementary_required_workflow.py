@@ -367,6 +367,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "41a39cd1a15f7eac8863fb872480b55cff36644c",
             "3a803ec7e6efd9cd482697e0175147e16cd0d2f1",
             "39fb4f684c7219a6f4c7629c0f4866d017c69c5d",
+            "620e6af830b722178e4f601de467253563115cc8",
             "4a4e39ea65f66f53666b3007925a73c98264f265",
             "c86b4481ced265bad0d9d5238b723041e88f11fe",
             "f394a820a9c0922d8e7187dbd1b8aca3bf13db61",
@@ -374,6 +375,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "dc20090a57340a436f7a94be2836fd684e3fe31f",
         ):
             self.assertIn(binding, transition)
+        self.assertNotIn("620e6af830b722178e4f601de467253563115cc8e", transition)
         self.assertIn("pulls/787", transition)
         self.assertIn("pulls/789", transition)
         self.assertIn('and .merged == false', transition)
