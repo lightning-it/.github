@@ -1,4 +1,6 @@
-# Canonical protected MLX-90/REP-60 current-revision review controller.
+# Managed by lightning-it/shared-assets-lit.
+# Do not edit downstream copies directly.
+# Protected per-repository MLX-90/REP-60 current-revision controller.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
@@ -146,24 +148,6 @@ jobs:
             jq -e --arg reviewer "${reviewer}" \
               'any(.users[]?; .login == $reviewer)' <<<"${response}" >/dev/null
           }
-          wait_for_pending_reviewer() {
-            local attempt request_status
-            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18; do
-              if reviewer_is_requested; then
-                if [ "${attempt}" -eq 18 ]; then
-                  echo "Timed out waiting for the previous revision review to finish." >&2
-                  return 1
-                fi
-                sleep 10
-                continue
-              fi
-              request_status=$?
-              if [ "${request_status}" -ne 1 ]; then
-                return "${request_status}"
-              fi
-              return 0
-            done
-          }
           comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
           marker_exists=false
           if jq -e --arg marker "${marker}" 'any(add[]; .body | contains($marker))' \
@@ -171,12 +155,12 @@ jobs:
             marker_exists=true
           fi
           if reviewer_is_requested; then
-            if [ "${marker_exists}" = true ]; then
-              echo "Copilot review is already pending for the exact finalized head."
-              exit 0
+            if [ "${marker_exists}" = false ]; then
+              gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+                -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
             fi
-            echo "A previous revision review is still pending; waiting before requesting the exact finalized head."
-            wait_for_pending_reviewer
+            echo "Copilot review is already pending for the exact finalized head."
+            exit 0
           else
             request_status=$?
             if [ "${request_status}" -ne 1 ]; then
@@ -186,7 +170,18 @@ jobs:
           if [ "${marker_exists}" = true ]; then
             echo "Recorded request no longer has a pending or completed exact-head review; requesting again."
           fi
-          gh api --method POST "${requested_reviewers_url}" -f "reviewers[]=${reviewer}"
+          if ! gh api --method POST "${requested_reviewers_url}" \
+              -f "reviewers[]=${reviewer}"; then
+            # A concurrent protected request may win after the pre-check.
+            # Accept only the verified idempotent outcome; every API failure
+            # without the expected live reviewer remains fail-closed.
+            if reviewer_is_requested; then
+              echo "A concurrent workflow already requested Copilot review."
+            else
+              verification_status=$?
+              exit "${verification_status}"
+            fi
+          fi
           if [ "${marker_exists}" = false ]; then
             gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
               -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
