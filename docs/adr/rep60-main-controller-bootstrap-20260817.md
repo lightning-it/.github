@@ -1,12 +1,12 @@
 ---
 id: adr-rep60-main-controller-bootstrap-20260817
 title: REP-60 protected-main controller bootstrap
-description: Records the immutable one-time transition that installs the protected current-revision controller on main.
+description: Records the completed and retired immutable transition that installed the protected current-revision controller on main.
 slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.13"
+  version: "1.14"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -20,7 +20,7 @@ document:
 
 # ADR: REP-60 protected-main controller bootstrap
 
-- Status: Accepted for one-time transition
+- Status: Completed; temporary transition paths retired
 - Date: 2026-08-17
 - Scope: Supplementary protected current-revision controller bootstrap
 
@@ -252,26 +252,45 @@ created. A dedicated protected hotfix corrects that one value and adds a
 regression assertion that requires the 40-character ID and rejects the stale
 41-character spelling before the single permitted re-evaluation.
 
-## Mandatory completion
+## Completion evidence and retirement
 
-After the parser correction reaches protected `main` through PR `#786` and a
-normal merge commit:
+The recovery and permanent-path rollout completed on 18 August 2026 without a
+protected-branch bypass, direct write, force push, squash, or rebase:
 
-1. remove the parser recovery transition and its regression assertions in a
-   separate normally reviewed organization PR;
-2. retain the neutral `Current revision review` ruleset requirement and the
-   organization-owned Required Workflow without bypass actors;
-3. let the permanent evidence-bearing `main` back-sync create a distinct
-   Release-App head on `develop`;
-4. prove that the fresh Release-App pilot's Draft state causes no Copilot or
-   Codex execution;
-5. transition to Ready exactly once;
-6. require exactly one protected MLX-90 §7.2 Exact-Revision Codex result and
-   one verified neutral current-revision result for the frozen live head;
-7. merge only after every required gate succeeds normally;
-8. remove any remaining historical bootstrap transition only through its own
-   protected cleanup PR after the valid pilot evidence exists.
+1. Supplementary PR `#786` merged the parser correction to protected `main` as
+   signed two-parent merge `9e7707f560d1d4c73e0f6d55a18313f5662f2c90`.
+2. Supplementary PR `#791` fixed the typed workflow-dispatch handoff and merged
+   normally to protected `develop` as
+   `f0dba90c1350215e26b9cc68aa3a779bfd677a83`.
+3. Supplementary PR `#793` made the deterministic `.lit/main-ancestry.json`
+   record non-user-visible for changelog policy and merged normally as
+   `3052b85264ffee1e01f4b29efd6b9278054d0c03`.
+4. The fresh Release-App pilot PR `#794` bound base
+   `3052b85264ffee1e01f4b29efd6b9278054d0c03`, head
+   `1d5624f15af458c8de7cbc922f58bc6a284e4e42`, integration tree
+   `29af28eb685e75ba01b0944474220b0229cd7761`, full-diff SHA-256
+   `9793c89eae3ce00f1472ac5f129dc91c89e1091d37894874046410eab81f741d`,
+   and immutable review-input SHA-256
+   `5471a181b108a8d62e833fb27b4a466aaa7542bd341dda20fa8168512bfdb39d`.
+5. Exactly one protected MLX-90 §7.2 Codex execution, run `32104462140`,
+   produced PASS. The protected re-evaluation helper and Required Workflow run
+   `32104461552` attempt 2 verified the same frozen evidence. The PR had zero
+   Copilot reviews.
+6. All normal gates passed and the Release App's preconfigured normal
+   auto-merge created signed two-parent merge
+   `65f86fa32b06358a62c2b8a848c33f18fbce159d`.
 
-Local AI review and Copilot dual-review are prohibited. Human/internal pull
-requests may use the pipeline Copilot path under the approved Lightning IT cost
-boundary; external contributors must supply their own eligible review path.
+This separately reviewed organization cleanup removes all executable branches
+for PRs `#777`, `#782`, and `#786` plus their positive regression assertions.
+The Required Workflow now recognizes only the permanent v4 producers:
+`mlx90-current-revision:v4:` for Release-App Exact-Revision Codex evidence and
+`mlx90-current-revision:copilot:v4:` for the governed pipeline-Copilot path.
+The neutral `Current revision review` requirement, the organization-owned
+Required Workflow, fail-closed reservations, post-review live binding, and the
+no-bypass rules remain unchanged.
+
+Local AI review and local Copilot dual-review remain prohibited. Human/internal
+pull requests may use the pipeline Copilot path under the approved Lightning IT
+cost boundary; external contributors must supply their own eligible review
+path. Any future exceptional transition requires a new, separately approved
+ADR and must not reuse these retired bindings.
