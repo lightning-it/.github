@@ -10,3 +10,13 @@ This one-time record accompanies the normal merge that reconnects the protected
 The merge preserved the current `develop` tree. This evidence file gives the
 normal human-authored pull request a reviewable change without bypassing branch
 protection, rewriting history, or writing directly to either protected branch.
+
+After the verifier promotion merged normally into `main`, the final ancestry
+sync used these exact protected tips:
+
+- Develop tip: `83fef60a5fb9f8e30da8e938d14111f6139d8621`
+- Promoted main tip: `16fb2fecc6ce212b2cff7acb384e969a33d4b542`
+- Local two-parent ancestry merge: `e523dbffc64bd8db3d48f29b3c91d17e8e704917`
+
+This second merge again preserves the current `develop` tree while making the
+promoted `main` commit an ancestor of the next protected `develop` revision.
