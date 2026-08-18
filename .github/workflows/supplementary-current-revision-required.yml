@@ -23,7 +23,9 @@ concurrency:
 
 jobs:
   verify-protected-current-revision-evidence:
-    name: Verify protected current-revision evidence
+    # This native Required-Workflow job is the status context enforced by the
+    # repository ruleset. The same-named API check remains evidence input only.
+    name: Current revision review
     if: github.repository == 'lightning-it/ansible-collection-supplementary'
     permissions:
       actions: read
@@ -346,7 +348,10 @@ jobs:
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
             neutral_checks="$(jq -c '
-              [.[].check_runs[]? | select(.name == "Current revision review")]
+              [.[].check_runs[]? |
+                select(.name == "Current revision review") |
+                select((.external_id | type) == "string") |
+                select(.external_id | startswith("rep60-main-bootstrap:v1:"))]
             ' <<<"${neutral_pages}")"
             neutral_count="$(jq 'length' <<<"${neutral_checks}")"
             if [ "${neutral_count}" -gt 1 ]; then
@@ -668,7 +673,13 @@ jobs:
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
             neutral_checks="$(jq -c '
-              [.[].check_runs[]? | select(.name == "Current revision review")]
+              [.[].check_runs[]? |
+                select(.name == "Current revision review") |
+                select((.external_id | type) == "string") |
+                select(
+                  (.external_id | startswith("rep60-human-provenance-transition:v1:"))
+                  or (.external_id | startswith("mlx90-current-revision:copilot:v4:"))
+                )]
             ' <<<"${neutral_pages}")"
             neutral_count="$(jq 'length' <<<"${neutral_checks}")"
             if [ "${neutral_count}" -gt 1 ]; then
@@ -802,7 +813,13 @@ jobs:
           neutral_pages="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
           neutral="$(jq -c '
-            [.[].check_runs[]? | select(.name == "Current revision review")]
+            [.[].check_runs[]? |
+              select(.name == "Current revision review") |
+              select((.external_id | type) == "string") |
+              select(
+                (.external_id | startswith("mlx90-current-revision:v4:"))
+                or (.external_id | startswith("mlx90-current-revision:copilot:v4:"))
+              )]
           ' <<<"${neutral_pages}")"
           test "$(jq 'length' <<<"${neutral}")" -eq 1
           check="$(jq -c '.[0]' <<<"${neutral}")"

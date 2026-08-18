@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.3"
+  version: "1.4"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -133,6 +133,21 @@ of ancestry merge `b4947507bc2ecec7a14650476649cd09fd9f525d`. Its first parent i
 `develop` commit `49c0a80776a407d09850c431ac135cd46b954d80`; the merge preserves that first
 parent's exact tree `e373262d5a661fe8c1caa5e7a321aa8a39a4c812`. The ancestry merge is promoted
 only through a normal reviewed pull request.
+
+After that source reached protected organization `main`, a manual retry of
+required-workflow run `32081327743` failed closed because GitHub correctly
+recorded `litroc`, rather than the Release App, as the retrying actor. Protected
+Release-App rearm run `32083913911` then emitted a new App-authored event, and
+required-workflow run `32083932536` verified the immutable transition without
+an AI call. Its API-created evidence check `95552404766` was correctly bound,
+green, and associated with PR `#777`, but GitHub's merge API still reported the
+same Required Status Check as expected. The API-created check therefore remains
+evidence input only. The organization Required-Workflow job itself now owns the
+native `Current revision review` context, while its verifier selects producer
+evidence by protected external-ID namespace and excludes its own job check.
+This retains the visible neutral name, prevents a candidate check name from
+becoming the trust root, and makes GitHub's native ruleset evaluation the final
+merge boundary.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
