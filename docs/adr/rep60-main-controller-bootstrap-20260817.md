@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.10"
+  version: "1.11"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -14,7 +14,7 @@ document:
     - repository maintainers
     - platform engineers
     - security reviewers
-  last_reviewed: "2026-08-17"
+  last_reviewed: "2026-08-18"
   review_cadence: annual
 ---
 
@@ -195,20 +195,61 @@ This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,
 author, repository, or workflow revision.
 
+## Result-parser recovery transition
+
+PR `#777` subsequently reached protected `main` through a normal merge, and
+the permanent neutral Required Workflow, ruleset context, and producer
+provenance were installed. The repository bootstrap aliases were removed in
+the separately reviewed cleanup. The first real Release-App execution then
+failed closed in protected Exact-Revision run `32097403637`: Codex produced the
+schema-defined single JSON object, but the protected base controller attempted
+to read that object as array element `.[0]`. No review success was published.
+
+Supplementary PR `#787` corrects only that parser contract, adds a regression
+test and changelog fragment, receives exact-head Copilot review `4957126983`
+with zero threads, and merges normally as signed two-parent commit
+`bb6da1923987240630b39d4cb1e616567d10036c`. The old protected `main`
+controller cannot validate the correction that repairs it. A direct human PR
+to `main` is correctly rejected because all normal promotions must originate
+from `develop`; a human-authored `develop` promotion is also correctly stopped
+by the normal Environment's `prevent_self_review=true` rule.
+
+The Required Workflow therefore contains one further immutable recovery
+transition. It can match only existing Release-App PR `#786`, base
+`dc7701c16fe89e003cd3fd1f19e422d6f1fd5c5d`, head
+`bb6da1923987240630b39d4cb1e616567d10036c`, tree
+`41a39cd1a15f7eac8863fb872480b55cff36644c`, the exact eight-commit compare,
+its complete 17-file inventory, source PR `#787`, its three-file inventory,
+review `4957126983`, zero unresolved source threads, and the protected prompt,
+schema, materializer, workflow, test, and changelog blob IDs. PR `#789` must
+remain closed. The transition requires `litroc` as the rearm actor and the
+Release App as the immutable PR author.
+
+The recovery transition performs no AI call and requires no Copilot review and
+no Exact-Revision Codex result on PR `#786`'s current head. Its evidence is
+always `temporary=true`, `acceptance_evidence=false`, and
+`review_path="immutable one-time result-parser bootstrap; no AI"`. The failed
+older Codex input remains historical evidence and is not retried.
+
 ## Mandatory completion
 
-After `#777` reaches protected `main` through a normal merge commit:
+After the parser correction reaches protected `main` through PR `#786` and a
+normal merge commit:
 
-1. remove the temporary transition and its regression assertions;
+1. remove the parser recovery transition and its regression assertions in a
+   separate normally reviewed organization PR;
 2. retain the neutral `Current revision review` ruleset requirement and the
-   organization-owned required workflow without bypass actors;
-3. remove the repository bootstrap aliases;
-4. create a fresh Release-App-owned promotion through the protected pipeline;
-5. prove that Draft causes no Copilot or Codex execution;
-6. transition to Ready exactly once;
-7. require exactly one protected MLX-90 §7.2 Exact-Revision Codex result and
+   organization-owned Required Workflow without bypass actors;
+3. let the permanent evidence-bearing `main` back-sync create a distinct
+   Release-App head on `develop`;
+4. prove that the fresh Release-App pilot's Draft state causes no Copilot or
+   Codex execution;
+5. transition to Ready exactly once;
+6. require exactly one protected MLX-90 §7.2 Exact-Revision Codex result and
    one verified neutral current-revision result for the frozen live head;
-8. merge only after every required gate succeeds normally.
+7. merge only after every required gate succeeds normally;
+8. remove any remaining historical bootstrap transition only through its own
+   protected cleanup PR after the valid pilot evidence exists.
 
 Local AI review and Copilot dual-review are prohibited. Human/internal pull
 requests may use the pipeline Copilot path under the approved Lightning IT cost

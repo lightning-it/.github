@@ -431,6 +431,501 @@ jobs:
             exit 0
           fi
 
+          # One exact protected transition promotes the already reviewed
+          # Exact-Revision result-parser correction into protected main.  The
+          # old main controller produced a schema-valid object and then indexed
+          # it as an array, so it cannot validate the correction that repairs
+          # it.  This exception is bound to the existing Release-App PR #786,
+          # its new develop head, the normal source merge #787, the complete
+          # compare inventory, and the exact protected controller blobs.  It
+          # performs no AI call, is not acceptance evidence, and is removed
+          # immediately after the corrected controller reaches main.
+          if [ "${PR_NUMBER}" = 786 ] \
+            && [ "${EVENT_BASE}" = dc7701c16fe89e003cd3fd1f19e422d6f1fd5c5d ] \
+            && [ "${EVENT_HEAD}" = bb6da1923987240630b39d4cb1e616567d10036c ]; then
+            test "${GITHUB_ACTOR}" = litroc
+            test "${GITHUB_TRIGGERING_ACTOR}" = litroc
+            test "${draft}" = false
+            test "${author}" = 'lightning-it-release-automation[bot]'
+            test "${base_ref}" = main
+            test "${head_ref}" = develop
+            test "${head_repository}" = "${REPOSITORY}"
+
+            failure_stage='parser-transition-static-provenance'
+            jq -e '
+              .sha == "bb6da1923987240630b39d4cb1e616567d10036c"
+              and .commit.tree.sha == "41a39cd1a15f7eac8863fb872480b55cff36644c"
+              and .commit.verification.verified == true
+              and .commit.verification.reason == "valid"
+              and .author.login == "litroc"
+              and .committer.login == "web-flow"
+              and [.parents[].sha] == [
+                "b92ecaca5f28ba63137df8f7bfe06c6664511336",
+                "3a803ec7e6efd9cd482697e0175147e16cd0d2f1"
+              ]
+              and .commit.message == "Merge pull request #787 from lightning-it/fix/rep60-result-parser-develop-20260817\n\nfix(rep60): validate Codex result object"
+            ' <<<"${target_commit}" >/dev/null
+
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/787")"
+            jq -e '
+              .number == 787
+              and .state == "closed"
+              and .merged == true
+              and .user.login == "litroc"
+              and .merged_by.login == "litroc"
+              and .base.ref == "develop"
+              and .base.sha == "b92ecaca5f28ba63137df8f7bfe06c6664511336"
+              and .head.ref == "fix/rep60-result-parser-develop-20260817"
+              and .head.sha == "3a803ec7e6efd9cd482697e0175147e16cd0d2f1"
+              and .merge_commit_sha == "bb6da1923987240630b39d4cb1e616567d10036c"
+              and .title == "fix(rep60): validate Codex result object"
+            ' <<<"${source_pr}" >/dev/null
+
+            superseded_pr="$(gh api "repos/${REPOSITORY}/pulls/789")"
+            jq -e '
+              .number == 789
+              and .state == "closed"
+              and .draft == false
+              and .user.login == "litroc"
+              and .base.ref == "main"
+              and .base.sha == "dc7701c16fe89e003cd3fd1f19e422d6f1fd5c5d"
+              and .head.ref == "develop"
+              and .head.sha == "bb6da1923987240630b39d4cb1e616567d10036c"
+            ' <<<"${superseded_pr}" >/dev/null
+
+            compare="$(gh api \
+              "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" '
+                .status == "ahead"
+                and .behind_by == 0
+                and .ahead_by == 8
+                and .total_commits == 8
+                and (.commits | length) == 8
+                and .base_commit.sha == $base
+                and .merge_base_commit.sha == $base
+                and .commits[-1].sha == $head
+                and [.files[] | {
+                  filename, status, sha, additions, deletions, changes
+                }] == [
+                  {
+                    filename: ".github/workflows/copilot-review.yml",
+                    status: "modified",
+                    sha: "ed6cfaffe10f6fe31e3b07694ca637790f397d93",
+                    additions: 1,
+                    deletions: 7,
+                    changes: 8
+                  },
+                  {
+                    filename: ".github/workflows/current-revision-rerun.yml",
+                    status: "modified",
+                    sha: "89cf5815ea737212e29bad826d3c6ff3e0f7331c",
+                    additions: 4,
+                    deletions: 4,
+                    changes: 8
+                  },
+                  {
+                    filename: ".github/workflows/release-bot-exact-head-review.yml",
+                    status: "modified",
+                    sha: "39fb4f684c7219a6f4c7629c0f4866d017c69c5d",
+                    additions: 1,
+                    deletions: 8,
+                    changes: 9
+                  },
+                  {
+                    filename: ".github/workflows/rep60-bootstrap-app-rearm.yml",
+                    status: "removed",
+                    sha: "dff67484aca33e111657c233c799c55a9a089321",
+                    additions: 0,
+                    deletions: 149,
+                    changes: 149
+                  },
+                  {
+                    filename: ".github/workflows/rep60-bootstrap-protected-review-alias.yml",
+                    status: "removed",
+                    sha: "312170c2d9fbd801c7c7917f69062f3be1ed75b9",
+                    additions: 0,
+                    deletions: 231,
+                    changes: 231
+                  },
+                  {
+                    filename: ".github/workflows/rep60-develop-bootstrap-review-alias.yml",
+                    status: "removed",
+                    sha: "620e6af830b722178e4f601de467253563115cc8e",
+                    additions: 0,
+                    deletions: 372,
+                    changes: 372
+                  },
+                  {
+                    filename: ".github/workflows/sync-main-to-develop.yml",
+                    status: "modified",
+                    sha: "be6195e67d24cd4966eb48df46db572552071ee6",
+                    additions: 31,
+                    deletions: 4,
+                    changes: 35
+                  },
+                  {
+                    filename: ".lit/main-ancestry.json",
+                    status: "added",
+                    sha: "32a05222704282e9baeed2c7788558e31dba6ad4",
+                    additions: 7,
+                    deletions: 0,
+                    changes: 7
+                  },
+                  {
+                    filename: "changelogs/fragments/rep60-exact-revision-result-object.yml",
+                    status: "added",
+                    sha: "c86b4481ced265bad0d9d5238b723041e88f11fe",
+                    additions: 5,
+                    deletions: 0,
+                    changes: 5
+                  },
+                  {
+                    filename: "changelogs/fragments/rep60-permanent-current-revision-gate.yml",
+                    status: "added",
+                    sha: "177b127ffa3b38073a5e73db0810864c81da8e8b",
+                    additions: 8,
+                    deletions: 0,
+                    changes: 8
+                  },
+                  {
+                    filename: "changelogs/fragments/rep60-reviewable-main-ancestry.yml",
+                    status: "added",
+                    sha: "2cdadd222c8f16f0e96233a81b6a3202f031b6d1",
+                    additions: 6,
+                    deletions: 0,
+                    changes: 6
+                  },
+                  {
+                    filename: "docs/mlx90-exact-revision-codex-review.md",
+                    status: "modified",
+                    sha: "e1c8b193da5113b54953d3ef2e7067d8a19d8a29",
+                    additions: 11,
+                    deletions: 5,
+                    changes: 16
+                  },
+                  {
+                    filename: "tests/unit/test_exact_revision_review.py",
+                    status: "modified",
+                    sha: "4a4e39ea65f66f53666b3007925a73c98264f265",
+                    additions: 35,
+                    deletions: 1,
+                    changes: 36
+                  },
+                  {
+                    filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
+                    status: "removed",
+                    sha: "ffd2c27e0e0ec257ca71795ae52c7b0528d86bcd",
+                    additions: 0,
+                    deletions: 70,
+                    changes: 70
+                  },
+                  {
+                    filename: "tests/unit/test_rep60_bootstrap_review_alias.py",
+                    status: "removed",
+                    sha: "ed77ec1a95ed7002cc68da2c7519c43718379a4a",
+                    additions: 0,
+                    deletions: 79,
+                    changes: 79
+                  },
+                  {
+                    filename: "tests/unit/test_rep60_develop_bootstrap_review_alias.py",
+                    status: "removed",
+                    sha: "d527ea5774d5e5dc0eb0f130decc7d97ca54cc5e",
+                    additions: 0,
+                    deletions: 73,
+                    changes: 73
+                  },
+                  {
+                    filename: "tests/unit/test_workflow_security.py",
+                    status: "modified",
+                    sha: "97a10874e7c32d4dfb196abf0f24b99c9ca6cdac",
+                    additions: 9,
+                    deletions: 12,
+                    changes: 21
+                  }
+                ]
+              ' <<<"${compare}" >/dev/null
+
+            source_files="$(gh api \
+              "repos/${REPOSITORY}/pulls/787/files?per_page=100")"
+            jq -e '
+              [.[] | {filename, status, sha, additions, deletions, changes}] == [
+                {
+                  filename: ".github/workflows/release-bot-exact-head-review.yml",
+                  status: "modified",
+                  sha: "39fb4f684c7219a6f4c7629c0f4866d017c69c5d",
+                  additions: 1,
+                  deletions: 1,
+                  changes: 2
+                },
+                {
+                  filename: "changelogs/fragments/rep60-exact-revision-result-object.yml",
+                  status: "added",
+                  sha: "c86b4481ced265bad0d9d5238b723041e88f11fe",
+                  additions: 5,
+                  deletions: 0,
+                  changes: 5
+                },
+                {
+                  filename: "tests/unit/test_exact_revision_review.py",
+                  status: "modified",
+                  sha: "4a4e39ea65f66f53666b3007925a73c98264f265",
+                  additions: 5,
+                  deletions: 0,
+                  changes: 5
+                }
+              ]
+            ' <<<"${source_files}" >/dev/null
+
+            verify_parser_blob() {
+              local file_name="$1" expected_blob="$2" observed_blob
+              observed_blob="$(gh api \
+                "repos/${REPOSITORY}/contents/${file_name}?ref=${EVENT_HEAD}" \
+                --jq .sha)"
+              test "${observed_blob}" = "${expected_blob}"
+            }
+            verify_parser_blob \
+              .github/workflows/release-bot-exact-head-review.yml \
+              39fb4f684c7219a6f4c7629c0f4866d017c69c5d
+            verify_parser_blob \
+              tests/unit/test_exact_revision_review.py \
+              4a4e39ea65f66f53666b3007925a73c98264f265
+            verify_parser_blob \
+              changelogs/fragments/rep60-exact-revision-result-object.yml \
+              c86b4481ced265bad0d9d5238b723041e88f11fe
+            verify_parser_blob \
+              scripts/materialize-exact-revision-review.py \
+              f394a820a9c0922d8e7187dbd1b8aca3bf13db61
+            verify_parser_blob \
+              .github/codex/prompts/review-exact-head.md \
+              7d2aaf0ff0fa7711503a1d9a3052bac2210d6335
+            verify_parser_blob \
+              .github/codex/schemas/exact-head-review.schema.json \
+              dc20090a57340a436f7a94be2836fd684e3fe31f
+
+            failure_stage='parser-transition-source-review'
+            source_review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/787/reviews?per_page=100")"
+            source_reviews="$(jq -c '
+              def normalized:
+                ascii_downcase
+                | gsub("wasn[\u0027\u2019]t"; "was not")
+                | gsub("\\s"; "");
+              [.[].[] |
+                select(
+                  (.user.login == "copilot-pull-request-reviewer[bot]"
+                   or .user.login == "copilot-pull-request-reviewer")
+                  and .id == 4957126983
+                  and .commit_id == "3a803ec7e6efd9cd482697e0175147e16cd0d2f1"
+                  and (.state == "COMMENTED" or .state == "APPROVED")
+                  and .submitted_at == "2026-08-18T04:07:45Z"
+                  and ((.body // "") | gsub("\\s"; "") | length > 0)
+                  and (((.body // "") | normalized | contains("wasnotabletoreviewanyfiles")) | not)
+                  and (((.body // "") | normalized | contains("unabletoreviewthispullrequest")) | not)
+                  and (((.body // "") | normalized | contains("quotaexhausted")) | not)
+                  and (((.body // "") | normalized | contains("quotaexceeded")) | not)
+                  and (((.body // "") | normalized | contains("encounteredanerror")) | not)
+                )]
+            ' <<<"${source_review_pages}")"
+            test "$(jq 'length' <<<"${source_reviews}")" -eq 1
+
+            # GraphQL variable names must remain literal for gh.
+            # shellcheck disable=SC2016
+            source_thread_query='query($owner:String!,$repository:String!,$number:Int!,$after:String) {
+              repository(owner:$owner,name:$repository) {
+                pullRequest(number:$number) {
+                  headRefOid
+                  reviewThreads(first:100,after:$after) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      isResolved
+                      comments(first:1) { nodes { author { login } } }
+                    }
+                  }
+                }
+              }
+            }'
+            owner="${REPOSITORY%%/*}"
+            repository="${REPOSITORY#*/}"
+            after=""
+            unresolved=0
+            while true; do
+              arguments=(
+                -f query="${source_thread_query}"
+                -F owner="${owner}"
+                -F repository="${repository}"
+                -F number=787
+              )
+              if [ -n "${after}" ]; then
+                arguments+=(-f after="${after}")
+              fi
+              response="$(gh api graphql "${arguments[@]}")"
+              jq -e '
+                .data.repository.pullRequest.headRefOid
+                == "3a803ec7e6efd9cd482697e0175147e16cd0d2f1"
+              ' <<<"${response}" >/dev/null
+              page_unresolved="$(jq '
+                [.data.repository.pullRequest.reviewThreads.nodes[]
+                  | select(.isResolved == false)] | length
+              ' <<<"${response}")"
+              unresolved=$((unresolved + page_unresolved))
+              has_next="$(jq -r '
+                .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage
+              ' <<<"${response}")"
+              if [ "${has_next}" != true ]; then
+                break
+              fi
+              after="$(jq -er '
+                .data.repository.pullRequest.reviewThreads.pageInfo.endCursor
+                | select(type == "string" and length > 0)
+              ' <<<"${response}")"
+            done
+            test "${unresolved}" -eq 0
+
+            failure_stage='parser-transition-ai-absence'
+            transition_review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+            jq -e '
+              all(.[][]?;
+                (.user.login | type == "string" and length > 0)
+                and .user.login != "copilot-pull-request-reviewer[bot]"
+                and .user.login != "github-copilot[bot]")
+            ' <<<"${transition_review_pages}" >/dev/null
+            exact_check_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"
+            exact_checks="$(jq -c '
+              [.[].check_runs[]? |
+                select(.name == "Protected Exact-Revision Codex result")]
+            ' <<<"${exact_check_pages}")"
+            test "$(jq 'length' <<<"${exact_checks}")" -eq 0
+
+            post_review_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg repository "${REPOSITORY}" '
+                .state == "open"
+                and .draft == false
+                and .user.login == "lightning-it-release-automation[bot]"
+                and .base.ref == "main"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == "develop"
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+              ' <<<"${post_review_pr}" >/dev/null
+
+            parser_transition_summary="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg source_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/787" \
+              --arg transition_pr_url "${GITHUB_SERVER_URL}/${REPOSITORY}/pull/${PR_NUMBER}" \
+              --arg verifier_run_url "${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" '
+                {
+                  schema: 1,
+                  temporary: true,
+                  acceptance_evidence: false,
+                  review_path: "immutable one-time result-parser bootstrap; no AI",
+                  base_sha: $base,
+                  head_sha: $head,
+                  source_pr_url: $source_pr_url,
+                  transition_pr_url: $transition_pr_url,
+                  verifier_run_url: $verifier_run_url
+                }
+              ')"
+            parser_transition_external_id="rep60-result-parser-bootstrap:v1:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
+            parser_transition_title='One-time immutable result-parser bootstrap verified'
+            failure_stage='parser-transition-neutral-check'
+            parser_neutral_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
+            parser_neutral_checks="$(jq -c '
+              [.[].check_runs[]? |
+                select(.name == "Current revision review") |
+                select((.external_id | type) == "string") |
+                select(.external_id | startswith("rep60-result-parser-bootstrap:v1:"))]
+            ' <<<"${parser_neutral_pages}")"
+            parser_neutral_count="$(jq 'length' <<<"${parser_neutral_checks}")"
+            if [ "${parser_neutral_count}" -gt 1 ]; then
+              echo "Multiple neutral checks exist for the result-parser transition." >&2
+              exit 1
+            fi
+            if [ "${parser_neutral_count}" -eq 1 ]; then
+              parser_transition_check="$(jq -c '.[0]' <<<"${parser_neutral_checks}")"
+              jq -e \
+                --arg evidence "${parser_transition_summary}" \
+                --arg external_id "${parser_transition_external_id}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg title "${parser_transition_title}" '
+                  .name == "Current revision review"
+                  and .head_sha == $head
+                  and .external_id == $external_id
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and .app.id == 15368
+                  and .app.slug == "github-actions"
+                  and .output.title == $title
+                  and .output.summary == $evidence
+                ' <<<"${parser_transition_check}" >/dev/null
+              parser_transition_check_id="$(jq -er '
+                .id | select(type == "number" and . > 0)
+              ' <<<"${parser_transition_check}")"
+            else
+              parser_transition_check="$(gh api --method POST \
+                "repos/${REPOSITORY}/check-runs" \
+                -f name='Current revision review' \
+                -f head_sha="${EVENT_HEAD}" \
+                -f status=completed \
+                -f conclusion=success \
+                -f external_id="${parser_transition_external_id}" \
+                -f "output[title]=${parser_transition_title}" \
+                -f "output[summary]=${parser_transition_summary}")"
+              parser_transition_check_id="$(jq -er '
+                .id | select(type == "number" and . > 0)
+              ' <<<"${parser_transition_check}")"
+            fi
+            parser_transition_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${parser_transition_check_id}"
+            parser_transition_check="$(gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${parser_transition_check_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f external_id="${parser_transition_external_id}" \
+              -f "details_url=${parser_transition_check_url}" \
+              -f "output[title]=${parser_transition_title}" \
+              -f "output[summary]=${parser_transition_summary}")"
+            jq -e \
+              --arg evidence "${parser_transition_summary}" \
+              --arg external_id "${parser_transition_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg title "${parser_transition_title}" \
+              --arg url "${parser_transition_check_url}" \
+              --argjson check_id "${parser_transition_check_id}" '
+                .id == $check_id
+                and .name == "Current revision review"
+                and .head_sha == $head
+                and .details_url == $url
+                and .external_id == $external_id
+                and .status == "completed"
+                and .conclusion == "success"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .output.title == $title
+                and .output.summary == $evidence
+              ' <<<"${parser_transition_check}" >/dev/null
+
+            failure_stage='parser-transition-finalization'
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=completed \
+              -f conclusion=success \
+              -f 'output[title]=Immutable one-time result-parser bootstrap verified' \
+              -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; no AI; not acceptance evidence." \
+              >/dev/null
+            trap - ERR
+            exit 0
+          fi
+
           # One exact protected transition repairs the human producer's
           # pull_request_target run-metadata binding. GitHub reports the event
           # PR branch and revision in Actions run head_branch/head_sha; the

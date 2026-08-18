@@ -169,6 +169,11 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "transition-ai-absence",
             "transition-neutral-check",
             "transition-finalization",
+            "parser-transition-static-provenance",
+            "parser-transition-source-review",
+            "parser-transition-ai-absence",
+            "parser-transition-neutral-check",
+            "parser-transition-finalization",
             "human-transition-static-provenance",
             "human-transition-review",
             "human-transition-neutral-check",
@@ -237,7 +242,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "          # One immutable transition is needed because the first main promotion",
             1,
         )[1].split(
-            "          # One exact protected transition repairs the human producer's",
+            "          # One exact protected transition promotes the already reviewed",
             1,
         )[0]
         self.assertIn('[ "${PR_NUMBER}" = 777 ]', transition)
@@ -338,6 +343,58 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             ),
             permanent.index("trap - ERR"),
         )
+
+    def test_one_time_result_parser_bootstrap_is_exact_ai_free_and_not_acceptance(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "          # One exact protected transition promotes the already reviewed",
+            1,
+        )[1].split(
+            "          # One exact protected transition repairs the human producer's",
+            1,
+        )[0]
+        self.assertIn('[ "${PR_NUMBER}" = 786 ]', transition)
+        self.assertIn('test "${GITHUB_ACTOR}" = litroc', transition)
+        self.assertIn(
+            'test "${author}" = \'lightning-it-release-automation[bot]\'',
+            transition,
+        )
+        for binding in (
+            "dc7701c16fe89e003cd3fd1f19e422d6f1fd5c5d",
+            "bb6da1923987240630b39d4cb1e616567d10036c",
+            "41a39cd1a15f7eac8863fb872480b55cff36644c",
+            "3a803ec7e6efd9cd482697e0175147e16cd0d2f1",
+            "39fb4f684c7219a6f4c7629c0f4866d017c69c5d",
+            "4a4e39ea65f66f53666b3007925a73c98264f265",
+            "c86b4481ced265bad0d9d5238b723041e88f11fe",
+            "f394a820a9c0922d8e7187dbd1b8aca3bf13db61",
+            "7d2aaf0ff0fa7711503a1d9a3052bac2210d6335",
+            "dc20090a57340a436f7a94be2836fd684e3fe31f",
+        ):
+            self.assertIn(binding, transition)
+        self.assertIn("pulls/787", transition)
+        self.assertIn("pulls/789", transition)
+        self.assertIn("and .ahead_by == 8", transition)
+        self.assertIn("and .total_commits == 8", transition)
+        self.assertIn("and (.commits | length) == 8", transition)
+        self.assertIn("pulls/787/files?per_page=100", transition)
+        self.assertIn(".commit.verification.verified == true", transition)
+        self.assertIn("reviewThreads(first:100,after:$after)", transition)
+        self.assertIn("and .id == 4957126983", transition)
+        self.assertIn('test "${unresolved}" -eq 0', transition)
+        self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
+        self.assertIn("rep60-result-parser-bootstrap:v1:", transition)
+        self.assertIn("temporary: true", transition)
+        self.assertIn("acceptance_evidence: false", transition)
+        self.assertIn(
+            'review_path: "immutable one-time result-parser bootstrap; no AI"',
+            transition,
+        )
+        self.assertEqual(transition.count("-f name='Current revision review'"), 1)
+        self.assertNotIn("openai/codex-action@", transition)
+        self.assertNotIn("copilot-requests", transition)
 
     def test_one_time_human_provenance_transition_is_exact_and_review_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
