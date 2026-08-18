@@ -255,22 +255,40 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             transition,
         )
         self.assertIn(
-            "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c",
+            "2070d78360b497ed954cfe8de3fb616b99841943",
             transition,
         )
         self.assertIn(
-            "4827a18733b36d38784c9a72e16bb759515c43ab",
+            "f9f953cabdeaea4a106c3390cf9cabbacfbad574",
             transition,
         )
         self.assertIn(".commit.verification.verified == true", transition)
         self.assertIn(".merge_commit_sha ==", transition)
-        self.assertIn("and .ahead_by == 72", transition)
+        self.assertIn("pulls/782", transition)
+        self.assertIn("and .ahead_by == 77", transition)
+        self.assertIn("and .total_commits == 77", transition)
         self.assertIn("and .commits[-1].sha == $head", transition)
         self.assertIn(
             'local file_name="$1" expected_blob="$2" observed_blob',
             transition,
         )
         self.assertIn(".github/workflows/rep60-bootstrap-app-rearm.yml", transition)
+        for blob in (
+            "32eafe4b11587356b74f89d7aa88177a4578608b",
+            "9566f3d997d41274c7e2e7c01ffb0b7711b842ba",
+            "30640b54850481349d3fbd3f80d2ebe513c7e1e4",
+            "dff67484aca33e111657c233c799c55a9a089321",
+            "f394a820a9c0922d8e7187dbd1b8aca3bf13db61",
+        ):
+            self.assertIn(blob, transition)
+        for stale in (
+            "pulls/781",
+            "and .ahead_by == 72",
+            "c605c6eea57d1bd679fbae7621b68c0dcafc4c76",
+            "4332028591a4f251f213b6aba35106ea95c4ac01",
+            "492aec2a302d50eb96293080dbd5d5cb6a97dd79",
+        ):
+            self.assertNotIn(stale, transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
         self.assertIn('acceptance_evidence: false', transition)
