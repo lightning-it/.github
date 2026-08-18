@@ -1,10 +1,12 @@
-# Organization-owned REP-60 trust root for the public Supplementary repository.
-# An organization ruleset binds this exact public source path and protected main
-# ref. Ruleset workflow event filters are intentionally omitted because GitHub
-# ignores them and uses the supported event's default activity types.
+# Organization-owned REP-60 trust root for managed Lightning IT repositories.
+# Organization rulesets bind this stable legacy source path and protected main
+# ref. The path keeps its historical name so the existing Supplementary gate is
+# never interrupted during the organization-wide rollout. Ruleset workflow
+# event filters are intentionally omitted because GitHub ignores them and uses
+# the supported event's default activity types.
 # yamllint disable rule:truthy rule:line-length
 ---
-name: Protected Supplementary current-revision evidence verifier
+name: Protected current-revision evidence verifier
 
 run-name: >-
   Protected current revision PR #${{ github.event.pull_request.number }}
@@ -26,7 +28,6 @@ jobs:
     # This native Required-Workflow job is the status context enforced by the
     # repository ruleset. The same-named API check remains evidence input only.
     name: Current revision review
-    if: github.repository == 'lightning-it/ansible-collection-supplementary'
     permissions:
       actions: read
       checks: write
@@ -62,7 +63,15 @@ jobs:
           trap report_failure_stage EXIT
 
           failure_stage='protected-source-binding'
-          test "${REPOSITORY}" = lightning-it/ansible-collection-supplementary
+          [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
+          target_repository="$(gh api "repos/${REPOSITORY}")"
+          jq -e \
+            --arg repository "${REPOSITORY}" '
+              .full_name == $repository
+              and .owner.login == "lightning-it"
+              and .archived == false
+              and .disabled == false
+            ' <<<"${target_repository}" >/dev/null
           test "${WORKFLOW_REF}" = \
             'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
@@ -299,9 +308,14 @@ jobs:
             # pull_request_target always runs the protected default-branch
             # controller. PR base_ref remains independently valid as main or
             # develop and is already bound to EVENT_BASE above.
-            controller_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
-            test "${controller_branch}" = develop
-            controller_head="$(gh api "repos/${REPOSITORY}/branches/${controller_branch}" --jq .commit.sha)"
+            controller_branch="$(jq -er \
+              '.default_branch | select(type == "string" and length > 0)' \
+              <<<"${target_repository}")"
+            controller_branch_uri="$(jq -rn \
+              --arg value "${controller_branch}" '$value | @uri')"
+            test -n "${controller_branch_uri}"
+            controller_head="$(gh api \
+              "repos/${REPOSITORY}/branches/${controller_branch_uri}" --jq .commit.sha)"
             controller_ancestry="$(gh api \
               "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
             jq -e \
