@@ -435,48 +435,49 @@ jobs:
           # pull_request_target run-metadata binding. GitHub reports the event
           # PR branch and revision in Actions run head_branch/head_sha; the
           # independently protected workflow_ref/workflow_sha remain the
-          # controller provenance. This transition accepts only PR #780's
-          # immutable five-blob change after one real exact-head Copilot review
-          # with no unresolved Copilot thread. Remove it after PR #780 merges.
-          if [ "${PR_NUMBER}" = 780 ] \
-            && [ "${EVENT_BASE}" = 80464dc3ea21c01ee5fd32e6e49675b0dfa5a513 ] \
-            && [ "${EVENT_HEAD}" = c74faddfa9955f6d8d4b27a074df3ebc664236d7 ]; then
+          # controller provenance. This transition accepts only PR #782's
+          # immutable six-blob controller fix after one real exact-head Copilot
+          # review with no unresolved Copilot thread. Remove it after PR #782
+          # merges.
+          if [ "${PR_NUMBER}" = 782 ] \
+            && [ "${EVENT_BASE}" = 5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c ] \
+            && [ "${EVENT_HEAD}" = fa0952617cfd6954f2b21e4466eaf05266b42ba6 ]; then
             test "${GITHUB_ACTOR}" = litroc
             test "${GITHUB_TRIGGERING_ACTOR}" = litroc
             test "${draft}" = false
             test "${author}" = litroc
             test "${base_ref}" = develop
-            test "${head_ref}" = fix/rep60-rearm-protected-environment-20260817
+            test "${head_ref}" = fix/rep60-rearm-result-dedupe-20260817
             test "${head_repository}" = "${REPOSITORY}"
 
             failure_stage='human-transition-static-provenance'
             jq -e '
-              .sha == "c74faddfa9955f6d8d4b27a074df3ebc664236d7"
-              and .commit.tree.sha == "7e043c4ee90e62ce6c880935117c64105042d063"
+              .sha == "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
+              and .commit.tree.sha == "9ddae320409b963936ab6ea0b4505502915798e4"
               and .commit.verification.verified == false
               and .commit.verification.reason == "unsigned"
               and .author.login == "litroc"
               and .committer.login == "litroc"
               and [.parents[].sha] == [
-                "7979767770cee1951df4772b3f82a3b7090c3582"
+                "87873141d2ab6c5f7124adfebfae6912c1c00720"
               ]
-              and .commit.message == "fix(rep60): accept asynchronous review requests"
+              and .commit.message == "fix(rep60): separate native and evidence checks"
             ' <<<"${target_commit}" >/dev/null
 
-            source_pr="$(gh api "repos/${REPOSITORY}/pulls/780")"
+            source_pr="$(gh api "repos/${REPOSITORY}/pulls/782")"
             jq -e \
               --arg repository "${REPOSITORY}" '
-                .number == 780
+                .number == 782
                 and .state == "open"
                 and .draft == false
                 and .user.login == "litroc"
                 and .base.ref == "develop"
-                and .base.sha == "80464dc3ea21c01ee5fd32e6e49675b0dfa5a513"
+                and .base.sha == "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c"
                 and .base.repo.full_name == $repository
-                and .head.ref == "fix/rep60-rearm-protected-environment-20260817"
-                and .head.sha == "c74faddfa9955f6d8d4b27a074df3ebc664236d7"
+                and .head.ref == "fix/rep60-rearm-result-dedupe-20260817"
+                and .head.sha == "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
                 and .head.repo.full_name == $repository
-                and .title == "fix(rep60): use protected rearm environment"
+                and .title == "fix(rep60): deduplicate the bootstrap producer result"
               ' <<<"${source_pr}" >/dev/null
 
             compare="$(gh api \
@@ -486,17 +487,18 @@ jobs:
               --arg head "${EVENT_HEAD}" '
                 .status == "ahead"
                 and .behind_by == 0
-                and .ahead_by == 2
-                and .total_commits == 2
-                and (.commits | length) == 2
+                and .ahead_by == 3
+                and .total_commits == 3
+                and (.commits | length) == 3
                 and .base_commit.sha == $base
                 and .merge_base_commit.sha == $base
-                and .commits[0].sha == "7979767770cee1951df4772b3f82a3b7090c3582"
-                and .commits[1].sha == $head
+                and .commits[0].sha == "94a9bd060fa7564ef7b15a84662cdaccebb02f4e"
+                and .commits[1].sha == "87873141d2ab6c5f7124adfebfae6912c1c00720"
+                and .commits[2].sha == $head
               ' <<<"${compare}" >/dev/null
 
             source_files="$(gh api --paginate --slurp \
-              "repos/${REPOSITORY}/pulls/780/files?per_page=100")"
+              "repos/${REPOSITORY}/pulls/782/files?per_page=100")"
             jq -e '
               [.[].[] |
                 {filename, status, sha, additions, deletions, changes}]
@@ -505,23 +507,39 @@ jobs:
                 {
                   filename: ".github/workflows/copilot-review.yml",
                   status: "modified",
-                  sha: "c605c6eea57d1bd679fbae7621b68c0dcafc4c76",
-                  additions: 7,
-                  deletions: 24,
-                  changes: 31
+                  sha: "32eafe4b11587356b74f89d7aa88177a4578608b",
+                  additions: 2,
+                  deletions: 1,
+                  changes: 3
+                },
+                {
+                  filename: ".github/workflows/release-bot-exact-head-review.yml",
+                  status: "modified",
+                  sha: "9566f3d997d41274c7e2e7c01ffb0b7711b842ba",
+                  additions: 3,
+                  deletions: 1,
+                  changes: 4
                 },
                 {
                   filename: ".github/workflows/rep60-bootstrap-app-rearm.yml",
                   status: "modified",
-                  sha: "bb60842524d15e6a296f24c7733b6f55877bae38",
-                  additions: 1,
+                  sha: "dff67484aca33e111657c233c799c55a9a089321",
+                  additions: 6,
+                  deletions: 6,
+                  changes: 12
+                },
+                {
+                  filename: "changelogs/fragments/rep60-current-revision-provenance-rearm.yml",
+                  status: "modified",
+                  sha: "70bc442c54a6bc91eb63beebf88278172db0b9ed",
+                  additions: 3,
                   deletions: 1,
-                  changes: 2
+                  changes: 4
                 },
                 {
                   filename: "tests/unit/test_exact_revision_review.py",
                   status: "modified",
-                  sha: "8d17aa893612e06bb7c2a26f2d39d0f54f72bf17",
+                  sha: "8b635fe2a9651ad1cb08c45bdd7ce58a6951ecbb",
                   additions: 8,
                   deletions: 0,
                   changes: 8
@@ -529,18 +547,10 @@ jobs:
                 {
                   filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
                   status: "modified",
-                  sha: "958b6832f109580642c7641027a2eac8b297db01",
-                  additions: 2,
-                  deletions: 0,
-                  changes: 2
-                },
-                {
-                  filename: "tests/unit/test_workflow_security.py",
-                  status: "modified",
-                  sha: "d3e38bb335401bdcb72e3599b2222f4b36e3060f",
-                  additions: 6,
-                  deletions: 5,
-                  changes: 11
+                  sha: "d05e7fcf15438e4f95a8130108012652d892facf",
+                  additions: 4,
+                  deletions: 2,
+                  changes: 6
                 }
               ]
             ' <<<"${source_files}" >/dev/null
@@ -641,7 +651,7 @@ jobs:
                 and .base.ref == "develop"
                 and .base.sha == $base
                 and .base.repo.full_name == $repository
-                and .head.ref == "fix/rep60-rearm-protected-environment-20260817"
+                and .head.ref == "fix/rep60-rearm-result-dedupe-20260817"
                 and .head.sha == $head
                 and .head.repo.full_name == $repository
               ' <<<"${post_review_pr}" >/dev/null
@@ -691,7 +701,7 @@ jobs:
               transition_check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
                 <<<"${transition_check}")"
               existing_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${transition_check_id}"
-              if jq -e \
+              jq -e \
                 --arg evidence "${transition_summary}" \
                 --arg external_id "${transition_external_id}" \
                 --arg head "${EVENT_HEAD}" \
@@ -707,40 +717,7 @@ jobs:
                   and .app.slug == "github-actions"
                   and .output.title == $title
                   and .output.summary == $evidence
-                ' <<<"${transition_check}" >/dev/null; then
-                :
-              else
-                prior_external_id="mlx90-current-revision:copilot:v4:32077652920:${EVENT_BASE}:${EVENT_HEAD}"
-                jq -e \
-                  --arg external_id "${prior_external_id}" \
-                  --arg head "${EVENT_HEAD}" \
-                  --arg url "${existing_check_url}" '
-                    .name == "Current revision review"
-                    and .head_sha == $head
-                    and .details_url == $url
-                    and .external_id == $external_id
-                    and .status == "completed"
-                    and .conclusion == "success"
-                    and .app.id == 15368
-                    and .app.slug == "github-actions"
-                    and .output.title == "Current revision review passed"
-                  ' <<<"${transition_check}" >/dev/null
-                prior_summary="$(jq -er '.output.summary | fromjson | select(type == "object")' \
-                  <<<"${transition_check}")"
-                jq -e \
-                  --arg base "${EVENT_BASE}" \
-                  --arg controller "${EVENT_BASE}" \
-                  --arg head "${EVENT_HEAD}" \
-                  --arg run_url "${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/32077652920" '
-                    .schema == 4
-                    and .base_sha == $base
-                    and .head_sha == $head
-                    and .controller_sha == $controller
-                    and .producer_run_id == 32077652920
-                    and .run_url == $run_url
-                    and .review_path == "applicable Copilot or governed automation exemption"
-                  ' <<<"${prior_summary}" >/dev/null
-              fi
+                ' <<<"${transition_check}" >/dev/null
             else
               transition_check="$(gh api --method POST \
                 "repos/${REPOSITORY}/check-runs" \
