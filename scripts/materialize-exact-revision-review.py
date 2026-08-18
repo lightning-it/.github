@@ -516,8 +516,6 @@ def verify(
         fail(f"Review metadata is malformed: {error}")
     if not isinstance(expected_metadata, dict):
         fail("Review metadata must be a JSON object.")
-    if not isinstance(expected_metadata, dict):
-        fail("Review metadata must be a JSON object.")
     expected_keys = set(IMMUTABLE_METADATA_KEYS)
     observed_keys = set(expected_metadata)
     if observed_keys != expected_keys:
