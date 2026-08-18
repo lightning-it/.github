@@ -10,17 +10,21 @@ WORKFLOW = (
 )
 
 
-class SupplementaryRequiredWorkflowTests(unittest.TestCase):
+class OrganizationRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
         self.assertNotIn("types:", workflow)
         self.assertNotIn("actions/checkout@", workflow)
         self.assertNotIn("openai/codex-action@", workflow)
+        self.assertNotIn("if: github.repository ==", workflow)
         self.assertIn(
-            "if: github.repository == 'lightning-it/ansible-collection-supplementary'",
+            '[[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]',
             workflow,
         )
+        self.assertIn('.owner.login == "lightning-it"', workflow)
+        self.assertIn("and .archived == false", workflow)
+        self.assertIn("and .disabled == false", workflow)
         self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", workflow)
         self.assertIn("@refs/heads/main", workflow)
         self.assertIn(
@@ -116,7 +120,8 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         )[1]
         human_path = author_paths.split("          else", 1)[1].split("          fi", 1)[0]
         self.assertIn(".controller_sha", human_path)
-        self.assertIn('test "${controller_branch}" = develop', human_path)
+        self.assertIn(".default_branch", human_path)
+        self.assertNotIn('test "${controller_branch}" = develop', human_path)
         self.assertIn("compare/${controller_sha}...${controller_head}", human_path)
         self.assertIn('--arg head_ref "${head_ref}"', human_path)
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
