@@ -21,6 +21,7 @@ REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RELEASE_BOT = "lightning-it-release-automation[bot]"
 MAX_REVIEW_BYTES = 200_000
 MAX_PROTECTED_ASSET_BYTES = 1_000_000
+COMMAND_TIMEOUT_SECONDS = 120
 ASSET_ARGUMENTS = {
     "materializer_sha256": "materializer_path",
     "prompt_sha256": "prompt_path",
@@ -89,14 +90,22 @@ def run(
     cwd: Path | None = None,
     binary: bool = False,
 ) -> subprocess.CompletedProcess[Any]:
-    result = subprocess.run(  # noqa: S603
-        list(arguments),
-        cwd=cwd,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=not binary,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603
+            list(arguments),
+            cwd=cwd,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=not binary,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        command = " ".join(arguments) or "<empty-command>"
+        fail(
+            f"Command timed out after {COMMAND_TIMEOUT_SECONDS} seconds: "
+            f"{command}"
+        )
     if result.returncode != 0:
         stderr = (
             result.stderr
@@ -144,6 +153,36 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
         if len(payload) != details.st_size:
             fail(f"Protected {name} changed while reading.")
         return payload
+    finally:
+        os.close(descriptor)
+
+
+def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
+    """Write one bounded owned file without following a replacement symlink."""
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if not isinstance(no_follow, int) or no_follow == 0:
+        fail("Protected file writing requires O_NOFOLLOW support.")
+    if len(payload) <= 0 or len(payload) > MAX_PROTECTED_ASSET_BYTES:
+        fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | no_follow
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        fail(f"Protected {name} cannot be opened safely: {error}")
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            fail(f"Protected {name} must be one regular non-symlink file.")
+        if details.st_uid != os.geteuid():
+            fail(f"Protected {name} must be owned by the current user.")
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=False) as protected_file:
+            written = protected_file.write(payload)
+            protected_file.flush()
+            os.fsync(descriptor)
+        if written != len(payload):
+            fail(f"Protected {name} was not written completely.")
     finally:
         os.close(descriptor)
 
@@ -421,28 +460,32 @@ def materialize(
         }
         patch = output_directory / "change.patch"
         metadata_path = output_directory / "review-metadata.json"
-        patch.write_bytes(diff)
-        metadata_path.write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        write_owned_regular_file(patch, diff, "review diff")
+        write_owned_regular_file(
+            metadata_path,
+            (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            "review metadata",
         )
-        patch.chmod(0o600)
-        metadata_path.chmod(0o600)
         return metadata
 
 
 def bind_assets(review_directory: Path, asset_paths: dict[str, Path]) -> dict[str, Any]:
     metadata_path = review_directory / "review-metadata.json"
-    if not metadata_path.is_file() or metadata_path.is_symlink():
-        fail("Review metadata must be a regular, non-symlink file.")
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata = json.loads(
+            protected_asset_bytes(metadata_path, "review metadata").decode("utf-8")
+        )
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         fail(f"Review metadata is malformed: {error}")
+    if not isinstance(metadata, dict):
+        fail("Review metadata must be a JSON object.")
     if any(key in metadata for key in (*ASSET_ARGUMENTS, "input_sha256")):
         fail("Review metadata already contains protected asset bindings.")
     bound = bind_protected_assets(metadata, asset_paths)
-    metadata_path.write_text(
-        json.dumps(bound, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    write_owned_regular_file(
+        metadata_path,
+        (json.dumps(bound, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        "review metadata",
     )
     return bound
 
@@ -466,9 +509,13 @@ def verify(
     if patch_size <= 0 or patch_size >= MAX_REVIEW_BYTES:
         fail(f"The review diff must be between 1 and {MAX_REVIEW_BYTES - 1} bytes.")
     try:
-        expected_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected_metadata = json.loads(
+            protected_asset_bytes(metadata_path, "review metadata").decode("utf-8")
+        )
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         fail(f"Review metadata is malformed: {error}")
+    if not isinstance(expected_metadata, dict):
+        fail("Review metadata must be a JSON object.")
     if not isinstance(expected_metadata, dict):
         fail("Review metadata must be a JSON object.")
     expected_keys = set(IMMUTABLE_METADATA_KEYS)
