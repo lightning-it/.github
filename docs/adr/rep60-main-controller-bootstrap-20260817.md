@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.4"
+  version: "1.5"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -148,6 +148,25 @@ evidence by protected external-ID namespace and excludes its own job check.
 This retains the visible neutral name, prevents a candidate check name from
 becoming the trust root, and makes GitHub's native ruleset evaluation the final
 merge boundary.
+
+The native context exposed one further fail-closed bootstrap dependency on
+Supplementary PR `#782`: the protected human and Release-App producers still
+selected every same-named check before validating their own external ID. A
+native Required-Workflow job therefore prevented either producer from
+publishing its evidence. PR `#782` is frozen to base
+`5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c`, head
+`fa0952617cfd6954f2b21e4466eaf05266b42ba6`, tree
+`9ddae320409b963936ab6ea0b4505502915798e4`, its exact three-commit ancestry,
+and its six changed blob IDs. Copilot review `4956145369` reviewed that exact
+head and reported no new comments; the earlier finding is fixed and its thread
+is resolved.
+
+The organization-owned Required Workflow reuses the one-time human transition
+only for that immutable PR/base/head/tree/files/review tuple. It creates
+temporary, explicitly review-bound evidence and cannot match another PR or
+revision. This transition exists solely to install the producer-side
+external-ID filtering; it supersedes the already completed PR `#780` repair
+and must be removed after `#782` merges. No local AI is used.
 
 This is a fail-closed installation step, not an MLX-90 or REP-60 operational
 acceptance result. It does not authorize another pull request, base, head,

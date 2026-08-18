@@ -327,27 +327,28 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "          # One exact protected transition repairs the human producer's",
             1,
         )[1].split("          failure_stage='permanent-producer-inventory'", 1)[0]
-        self.assertIn('[ "${PR_NUMBER}" = 780 ]', transition)
-        self.assertIn("80464dc3ea21c01ee5fd32e6e49675b0dfa5a513", transition)
-        self.assertIn("7979767770cee1951df4772b3f82a3b7090c3582", transition)
-        self.assertIn("c74faddfa9955f6d8d4b27a074df3ebc664236d7", transition)
-        self.assertIn("7e043c4ee90e62ce6c880935117c64105042d063", transition)
-        self.assertIn("fix/rep60-rearm-protected-environment-20260817", transition)
+        self.assertIn('[ "${PR_NUMBER}" = 782 ]', transition)
+        self.assertIn("5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c", transition)
+        self.assertIn("94a9bd060fa7564ef7b15a84662cdaccebb02f4e", transition)
+        self.assertIn("87873141d2ab6c5f7124adfebfae6912c1c00720", transition)
+        self.assertIn("fa0952617cfd6954f2b21e4466eaf05266b42ba6", transition)
+        self.assertIn("9ddae320409b963936ab6ea0b4505502915798e4", transition)
+        self.assertIn("fix/rep60-rearm-result-dedupe-20260817", transition)
         self.assertNotIn("Rene Osorio", transition)
         self.assertNotIn("ro@l-it.io", transition)
-        self.assertIn("and .ahead_by == 2", transition)
-        self.assertIn("and .total_commits == 2", transition)
-        self.assertIn("pulls/780/files?per_page=100", transition)
+        self.assertIn("and .ahead_by == 3", transition)
+        self.assertIn("and .total_commits == 3", transition)
+        self.assertIn("pulls/782/files?per_page=100", transition)
         for blob in (
-            "c605c6eea57d1bd679fbae7621b68c0dcafc4c76",
-            "bb60842524d15e6a296f24c7733b6f55877bae38",
-            "8d17aa893612e06bb7c2a26f2d39d0f54f72bf17",
-            "958b6832f109580642c7641027a2eac8b297db01",
-            "d3e38bb335401bdcb72e3599b2222f4b36e3060f",
+            "32eafe4b11587356b74f89d7aa88177a4578608b",
+            "9566f3d997d41274c7e2e7c01ffb0b7711b842ba",
+            "dff67484aca33e111657c233c799c55a9a089321",
+            "70bc442c54a6bc91eb63beebf88278172db0b9ed",
+            "8b635fe2a9651ad1cb08c45bdd7ce58a6951ecbb",
+            "d05e7fcf15438e4f95a8130108012652d892facf",
         ):
             self.assertIn(blob, transition)
-        self.assertIn("mlx90-current-revision:copilot:v4:32077652920", transition)
-        self.assertIn("Current revision review passed", transition)
+        self.assertNotIn("mlx90-current-revision:copilot:v4:32077652920", transition)
         self.assertIn("copilot-pull-request-reviewer[bot]", transition)
         self.assertIn("and .commit_id == $head", transition)
         self.assertIn('test "$(jq \'length\' <<<"${accepted_reviews}")" -eq 1', transition)
