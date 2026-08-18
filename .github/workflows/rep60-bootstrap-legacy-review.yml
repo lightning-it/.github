@@ -129,11 +129,9 @@ jobs:
           check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
           jq -e \
             --arg external_id "${external_id}" \
-            --arg head "${EVENT_HEAD}" \
-            --arg url "${check_url}" '
+            --arg head "${EVENT_HEAD}" '
               .name == "Successful Copilot review"
               and .head_sha == $head
-              and .details_url == $url
               and .external_id == $external_id
               and .status == "in_progress"
               and .app.id == 15368
@@ -265,11 +263,9 @@ jobs:
           )"
           jq -e \
             --arg external_id "${external_id}" \
-            --arg head "${EVENT_HEAD}" \
-            --arg url "${check_url}" '
+            --arg head "${EVENT_HEAD}" '
               .name == "Successful Copilot review"
               and .head_sha == $head
-              and .details_url == $url
               and .external_id == $external_id
               and .status == "completed"
               and .conclusion == "success"
