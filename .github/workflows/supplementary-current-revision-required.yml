@@ -441,7 +441,7 @@ jobs:
           # merges.
           if [ "${PR_NUMBER}" = 782 ] \
             && [ "${EVENT_BASE}" = 5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c ] \
-            && [ "${EVENT_HEAD}" = fa0952617cfd6954f2b21e4466eaf05266b42ba6 ]; then
+            && [ "${EVENT_HEAD}" = 73156874fd8bfd1560e340c0cd470bebfe6c35f8 ]; then
             test "${GITHUB_ACTOR}" = litroc
             test "${GITHUB_TRIGGERING_ACTOR}" = litroc
             test "${draft}" = false
@@ -452,16 +452,16 @@ jobs:
 
             failure_stage='human-transition-static-provenance'
             jq -e '
-              .sha == "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
-              and .commit.tree.sha == "9ddae320409b963936ab6ea0b4505502915798e4"
+              .sha == "73156874fd8bfd1560e340c0cd470bebfe6c35f8"
+              and .commit.tree.sha == "f9f953cabdeaea4a106c3390cf9cabbacfbad574"
               and .commit.verification.verified == false
               and .commit.verification.reason == "unsigned"
               and .author.login == "litroc"
               and .committer.login == "litroc"
               and [.parents[].sha] == [
-                "87873141d2ab6c5f7124adfebfae6912c1c00720"
+                "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
               ]
-              and .commit.message == "fix(rep60): separate native and evidence checks"
+              and .commit.message == "style(rep60): normalize rearm test formatting"
             ' <<<"${target_commit}" >/dev/null
 
             source_pr="$(gh api "repos/${REPOSITORY}/pulls/782")"
@@ -475,7 +475,7 @@ jobs:
                 and .base.sha == "5f212688fd6b18a1f90b9c9e8cb2cf6b60c53c0c"
                 and .base.repo.full_name == $repository
                 and .head.ref == "fix/rep60-rearm-result-dedupe-20260817"
-                and .head.sha == "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
+                and .head.sha == "73156874fd8bfd1560e340c0cd470bebfe6c35f8"
                 and .head.repo.full_name == $repository
                 and .title == "fix(rep60): deduplicate the bootstrap producer result"
               ' <<<"${source_pr}" >/dev/null
@@ -487,14 +487,15 @@ jobs:
               --arg head "${EVENT_HEAD}" '
                 .status == "ahead"
                 and .behind_by == 0
-                and .ahead_by == 3
-                and .total_commits == 3
-                and (.commits | length) == 3
+                and .ahead_by == 4
+                and .total_commits == 4
+                and (.commits | length) == 4
                 and .base_commit.sha == $base
                 and .merge_base_commit.sha == $base
                 and .commits[0].sha == "94a9bd060fa7564ef7b15a84662cdaccebb02f4e"
                 and .commits[1].sha == "87873141d2ab6c5f7124adfebfae6912c1c00720"
-                and .commits[2].sha == $head
+                and .commits[2].sha == "fa0952617cfd6954f2b21e4466eaf05266b42ba6"
+                and .commits[3].sha == $head
               ' <<<"${compare}" >/dev/null
 
             source_files="$(gh api --paginate --slurp \
@@ -547,7 +548,7 @@ jobs:
                 {
                   filename: "tests/unit/test_rep60_bootstrap_app_rearm.py",
                   status: "modified",
-                  sha: "d05e7fcf15438e4f95a8130108012652d892facf",
+                  sha: "ffd2c27e0e0ec257ca71795ae52c7b0528d86bcd",
                   additions: 4,
                   deletions: 2,
                   changes: 6

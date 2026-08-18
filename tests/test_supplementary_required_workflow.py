@@ -332,12 +332,13 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("94a9bd060fa7564ef7b15a84662cdaccebb02f4e", transition)
         self.assertIn("87873141d2ab6c5f7124adfebfae6912c1c00720", transition)
         self.assertIn("fa0952617cfd6954f2b21e4466eaf05266b42ba6", transition)
-        self.assertIn("9ddae320409b963936ab6ea0b4505502915798e4", transition)
+        self.assertIn("73156874fd8bfd1560e340c0cd470bebfe6c35f8", transition)
+        self.assertIn("f9f953cabdeaea4a106c3390cf9cabbacfbad574", transition)
         self.assertIn("fix/rep60-rearm-result-dedupe-20260817", transition)
         self.assertNotIn("Rene Osorio", transition)
         self.assertNotIn("ro@l-it.io", transition)
-        self.assertIn("and .ahead_by == 3", transition)
-        self.assertIn("and .total_commits == 3", transition)
+        self.assertIn("and .ahead_by == 4", transition)
+        self.assertIn("and .total_commits == 4", transition)
         self.assertIn("pulls/782/files?per_page=100", transition)
         for blob in (
             "32eafe4b11587356b74f89d7aa88177a4578608b",
@@ -345,7 +346,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             "dff67484aca33e111657c233c799c55a9a089321",
             "70bc442c54a6bc91eb63beebf88278172db0b9ed",
             "8b635fe2a9651ad1cb08c45bdd7ce58a6951ecbb",
-            "d05e7fcf15438e4f95a8130108012652d892facf",
+            "ffd2c27e0e0ec257ca71795ae52c7b0528d86bcd",
         ):
             self.assertIn(blob, transition)
         self.assertNotIn("mlx90-current-revision:copilot:v4:32077652920", transition)
