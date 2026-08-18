@@ -144,8 +144,10 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
         fail(f"Protected {name} is unavailable: {error}")
     try:
         details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode):
-            fail(f"Protected {name} must be a regular non-symlink file.")
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            fail(f"Protected {name} must be one regular non-symlink file.")
+        if details.st_uid != os.geteuid():
+            fail(f"Protected {name} must be owned by the current user.")
         if details.st_size <= 0 or details.st_size > MAX_PROTECTED_ASSET_BYTES:
             fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
         with os.fdopen(descriptor, "rb", closefd=False) as protected_asset:

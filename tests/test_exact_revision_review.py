@@ -68,6 +68,18 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             ):
                 self.module.protected_asset_bytes(link, "test asset")
 
+    def test_protected_reader_rejects_hardlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "target"
+            target.write_text("protected\n", encoding="utf-8")
+            link = Path(temporary) / "link"
+            os.link(target, link)
+            with self.assertRaisesRegex(
+                self.module.MaterializationError,
+                "one regular non-symlink file",
+            ):
+                self.module.protected_asset_bytes(link, "test asset")
+
     def test_protected_writer_rejects_replacement_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "target"
