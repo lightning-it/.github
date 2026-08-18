@@ -6,7 +6,7 @@ slug: /adr/rep60-main-controller-bootstrap-20260817/
 document:
   status: maintained
   approval_status: approved
-  version: "1.9"
+  version: "1.10"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -180,9 +180,10 @@ transition can match another PR or revision. Remove both transitions and
 their regression assertions immediately after PR `#777` reaches `main`. No
 local AI is used.
 
-Before promoting this final transition, protected organization `main`
-`997b074aee07f9975a8a90608a9b306dc62911f8` is reintroduced into protected
-organization `develop` through PR `#168`. Its ancestry commit
+Before promoting this final transition, protected `lightning-it/.github`
+`main` `997b074aee07f9975a8a90608a9b306dc62911f8` is reintroduced into protected
+`lightning-it/.github` `develop` through `lightning-it/.github` PR `#168`.
+Its ancestry commit
 `14bafdf422df9c8da471ce047625ec4493ca1ed0` has first parent
 `edcfecedc8797ae0c07283aeb8b39ce0b45494a7`, second parent
 `997b074aee07f9975a8a90608a9b306dc62911f8`, and tree
