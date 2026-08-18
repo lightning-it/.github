@@ -14,6 +14,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 MATERIALIZER = ROOT / "scripts/materialize-exact-revision-review.py"
+REVIEW_WORKFLOW = ROOT / ".github/workflows/release-bot-exact-head-review.yml"
 
 
 def load_materializer() -> types.ModuleType:
@@ -54,6 +55,17 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
         self.assertIn(
             'regenerated / "change.patch", "regenerated diff"',
             source,
+        )
+
+    def test_unfinished_reservation_is_always_failed_closed(self) -> None:
+        workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("Fail-close an unfinished protected reservation", workflow)
+        self.assertIn("always() &&", workflow)
+        self.assertIn("steps.dedupe.outputs.check_id != ''", workflow)
+        self.assertIn("Protected Exact-Revision Codex review failed closed", workflow)
+        self.assertLess(
+            workflow.index('echo "check_id=${check_id}"'),
+            workflow.index('-f "details_url=${check_url}"'),
         )
 
     def test_protected_reader_rejects_symlink(self) -> None:

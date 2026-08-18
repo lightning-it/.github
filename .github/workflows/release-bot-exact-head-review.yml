@@ -1,6 +1,6 @@
 # Managed by lightning-it/shared-assets-lit.
 # Do not edit downstream copies directly.
-# Canonical protected MLX-90 §7.2 Exact-Revision Codex controller.
+# Protected per-repository MLX-90 §7.2 Exact-Revision Codex controller.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Protected Exact-Revision Codex review
@@ -233,6 +233,13 @@ jobs:
             -f 'output[title]=Protected Exact-Revision Codex review in progress' \
             -f "output[summary]=Immutable input SHA-256: ${input_sha256}.")"
           check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+          {
+            echo "reuse=false"
+            echo "check_id=${check_id}"
+            echo "input_sha256=${input_sha256}"
+            echo "external_id=${external_id}"
+            echo "producer_run_id=${GITHUB_RUN_ID}"
+          } >>"${GITHUB_OUTPUT}"
           check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
           reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
             -f "details_url=${check_url}")"
@@ -249,13 +256,6 @@ jobs:
               and .app.id == 15368
               and .app.slug == "github-actions"
             ' <<<"${reservation}" >/dev/null
-          {
-            echo "reuse=false"
-            echo "check_id=${check_id}"
-            echo "input_sha256=${input_sha256}"
-            echo "external_id=${external_id}"
-            echo "producer_run_id=${GITHUB_RUN_ID}"
-          } >>"${GITHUB_OUTPUT}"
 
       - name: Run protected history-free Exact-Revision Codex review
         if: steps.dedupe.outputs.reuse != 'true'
@@ -412,12 +412,14 @@ jobs:
                 return
               fi
               jq -e \
+                --arg check_name "${check_name}" \
                 --arg evidence "${evidence}" \
                 --arg external_id "${external_id}" \
                 --arg head "${EXPECTED_HEAD}" \
                 --arg url "${check_url}" \
                 --argjson check_id "${check_id}" '
                   .[0].id == $check_id
+                  and .[0].name == $check_name
                   and .[0].app.id == 15368
                   and .[0].app.slug == "github-actions"
                   and .[0].head_sha == $head
@@ -442,12 +444,14 @@ jobs:
             created="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f "details_url=${check_url}")"
             jq -e \
+              --arg check_name "${check_name}" \
               --arg evidence "${evidence}" \
               --arg external_id "${external_id}" \
               --arg head "${EXPECTED_HEAD}" \
               --arg url "${check_url}" \
               --argjson check_id "${check_id}" '
                 .id == $check_id
+                and .name == $check_name
                 and .app.id == 15368
                 and .app.slug == "github-actions"
                 and .head_sha == $head
@@ -462,6 +466,57 @@ jobs:
             'Current revision review' \
             "mlx90-current-revision:v4:${producer_run_id}:${input_sha256}" \
             'Protected Exact-Revision Codex review passed'
+
+      - name: Fail-close an unfinished protected reservation
+        if: >-
+          always() &&
+          steps.dedupe.outputs.reuse != 'true' &&
+          steps.dedupe.outputs.check_id != ''
+        env:
+          CHECK_ID: ${{ steps.dedupe.outputs.check_id }}
+          EXPECTED_EXTERNAL_ID: ${{ steps.dedupe.outputs.external_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${CHECK_ID}" =~ ^[1-9][0-9]*$ ]]
+          reservation="$(gh api "repos/${REPOSITORY}/check-runs/${CHECK_ID}")"
+          jq -e \
+            --arg external_id "${EXPECTED_EXTERNAL_ID}" \
+            --arg head "${EXPECTED_HEAD}" \
+            --argjson check_id "${CHECK_ID}" '
+              .id == $check_id
+              and .name == "Protected Exact-Revision Codex result"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and (.status == "in_progress" or .status == "completed")
+            ' <<<"${reservation}" >/dev/null
+          if [ "$(jq -r .status <<<"${reservation}")" = completed ]; then
+            jq -e '.conclusion == "success" or .conclusion == "failure"' \
+              <<<"${reservation}" >/dev/null
+            exit 0
+          fi
+          failure_evidence="The protected producer run ${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID} ended before finalizing this immutable reservation."
+          reservation="$(gh api --method PATCH \
+            "repos/${REPOSITORY}/check-runs/${CHECK_ID}" \
+            -f status=completed \
+            -f conclusion=failure \
+            -f 'output[title]=Protected Exact-Revision Codex review failed closed' \
+            -f "output[summary]=${failure_evidence}")"
+          jq -e \
+            --arg external_id "${EXPECTED_EXTERNAL_ID}" \
+            --arg head "${EXPECTED_HEAD}" \
+            --argjson check_id "${CHECK_ID}" '
+              .id == $check_id
+              and .name == "Protected Exact-Revision Codex result"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == "failure"
+            ' <<<"${reservation}" >/dev/null
 
   request-protected-verifier-reevaluation:
     name: Request protected verifier re-evaluation
