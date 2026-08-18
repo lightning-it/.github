@@ -311,7 +311,11 @@ jobs:
             controller_branch="$(jq -er \
               '.default_branch | select(type == "string" and length > 0)' \
               <<<"${target_repository}")"
-            controller_head="$(gh api "repos/${REPOSITORY}/branches/${controller_branch}" --jq .commit.sha)"
+            controller_branch_uri="$(jq -rn \
+              --arg value "${controller_branch}" '$value | @uri')"
+            test -n "${controller_branch_uri}"
+            controller_head="$(gh api \
+              "repos/${REPOSITORY}/branches/${controller_branch_uri}" --jq .commit.sha)"
             controller_ancestry="$(gh api \
               "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
             jq -e \
