@@ -41,6 +41,23 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Protected current-revision verifier", workflow)
+        self.assertIn("    name: Current revision review\n", workflow)
+        self.assertIn(
+            'startswith("rep60-main-bootstrap:v1:")',
+            workflow,
+        )
+        self.assertIn(
+            'startswith("rep60-human-provenance-transition:v1:")',
+            workflow,
+        )
+        self.assertIn(
+            'startswith("mlx90-current-revision:v4:")',
+            workflow,
+        )
+        self.assertIn(
+            'startswith("mlx90-current-revision:copilot:v4:")',
+            workflow,
+        )
         self.assertIn(
             "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
             workflow,
