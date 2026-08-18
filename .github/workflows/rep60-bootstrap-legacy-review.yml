@@ -7,7 +7,7 @@ name: REP-60 bootstrap legacy review bridge
 
 on:
   pull_request_target:
-    types: [synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions: {}
 
@@ -27,7 +27,6 @@ jobs:
       github.event.pull_request.head.ref == 'fix/rep60-current-revision-rollout-20260818-v1' &&
       github.event.pull_request.title == 'fix(rep60): adopt protected current-revision controller'
     permissions:
-      actions: read
       checks: write
       contents: read
       pull-requests: read
@@ -82,8 +81,7 @@ jobs:
           test "${WORKFLOW_REF}" = \
             "${REPOSITORY}/${bridge_path}@refs/heads/${DEFAULT_BRANCH}"
           test "${WORKFLOW_SHA}" = "${EVENT_BASE}"
-          test "$(gh api "repos/${REPOSITORY}/branches/${DEFAULT_BRANCH}" --jq .commit.sha)" = \
-            "${WORKFLOW_SHA}"
+          test "${GITHUB_SHA}" = "${WORKFLOW_SHA}"
 
           live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
