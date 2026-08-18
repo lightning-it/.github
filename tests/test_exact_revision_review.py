@@ -46,6 +46,16 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
         ):
             self.module.run(["gh", "api"], environment={})
 
+    def test_diff_reverification_uses_protected_reads(self) -> None:
+        source = MATERIALIZER.read_text(encoding="utf-8")
+        self.assertNotIn("patch.read_bytes()", source)
+        self.assertNotIn('(regenerated / "change.patch").read_bytes()', source)
+        self.assertIn('patch, "review diff"', source)
+        self.assertIn(
+            'regenerated / "change.patch", "regenerated diff"',
+            source,
+        )
+
     def test_protected_reader_rejects_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "target"

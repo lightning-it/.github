@@ -537,7 +537,9 @@ def verify(
         actual_metadata = bind_protected_assets(
             materialize(arguments, regenerated), asset_paths
         )
-        if patch.read_bytes() != (regenerated / "change.patch").read_bytes():
+        if protected_asset_bytes(
+            patch, "review diff"
+        ) != protected_asset_bytes(regenerated / "change.patch", "regenerated diff"):
             fail("The full binary diff changed during exact-revision verification.")
     for key in IMMUTABLE_METADATA_KEYS:
         if expected_metadata.get(key) != actual_metadata.get(key):
