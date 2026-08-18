@@ -485,6 +485,7 @@ jobs:
             jq -e '
               .number == 789
               and .state == "closed"
+              and .merged == false
               and .draft == false
               and .user.login == "litroc"
               and .base.ref == "main"
@@ -791,7 +792,9 @@ jobs:
               all(.[][]?;
                 (.user.login | type == "string" and length > 0)
                 and .user.login != "copilot-pull-request-reviewer[bot]"
-                and .user.login != "github-copilot[bot]")
+                and .user.login != "copilot-pull-request-reviewer"
+                and .user.login != "github-copilot[bot]"
+                and .user.login != "github-copilot")
             ' <<<"${transition_review_pages}" >/dev/null
             exact_check_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&per_page=100")"

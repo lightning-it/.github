@@ -376,6 +376,7 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
             self.assertIn(binding, transition)
         self.assertIn("pulls/787", transition)
         self.assertIn("pulls/789", transition)
+        self.assertIn('and .merged == false', transition)
         self.assertIn("and .ahead_by == 8", transition)
         self.assertIn("and .total_commits == 8", transition)
         self.assertIn("and (.commits | length) == 8", transition)
@@ -385,6 +386,10 @@ class SupplementaryRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("and .id == 4957126983", transition)
         self.assertIn('test "${unresolved}" -eq 0', transition)
         self.assertIn("Protected%20Exact-Revision%20Codex%20result", transition)
+        self.assertIn(
+            'and .user.login != "copilot-pull-request-reviewer"', transition
+        )
+        self.assertIn('and .user.login != "github-copilot"', transition)
         self.assertIn("rep60-result-parser-bootstrap:v1:", transition)
         self.assertIn("temporary: true", transition)
         self.assertIn("acceptance_evidence: false", transition)
