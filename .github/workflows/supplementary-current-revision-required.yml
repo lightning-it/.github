@@ -25,9 +25,11 @@ concurrency:
 
 jobs:
   verify-protected-current-revision-evidence:
-    # This native Required-Workflow job is the status context enforced by the
-    # repository ruleset. The same-named API check remains evidence input only.
-    name: Current revision review
+    # Keep the native Required-Workflow job distinct from the API evidence
+    # check it verifies. GitHub Actions check runs share one App identity, so
+    # identical names would make the producer target this job instead of its
+    # immutable evidence check.
+    name: Required current-revision workflow
     permissions:
       actions: read
       checks: write
@@ -242,7 +244,8 @@ jobs:
               select((.external_id | type) == "string") |
               select(
                 (.external_id | startswith("mlx90-current-revision:v4:"))
-                or (.external_id | startswith("mlx90-current-revision:copilot:v4:"))
+                or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
+                or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
               )]
           ' <<<"${neutral_pages}")"
           test "$(jq 'length' <<<"${neutral}")" -eq 1
@@ -260,7 +263,8 @@ jobs:
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
           failure_stage='permanent-producer-binding'
-          if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+          if [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+            && [[ "${external_id}" =~ ^mlx90-current-revision:v4: ]]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
             producer_run_id="${BASH_REMATCH[1]}"
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
@@ -299,8 +303,20 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            [[ "${external_id}" =~ ^mlx90-current-revision:copilot:v4:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
-            producer_run_id="${BASH_REMATCH[1]}"
+            [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+            producer_kind="${BASH_REMATCH[1]}"
+            producer_run_id="${BASH_REMATCH[2]}"
+            if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+              test "${producer_kind}" = ancestry-backmerge
+              test "${base_ref}" = develop
+              [[ "${head_ref}" == backmerge/*-main ]]
+              [[ "$(jq -r .title <<<"${pr}")" == \
+                "chore(governance): record main ancestry before "* ]]
+              expected_review_path="deterministic evidence-bound ancestry exemption"
+            else
+              test "${producer_kind}" = copilot
+              expected_review_path="applicable Copilot or governed automation exemption"
+            fi
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
@@ -347,6 +363,7 @@ jobs:
               --arg base "${EVENT_BASE}" \
               --arg controller "${controller_sha}" \
               --arg head "${EVENT_HEAD}" \
+              --arg review_path "${expected_review_path}" \
               --arg run_url "${producer_run_url}" \
               --argjson run_id "${producer_run_id}" '
                 .schema == 4
@@ -355,7 +372,7 @@ jobs:
                 and .controller_sha == $controller
                 and .producer_run_id == $run_id
                 and .run_url == $run_url
-                and .review_path == "applicable Copilot or governed automation exemption"
+                and .review_path == $review_path
               ' <<<"${summary}" >/dev/null
           fi
 

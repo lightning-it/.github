@@ -7,7 +7,7 @@ name: Current revision review gate
 
 on:
   pull_request_target:
-    types: [opened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -194,9 +194,13 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       (((github.event.action == 'opened' ||
+        github.event.action == 'synchronize' ||
+        github.event.action == 'reopened' ||
         github.event.action == 'ready_for_review') &&
         github.event.pull_request.user.login != 'lightning-it-release-automation[bot]') ||
         ((github.event.action == 'opened' ||
+          github.event.action == 'synchronize' ||
+          github.event.action == 'reopened' ||
           github.event.action == 'ready_for_review') &&
           github.event.pull_request.user.login == 'lightning-it-release-automation[bot]' &&
           github.event.pull_request.base.ref == 'develop' &&
