@@ -17,6 +17,10 @@ class RenovateGuardedAutomergeTests(unittest.TestCase):
         )
         self.assertIn('if [ "$auto_merge_enabled" != false ]; then', workflow)
         self.assertIn("printf '%s\\n' \"$disable_error\" >&2", workflow)
+        self.assertIn(
+            'gh pr merge "${PR_URL}" --auto --merge --delete-branch',
+            workflow,
+        )
 
 
 if __name__ == "__main__":

@@ -316,5 +316,5 @@ jobs:
           # governance policy deliberately prohibits Actions from submitting
           # reviews, so a synthetic self-approval would only make this path
           # fail. Auto-merge still waits for every required current-head check.
-          gh pr merge "${PR_URL}" --auto --merge \
+          gh pr merge "${PR_URL}" --auto --merge --delete-branch \
             --match-head-commit "${PR_HEAD_SHA}"
