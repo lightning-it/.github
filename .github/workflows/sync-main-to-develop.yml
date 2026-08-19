@@ -51,13 +51,30 @@ jobs:
       - name: Validate ancestry bot token
         id: ancestry-bot
         env:
-          APP_SLUG: ${{ steps.release-app.outputs.app-slug || steps.workflow-source-app.outputs.app-slug }}
-          GH_TOKEN: ${{ steps.release-app.outputs.token || steps.workflow-source-app.outputs.token }}
-          APP_INSTALLATION_ID: ${{ steps.release-app.outputs.installation-id || steps.workflow-source-app.outputs.installation-id }}
-          EXPECTED_APP_SLUG: ${{ github.repository == 'lightning-it/.github' && 'lightning-it-shared-assets-sync' || 'lightning-it-release-automation' }}
-          EXPECTED_BOT_LOGIN: ${{ github.repository == 'lightning-it/.github' && 'lightning-it-shared-assets-sync[bot]' || 'lightning-it-release-automation[bot]' }}
-          EXPECTED_BOT_PATH: ${{ github.repository == 'lightning-it/.github' && 'lightning-it-shared-assets-sync%5Bbot%5D' || 'lightning-it-release-automation%5Bbot%5D' }}
-          EXPECTED_INSTALLATION_ID: ${{ github.repository == 'lightning-it/.github' && '147922640' || '148019054' }}
+          APP_SLUG: >-
+            ${{ steps.release-app.outputs.app-slug ||
+            steps.workflow-source-app.outputs.app-slug }}
+          GH_TOKEN: >-
+            ${{ steps.release-app.outputs.token ||
+            steps.workflow-source-app.outputs.token }}
+          APP_INSTALLATION_ID: >-
+            ${{ steps.release-app.outputs.installation-id ||
+            steps.workflow-source-app.outputs.installation-id }}
+          EXPECTED_APP_SLUG: >-
+            ${{ github.repository == 'lightning-it/.github' &&
+            'lightning-it-shared-assets-sync' ||
+            'lightning-it-release-automation' }}
+          EXPECTED_BOT_LOGIN: >-
+            ${{ github.repository == 'lightning-it/.github' &&
+            'lightning-it-shared-assets-sync[bot]' ||
+            'lightning-it-release-automation[bot]' }}
+          EXPECTED_BOT_PATH: >-
+            ${{ github.repository == 'lightning-it/.github' &&
+            'lightning-it-shared-assets-sync%5Bbot%5D' ||
+            'lightning-it-release-automation%5Bbot%5D' }}
+          EXPECTED_INSTALLATION_ID: >-
+            ${{ github.repository == 'lightning-it/.github' &&
+            '147922640' || '148019054' }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
