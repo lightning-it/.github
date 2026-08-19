@@ -437,7 +437,8 @@ jobs:
               --arg marker "${sync_comment_marker}" '
                 [.[].[]? |
                   select((.body | type) == "string") |
-                  select(.body | startswith($marker + "\n"))]
+                  select((.body | sub("^[[:space:]]+"; ""))
+                    | startswith($marker))]
               ' <<<"${sync_comment_pages}")"
             # Any second marker is ambiguous evidence, even if its payload or
             # actor is invalid. Exactly one marker must exist before validating

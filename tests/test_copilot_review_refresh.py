@@ -190,6 +190,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", None),
             ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", 999),
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
+            (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             ("litroc", f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}", None),
         )
         for author, external_id, pull_request_number in rejected:

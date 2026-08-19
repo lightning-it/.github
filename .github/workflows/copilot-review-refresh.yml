@@ -175,7 +175,9 @@ jobs:
                 and (
                   (
                     (
-                      ($author != "lightning-it-release-automation[bot]"
+                      (($author != "lightning-it-release-automation[bot]"
+                        and ($repository != "lightning-it/.github"
+                          or $author != "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v6:" + $pr
                             + ":[1-9][0-9]*:" + $base + ":" + $head + "$")))
@@ -192,7 +194,9 @@ jobs:
                   or
                   (
                     (
-                      ($author != "lightning-it-release-automation[bot]"
+                      (($author != "lightning-it-release-automation[bot]"
+                        and ($repository != "lightning-it/.github"
+                          or $author != "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v5:[1-9][0-9]*:"
                             + $base + ":" + $head + "$")))
