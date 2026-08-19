@@ -112,26 +112,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         }
 
         def validate(candidate: dict[str, object]) -> int:
-            result = subprocess.run(
-                [
-                    "jq",
-                    "-e",
-                    "--arg",
-                    "base",
-                    "a" * 40,
-                    "--arg",
-                    "head",
-                    "b" * 40,
-                    "--arg",
-                    "repository",
-                    "lightning-it/.github",
-                    identity_filter,
-                ],
-                input=json.dumps(candidate),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "jq",
+                        "-e",
+                        "--arg",
+                        "base",
+                        "a" * 40,
+                        "--arg",
+                        "head",
+                        "b" * 40,
+                        "--arg",
+                        "repository",
+                        "lightning-it/.github",
+                        identity_filter,
+                    ],
+                    input=json.dumps(candidate),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate promotion identity: {error}")
             return result.returncode
 
         self.assertEqual(0, validate(valid))
