@@ -259,6 +259,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
     except OSError as error:
         fail(f"Protected {name} cannot be written atomically: {error}")
     finally:
+        active_error = sys.exc_info()[1]
         if temporary_descriptor >= 0:
             os.close(temporary_descriptor)
         if not replaced:
@@ -266,6 +267,14 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                 os.unlink(temporary_name, dir_fd=directory)
             except FileNotFoundError:
                 pass
+            except OSError as cleanup_error:
+                cleanup_message = (
+                    f"Protected {name} temporary cleanup also failed: "
+                    f"{cleanup_error}"
+                )
+                if active_error is None:
+                    fail(cleanup_message)
+                active_error.add_note(cleanup_message)
         try:
             os.close(directory)
         except OSError:
