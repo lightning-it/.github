@@ -23,6 +23,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: >-
+    protected-current-revision-rerun-${{ inputs.pr_number }}-${{ inputs.expected_head }}
+  cancel-in-progress: false
+
 jobs:
   rerun-protected-verifier:
     name: Re-run the one protected verifier attempt
@@ -32,7 +37,7 @@ jobs:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Validate the live binding and rerun exactly once
@@ -208,11 +213,13 @@ jobs:
           run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
           jq -e \
             --arg api_url "${GITHUB_API_URL}" \
-            --arg actor "${author}" \
+            --arg base_ref "${base_ref}" \
+            --arg base_sha "${EXPECTED_BASE}" \
             --arg head_ref "${head_ref}" \
             --arg head_sha "${EXPECTED_HEAD}" \
             --arg repository "${REPOSITORY}" \
-            --arg run_url "${verifier_run_url}" '
+            --arg run_url "${verifier_run_url}" \
+            --argjson pr_number "${PR_NUMBER}" '
               .event == "pull_request_target"
               and .path == ".github/workflows/supplementary-current-revision-required.yml"
               and (.workflow_id | type == "number" and . > 0)
@@ -221,8 +228,18 @@ jobs:
               and .head_branch == $head_ref
               and .head_sha == $head_sha
               and .html_url == $run_url
-              and .actor.login == $actor
-              and .triggering_actor.login == $actor
+              and (.actor.login | type == "string" and length > 0)
+              and (.triggering_actor.login | type == "string" and length > 0)
+              and (.pull_requests | length) == 1
+              and .pull_requests[0].number == $pr_number
+              and .pull_requests[0].url == ($api_url + "/repos/" + $repository
+                + "/pulls/" + ($pr_number | tostring))
+              and .pull_requests[0].base.ref == $base_ref
+              and .pull_requests[0].base.sha == $base_sha
+              and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
+              and .pull_requests[0].head.ref == $head_ref
+              and .pull_requests[0].head.sha == $head_sha
+              and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
               and .status == "completed"
             ' <<<"${run}" >/dev/null
           if [ "$(jq -r .conclusion <<<"${run}")" = success ]; then
@@ -235,4 +252,32 @@ jobs:
             echo "Protected verifier already consumed its single rerun; no further retry is allowed."
             exit 0
           fi
-          gh api --method POST "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null
+          if ! gh api --method POST \
+              "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null; then
+            # GitHub can accept the rerun and still close the client request
+            # with a non-success response when another service-side request
+            # wins the same transition. Accept that outcome only after the
+            # live run proves that attempt two was actually materialized.
+            run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
+            observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+            if [ "${observed_attempt}" -lt 2 ]; then
+              echo "Rerun request failed without a materialized second attempt." >&2
+              exit 1
+            fi
+            echo "A concurrent service-side request already materialized the protected rerun."
+          fi
+          for completion_attempt in $(seq 1 60); do
+            run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
+            observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+            status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${run}")"
+            if [ "${observed_attempt}" -ge 2 ] && [ "${status}" = completed ]; then
+              test "$(jq -r .conclusion <<<"${run}")" = success
+              echo "Protected verifier rerun completed successfully."
+              exit 0
+            fi
+            if [ "${completion_attempt}" -eq 60 ]; then
+              echo "Protected verifier rerun did not complete successfully in time." >&2
+              exit 1
+            fi
+            sleep 5
+          done
