@@ -89,13 +89,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_self_hosted_promotion_controller_requires_exact_live_pr(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        promotion = workflow.split('promotion_pr="$(gh api', 1)[1].split(
+        promotion = workflow.split('                pr="$(gh api', 1)[1].split(
             '                protected_main="$(gh api', 1
         )[0]
         marker = '                  --arg repository "${REPOSITORY}" \'\n'
         start = promotion.index(marker) + len(marker)
-        end = promotion.index('\n                  \' <<<"${promotion_pr}"', start)
+        end = promotion.index('\n                  \' <<<"${pr}"', start)
         identity_filter = promotion[start:end]
+
+        self.assertIn('          pr=""\n          case "${WORKFLOW_REF}" in', workflow)
+        self.assertIn(
+            "          if [ -z \"${pr}\" ]; then\n"
+            '            pr="$(gh api '
+            '"repos/${REPOSITORY}/pulls/${PR_NUMBER}")"\n'
+            "          fi",
+            workflow,
+        )
 
         valid = {
             "state": "open",

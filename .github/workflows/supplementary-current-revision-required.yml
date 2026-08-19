@@ -81,6 +81,7 @@ jobs:
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          pr=""
           case "${WORKFLOW_REF}" in
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
               source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
@@ -125,7 +126,7 @@ jobs:
                 source_sha="${EVENT_BASE}"
               else
                 test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
-                promotion_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
                 jq -e \
                   --arg base "${EVENT_BASE}" \
                   --arg head "${EVENT_HEAD}" \
@@ -137,7 +138,7 @@ jobs:
                     and .head.ref == "develop"
                     and .head.sha == $head
                     and .head.repo.full_name == $repository
-                  ' <<<"${promotion_pr}" >/dev/null
+                  ' <<<"${pr}" >/dev/null
                 protected_main="$(gh api repos/lightning-it/.github/branches/main)"
                 jq -e \
                   --arg base "${EVENT_BASE}" '
@@ -165,7 +166,9 @@ jobs:
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
 
           failure_stage='live-pr-binding'
-          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          if [ -z "${pr}" ]; then
+            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          fi
           jq -e \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \
