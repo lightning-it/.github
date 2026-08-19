@@ -1,0 +1,7 @@
+{
+  "develop_parent_sha": "e5e1eed8f14a544146c35b37fd93df9514c9d092",
+  "main_sha": "3b4daf9f0d5d3c02ab0df6a5463a54fab6724c76",
+  "purpose": "Bind the reviewed main ancestry backmerge.",
+  "repository": "lightning-it/.github",
+  "schema_version": 1
+}
