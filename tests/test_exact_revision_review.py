@@ -161,6 +161,48 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             self.assertEqual(b"unchanged", protected.read_bytes())
 
+    def test_protected_writer_close_does_not_mask_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            protected = Path(temporary) / "protected"
+            protected.write_bytes(b"unchanged")
+            real_close = self.module.os.close
+            close_calls = 0
+
+            def close_then_report_failure(descriptor: int) -> None:
+                nonlocal close_calls
+                close_calls += 1
+                real_close(descriptor)
+                if close_calls == 2:
+                    raise OSError("simulated close failure")
+
+            with (
+                mock.patch.object(
+                    self.module.os,
+                    "fsync",
+                    side_effect=OSError("simulated write failure"),
+                ),
+                mock.patch.object(
+                    self.module.os,
+                    "close",
+                    side_effect=close_then_report_failure,
+                ),
+                self.assertRaisesRegex(
+                    self.module.MaterializationError,
+                    "simulated write failure",
+                ) as raised,
+            ):
+                self.module.write_owned_regular_file(
+                    protected,
+                    b"replacement",
+                    "test",
+                )
+            notes = getattr(raised.exception, "__notes__", ())
+            if hasattr(raised.exception, "add_note"):
+                self.assertTrue(
+                    any("simulated close failure" in note for note in notes)
+                )
+            self.assertEqual(b"unchanged", protected.read_bytes())
+
     def test_metadata_binding_rejects_non_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             review = Path(temporary)

@@ -261,7 +261,18 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
     finally:
         active_error = sys.exc_info()[1]
         if temporary_descriptor >= 0:
-            os.close(temporary_descriptor)
+            try:
+                os.close(temporary_descriptor)
+            except OSError as cleanup_error:
+                cleanup_message = (
+                    f"Protected {name} temporary close also failed: "
+                    f"{cleanup_error}"
+                )
+                if active_error is None:
+                    fail(cleanup_message)
+                add_note = getattr(active_error, "add_note", None)
+                if callable(add_note):
+                    add_note(cleanup_message)
         if not replaced:
             try:
                 os.unlink(temporary_name, dir_fd=directory)
