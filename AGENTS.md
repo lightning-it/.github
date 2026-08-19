@@ -2,7 +2,8 @@
 
 ## Pull requests
 
-- Every pull request must request review from GitHub Copilot (`copilot-pull-request-reviewer[bot]`).
+- Pipeline review follows the permanent REP-60 current-revision contract below;
+  no local tool invokes an AI reviewer.
 - Treat Copilot findings as actionable review comments: reproduce the issue, fix it, and add a regression test where practical.
 - Do not dismiss a finding without documenting why it is a false positive in the pull request.
 - A pull request is mergeable only after all required automated checks pass and
@@ -41,3 +42,30 @@ model/reasoning choice, rationale, and a concrete escalation condition.
   remaining risks; preserve durable decisions in Confluence, Jira, or GitHub.
 
 <!-- LIT AI task governance: end -->
+
+<!-- LIT REP-60 review governance: start -->
+
+## REP-60 current-revision review governance
+
+- Local validation is deterministic only. It must never invoke Codex, GitHub
+  Copilot, another model, or an external AI endpoint. Authoritative AI review
+  runs only in the protected GitHub pipeline and binds the exact PR head.
+- Lightning IT automation may request and fund one GitHub Copilot review only
+  when the exact PR author is `litroc`, and only at the finalization boundary;
+  intermediate `synchronize` pushes must not trigger AI review. Any finding
+  requires correction and a final current-head re-review.
+- Every other human or external contributor supplies any required current-head
+  Copilot review under their own entitlement and cost. Lightning IT verifies
+  valid evidence but never requests or funds that review, and personal tokens
+  or provider keys never enter Actions.
+- A same-repository PR authored exactly by
+  `lightning-it-release-automation[bot]` uses only the protected MLX-90 §7.2
+  Exact-Revision Codex check. It must never request Copilot or synthesize a
+  Copilot success.
+- A proven ancestry-only main-to-develop backmerge uses the deterministic
+  evidence-bound exemption and performs zero AI calls. Unknown automation
+  identities fail closed.
+- The only neutral merge-gate result is `Current revision review`. Missing,
+  stale, ambiguous, or unresolved review evidence blocks the merge.
+
+<!-- LIT REP-60 review governance: end -->

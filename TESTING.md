@@ -24,29 +24,6 @@ Products and runtimes:
 - `develop` to `main` promotion pull requests run the strongest validation profile for this repository.
 - Trusted `main` release workflows build and publish artifacts only after validation succeeds.
 
-## Protected Trust-Root Promotion
-
-Promote an organization-owned required-workflow source in this order: merge the
-source change normally to protected `develop`, promote it normally to protected
-`main`, verify the exact `main` source commit, and only then activate a ruleset
-that requires it. A candidate branch or an unpromoted `develop` workflow must
-never validate itself.
-
-Promotion uses exact current branch heads and normal merge commits, without a
-bypass, force-push, or direct protected-branch write. If `main` is not already
-an ancestor of `develop`, repair ancestry in a separately reviewed two-parent
-merge before promotion. A zero-file or unavailable AI response is not a review
-PASS.
-
-For protected current-revision evidence, a custom check's canonical
-`/runs/<check-id>` URL identifies only that check object; it is not sufficient
-for producer provenance. Schema-v4 evidence also binds the exact GitHub Actions
-producer run ID in the external ID and summary. The organization-owned required
-workflow must query that run and verify its repository, event, workflow path,
-protected base, candidate head, actor, conclusion, and schema before it can pass.
-The verifier reservation separately embeds its own required-workflow run ID in
-a v2 external ID; its details URL remains the canonical `/runs/<check-id>` URL.
-
 ## Local Commands
 
 Run the managed repository-policy checks:
