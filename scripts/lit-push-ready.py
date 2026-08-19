@@ -3584,7 +3584,9 @@ def governed_push_remote_from_url(
         if value.startswith(prefix):
             repository_name = value[len(prefix) :]
             break
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository_name):
+    if repository_name != ".github" and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", repository_name
+    ):
         raise RuntimeError(
             "origin push URL must target a Lightning IT repository on github.com"
         )

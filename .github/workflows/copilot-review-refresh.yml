@@ -28,14 +28,25 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
         (
-          contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+          github.event_name == 'pull_request_review' &&
           (
-            github.event.review.user.login == 'copilot-pull-request-reviewer[bot]' ||
-            github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            (
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+              github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
+            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
           )
         ) ||
-        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association) ||
-        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+        (
+          github.event_name == 'pull_request_review_comment' &&
+          (
+            (
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+              github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
+            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+          )
+        )
       )
     permissions:
       actions: write

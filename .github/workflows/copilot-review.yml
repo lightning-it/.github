@@ -22,7 +22,9 @@ env:
   SUPPRESSED_COMMENTS_MARKER: suppressed comments
 
 concurrency:
-  group: copilot-review-${{ github.event.pull_request.number }}
+  # A synchronize/reopened verifier run must never cancel the one-time
+  # opened/ready_for_review request run before that request is recorded.
+  group: copilot-review-${{ github.event.pull_request.number }}-${{ github.event.action }}
   cancel-in-progress: true
 
 # Release-App pull requests use only the protected MLX-90 §7.2 Exact-Revision
@@ -349,7 +351,9 @@ jobs:
               <<<"${live_pr}" >/dev/null; then
             trusted=true
             trusted_kind=repository-quality
-          elif [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+          elif { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+              || { [ "${REPOSITORY}" = "lightning-it/.github" ] \
+                && [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; }; } \
             && [ "${PR_HEAD_REPO}" = "${REPOSITORY}" ] \
             && [[ "${PR_HEAD}" == backmerge/*-main ]] \
             && [ "${PR_BASE}" = "develop" ] \
@@ -883,7 +887,9 @@ jobs:
           review_path="applicable Copilot or governed automation exemption"
           external_kind="copilot"
           result_title="Current revision review passed"
-          if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+          if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+              || { [ "${REPOSITORY}" = "lightning-it/.github" ] \
+                && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
             test "${TRUSTED_KIND}" = ancestry-backmerge
             test "${base_ref}" = develop
             [[ "${EVENT_HEAD_REF}" == backmerge/*-main ]]
