@@ -237,7 +237,7 @@ jobs:
           failure_stage='permanent-producer-inventory'
           test "${draft}" = false
           neutral_pages="$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&per_page=100")"
+            "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
           neutral="$(jq -c '
             [.[].check_runs[]? |
               select(.name == "Current revision review") |

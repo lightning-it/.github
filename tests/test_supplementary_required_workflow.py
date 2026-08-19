@@ -70,6 +70,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
             workflow,
         )
+        self.assertIn(
+            "check_name=Current%20revision%20review&filter=all&per_page=100",
+            workflow,
+        )
         self.assertIn(".app.id == 15368", workflow)
         self.assertIn(
             '.path == ".github/workflows/release-bot-exact-head-review.yml"',
