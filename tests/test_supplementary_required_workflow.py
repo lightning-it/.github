@@ -59,7 +59,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            'startswith("mlx90-current-revision:copilot:v6:")',
+            workflow,
+        )
+        self.assertIn(
+            'startswith("mlx90-current-revision:ancestry-backmerge:v6:")',
+            workflow,
+        )
+        self.assertIn(
             "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn(
+            "check_name=Current%20revision%20review&filter=all&per_page=100",
             workflow,
         )
         self.assertIn(".app.id == 15368", workflow)
@@ -81,6 +93,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
+        self.assertIn(
+            "mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn("Keep v5 valid only for already-open pull requests", workflow)
+        self.assertIn("prevents v5 and v6 from satisfying the gate together", workflow)
         self.assertIn("producer_kind=\"${BASH_REMATCH[1]}\"", workflow)
         self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
         self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
