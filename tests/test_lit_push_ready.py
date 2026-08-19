@@ -45,5 +45,28 @@ class ChangedPathsTests(unittest.TestCase):
                 self.changed_paths()
 
 
+class GovernedRemoteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts" / "lit-push-ready.py"))
+        self.governed_remote = namespace["governed_push_remote_from_url"]
+
+    def test_accepts_github_profile_https_and_ssh_remotes(self) -> None:
+        for url in (
+            "https://github.com/lightning-it/.github.git",
+            "ssh://git@github.com/lightning-it/.github.git",
+            "git@github.com:lightning-it/.github.git",
+        ):
+            with self.subTest(url=url):
+                remote = self.governed_remote("origin", url)
+                self.assertEqual("lightning-it/.github", remote["repository"])
+                self.assertEqual("github.com", remote["host"])
+
+    def test_rejects_other_dot_prefixed_repository_names(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Lightning IT repository"):
+            self.governed_remote(
+                "origin", "https://github.com/lightning-it/.github-private.git"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
