@@ -18,13 +18,6 @@
 - Prefer least-privilege credentials and pin third-party Actions to immutable commit SHAs.
 - Add tests for authorization, secret scope, and failure paths when changing governance or release automation.
 
-
-
-
-
-
-
-
 <!-- LIT REP-60 review governance: start -->
 
 ## REP-60 current-revision review governance
