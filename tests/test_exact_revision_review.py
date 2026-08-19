@@ -68,6 +68,13 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             workflow.index('-f "details_url=${check_url}"'),
         )
 
+    def test_pr_number_is_validated_before_json_evidence(self) -> None:
+        workflow = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+        validation = '[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]'
+        evidence_use = '--argjson pr_number "${PR_NUMBER}"'
+        self.assertIn(validation, workflow)
+        self.assertLess(workflow.index(validation), workflow.index(evidence_use))
+
     def test_protected_reader_rejects_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "target"

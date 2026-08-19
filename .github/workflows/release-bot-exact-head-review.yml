@@ -319,6 +319,7 @@ jobs:
           input_sha256="$(jq -r .input_sha256 "${metadata}")"
           review_bytes="$(jq -r .review_bytes "${metadata}")"
           producer_run_id="${{ steps.dedupe.outputs.producer_run_id }}"
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
           producer_run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${producer_run_id}"
           evidence="$(jq -cn \
