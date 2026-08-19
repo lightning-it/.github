@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -132,18 +135,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
         self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
         self.assertIn('test "${producer_kind}" = copilot', workflow)
+        self.assertIn('central_sync_backmerge=false', workflow)
+        self.assertIn('central_sync_backmerge=true', workflow)
         self.assertEqual(
             2,
-            workflow.count(
-                "[ \"${REPOSITORY}\" = 'lightning-it/.github' ]"
-            ),
-        )
-        self.assertEqual(
-            3,
-            workflow.count(
-                "[ \"${author}\" = "
-                "'lightning-it-shared-assets-sync[bot]' ]"
-            ),
+            workflow.count('[ "${central_sync_backmerge}" = true ]'),
         )
         self.assertIn(".producer_run_id == $run_id", workflow)
         self.assertIn(".schema == 4", workflow)
@@ -192,6 +188,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "[ \"${author}\" = "
             "'lightning-it-shared-assets-sync[bot]' ]",
             recovery,
+        )
+        self.assertIn(
+            '&& [ "${central_sync_backmerge}" = false ]', recovery
         )
         self.assertIn('test "${base_ref}" = develop', recovery)
         self.assertIn(
@@ -295,6 +294,109 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "$(jq \'length\' <<<"${sync_app_comments}")" -eq 1',
             recovery,
         )
+
+    def test_central_sync_backmerge_bypasses_only_distribution_provenance(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        routing = workflow.split(
+            "central_sync_backmerge=false", 1
+        )[1].split(
+            "failure_stage='live-commit-binding'", 1
+        )[0]
+
+        for exact_binding in (
+            "[ \"${REPOSITORY}\" = 'lightning-it/.github' ]",
+            "[ \"${author}\" = 'lightning-it-shared-assets-sync[bot]' ]",
+            '[ "${base_ref}" = develop ]',
+            '[ "${head_repository}" = "${REPOSITORY}" ]',
+            '[[ "${head_ref}" == backmerge/*-main ]]',
+            '"chore(governance): record main ancestry before "*',
+        ):
+            with self.subTest(exact_binding=exact_binding):
+                self.assertIn(exact_binding, routing)
+        self.assertIn("central_sync_backmerge=true", routing)
+
+        managed_sync = workflow.split(
+            "managed_sync_verified=false", 1
+        )[1].split(
+            "failure_stage='managed-sync-provenance'", 1
+        )[0]
+        self.assertIn(
+            '[ "${author}" = \'lightning-it-shared-assets-sync[bot]\' ]',
+            managed_sync,
+        )
+        self.assertIn(
+            '&& [ "${central_sync_backmerge}" = false ]', managed_sync
+        )
+
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-binding'", 1
+        )[1]
+        self.assertIn(
+            '|| [ "${central_sync_backmerge}" = true ]', permanent
+        )
+        self.assertIn(
+            'test "${producer_kind}" = ancestry-backmerge', permanent
+        )
+
+        routing_script = textwrap.dedent(
+            workflow.split(
+                "          central_sync_backmerge=false", 1
+            )[1].split(
+                "\n\n          failure_stage='live-commit-binding'", 1
+            )[0]
+        )
+
+        def classify(**overrides: str) -> str:
+            environment = {
+                "REPOSITORY": "lightning-it/.github",
+                "author": "lightning-it-shared-assets-sync[bot]",
+                "base_ref": "develop",
+                "head_repository": "lightning-it/.github",
+                "head_ref": "backmerge/github-main",
+                "pr_title": (
+                    "chore(governance): record main ancestry before abc123"
+                ),
+                **overrides,
+            }
+            bash = shutil.which("bash")
+            if bash is None:
+                self.fail("bash is required to execute the workflow predicate")
+            try:
+                result = subprocess.run(
+                    [
+                        bash,
+                        "-c",
+                        "set -euo pipefail\n"
+                        "central_sync_backmerge=false\n"
+                        f"{routing_script}\n"
+                        'printf "%s" "${central_sync_backmerge}"\n',
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                )
+            except FileNotFoundError as error:
+                self.fail(
+                    f"bash disappeared before the workflow predicate ran: {error}"
+                )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout
+
+        self.assertEqual("true", classify())
+        rejected = (
+            {"REPOSITORY": "lightning-it/shared-assets-lit"},
+            {"author": "lightning-it-release-automation[bot]"},
+            {"base_ref": "main"},
+            {"head_repository": "fork/.github"},
+            {"head_ref": "chore/sync-repository-quality-.github"},
+            {"pr_title": "chore: sync repository quality assets"},
+        )
+        for overrides in rejected:
+            with self.subTest(rejected=overrides):
+                self.assertEqual("false", classify(**overrides))
 
     def test_human_producer_separates_event_head_from_protected_controller(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

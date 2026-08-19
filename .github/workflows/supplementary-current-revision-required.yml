@@ -151,7 +151,18 @@ jobs:
           draft="$(jq -er '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
+          pr_title="$(jq -er '.title | select(type == "string" and length > 0)' <<<"${pr}")"
           [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          central_sync_backmerge=false
+          if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+            && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ] \
+            && [ "${base_ref}" = develop ] \
+            && [ "${head_repository}" = "${REPOSITORY}" ] \
+            && [[ "${head_ref}" == backmerge/*-main ]] \
+            && [[ "${pr_title}" == \
+              "chore(governance): record main ancestry before "* ]]; then
+            central_sync_backmerge=true
+          fi
 
           failure_stage='live-commit-binding'
           head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"
@@ -159,8 +170,7 @@ jobs:
           test "$(jq -r .sha <<<"${head_commit}")" = "${EVENT_HEAD}"
           test "$(jq -r .sha <<<"${target_commit}")" = "${EVENT_HEAD}"
           if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
-              || { [ "${REPOSITORY}" = 'lightning-it/.github' ] \
-                && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
+              || [ "${central_sync_backmerge}" = true ]; }; then
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
@@ -263,7 +273,8 @@ jobs:
 
           test "${draft}" = false
           managed_sync_verified=false
-          if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
+          if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ] \
+            && [ "${central_sync_backmerge}" = false ]; then
             failure_stage='managed-sync-provenance'
             test "${base_ref}" = develop
             test "${head_repository}" = "${REPOSITORY}"
@@ -613,12 +624,11 @@ jobs:
               producer_run_id="${BASH_REMATCH[2]}"
             fi
             if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
-                || { [ "${REPOSITORY}" = 'lightning-it/.github' ] \
-                  && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
+                || [ "${central_sync_backmerge}" = true ]; }; then
               test "${producer_kind}" = ancestry-backmerge
               test "${base_ref}" = develop
               [[ "${head_ref}" == backmerge/*-main ]]
-              [[ "$(jq -r .title <<<"${pr}")" == \
+              [[ "${pr_title}" == \
                 "chore(governance): record main ancestry before "* ]]
               expected_review_path="deterministic evidence-bound ancestry exemption"
             else
