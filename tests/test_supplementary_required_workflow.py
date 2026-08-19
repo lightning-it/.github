@@ -83,6 +83,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '[[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]',
             '[[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]',
             '[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]',
+            '[[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]',
         ):
             with self.subTest(validated_input=validated_input):
                 self.assertLess(workflow.index(validated_input), controller_case)
@@ -605,7 +606,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("select(.head_sha == $head)", reservation_selection)
         self.assertIn("startswith($prefix)", reservation_selection)
         self.assertIn("endswith($suffix)", reservation_selection)
-        self.assertIn("belongs to a different PR/head binding", reservation_selection)
+        self.assertIn('foreign_reservations="$(jq -c', reservation_selection)
         self.assertEqual(
             workflow.count('-f external_id="${reservation_external_id}"'),
             3,
@@ -618,6 +619,215 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.index('prior_external_id="$(jq -er'),
             workflow.index('-f external_id="${reservation_external_id}"'),
         )
+
+    def test_only_closed_same_workflow_foreign_reservations_are_retired(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        retirement = workflow.split('foreign_reservations="$(jq -c', 1)[1].split(
+            '          reservation_count="$(jq', 1
+        )[0]
+
+        self.assertIn('if [ "${foreign_count}" -gt 20 ]; then', retirement)
+        self.assertIn('.status == "completed"', retirement)
+        self.assertIn(
+            '(.conclusion == "success" or .conclusion == "failure")',
+            retirement,
+        )
+        self.assertIn('[.[].external_id] | unique | length', retirement)
+        self.assertIn('declare -A retired_pr_numbers=()', retirement)
+        self.assertIn('declare -A retired_run_ids=()', retirement)
+        self.assertIn(
+            '"repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"',
+            retirement,
+        )
+        self.assertIn('.event == "pull_request_target"', retirement)
+        self.assertIn(
+            '.path == ".github/workflows/'
+            'supplementary-current-revision-required.yml"',
+            retirement,
+        )
+        self.assertIn('.status == "in_progress"', retirement)
+        self.assertIn('.conclusion == null', retirement)
+        self.assertIn('.workflow_id == $workflow_id', retirement)
+        self.assertIn('.state == "closed"', retirement)
+        self.assertIn('.base.repo.full_name == $repository', retirement)
+        self.assertIn('.head.sha == $head', retirement)
+        self.assertIn(
+            'test "${foreign_pr_number}" != "${PR_NUMBER}"',
+            retirement,
+        )
+        self.assertIn(
+            'test "${foreign_details_url}" =',
+            retirement,
+        )
+        self.assertNotIn('.state == "open"', retirement)
+
+    def test_retired_reservation_filters_reject_open_or_foreign_evidence(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        retirement = workflow.split('foreign_reservations="$(jq -c', 1)[1].split(
+            '          reservation_count="$(jq', 1
+        )[0]
+
+        def extract(block: str, argument_marker: str, end_marker: str) -> str:
+            return block.split(argument_marker, 1)[1].split(end_marker, 1)[0]
+
+        def accepts(
+            jq_filter: str,
+            arguments: list[str],
+            payload: dict[str, object],
+        ) -> bool:
+            try:
+                result = subprocess.run(
+                    ["jq", "-e", *arguments, jq_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(
+                    f"jq is required to validate retired reservations: {error}"
+                )
+            return result.returncode == 0
+
+        current_filter = extract(
+            retirement.split('current_workflow_id="$(jq -er', 1)[1],
+            '--argjson run_id "${GITHUB_RUN_ID}" \'\n',
+            '\n              \' <<<"${current_verifier_run}")"',
+        )
+        head = "a" * 40
+        current = {
+            "id": 101,
+            "event": "pull_request_target",
+            "path": ".github/workflows/supplementary-current-revision-required.yml",
+            "status": "in_progress",
+            "conclusion": None,
+            "head_sha": head,
+            "run_attempt": 1,
+            "name": f"Protected current revision PR #225 opened {head}",
+            "workflow_id": 335,
+        }
+        current_args = [
+            "--arg",
+            "action",
+            "opened",
+            "--arg",
+            "head",
+            head,
+            "--argjson",
+            "pr_number",
+            "225",
+            "--argjson",
+            "run_id",
+            "101",
+        ]
+        self.assertTrue(accepts(current_filter, current_args, current))
+        for rejected in (
+            {**current, "event": "pull_request"},
+            {**current, "status": "completed"},
+            {**current, "conclusion": "success"},
+            {**current, "run_attempt": 3},
+            {**current, "workflow_id": 0},
+            {**current, "name": f"Protected current revision PR #221 opened {head}"},
+        ):
+            with self.subTest(current=rejected):
+                self.assertFalse(accepts(current_filter, current_args, rejected))
+
+        retired_pr_filter = extract(
+            retirement.split('retired_pr="$(gh api', 1)[1],
+            '--argjson number "${foreign_pr_number}" \'\n',
+            '\n                \' <<<"${retired_pr}"',
+        )
+        retired_pr = {
+            "number": 221,
+            "state": "closed",
+            "base": {"repo": {"full_name": "lightning-it/.github"}},
+            "head": {
+                "sha": head,
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+        }
+        retired_pr_args = [
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "repository",
+            "lightning-it/.github",
+            "--argjson",
+            "number",
+            "221",
+        ]
+        self.assertTrue(accepts(retired_pr_filter, retired_pr_args, retired_pr))
+        for rejected in (
+            {**retired_pr, "state": "open"},
+            {**retired_pr, "number": 220},
+            {
+                **retired_pr,
+                "base": {"repo": {"full_name": "fork/.github"}},
+            },
+            {
+                **retired_pr,
+                "head": {
+                    "sha": "b" * 40,
+                    "repo": {"full_name": "lightning-it/.github"},
+                },
+            },
+        ):
+            with self.subTest(retired_pr=rejected):
+                self.assertFalse(
+                    accepts(retired_pr_filter, retired_pr_args, rejected)
+                )
+
+        retired_run_filter = extract(
+            retirement.split('retired_verifier_run="$(gh api', 1)[1],
+            '--argjson workflow_id "${current_workflow_id}" \'\n',
+            '\n                \' <<<"${retired_verifier_run}"',
+        )
+        retired_run = {
+            "id": 201,
+            "workflow_id": 335,
+            "event": "pull_request_target",
+            "path": ".github/workflows/supplementary-current-revision-required.yml",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_sha": head,
+            "run_attempt": 1,
+            "name": f"Protected current revision PR #221 synchronize {head}",
+        }
+        retired_run_args = [
+            "--arg",
+            "conclusion",
+            "failure",
+            "--arg",
+            "head",
+            head,
+            "--argjson",
+            "pr_number",
+            "221",
+            "--argjson",
+            "run_id",
+            "201",
+            "--argjson",
+            "workflow_id",
+            "335",
+        ]
+        self.assertTrue(accepts(retired_run_filter, retired_run_args, retired_run))
+        for rejected in (
+            {**retired_run, "workflow_id": 336},
+            {**retired_run, "event": "pull_request"},
+            {**retired_run, "status": "in_progress"},
+            {**retired_run, "conclusion": "success"},
+            {**retired_run, "run_attempt": 3},
+            {**retired_run, "name": f"Protected current revision PR #220 synchronize {head}"},
+        ):
+            with self.subTest(retired_run=rejected):
+                self.assertFalse(
+                    accepts(retired_run_filter, retired_run_args, rejected)
+                )
 
     def test_historical_bootstrap_transitions_are_absent(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
