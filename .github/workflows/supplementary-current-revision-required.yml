@@ -34,6 +34,8 @@ jobs:
       actions: read
       checks: write
       contents: read
+      # GitHub permits reading PR issue comments with Pull requests: read;
+      # do not widen this job to the separate Issues permission.
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -74,32 +76,54 @@ jobs:
               and .archived == false
               and .disabled == false
             ' <<<"${target_repository}" >/dev/null
-          test "${WORKFLOW_REF}" = \
-            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
-          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
-          source_compare="$(gh api \
-            "repos/lightning-it/.github/compare/${WORKFLOW_SHA}...${source_sha}")"
-          jq -e \
-            --arg workflow_sha "${WORKFLOW_SHA}" \
-            --arg source_sha "${source_sha}" '
-              .base_commit.sha == $workflow_sha
-              and .merge_base_commit.sha == $workflow_sha
-              and (
-                (.status == "identical"
-                  and $source_sha == $workflow_sha
-                  and .ahead_by == 0
-                  and .behind_by == 0
-                  and .head_commit == null)
-                or
-                (.status == "ahead"
-                  and $source_sha != $workflow_sha
-                  and .ahead_by > 0
-                  and .behind_by == 0
-                  and .head_commit.sha == $source_sha)
-              )
-            ' <<<"${source_compare}" >/dev/null
+          case "${WORKFLOW_REF}" in
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
+              source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
+              [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+              source_compare="$(gh api \
+                "repos/lightning-it/.github/compare/${WORKFLOW_SHA}...${source_sha}")"
+              jq -e \
+                --arg workflow_sha "${WORKFLOW_SHA}" \
+                --arg source_sha "${source_sha}" '
+                  .base_commit.sha == $workflow_sha
+                  and .merge_base_commit.sha == $workflow_sha
+                  and (
+                    (.status == "identical"
+                      and $source_sha == $workflow_sha
+                      and .ahead_by == 0
+                      and .behind_by == 0
+                      and .head_commit == null)
+                    or
+                    (.status == "ahead"
+                      and $source_sha != $workflow_sha
+                      and .ahead_by > 0
+                      and .behind_by == 0
+                      and .head_commit.sha == $source_sha)
+                  )
+                ' <<<"${source_compare}" >/dev/null
+              ;;
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
+              # A .github PR to develop is evaluated by the already-protected
+              # base copy, never by its candidate workflow. Bind that special
+              # self-hosted controller to both the event base and the live
+              # protected develop head. Other repositories remain main-only.
+              test "${REPOSITORY}" = lightning-it/.github
+              test "${WORKFLOW_SHA}" = "${EVENT_BASE}"
+              protected_develop="$(gh api repos/lightning-it/.github/branches/develop)"
+              jq -e \
+                --arg base "${EVENT_BASE}" '
+                  .name == "develop"
+                  and .protected == true
+                  and .commit.sha == $base
+                ' <<<"${protected_develop}" >/dev/null
+              source_sha="${EVENT_BASE}"
+              ;;
+            *)
+              echo "Required Workflow source is not a protected controller." >&2
+              exit 1
+              ;;
+          esac
 
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2

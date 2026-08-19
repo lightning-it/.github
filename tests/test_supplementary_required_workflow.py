@@ -42,6 +42,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and $source_sha != $workflow_sha', source_compare)
         self.assertIn('and .head_commit.sha == $source_sha', source_compare)
 
+    def test_self_hosted_develop_controller_is_base_and_protection_bound(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "supplementary-current-revision-required.yml@refs/heads/develop)",
+            workflow,
+        )
+        self.assertIn('test "${REPOSITORY}" = lightning-it/.github', workflow)
+        self.assertIn('test "${WORKFLOW_SHA}" = "${EVENT_BASE}"', workflow)
+        self.assertIn(
+            "protected_develop=\"$(gh api "
+            "repos/lightning-it/.github/branches/develop)\"",
+            workflow,
+        )
+        self.assertIn('and .protected == true', workflow)
+        self.assertIn('and .commit.sha == $base', workflow)
+        self.assertIn('source_sha="${EVENT_BASE}"', workflow)
+
+    def test_pr_comment_read_uses_the_smaller_supported_permission(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permissions = workflow.split("    runs-on:", 1)[0]
+        self.assertIn("      pull-requests: read", permissions)
+        self.assertNotIn("      issues: read", permissions)
+        self.assertIn(
+            "GitHub permits reading PR issue comments with Pull requests: read",
+            permissions,
+        )
+
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Protected current-revision verifier", workflow)
