@@ -127,13 +127,15 @@ jobs:
               -f 'output[summary]=Verifying the exact current revision from the protected base controller.'
           )"
           check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+          canonical_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
           jq -e \
             --arg external_id "${external_id}" \
             --arg head "${EVENT_HEAD}" \
-            --arg url "${check_url}" '
+            --arg requested_url "${check_url}" \
+            --arg canonical_url "${canonical_check_url}" '
               .name == "Successful Copilot review"
               and .head_sha == $head
-              and .details_url == $url
+              and (.details_url == $requested_url or .details_url == $canonical_url)
               and .external_id == $external_id
               and .status == "in_progress"
               and .app.id == 15368
@@ -266,10 +268,11 @@ jobs:
           jq -e \
             --arg external_id "${external_id}" \
             --arg head "${EVENT_HEAD}" \
-            --arg url "${check_url}" '
+            --arg requested_url "${check_url}" \
+            --arg canonical_url "${canonical_check_url}" '
               .name == "Successful Copilot review"
               and .head_sha == $head
-              and .details_url == $url
+              and (.details_url == $requested_url or .details_url == $canonical_url)
               and .external_id == $external_id
               and .status == "completed"
               and .conclusion == "success"
