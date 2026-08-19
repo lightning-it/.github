@@ -34,8 +34,9 @@ jobs:
       actions: read
       checks: write
       contents: read
-      # GitHub permits reading PR issue comments with Pull requests: read;
-      # do not widen this job to the separate Issues permission.
+      # The App binding exists only on the Issues REST representation of a PR
+      # comment, so keep this endpoint-specific permission explicit and read-only.
+      issues: read
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -436,7 +437,10 @@ jobs:
                   select((.body | type) == "string") |
                   select(.body | startswith($marker + "\n"))]
               ' <<<"${sync_comment_pages}")"
-            test "$(jq 'length' <<<"${sync_comments}")" -le 100
+            # Any second marker is ambiguous evidence, even if its payload or
+            # actor is invalid. Exactly one marker must exist before validating
+            # the App identity and immutable bindings below.
+            test "$(jq 'length' <<<"${sync_comments}")" -eq 1
             sync_app_comments="$(jq -c \
               --arg api_url "${GITHUB_API_URL}" \
               --arg base "${EVENT_BASE}" \
@@ -462,6 +466,7 @@ jobs:
                   ($lines[1] | fromjson?) as $evidence |
                   select($evidence != null) |
                   select($comment.user.login == $bot) |
+                  select($comment.user.id == 307342877) |
                   select($comment.user.type == "Bot") |
                   select($comment.performed_via_github_app.id == $app_id) |
                   select($comment.performed_via_github_app.slug
@@ -477,8 +482,7 @@ jobs:
                   select($comment.issue_url
                     == ($api_url + "/repos/" + $repository + "/issues/"
                       + ($pr_number | tostring))) |
-                  select(($comment.created_at | fromdateiso8601)
-                    <= ($comment.updated_at | fromdateiso8601)) |
+                  select($comment.created_at == $comment.updated_at) |
                   select(($comment.updated_at | fromdateiso8601)
                     >= ($run_started | fromdateiso8601)) |
                   select(($comment.updated_at | fromdateiso8601)

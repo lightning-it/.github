@@ -61,13 +61,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .commit.sha == $base', workflow)
         self.assertIn('source_sha="${EVENT_BASE}"', workflow)
 
-    def test_pr_comment_read_uses_the_smaller_supported_permission(self) -> None:
+    def test_pr_comment_read_permissions_are_explicit_and_read_only(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         permissions = workflow.split("    runs-on:", 1)[0]
         self.assertIn("      pull-requests: read", permissions)
-        self.assertNotIn("      issues: read", permissions)
+        self.assertIn("      issues: read", permissions)
         self.assertIn(
-            "GitHub permits reading PR issue comments with Pull requests: read",
+            "App binding exists only on the Issues REST representation",
             permissions,
         )
 
@@ -267,6 +267,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '($comment.updated_at | fromdateiso8601)', recovery
+        )
+        self.assertIn(
+            'test "$(jq \'length\' <<<"${sync_comments}")" -eq 1',
+            recovery,
+        )
+        self.assertIn('$comment.user.id == 307342877', recovery)
+        self.assertIn(
+            '$comment.created_at == $comment.updated_at', recovery
         )
         self.assertIn(
             'test "$(jq \'length\' <<<"${sync_app_comments}")" -eq 1',
