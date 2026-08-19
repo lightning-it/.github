@@ -246,6 +246,8 @@ jobs:
                 (.external_id | startswith("mlx90-current-revision:v4:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
+                or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
+                or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v6:"))
               )]
           ' <<<"${neutral_pages}")"
           test "$(jq 'length' <<<"${neutral}")" -eq 1
@@ -303,9 +305,17 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
-            producer_kind="${BASH_REMATCH[1]}"
-            producer_run_id="${BASH_REMATCH[2]}"
+            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              producer_kind="${BASH_REMATCH[1]}"
+              producer_run_id="${BASH_REMATCH[2]}"
+            else
+              # Keep v5 valid only for already-open pull requests during the
+              # atomic producer/verifier rollout. Exact-one inventory above
+              # prevents v5 and v6 from satisfying the gate together.
+              [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+              producer_kind="${BASH_REMATCH[1]}"
+              producer_run_id="${BASH_REMATCH[2]}"
+            fi
             if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
               test "${producer_kind}" = ancestry-backmerge
               test "${base_ref}" = develop
