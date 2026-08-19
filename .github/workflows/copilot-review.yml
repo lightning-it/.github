@@ -351,7 +351,9 @@ jobs:
               <<<"${live_pr}" >/dev/null; then
             trusted=true
             trusted_kind=repository-quality
-          elif [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+          elif { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+              || { [ "${REPOSITORY}" = "lightning-it/.github" ] \
+                && [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; }; } \
             && [ "${PR_HEAD_REPO}" = "${REPOSITORY}" ] \
             && [[ "${PR_HEAD}" == backmerge/*-main ]] \
             && [ "${PR_BASE}" = "develop" ] \
