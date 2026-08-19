@@ -73,6 +73,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
         validation = '[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]'
         evidence_use = '--argjson pr_number "${PR_NUMBER}"'
         self.assertIn(validation, workflow)
+        self.assertIn(evidence_use, workflow)
         self.assertLess(workflow.index(validation), workflow.index(evidence_use))
 
     def test_protected_reader_rejects_symlink(self) -> None:
