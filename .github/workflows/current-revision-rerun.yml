@@ -232,8 +232,18 @@ jobs:
               .event == "pull_request_target"
               and .path == ".github/workflows/supplementary-current-revision-required.yml"
               and (.workflow_id | type == "number" and . > 0)
-              and .workflow_url == ($api_url + "/repos/" + $repository
-                + "/actions/required_workflows/" + (.workflow_id | tostring))
+              and .workflow_url == (
+                if $repository == "lightning-it/.github" then
+                  # The controller executes its own protected base workflow;
+                  # targets receive the same file as a Required Workflow.
+                  $api_url + "/repos/" + $repository + "/actions/workflows/"
+                    + (.workflow_id | tostring)
+                else
+                  $api_url + "/repos/" + $repository
+                    + "/actions/required_workflows/"
+                    + (.workflow_id | tostring)
+                end
+              )
               and .head_branch == $head_ref
               and .head_sha == $head_sha
               and .html_url == $run_url

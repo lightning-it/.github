@@ -26,6 +26,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index('\n            \' <<<"${neutral_summary}"', start)
         return workflow[start:end]
 
+    @staticmethod
+    def _rerun_workflow_identity_filter() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            --argjson pr_number "${PR_NUMBER}" \'\n'
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index('\n            \' <<<"${run}"', start)
+        return workflow[start:end]
+
     def _run_refresh_filter(
         self,
         *,
@@ -151,6 +159,105 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn(
             "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
         )
+
+    def test_rerun_helper_binds_central_and_distributed_workflow_urls(self) -> None:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if $repository == "lightning-it/.github" then',
+            workflow,
+        )
+        self.assertIn(
+            '$api_url + "/repos/" + $repository + "/actions/workflows/"',
+            workflow,
+        )
+        self.assertIn(
+            '+ "/actions/required_workflows/"', workflow
+        )
+
+        def validate(repository: str, workflow_url: str) -> int:
+            run = {
+                "event": "pull_request_target",
+                "path": ".github/workflows/supplementary-current-revision-required.yml",
+                "workflow_id": 337993808,
+                "workflow_url": workflow_url,
+                "head_branch": "fix/final",
+                "head_sha": "b" * 40,
+                "html_url": f"https://github.example/{repository}/actions/runs/42",
+                "actor": {"login": "litroc"},
+                "triggering_actor": {"login": "litroc"},
+                "pull_requests": [
+                    {
+                        "number": 220,
+                        "url": f"https://api.github.example/repos/{repository}/pulls/220",
+                        "base": {
+                            "ref": "develop",
+                            "sha": "a" * 40,
+                            "repo": {
+                                "url": f"https://api.github.example/repos/{repository}"
+                            },
+                        },
+                        "head": {
+                            "ref": "fix/final",
+                            "sha": "b" * 40,
+                            "repo": {
+                                "url": f"https://api.github.example/repos/{repository}"
+                            },
+                        },
+                    }
+                ],
+                "status": "completed",
+            }
+            result = subprocess.run(
+                [
+                    "jq",
+                    "-e",
+                    "--arg",
+                    "api_url",
+                    "https://api.github.example",
+                    "--arg",
+                    "base_ref",
+                    "develop",
+                    "--arg",
+                    "base_sha",
+                    "a" * 40,
+                    "--arg",
+                    "head_ref",
+                    "fix/final",
+                    "--arg",
+                    "head_sha",
+                    "b" * 40,
+                    "--arg",
+                    "repository",
+                    repository,
+                    "--arg",
+                    "run_url",
+                    f"https://github.example/{repository}/actions/runs/42",
+                    "--argjson",
+                    "pr_number",
+                    "220",
+                    self._rerun_workflow_identity_filter(),
+                ],
+                input=json.dumps(run),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        central = "lightning-it/.github"
+        target = "lightning-it/shared-assets-lit"
+        central_url = (
+            f"https://api.github.example/repos/{central}/actions/workflows/337993808"
+        )
+        target_url = (
+            f"https://api.github.example/repos/{target}"
+            "/actions/required_workflows/337993808"
+        )
+        self.assertEqual(0, validate(central, central_url))
+        self.assertEqual(0, validate(target, target_url))
+        self.assertNotEqual(0, validate(central, target_url))
+        self.assertNotEqual(0, validate(target, central_url))
 
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
