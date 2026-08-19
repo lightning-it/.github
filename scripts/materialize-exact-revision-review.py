@@ -161,7 +161,7 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
 
 
 def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
-    """Replace a bounded owned file without following its parent or target entry."""
+    """Replace a bounded owned file without following its immediate parent or target."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if not isinstance(no_follow, int) or no_follow == 0:
         fail("Protected file writing requires O_NOFOLLOW support.")
@@ -290,8 +290,16 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                     add_note(cleanup_message)
         try:
             os.close(directory)
-        except OSError:
-            pass
+        except OSError as cleanup_error:
+            cleanup_message = (
+                f"Protected {name} parent directory close also failed: "
+                f"{cleanup_error}"
+            )
+            if active_error is None:
+                fail(cleanup_message)
+            add_note = getattr(active_error, "add_note", None)
+            if callable(add_note):
+                add_note(cleanup_message)
 
 
 def bind_protected_assets(
