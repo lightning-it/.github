@@ -45,13 +45,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_validates_exact_neutral_producer(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("Protected current-revision verifier", workflow)
-        self.assertIn("    name: Current revision review\n", workflow)
+        self.assertIn("    name: Required current-revision workflow\n", workflow)
         self.assertIn(
             'startswith("mlx90-current-revision:v4:")',
             workflow,
         )
         self.assertIn(
-            'startswith("mlx90-current-revision:copilot:v4:")',
+            'startswith("mlx90-current-revision:copilot:v5:")',
+            workflow,
+        )
+        self.assertIn(
+            'startswith("mlx90-current-revision:ancestry-backmerge:v5:")',
             workflow,
         )
         self.assertIn(
@@ -74,10 +78,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.event == "pull_request_target"', workflow)
         self.assertIn('.name == "Current revision review gate"', workflow)
         self.assertIn(
-            "mlx90-current-revision:copilot:v4:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
-        self.assertIn("producer_run_id=\"${BASH_REMATCH[1]}\"", workflow)
+        self.assertIn("producer_kind=\"${BASH_REMATCH[1]}\"", workflow)
+        self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
+        self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
+        self.assertIn('test "${producer_kind}" = copilot', workflow)
         self.assertIn(".producer_run_id == $run_id", workflow)
         self.assertIn(".schema == 4", workflow)
         self.assertIn(
@@ -113,12 +120,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_human_producer_separates_event_head_from_protected_controller(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        author_paths = workflow.split(
-            "          if [ \"${author}\" = 'lightning-it-release-automation[bot]' ]; then\n"
-            '            [[ "${external_id}" =~ ^mlx90-current-revision:v4:',
-            1,
-        )[1]
-        human_path = author_paths.split("          else", 1)[1].split("          fi", 1)[0]
+        producer_paths = workflow.split(
+            "failure_stage='permanent-producer-binding'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+        human_path = producer_paths.split("          else", 1)[1]
         self.assertIn(".controller_sha", human_path)
         self.assertIn(".default_branch", human_path)
         self.assertNotIn('test "${controller_branch}" = develop', human_path)
