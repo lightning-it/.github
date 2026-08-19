@@ -275,7 +275,7 @@ jobs:
                   and .conclusion == null
                   and .head_sha == $head
                   and ((.run_attempt == 1) or (.run_attempt == 2))
-                  and .name == (
+                  and .display_title == (
                     "Protected current revision PR #"
                     + ($pr_number | tostring) + " " + $action + " " + $head
                   )
@@ -331,9 +331,9 @@ jobs:
                   and .head_sha == $head
                   and ((.run_attempt == 1) or (.run_attempt == 2))
                   and (
-                    .name == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
-                    or .name == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
-                    or .name == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
                   )
                 ' <<<"${retired_verifier_run}" >/dev/null
             done < <(jq -r '.[] | [.id, .status, .conclusion, .external_id, .details_url] | @tsv' <<<"${foreign_reservations}")

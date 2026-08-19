@@ -642,6 +642,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             retirement,
         )
         self.assertIn('.event == "pull_request_target"', retirement)
+        self.assertIn('.display_title == (', retirement)
         self.assertIn(
             '.path == ".github/workflows/'
             'supplementary-current-revision-required.yml"',
@@ -699,6 +700,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n              \' <<<"${current_verifier_run}")"',
         )
         head = "a" * 40
+        current_title = f"Protected current revision PR #225 opened {head}"
         current = {
             "id": 101,
             "event": "pull_request_target",
@@ -707,7 +709,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "conclusion": None,
             "head_sha": head,
             "run_attempt": 1,
-            "name": f"Protected current revision PR #225 opened {head}",
+            "name": current_title,
+            "display_title": current_title,
             "workflow_id": 335,
         }
         current_args = [
@@ -731,7 +734,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {**current, "conclusion": "success"},
             {**current, "run_attempt": 3},
             {**current, "workflow_id": 0},
-            {**current, "name": f"Protected current revision PR #221 opened {head}"},
+            {
+                **current,
+                "display_title": f"Protected current revision PR #221 opened {head}",
+            },
+            {**current, "display_title": None},
         ):
             with self.subTest(current=rejected):
                 self.assertFalse(accepts(current_filter, current_args, rejected))
@@ -787,6 +794,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '--argjson workflow_id "${current_workflow_id}" \'\n',
             '\n                \' <<<"${retired_verifier_run}"',
         )
+        retired_title = f"Protected current revision PR #221 synchronize {head}"
         retired_run = {
             "id": 201,
             "workflow_id": 335,
@@ -796,7 +804,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "conclusion": "failure",
             "head_sha": head,
             "run_attempt": 1,
-            "name": f"Protected current revision PR #221 synchronize {head}",
+            "name": retired_title,
+            "display_title": retired_title,
         }
         retired_run_args = [
             "--arg",
@@ -822,7 +831,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {**retired_run, "status": "in_progress"},
             {**retired_run, "conclusion": "success"},
             {**retired_run, "run_attempt": 3},
-            {**retired_run, "name": f"Protected current revision PR #220 synchronize {head}"},
+            {
+                **retired_run,
+                "display_title": (
+                    f"Protected current revision PR #220 synchronize {head}"
+                ),
+            },
+            {**retired_run, "display_title": None},
         ):
             with self.subTest(retired_run=rejected):
                 self.assertFalse(
