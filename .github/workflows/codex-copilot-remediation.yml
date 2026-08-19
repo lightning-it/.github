@@ -33,7 +33,9 @@ concurrency:
     github.event_name == 'pull_request_review' &&
     github.event.review.user.login != 'copilot-pull-request-reviewer[bot]' &&
     github.event.review.user.login || 'trusted' }}
-  cancel-in-progress: true
+  # Preserve every review-state observation. Cancelling a run can leave GitHub's
+  # overall rollup failed even after the exact required check has passed.
+  cancel-in-progress: false
 
 env:
   COPILOT_LOGIN: copilot-pull-request-reviewer[bot]
@@ -158,8 +160,8 @@ jobs:
             gh api --method POST "repos/${REPOSITORY}/issues/${pr_number}/comments" -f body="Codex remediation stopped: identical Copilot finding set repeated (${finding_hash})." >/dev/null
             exit 0
           fi
-          if [ "${round}" -gt 3 ]; then
-            gh api --method POST "repos/${REPOSITORY}/issues/${pr_number}/comments" -f body='Codex remediation stopped: maximum three automatic repair rounds reached.' >/dev/null
+          if [ "${round}" -gt 1 ]; then
+            gh api --method POST "repos/${REPOSITORY}/issues/${pr_number}/comments" -f body='Codex remediation stopped: the single automatic repair round was already consumed.' >/dev/null
             exit 0
           fi
           {
