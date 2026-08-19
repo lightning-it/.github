@@ -110,7 +110,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("and .base_sha == $base", workflow)
-        self.assertNotIn("and .run_attempt == 1", workflow)
+        neutral_producer = workflow.split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[1]
+        self.assertNotIn("and .run_attempt == 1", neutral_producer)
         self.assertEqual(workflow.count(".actor.login == $actor"), 2)
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
@@ -135,6 +138,111 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn('test "${head_repository}" = "${REPOSITORY}"', workflow)
+
+    def test_managed_sync_recovery_is_source_run_and_target_job_bound(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split(
+            "managed_sync_verified=false", 1
+        )[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        self.assertIn(
+            "[ \"${author}\" = "
+            "'lightning-it-shared-assets-sync[bot]' ]",
+            recovery,
+        )
+        self.assertIn('test "${base_ref}" = develop', recovery)
+        self.assertIn(
+            'test "${head_repository}" = "${REPOSITORY}"', recovery
+        )
+        self.assertIn('test "$(jq -r .commits <<<"${pr}")" -eq 1', recovery)
+        self.assertIn('and (.parents | length) == 1', recovery)
+        self.assertIn('and .parents[0].sha == $base', recovery)
+        self.assertIn('and .author.login == $bot', recovery)
+        self.assertIn('and .committer.login == $bot', recovery)
+        self.assertIn('Shared-Assets-Source-SHA:', recovery)
+        self.assertIn('Shared-Assets-Source-Run:', recovery)
+        self.assertIn('Shared-Assets-Sync-App-ID: 4351516', recovery)
+        self.assertIn('test "${managed_trailer_count}" -eq 3', recovery)
+        for source_workflow in (
+            "sync-repository-quality-repos.yml",
+            "sync-ansible-inventories.yml",
+            "sync-ansible-collections.yml",
+            "sync-ee-containers.yml",
+            "sync-playbook-runbook-repos.yml",
+        ):
+            with self.subTest(source_workflow=source_workflow):
+                self.assertIn(source_workflow, recovery)
+        self.assertIn('and .event == "push"', recovery)
+        self.assertIn(
+            'for ((attempt = 1; attempt <= 42; attempt++))', recovery
+        )
+        self.assertIn(
+            'requested | waiting | pending | queued | in_progress', recovery
+        )
+        self.assertIn(
+            'test "$(jq -r .status <<<"${source_run}")" = completed',
+            recovery,
+        )
+        self.assertIn('and .head_branch == "main"', recovery)
+        self.assertIn('and .head_sha == $head', recovery)
+        self.assertIn('and .path == $path', recovery)
+        self.assertIn('and .status == "completed"', recovery)
+        self.assertIn('and .conclusion == "success"', recovery)
+        self.assertIn('and .repository.full_name == $repository', recovery)
+        self.assertIn('and .head_repository.full_name == $repository', recovery)
+        self.assertIn('and .run_attempt == 1', recovery)
+        self.assertIn('.base_commit.sha == $source', recovery)
+        self.assertIn('.merge_base_commit.sha == $source', recovery)
+        self.assertIn('and .behind_by == 0', recovery)
+        self.assertIn('and (.jobs | length) == .total_count', recovery)
+        self.assertIn('select(.name == $expected)', recovery)
+        self.assertIn(
+            'select(.status == "completed" and .conclusion == "success")',
+            recovery,
+        )
+        self.assertIn('| length) == 1', recovery)
+        self.assertIn(
+            '<!-- lit-shared-assets-sync-provenance:v1 -->', recovery
+        )
+        self.assertIn(
+            '"repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100"',
+            recovery,
+        )
+        self.assertIn(
+            '$comment.performed_via_github_app.id == $app_id', recovery
+        )
+        self.assertIn(
+            '$comment.performed_via_github_app.slug', recovery
+        )
+        self.assertIn(
+            '== "lightning-it-shared-assets-sync"', recovery
+        )
+        self.assertIn(
+            '== "lit-shared-assets-sync-provenance/v1"', recovery
+        )
+        self.assertIn(
+            '$evidence.target_base_sha == $base', recovery
+        )
+        self.assertIn(
+            '$evidence.target_head_sha == $head', recovery
+        )
+        self.assertIn(
+            '$evidence.target_tree_sha == $tree', recovery
+        )
+        self.assertIn(
+            '$evidence.source_run_id == $run_id', recovery
+        )
+        self.assertIn(
+            '$evidence.source_job == $job', recovery
+        )
+        self.assertIn(
+            '($comment.updated_at | fromdateiso8601)', recovery
+        )
+        self.assertIn(
+            'test "$(jq \'length\' <<<"${sync_app_comments}")" -eq 1',
+            recovery,
+        )
 
     def test_human_producer_separates_event_head_from_protected_controller(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -190,6 +298,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "live-commit-binding",
             "reservation-inventory",
             "reservation-materialization",
+            "managed-sync-provenance",
             "permanent-producer-inventory",
             "permanent-producer-binding",
             "permanent-finalization",
@@ -267,12 +376,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             self.assertNotIn(retired_binding, workflow)
 
         failure_trap = workflow.index("trap finalize_failure ERR")
+        managed_sync = workflow.index("managed_sync_verified=false")
         permanent_inventory = workflow.index(
             "failure_stage='permanent-producer-inventory'"
         )
-        self.assertLess(failure_trap, permanent_inventory)
-        between = workflow[failure_trap:permanent_inventory]
+        self.assertLess(failure_trap, managed_sync)
+        self.assertLess(managed_sync, permanent_inventory)
+        between = workflow[failure_trap:managed_sync]
         self.assertNotIn("if [", between)
+        recovery = workflow[managed_sync:permanent_inventory]
+        self.assertNotIn("temporary", recovery)
+        self.assertNotIn("bootstrap", recovery)
         self.assertLess(
             workflow.index(
                 "output[title]=Protected current-revision evidence verified"

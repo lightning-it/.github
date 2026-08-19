@@ -234,8 +234,270 @@ jobs:
           }
           trap finalize_failure ERR
 
-          failure_stage='permanent-producer-inventory'
           test "${draft}" = false
+          managed_sync_verified=false
+          if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
+            failure_stage='managed-sync-provenance'
+            test "${base_ref}" = develop
+            test "${head_repository}" = "${REPOSITORY}"
+            test "$(jq -r .commits <<<"${pr}")" -eq 1
+            target_name="${REPOSITORY#lightning-it/}"
+            test -n "${target_name}"
+            test "${target_name}" != "${REPOSITORY}"
+            jq -e '
+              ([.labels[].name] | index("chore") != null)
+              and ([.labels[].name] | index("shared-assets-lit") != null)
+            ' <<<"${pr}" >/dev/null
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg bot "${author}" \
+              --arg head "${EVENT_HEAD}" '
+                .sha == $head
+                and (.parents | length) == 1
+                and .parents[0].sha == $base
+                and .author.login == $bot
+                and .author.type == "Bot"
+                and .committer.login == $bot
+                and .committer.type == "Bot"
+                and (.commit.message | type == "string" and length > 0)
+              ' <<<"${target_commit}" >/dev/null
+            commit_message="$(jq -r .commit.message <<<"${target_commit}")"
+            first_line="$(head -n 1 <<<"${commit_message}")"
+            source_sha_count="$(awk '
+              /^Shared-Assets-Source-SHA: [0-9a-f]{40}$/ { count++ }
+              END { print count + 0 }
+            ' <<<"${commit_message}")"
+            source_run_count="$(awk '
+              /^Shared-Assets-Source-Run: [1-9][0-9]*$/ { count++ }
+              END { print count + 0 }
+            ' <<<"${commit_message}")"
+            source_app_id_count="$(awk '
+              $0 == "Shared-Assets-Sync-App-ID: 4351516" { count++ }
+              END { print count + 0 }
+            ' <<<"${commit_message}")"
+            managed_trailer_count="$(awk '
+              /^Shared-Assets-/ { count++ }
+              END { print count + 0 }
+            ' <<<"${commit_message}")"
+            test "${source_sha_count}" -eq 1
+            test "${source_run_count}" -eq 1
+            test "${source_app_id_count}" -eq 1
+            test "${managed_trailer_count}" -eq 3
+            source_sha="$(awk '/^Shared-Assets-Source-SHA: / { print $2 }' \
+              <<<"${commit_message}")"
+            source_run_id="$(awk '/^Shared-Assets-Source-Run: / { print $2 }' \
+              <<<"${commit_message}")"
+            [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${source_run_id}" =~ ^[1-9][0-9]*$ ]]
+            source_run_url="${GITHUB_SERVER_URL}/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
+            source_run="$(gh api \
+              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
+            for ((attempt = 1; attempt <= 42; attempt++)); do
+              source_run_status="$(jq -er \
+                '.status | select(type == "string" and length > 0)' \
+                <<<"${source_run}")"
+              if [ "${source_run_status}" = completed ]; then
+                break
+              fi
+              case "${source_run_status}" in
+                requested | waiting | pending | queued | in_progress) ;;
+                *)
+                  echo "The cited source run has an invalid status." >&2
+                  exit 1
+                  ;;
+              esac
+              test "${attempt}" -lt 42
+              sleep 10
+              source_run="$(gh api \
+                "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
+            done
+            test "$(jq -r .status <<<"${source_run}")" = completed
+            source_path="$(jq -er '.path | select(type == "string" and length > 0)' \
+              <<<"${source_run}")"
+            case "${source_path}" in
+              .github/workflows/sync-repository-quality-repos.yml)
+                expected_head_ref="chore/sync-repository-quality-${target_name}"
+                expected_pr_title='chore: sync repository quality assets'
+                expected_subject='chore: sync repository quality assets'
+                expected_source_job="Sync repository-quality assets to ${target_name}"
+                ;;
+              .github/workflows/sync-ansible-inventories.yml)
+                expected_head_ref="chore/sync-shared-assets-lit-${target_name}"
+                expected_pr_title='chore: sync shared assets'
+                expected_subject='chore: sync shared assets from lightning-it/shared-assets-lit'
+                expected_source_job="Sync shared assets → ${target_name}"
+                ;;
+              .github/workflows/sync-ansible-collections.yml | \
+              .github/workflows/sync-ee-containers.yml | \
+              .github/workflows/sync-playbook-runbook-repos.yml)
+                expected_head_ref="chore/sync-shared-assets-lit-${target_name}"
+                expected_pr_title='chore: sync shared-assets-lit'
+                expected_subject='chore: sync shared assets from lightning-it/shared-assets-lit'
+                expected_source_job="Sync shared-assets-lit to ${target_name}"
+                ;;
+              *)
+                echo "The cited source run is not an approved shared-assets distribution workflow." >&2
+                exit 1
+                ;;
+            esac
+            test "${head_ref}" = "${expected_head_ref}"
+            test "$(jq -r .title <<<"${pr}")" = "${expected_pr_title}"
+            test "${first_line}" = "${expected_subject}"
+            jq -e \
+              --arg head "${source_sha}" \
+              --arg path "${source_path}" \
+              --arg repository 'lightning-it/shared-assets-lit' \
+              --arg run_url "${source_run_url}" \
+              --argjson run_id "${source_run_id}" '
+                .id == $run_id
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $head
+                and .path == $path
+                and .status == "completed"
+                and .conclusion == "success"
+                and .html_url == $run_url
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+                and ((.run_attempt | type) == "number")
+                and .run_attempt == 1
+              ' <<<"${source_run}" >/dev/null
+            source_commit="$(gh api \
+              "repos/lightning-it/shared-assets-lit/commits/${source_sha}")"
+            test "$(jq -r .sha <<<"${source_commit}")" = "${source_sha}"
+            source_main="$(gh api \
+              repos/lightning-it/shared-assets-lit/branches/main --jq .commit.sha)"
+            [[ "${source_main}" =~ ^[0-9a-f]{40}$ ]]
+            source_compare="$(gh api \
+              "repos/lightning-it/shared-assets-lit/compare/${source_sha}...${source_main}")"
+            jq -e \
+              --arg source "${source_sha}" \
+              --arg current "${source_main}" '
+                .base_commit.sha == $source
+                and .merge_base_commit.sha == $source
+                and (
+                  (.status == "identical"
+                    and $current == $source
+                    and .ahead_by == 0
+                    and .behind_by == 0)
+                  or
+                  (.status == "ahead"
+                    and $current != $source
+                    and .ahead_by > 0
+                    and .behind_by == 0
+                    and .head_commit.sha == $current)
+                )
+              ' <<<"${source_compare}" >/dev/null
+            source_jobs="$(gh api \
+              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/jobs?per_page=100")"
+            jq -e \
+              --arg expected "${expected_source_job}" '
+                (.total_count | type == "number" and . > 0 and . <= 100)
+                and (.jobs | length) == .total_count
+                and ([.jobs[] |
+                  select(.name == $expected)
+                  | select(.status == "completed" and .conclusion == "success")]
+                  | length) == 1
+              ' <<<"${source_jobs}" >/dev/null
+            target_tree_sha="$(jq -er '
+              .commit.tree.sha
+              | select(type == "string" and test("^[0-9a-f]{40}$"))
+            ' <<<"${target_commit}")"
+            sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
+            sync_comment_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+            sync_comments="$(jq -c \
+              --arg marker "${sync_comment_marker}" '
+                [.[].[]? |
+                  select((.body | type) == "string") |
+                  select(.body | startswith($marker + "\n"))]
+              ' <<<"${sync_comment_pages}")"
+            test "$(jq 'length' <<<"${sync_comments}")" -le 100
+            sync_app_comments="$(jq -c \
+              --arg api_url "${GITHUB_API_URL}" \
+              --arg base "${EVENT_BASE}" \
+              --arg bot "${author}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg job "${expected_source_job}" \
+              --arg marker "${sync_comment_marker}" \
+              --arg repository "${REPOSITORY}" \
+              --arg run_started "$(jq -r .run_started_at <<<"${source_run}")" \
+              --arg run_updated "$(jq -r .updated_at <<<"${source_run}")" \
+              --arg run_url "${source_run_url}" \
+              --arg source "${source_sha}" \
+              --arg source_path "${source_path}" \
+              --arg tree "${target_tree_sha}" \
+              --arg web_url "${GITHUB_SERVER_URL}" \
+              --argjson app_id 4351516 \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_id "${source_run_id}" '
+                [.[] as $comment |
+                  ($comment.body | split("\n")) as $lines |
+                  select(($lines | length) == 2) |
+                  select($lines[0] == $marker) |
+                  ($lines[1] | fromjson?) as $evidence |
+                  select($evidence != null) |
+                  select($comment.user.login == $bot) |
+                  select($comment.user.type == "Bot") |
+                  select($comment.performed_via_github_app.id == $app_id) |
+                  select($comment.performed_via_github_app.slug
+                    == "lightning-it-shared-assets-sync") |
+                  select(($comment.id | type) == "number" and $comment.id > 0) |
+                  select($comment.url
+                    == ($api_url + "/repos/" + $repository
+                      + "/issues/comments/" + ($comment.id | tostring))) |
+                  select($comment.html_url
+                    == ($web_url + "/" + $repository + "/pull/"
+                      + ($pr_number | tostring) + "#issuecomment-"
+                      + ($comment.id | tostring))) |
+                  select($comment.issue_url
+                    == ($api_url + "/repos/" + $repository + "/issues/"
+                      + ($pr_number | tostring))) |
+                  select(($comment.created_at | fromdateiso8601)
+                    <= ($comment.updated_at | fromdateiso8601)) |
+                  select(($comment.updated_at | fromdateiso8601)
+                    >= ($run_started | fromdateiso8601)) |
+                  select(($comment.updated_at | fromdateiso8601)
+                    <= ($run_updated | fromdateiso8601)) |
+                  select(($evidence | keys) == [
+                    "app_id",
+                    "schema",
+                    "source_job",
+                    "source_repository",
+                    "source_run_id",
+                    "source_run_url",
+                    "source_sha",
+                    "source_workflow",
+                    "target_base_sha",
+                    "target_head_sha",
+                    "target_pr",
+                    "target_repository",
+                    "target_tree_sha"
+                  ]) |
+                  select($evidence.schema
+                    == "lit-shared-assets-sync-provenance/v1") |
+                  select($evidence.app_id == $app_id) |
+                  select($evidence.source_repository
+                    == "lightning-it/shared-assets-lit") |
+                  select($evidence.source_sha == $source) |
+                  select($evidence.source_run_id == $run_id) |
+                  select($evidence.source_run_url == $run_url) |
+                  select($evidence.source_workflow == $source_path) |
+                  select($evidence.source_job == $job) |
+                  select($evidence.target_repository == $repository) |
+                  select($evidence.target_pr == $pr_number) |
+                  select($evidence.target_base_sha == $base) |
+                  select($evidence.target_head_sha == $head) |
+                  select($evidence.target_tree_sha == $tree) |
+                  $comment]
+              ' <<<"${sync_comments}")"
+            test "$(jq 'length' <<<"${sync_app_comments}")" -eq 1
+            producer_run_url="${source_run_url}"
+            managed_sync_verified=true
+          fi
+
+          if [ "${managed_sync_verified}" = false ]; then
+            failure_stage='permanent-producer-inventory'
           neutral_pages="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
           neutral="$(jq -c '
@@ -384,6 +646,8 @@ jobs:
                 and .run_url == $run_url
                 and .review_path == $review_path
               ' <<<"${summary}" >/dev/null
+          fi
+
           fi
 
           failure_stage='permanent-finalization'
