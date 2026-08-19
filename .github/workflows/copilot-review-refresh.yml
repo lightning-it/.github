@@ -30,12 +30,12 @@ jobs:
         (
           contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
           (
-            github.event.review.user.login == 'copilot-pull-request-reviewer[bot]' ||
-            github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            (github.event.review.user.login || '') == 'copilot-pull-request-reviewer[bot]' ||
+            (github.event.comment.user.login || '') == 'copilot-pull-request-reviewer[bot]'
           )
         ) ||
-        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association) ||
-        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association || '') ||
+        contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association || '')
       )
     permissions:
       actions: write

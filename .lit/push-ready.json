@@ -19,7 +19,7 @@
       "id": "copilot-current-head-review",
       "workflow": ".github/workflows/copilot-review.yml",
       "job": "verify-current-revision-policy",
-      "reason": "The authoritative Copilot pull-request review is produced and bound to the current head SHA by GitHub.",
+      "reason": "The authoritative pipeline-only current-revision policy result is bound to the exact head SHA and may represent contributor-funded Copilot, a governed automation exemption, or the protected MLX-90 exact-revision Codex path.",
       "owner": "Lightning IT Application Platform Maintainers"
     }
   ],
