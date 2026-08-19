@@ -156,11 +156,15 @@ jobs:
           if [ "${neutral_count}" -eq 1 ]; then
             check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${neutral}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
+            # The transition-era `copilot` kind also carries the protected
+            # governed-distribution exemption outside lightning-it/.github.
+            # Inside .github, the sync App is accepted only as ancestry-backmerge.
             if ! jq -e \
               --arg author "${PR_AUTHOR}" \
               --arg base "${BASE_SHA}" \
               --arg head "${HEAD_SHA}" \
               --arg pr "${PR_NUMBER}" \
+              --arg repository "${REPOSITORY}" \
               --argjson pr_number "${PR_NUMBER}" \
               --arg url "${check_url}" '
                 .[0] as $check
@@ -174,12 +178,16 @@ jobs:
                 and (
                   (
                     (
-                      ($author != "lightning-it-release-automation[bot]"
+                      (($author != "lightning-it-release-automation[bot]"
+                        and ($repository != "lightning-it/.github"
+                          or $author != "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v6:" + $pr
                             + ":[1-9][0-9]*:" + $base + ":" + $head + "$")))
                       or
-                      ($author == "lightning-it-release-automation[bot]"
+                      (($author == "lightning-it-release-automation[bot]"
+                        or ($repository == "lightning-it/.github"
+                          and $author == "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:ancestry-backmerge:v6:"
                             + $pr + ":[1-9][0-9]*:" + $base + ":" + $head + "$")))
@@ -189,12 +197,16 @@ jobs:
                   or
                   (
                     (
-                      ($author != "lightning-it-release-automation[bot]"
+                      (($author != "lightning-it-release-automation[bot]"
+                        and ($repository != "lightning-it/.github"
+                          or $author != "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v5:[1-9][0-9]*:"
                             + $base + ":" + $head + "$")))
                       or
-                      ($author == "lightning-it-release-automation[bot]"
+                      (($author == "lightning-it-release-automation[bot]"
+                        or ($repository == "lightning-it/.github"
+                          and $author == "lightning-it-shared-assets-sync[bot]"))
                         and ($check.external_id |
                           test("^mlx90-current-revision:ancestry-backmerge:v5:"
                             + "[1-9][0-9]*:" + $base + ":" + $head + "$")))

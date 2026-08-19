@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 10
 
     env:
+      EVENT_ACTION: ${{ github.event.action }}
       EVENT_BASE: ${{ github.event.pull_request.base.sha }}
       EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -78,6 +79,11 @@ jobs:
               and .disabled == false
             ' <<<"${target_repository}" >/dev/null
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          pr=""
           case "${WORKFLOW_REF}" in
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
               source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
@@ -105,20 +111,51 @@ jobs:
                 ' <<<"${source_compare}" >/dev/null
               ;;
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
-              # A .github PR to develop is evaluated by the already-protected
-              # base copy, never by its candidate workflow. Bind that special
-              # self-hosted controller to both the event base and the live
-              # protected develop head. Other repositories remain main-only.
+              # The central repository self-hosts this controller on its
+              # protected default branch. A PR to develop is evaluated by the
+              # protected base copy. A direct develop-to-main promotion is
+              # evaluated by the protected develop head itself. No feature
+              # branch can satisfy either exact live branch binding.
               test "${REPOSITORY}" = lightning-it/.github
-              test "${WORKFLOW_SHA}" = "${EVENT_BASE}"
               protected_develop="$(gh api repos/lightning-it/.github/branches/develop)"
-              jq -e \
-                --arg base "${EVENT_BASE}" '
-                  .name == "develop"
-                  and .protected == true
-                  and .commit.sha == $base
-                ' <<<"${protected_develop}" >/dev/null
-              source_sha="${EVENT_BASE}"
+              if [ "${WORKFLOW_SHA}" = "${EVENT_BASE}" ]; then
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_develop}" >/dev/null
+                source_sha="${EVENT_BASE}"
+              else
+                test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg repository "${REPOSITORY}" '
+                    .state == "open"
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == "develop"
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                  ' <<<"${pr}" >/dev/null
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                jq -e \
+                  --arg head "${EVENT_HEAD}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $head
+                  ' <<<"${protected_develop}" >/dev/null
+                source_sha="${EVENT_HEAD}"
+              fi
               ;;
             *)
               echo "Required Workflow source is not a protected controller." >&2
@@ -128,13 +165,12 @@ jobs:
 
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
-          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
 
           failure_stage='live-pr-binding'
-          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          if [ -z "${pr}" ]; then
+            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          fi
           jq -e \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \
@@ -151,14 +187,26 @@ jobs:
           draft="$(jq -er '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
           head_repository="$(jq -er '.head.repo.full_name | select(type == "string" and length > 0)' <<<"${pr}")"
+          pr_title="$(jq -er '.title | select(type == "string" and length > 0)' <<<"${pr}")"
           [[ "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          central_sync_backmerge=false
+          if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+            && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ] \
+            && [ "${base_ref}" = develop ] \
+            && [ "${head_repository}" = "${REPOSITORY}" ] \
+            && [[ "${head_ref}" == backmerge/*-main ]] \
+            && [[ "${pr_title}" == \
+              "chore(governance): record main ancestry before "* ]]; then
+            central_sync_backmerge=true
+          fi
 
           failure_stage='live-commit-binding'
           head_commit="$(gh api "repos/${head_repository}/commits/${EVENT_HEAD}")"
           target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"
           test "$(jq -r .sha <<<"${head_commit}")" = "${EVENT_HEAD}"
           test "$(jq -r .sha <<<"${target_commit}")" = "${EVENT_HEAD}"
-          if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+          if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+              || [ "${central_sync_backmerge}" = true ]; }; then
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
@@ -182,9 +230,113 @@ jobs:
                 select((.external_id | type) == "string") |
                 select(.external_id | startswith($prefix) and endswith($suffix))]
             ' <<<"${all_reservations}")"
-          if [ "$(jq 'length' <<<"${all_reservations}")" -ne "$(jq 'length' <<<"${reservations}")" ]; then
-            echo "A protected verifier reservation for this commit belongs to a different PR/head binding." >&2
+          foreign_reservations="$(jq -c \
+            --arg prefix 'rep60-required-workflow:v2:' \
+            --arg suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
+              [.[] |
+                select((
+                  ((.external_id | type) == "string")
+                  and (.external_id | startswith($prefix) and endswith($suffix))
+                ) | not)]
+            ' <<<"${all_reservations}")"
+          foreign_count="$(jq 'length' <<<"${foreign_reservations}")"
+          if [ "${foreign_count}" -gt 20 ]; then
+            echo "Too many foreign protected verifier reservations exist for this commit." >&2
             exit 1
+          fi
+          if [ "${foreign_count}" -gt 0 ]; then
+            jq -e \
+              --arg head "${EVENT_HEAD}" \
+              --arg name "${reservation_name}" '
+                all(.[];
+                  (.id | type == "number" and . > 0)
+                  and .name == $name
+                  and .head_sha == $head
+                  and (.external_id | type == "string")
+                  and (.details_url | type == "string")
+                  and .status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure")
+                )
+              ' <<<"${foreign_reservations}" >/dev/null
+            test "$(jq '[.[].external_id] | unique | length' <<<"${foreign_reservations}")" -eq "${foreign_count}"
+
+            current_verifier_run="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+            current_workflow_id="$(jq -er \
+              --arg action "${EVENT_ACTION}" \
+              --arg head "${EVENT_HEAD}" \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_id "${GITHUB_RUN_ID}" '
+                select(
+                  .id == $run_id
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                  and .status == "in_progress"
+                  and .conclusion == null
+                  and .head_sha == $head
+                  and ((.run_attempt == 1) or (.run_attempt == 2))
+                  and .display_title == (
+                    "Protected current revision PR #"
+                    + ($pr_number | tostring) + " " + $action + " " + $head
+                  )
+                  and (.workflow_id | type == "number" and . > 0)
+                )
+                | .workflow_id
+              ' <<<"${current_verifier_run}")"
+
+            declare -A retired_pr_numbers=()
+            declare -A retired_run_ids=()
+            while IFS=$'\t' read -r foreign_check_id foreign_status foreign_conclusion foreign_external_id foreign_details_url; do
+              [[ "${foreign_check_id}" =~ ^[1-9][0-9]*$ ]]
+              test "${foreign_status}" = completed
+              [[ "${foreign_conclusion}" =~ ^(success|failure)$ ]]
+              [[ "${foreign_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):([1-9][0-9]*):${EVENT_HEAD}$ ]]
+              foreign_run_id="${BASH_REMATCH[1]}"
+              foreign_pr_number="${BASH_REMATCH[2]}"
+              test "${foreign_pr_number}" != "${PR_NUMBER}"
+              test -z "${retired_pr_numbers["${foreign_pr_number}"]:-}"
+              test -z "${retired_run_ids["${foreign_run_id}"]:-}"
+              retired_pr_numbers["${foreign_pr_number}"]=true
+              retired_run_ids["${foreign_run_id}"]=true
+              test "${foreign_details_url}" = \
+                "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${foreign_check_id}"
+
+              retired_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${foreign_pr_number}")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson number "${foreign_pr_number}" '
+                  .number == $number
+                  and .state == "closed"
+                  and .base.repo.full_name == $repository
+                  and .head.sha == $head
+                  and (.head.repo.full_name | type == "string" and length > 0)
+                ' <<<"${retired_pr}" >/dev/null
+
+              retired_verifier_run="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${foreign_run_id}")"
+              jq -e \
+                --arg conclusion "${foreign_conclusion}" \
+                --arg head "${EVENT_HEAD}" \
+                --argjson pr_number "${foreign_pr_number}" \
+                --argjson run_id "${foreign_run_id}" \
+                --argjson workflow_id "${current_workflow_id}" '
+                  .id == $run_id
+                  and .workflow_id == $workflow_id
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                  and .status == "completed"
+                  and .conclusion == $conclusion
+                  and .head_sha == $head
+                  and ((.run_attempt == 1) or (.run_attempt == 2))
+                  and (
+                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                  )
+                ' <<<"${retired_verifier_run}" >/dev/null
+            done < <(jq -r '.[] | [.id, .status, .conclusion, .external_id, .details_url] | @tsv' <<<"${foreign_reservations}")
           fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${reservation_count}" -gt 1 ]; then
@@ -261,7 +413,8 @@ jobs:
 
           test "${draft}" = false
           managed_sync_verified=false
-          if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
+          if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ] \
+            && [ "${central_sync_backmerge}" = false ]; then
             failure_stage='managed-sync-provenance'
             test "${base_ref}" = develop
             test "${head_repository}" = "${REPOSITORY}"
@@ -431,11 +584,15 @@ jobs:
             sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+            # The marker token is reserved anywhere in a comment. The strict
+            # parser below accepts only the exact two-line App proof, so any
+            # prefix, suffix, edit, malformed proof, or duplicate stays counted
+            # here but fails closed during exact validation.
             sync_comments="$(jq -c \
               --arg marker "${sync_comment_marker}" '
                 [.[].[]? |
                   select((.body | type) == "string") |
-                  select(.body | startswith($marker + "\n"))]
+                  select(.body | contains($marker))]
               ' <<<"${sync_comment_pages}")"
             # Any second marker is ambiguous evidence, even if its payload or
             # actor is invalid. Exactly one marker must exist before validating
@@ -606,11 +763,12 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             fi
-            if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+            if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+                || [ "${central_sync_backmerge}" = true ]; }; then
               test "${producer_kind}" = ancestry-backmerge
               test "${base_ref}" = develop
               [[ "${head_ref}" == backmerge/*-main ]]
-              [[ "$(jq -r .title <<<"${pr}")" == \
+              [[ "${pr_title}" == \
                 "chore(governance): record main ancestry before "* ]]
               expected_review_path="deterministic evidence-bound ancestry exemption"
             else
