@@ -28,11 +28,14 @@
 - Lightning IT automation may request and fund one GitHub Copilot review only
   when the exact PR author is `litroc`, and only at the finalization boundary;
   intermediate `synchronize` pushes must not trigger AI review. Any finding
-  requires correction and a final current-head re-review.
+  requires correction and a final current-head re-review. The request is
+  consumed once per head; unavailable or quota-blocked reviews fail closed
+  without an automatic retry. Organization-funded Codex remediation and its
+  single re-review are likewise restricted to `litroc`.
 - Every other human or external contributor supplies any required current-head
   Copilot review under their own entitlement and cost. Lightning IT verifies
-  valid evidence but never requests or funds that review, and personal tokens
-  or provider keys never enter Actions.
+  valid evidence but never requests or funds that review, and personal tokens or
+  provider keys never enter Actions.
 - A same-repository PR authored exactly by
   `lightning-it-release-automation[bot]` uses only the protected MLX-90 §7.2
   Exact-Revision Codex check. It must never request Copilot or synthesize a

@@ -103,10 +103,7 @@ def run(
         )
     except subprocess.TimeoutExpired:
         command = " ".join(arguments) or "<empty-command>"
-        fail(
-            f"Command timed out after {COMMAND_TIMEOUT_SECONDS} seconds: "
-            f"{command}"
-        )
+        fail(f"Command timed out after {COMMAND_TIMEOUT_SECONDS} seconds: {command}")
     if result.returncode != 0:
         stderr = (
             result.stderr
@@ -265,8 +262,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                 os.close(temporary_descriptor)
             except OSError as cleanup_error:
                 cleanup_message = (
-                    f"Protected {name} temporary close also failed: "
-                    f"{cleanup_error}"
+                    f"Protected {name} temporary close also failed: {cleanup_error}"
                 )
                 if active_error is None:
                     fail(cleanup_message)
@@ -280,8 +276,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                 pass
             except OSError as cleanup_error:
                 cleanup_message = (
-                    f"Protected {name} temporary cleanup also failed: "
-                    f"{cleanup_error}"
+                    f"Protected {name} temporary cleanup also failed: {cleanup_error}"
                 )
                 if active_error is None:
                     fail(cleanup_message)
@@ -292,8 +287,7 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
             os.close(directory)
         except OSError as cleanup_error:
             cleanup_message = (
-                f"Protected {name} parent directory close also failed: "
-                f"{cleanup_error}"
+                f"Protected {name} parent directory close also failed: {cleanup_error}"
             )
             if active_error is None:
                 fail(cleanup_message)
@@ -651,9 +645,9 @@ def verify(
         actual_metadata = bind_protected_assets(
             materialize(arguments, regenerated), asset_paths
         )
-        if protected_asset_bytes(
-            patch, "review diff"
-        ) != protected_asset_bytes(regenerated / "change.patch", "regenerated diff"):
+        if protected_asset_bytes(patch, "review diff") != protected_asset_bytes(
+            regenerated / "change.patch", "regenerated diff"
+        ):
             fail("The full binary diff changed during exact-revision verification.")
     for key in IMMUTABLE_METADATA_KEYS:
         if expected_metadata.get(key) != actual_metadata.get(key):
