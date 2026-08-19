@@ -78,6 +78,10 @@ jobs:
               and .disabled == false
             ' <<<"${target_repository}" >/dev/null
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          pr=""
           case "${WORKFLOW_REF}" in
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
               source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
@@ -105,20 +109,51 @@ jobs:
                 ' <<<"${source_compare}" >/dev/null
               ;;
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
-              # A .github PR to develop is evaluated by the already-protected
-              # base copy, never by its candidate workflow. Bind that special
-              # self-hosted controller to both the event base and the live
-              # protected develop head. Other repositories remain main-only.
+              # The central repository self-hosts this controller on its
+              # protected default branch. A PR to develop is evaluated by the
+              # protected base copy. A direct develop-to-main promotion is
+              # evaluated by the protected develop head itself. No feature
+              # branch can satisfy either exact live branch binding.
               test "${REPOSITORY}" = lightning-it/.github
-              test "${WORKFLOW_SHA}" = "${EVENT_BASE}"
               protected_develop="$(gh api repos/lightning-it/.github/branches/develop)"
-              jq -e \
-                --arg base "${EVENT_BASE}" '
-                  .name == "develop"
-                  and .protected == true
-                  and .commit.sha == $base
-                ' <<<"${protected_develop}" >/dev/null
-              source_sha="${EVENT_BASE}"
+              if [ "${WORKFLOW_SHA}" = "${EVENT_BASE}" ]; then
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_develop}" >/dev/null
+                source_sha="${EVENT_BASE}"
+              else
+                test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg repository "${REPOSITORY}" '
+                    .state == "open"
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == "develop"
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                  ' <<<"${pr}" >/dev/null
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                jq -e \
+                  --arg head "${EVENT_HEAD}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $head
+                  ' <<<"${protected_develop}" >/dev/null
+                source_sha="${EVENT_HEAD}"
+              fi
               ;;
             *)
               echo "Required Workflow source is not a protected controller." >&2
@@ -128,13 +163,12 @@ jobs:
 
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
-          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
 
           failure_stage='live-pr-binding'
-          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          if [ -z "${pr}" ]; then
+            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          fi
           jq -e \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \

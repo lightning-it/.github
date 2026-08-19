@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import textwrap
@@ -54,15 +55,122 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn('test "${REPOSITORY}" = lightning-it/.github', workflow)
-        self.assertIn('test "${WORKFLOW_SHA}" = "${EVENT_BASE}"', workflow)
+        self.assertIn(
+            'if [ "${WORKFLOW_SHA}" = "${EVENT_BASE}" ]; then', workflow
+        )
+        self.assertIn(
+            'test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"', workflow
+        )
         self.assertIn(
             "protected_develop=\"$(gh api "
             "repos/lightning-it/.github/branches/develop)\"",
             workflow,
         )
+        self.assertIn(
+            "protected_main=\"$(gh api "
+            "repos/lightning-it/.github/branches/main)\"",
+            workflow,
+        )
         self.assertIn('and .protected == true', workflow)
         self.assertIn('and .commit.sha == $base', workflow)
         self.assertIn('source_sha="${EVENT_BASE}"', workflow)
+        self.assertIn('source_sha="${EVENT_HEAD}"', workflow)
+        self.assertIn('.base.ref == "main"', workflow)
+        self.assertIn('.head.ref == "develop"', workflow)
+        self.assertIn('and .head.repo.full_name == $repository', workflow)
+        controller_case = workflow.index('          case "${WORKFLOW_REF}" in')
+        for validated_input in (
+            '[[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]',
+            '[[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]',
+            '[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]',
+        ):
+            with self.subTest(validated_input=validated_input):
+                self.assertLess(workflow.index(validated_input), controller_case)
+
+    def test_self_hosted_promotion_controller_requires_exact_live_pr(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        promotion = workflow.split('                pr="$(gh api', 1)[1].split(
+            '                protected_main="$(gh api', 1
+        )[0]
+        marker = '                  --arg repository "${REPOSITORY}" \'\n'
+        start = promotion.index(marker) + len(marker)
+        end = promotion.index('\n                  \' <<<"${pr}"', start)
+        identity_filter = promotion[start:end]
+
+        self.assertIn('          pr=""\n          case "${WORKFLOW_REF}" in', workflow)
+        self.assertIn(
+            "          if [ -z \"${pr}\" ]; then\n"
+            '            pr="$(gh api '
+            '"repos/${REPOSITORY}/pulls/${PR_NUMBER}")"\n'
+            "          fi",
+            workflow,
+        )
+
+        valid = {
+            "state": "open",
+            "base": {
+                "ref": "main",
+                "sha": "a" * 40,
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+            "head": {
+                "ref": "develop",
+                "sha": "b" * 40,
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+        }
+
+        def validate(candidate: dict[str, object]) -> int:
+            try:
+                result = subprocess.run(
+                    [
+                        "jq",
+                        "-e",
+                        "--arg",
+                        "base",
+                        "a" * 40,
+                        "--arg",
+                        "head",
+                        "b" * 40,
+                        "--arg",
+                        "repository",
+                        "lightning-it/.github",
+                        identity_filter,
+                    ],
+                    input=json.dumps(candidate),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate promotion identity: {error}")
+            return result.returncode
+
+        self.assertEqual(0, validate(valid))
+        rejected = (
+            {**valid, "state": "closed"},
+            {**valid, "base": {**valid["base"], "ref": "develop"}},
+            {**valid, "base": {**valid["base"], "sha": "c" * 40}},
+            {
+                **valid,
+                "base": {
+                    **valid["base"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+            {**valid, "head": {**valid["head"], "ref": "feature"}},
+            {**valid, "head": {**valid["head"], "sha": "c" * 40}},
+            {
+                **valid,
+                "head": {
+                    **valid["head"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+        )
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                self.assertNotEqual(0, validate(candidate))
 
     def test_pr_comment_read_permissions_are_explicit_and_read_only(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
