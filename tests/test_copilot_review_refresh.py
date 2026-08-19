@@ -49,35 +49,38 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "external_id": external_id,
             "output": {"summary": json.dumps(summary)},
         }
-        return subprocess.run(
-            [
-                "jq",
-                "-e",
-                "--arg",
-                "author",
-                author,
-                "--arg",
-                "base",
-                base,
-                "--arg",
-                "head",
-                head,
-                "--arg",
-                "pr",
-                "123",
-                "--argjson",
-                "pr_number",
-                "123",
-                "--arg",
-                "url",
-                "https://github.example/runs/42",
-                self._refresh_validation_filter(),
-            ],
-            input=json.dumps([check]),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            return subprocess.run(
+                [
+                    "jq",
+                    "-e",
+                    "--arg",
+                    "author",
+                    author,
+                    "--arg",
+                    "base",
+                    base,
+                    "--arg",
+                    "head",
+                    head,
+                    "--arg",
+                    "pr",
+                    "123",
+                    "--argjson",
+                    "pr_number",
+                    "123",
+                    "--arg",
+                    "url",
+                    "https://github.example/runs/42",
+                    self._refresh_validation_filter(),
+                ],
+                input=json.dumps([check]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError as error:
+            self.fail(f"jq is required to validate refresh evidence: {error}")
 
     def test_event_specific_payloads_are_guarded(self) -> None:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
@@ -192,35 +195,38 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         }
 
         def run(version: str, evidence: dict[str, object]) -> int:
-            result = subprocess.run(
-                [
-                    "jq",
-                    "-e",
-                    "--arg",
-                    "base",
-                    "a" * 40,
-                    "--arg",
-                    "evidence_version",
-                    version,
-                    "--arg",
-                    "head",
-                    "b" * 40,
-                    "--arg",
-                    "run_url",
-                    "https://github.example/actions/runs/77",
-                    "--argjson",
-                    "pr_number",
-                    "123",
-                    "--argjson",
-                    "run_id",
-                    "77",
-                    self._rerun_summary_filter(),
-                ],
-                input=json.dumps(evidence),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            try:
+                result = subprocess.run(
+                    [
+                        "jq",
+                        "-e",
+                        "--arg",
+                        "base",
+                        "a" * 40,
+                        "--arg",
+                        "evidence_version",
+                        version,
+                        "--arg",
+                        "head",
+                        "b" * 40,
+                        "--arg",
+                        "run_url",
+                        "https://github.example/actions/runs/77",
+                        "--argjson",
+                        "pr_number",
+                        "123",
+                        "--argjson",
+                        "run_id",
+                        "77",
+                        self._rerun_summary_filter(),
+                    ],
+                    input=json.dumps(evidence),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate rerun evidence: {error}")
             return result.returncode
 
         self.assertEqual(0, run("v5", summary))
