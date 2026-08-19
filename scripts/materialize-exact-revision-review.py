@@ -274,7 +274,9 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                 )
                 if active_error is None:
                     fail(cleanup_message)
-                active_error.add_note(cleanup_message)
+                add_note = getattr(active_error, "add_note", None)
+                if callable(add_note):
+                    add_note(cleanup_message)
         try:
             os.close(directory)
         except OSError:

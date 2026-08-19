@@ -154,12 +154,11 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                     b"replacement",
                     "test",
                 )
-            self.assertTrue(
-                any(
-                    "simulated cleanup failure" in note
-                    for note in raised.exception.__notes__
+            notes = getattr(raised.exception, "__notes__", ())
+            if hasattr(raised.exception, "add_note"):
+                self.assertTrue(
+                    any("simulated cleanup failure" in note for note in notes)
                 )
-            )
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_metadata_binding_rejects_non_object(self) -> None:
