@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -160,34 +161,115 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
 
 
 def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
-    """Write one bounded owned file without following a replacement symlink."""
+    """Atomically replace one bounded owned file without following symlinks."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if not isinstance(no_follow, int) or no_follow == 0:
         fail("Protected file writing requires O_NOFOLLOW support.")
     if len(payload) <= 0 or len(payload) > MAX_PROTECTED_ASSET_BYTES:
         fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
-    flags = os.O_WRONLY | os.O_CREAT | no_follow
-    flags |= getattr(os, "O_CLOEXEC", 0)
+    if path.name in {"", ".", ".."}:
+        fail(f"Protected {name} path is invalid.")
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | no_follow
+    directory_flags |= close_on_exec
     try:
-        descriptor = os.open(path, flags, 0o600)
+        directory = os.open(path.parent, directory_flags)
     except OSError as error:
-        fail(f"Protected {name} cannot be opened safely: {error}")
+        fail(f"Protected {name} parent cannot be opened safely: {error}")
+    temporary_name = f".mlx90-protected-{secrets.token_hex(16)}.tmp"
+    temporary_descriptor = -1
+    replaced = False
     try:
-        details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
-            fail(f"Protected {name} must be one regular non-symlink file.")
-        if details.st_uid != os.geteuid():
-            fail(f"Protected {name} must be owned by the current user.")
-        os.ftruncate(descriptor, 0)
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=False) as protected_file:
-            written = protected_file.write(payload)
-            protected_file.flush()
-            os.fsync(descriptor)
-        if written != len(payload):
-            fail(f"Protected {name} was not written completely.")
+        parent_details = os.fstat(directory)
+        if not stat.S_ISDIR(parent_details.st_mode):
+            fail(f"Protected {name} parent must be a directory.")
+        if parent_details.st_uid != os.geteuid():
+            fail(f"Protected {name} parent must be owned by the current user.")
+
+        existing_descriptor = -1
+        try:
+            existing_descriptor = os.open(
+                path.name,
+                os.O_RDONLY | no_follow | close_on_exec,
+                dir_fd=directory,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            fail(f"Protected {name} cannot be opened safely: {error}")
+        try:
+            if existing_descriptor >= 0:
+                existing = os.fstat(existing_descriptor)
+                if not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1:
+                    fail(f"Protected {name} must be one regular non-symlink file.")
+                if existing.st_uid != os.geteuid():
+                    fail(f"Protected {name} must be owned by the current user.")
+        finally:
+            if existing_descriptor >= 0:
+                os.close(existing_descriptor)
+
+        temporary_descriptor = os.open(
+            temporary_name,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | no_follow | close_on_exec,
+            0o600,
+            dir_fd=directory,
+        )
+        temporary = os.fstat(temporary_descriptor)
+        if not stat.S_ISREG(temporary.st_mode) or temporary.st_nlink != 1:
+            fail(f"Protected {name} temporary file is not a single regular file.")
+        if temporary.st_uid != os.geteuid():
+            fail(f"Protected {name} temporary file has an unexpected owner.")
+        os.fchmod(temporary_descriptor, 0o600)
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(temporary_descriptor, remaining)
+            if written <= 0:
+                fail(f"Protected {name} was not written completely.")
+            remaining = remaining[written:]
+        os.fsync(temporary_descriptor)
+        temporary = os.fstat(temporary_descriptor)
+        if (
+            not stat.S_ISREG(temporary.st_mode)
+            or temporary.st_nlink != 1
+            or temporary.st_uid != os.geteuid()
+            or temporary.st_size != len(payload)
+        ):
+            fail(f"Protected {name} temporary file changed while writing.")
+        os.lseek(temporary_descriptor, 0, os.SEEK_SET)
+        with os.fdopen(temporary_descriptor, "rb", closefd=False) as protected_file:
+            if protected_file.read(len(payload) + 1) != payload:
+                fail(f"Protected {name} temporary content changed while writing.")
+        os.close(temporary_descriptor)
+        temporary_descriptor = -1
+
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        replaced = True
+        # The atomic replace is the commit point. Some filesystems do not
+        # support directory fsync; no post-commit durability probe may turn a
+        # complete replacement into a reported partial-write failure.
+        try:
+            os.fsync(directory)
+        except OSError:
+            pass
+    except OSError as error:
+        fail(f"Protected {name} cannot be written atomically: {error}")
     finally:
-        os.close(descriptor)
+        if temporary_descriptor >= 0:
+            os.close(temporary_descriptor)
+        if not replaced:
+            try:
+                os.unlink(temporary_name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+        try:
+            os.close(directory)
+        except OSError:
+            pass
 
 
 def bind_protected_assets(

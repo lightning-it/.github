@@ -94,17 +94,17 @@ jobs:
               and .producer_run_id == $run_id
               and .run_url == $run_url
             ' <<<"${neutral_summary}" >/dev/null
-          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          for attempt in $(seq 1 40); do
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_id}")"
             if [ "$(jq -r .status <<<"${producer}")" = completed ]; then
               test "$(jq -r .conclusion <<<"${producer}")" = success
               break
             fi
-            test "${attempt}" -lt 10
-            sleep 2
+            test "${attempt}" -lt 40
+            sleep 5
           done
-          if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
-            [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:[0-9a-f]{64}$ ]]
+          if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:[0-9a-f]{64}$ ]]; then
+            test "${author}" = 'lightning-it-release-automation[bot]'
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EXPECTED_BASE}..${EXPECTED_HEAD}"
             jq -e \
               --arg actor "${author}" \
@@ -122,7 +122,17 @@ jobs:
                 and .triggering_actor.login == $actor
               ' <<<"${producer}" >/dev/null
           else
-            test "${neutral_external_id}" = "mlx90-current-revision:copilot:v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}"
+            [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]
+            external_kind="${BASH_REMATCH[1]}"
+            if [ "${external_kind}" = ancestry-backmerge ]; then
+              test "${author}" = 'lightning-it-release-automation[bot]'
+              test "$(jq -r .review_path <<<"${neutral_summary}")" = \
+                'deterministic evidence-bound ancestry exemption'
+            else
+              test "${author}" != 'lightning-it-release-automation[bot]'
+              test "$(jq -r .review_path <<<"${neutral_summary}")" = \
+                'applicable Copilot or governed automation exemption'
+            fi
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${neutral_summary}")"
             default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
@@ -198,5 +208,9 @@ jobs:
             exit 0
           fi
           test "$(jq -r .conclusion <<<"${run}")" = failure
-          test "$(jq -r .run_attempt <<<"${run}")" -eq 1
+          run_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+          if [ "${run_attempt}" -ne 1 ]; then
+            echo "Protected verifier already consumed its single rerun; no further retry is allowed."
+            exit 0
+          fi
           gh api --method POST "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null
