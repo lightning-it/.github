@@ -129,6 +129,39 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             self.assertEqual(0o600, path.stat().st_mode & 0o777)
             self.assertEqual(b"protected", path.read_bytes())
 
+    def test_protected_writer_cleanup_does_not_mask_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            protected = Path(temporary) / "protected"
+            protected.write_bytes(b"unchanged")
+            with (
+                mock.patch.object(
+                    self.module.os,
+                    "fsync",
+                    side_effect=OSError("simulated write failure"),
+                ),
+                mock.patch.object(
+                    self.module.os,
+                    "unlink",
+                    side_effect=OSError("simulated cleanup failure"),
+                ),
+                self.assertRaisesRegex(
+                    self.module.MaterializationError,
+                    "simulated write failure",
+                ) as raised,
+            ):
+                self.module.write_owned_regular_file(
+                    protected,
+                    b"replacement",
+                    "test",
+                )
+            self.assertTrue(
+                any(
+                    "simulated cleanup failure" in note
+                    for note in raised.exception.__notes__
+                )
+            )
+            self.assertEqual(b"unchanged", protected.read_bytes())
+
     def test_metadata_binding_rejects_non_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             review = Path(temporary)
