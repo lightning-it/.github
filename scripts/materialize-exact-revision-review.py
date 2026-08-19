@@ -161,7 +161,7 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
 
 
 def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
-    """Atomically replace one bounded owned file without following symlinks."""
+    """Replace a bounded owned file without following its parent or target entry."""
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if not isinstance(no_follow, int) or no_follow == 0:
         fail("Protected file writing requires O_NOFOLLOW support.")
