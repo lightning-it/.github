@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import shutil
 import subprocess
 import textwrap
 import unittest
@@ -350,7 +350,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         def classify(**overrides: str) -> str:
             environment = {
-                **os.environ,
                 "REPOSITORY": "lightning-it/.github",
                 "author": "lightning-it-shared-assets-sync[bot]",
                 "base_ref": "develop",
@@ -361,20 +360,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ),
                 **overrides,
             }
-            result = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    "set -euo pipefail\n"
-                    "central_sync_backmerge=false\n"
-                    f"{routing_script}\n"
-                    'printf "%s" "${central_sync_backmerge}"\n',
-                ],
-                text=True,
-                capture_output=True,
-                check=False,
-                env=environment,
-            )
+            bash = shutil.which("bash")
+            if bash is None:
+                self.fail("bash is required to execute the workflow predicate")
+            try:
+                result = subprocess.run(
+                    [
+                        bash,
+                        "-c",
+                        "set -euo pipefail\n"
+                        "central_sync_backmerge=false\n"
+                        f"{routing_script}\n"
+                        'printf "%s" "${central_sync_backmerge}"\n',
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                )
+            except FileNotFoundError as error:
+                self.fail(
+                    f"bash disappeared before the workflow predicate ran: {error}"
+                )
             self.assertEqual(0, result.returncode, result.stderr)
             return result.stdout
 
