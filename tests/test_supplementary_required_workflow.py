@@ -247,7 +247,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             '<!-- lit-shared-assets-sync-provenance:v1 -->', recovery
         )
-        self.assertIn('sub("^[[:space:]]+"; "")', recovery)
+        self.assertIn("The marker token is reserved anywhere", recovery)
+        self.assertIn("select(.body | contains($marker))", recovery)
         self.assertIn(
             '"repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100"',
             recovery,

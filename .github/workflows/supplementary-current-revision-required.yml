@@ -433,12 +433,15 @@ jobs:
             sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+            # The marker token is reserved anywhere in a comment. The strict
+            # parser below accepts only the exact two-line App proof, so any
+            # prefix, suffix, edit, malformed proof, or duplicate stays counted
+            # here but fails closed during exact validation.
             sync_comments="$(jq -c \
               --arg marker "${sync_comment_marker}" '
                 [.[].[]? |
                   select((.body | type) == "string") |
-                  select((.body | sub("^[[:space:]]+"; ""))
-                    | startswith($marker))]
+                  select(.body | contains($marker))]
               ' <<<"${sync_comment_pages}")"
             # Any second marker is ambiguous evidence, even if its payload or
             # actor is invalid. Exactly one marker must exist before validating

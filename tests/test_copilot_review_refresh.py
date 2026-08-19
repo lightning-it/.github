@@ -32,6 +32,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         author: str,
         external_id: str,
         pull_request_number: int | None,
+        repository: str = "lightning-it/.github",
     ) -> subprocess.CompletedProcess[str]:
         base = "a" * 40
         head = "b" * 40
@@ -68,7 +69,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     "123",
                     "--arg",
                     "repository",
-                    "lightning-it/.github",
+                    repository,
                     "--argjson",
                     "pr_number",
                     "123",
@@ -146,6 +147,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('.pull_request_number == $pr_number', workflow)
         self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
         self.assertIn("lightning-it/.github", workflow)
+        self.assertIn("legacy `copilot`", workflow)
+        self.assertIn(
+            "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
+        )
 
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
@@ -186,6 +191,22 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
 
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+        ):
+            with self.subTest(managed_distribution=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+
         rejected = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", None),
             ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", 999),
@@ -200,6 +221,25 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     author=author,
                     external_id=external_id,
                     pull_request_number=pull_request_number,
+                )
+                self.assertNotEqual(0, result.returncode)
+
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
+                f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
+                None,
+            ),
+        ):
+            with self.subTest(outside_repository=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
                 )
                 self.assertNotEqual(0, result.returncode)
 
