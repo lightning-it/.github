@@ -158,7 +158,9 @@ jobs:
           target_commit="$(gh api "repos/${REPOSITORY}/commits/${EVENT_HEAD}")"
           test "$(jq -r .sha <<<"${head_commit}")" = "${EVENT_HEAD}"
           test "$(jq -r .sha <<<"${target_commit}")" = "${EVENT_HEAD}"
-          if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+          if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+              || { [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+                && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
             test "${head_repository}" = "${REPOSITORY}"
           fi
 
@@ -431,11 +433,15 @@ jobs:
             sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+            # The marker token is reserved anywhere in a comment. The strict
+            # parser below accepts only the exact two-line App proof, so any
+            # prefix, suffix, edit, malformed proof, or duplicate stays counted
+            # here but fails closed during exact validation.
             sync_comments="$(jq -c \
               --arg marker "${sync_comment_marker}" '
                 [.[].[]? |
                   select((.body | type) == "string") |
-                  select(.body | startswith($marker + "\n"))]
+                  select(.body | contains($marker))]
               ' <<<"${sync_comment_pages}")"
             # Any second marker is ambiguous evidence, even if its payload or
             # actor is invalid. Exactly one marker must exist before validating
@@ -606,7 +612,9 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             fi
-            if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+            if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
+                || { [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+                  && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
               test "${producer_kind}" = ancestry-backmerge
               test "${base_ref}" = develop
               [[ "${head_ref}" == backmerge/*-main ]]

@@ -26,12 +26,21 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index('\n            \' <<<"${neutral_summary}"', start)
         return workflow[start:end]
 
+    @staticmethod
+    def _rerun_workflow_identity_filter() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            --argjson pr_number "${PR_NUMBER}" \'\n'
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index('\n            \' <<<"${run}"', start)
+        return workflow[start:end]
+
     def _run_refresh_filter(
         self,
         *,
         author: str,
         external_id: str,
         pull_request_number: int | None,
+        repository: str = "lightning-it/.github",
     ) -> subprocess.CompletedProcess[str]:
         base = "a" * 40
         head = "b" * 40
@@ -66,6 +75,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     "--arg",
                     "pr",
                     "123",
+                    "--arg",
+                    "repository",
+                    repository,
                     "--argjson",
                     "pr_number",
                     "123",
@@ -141,11 +153,117 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('if $evidence_version == "v6" then', workflow)
         self.assertIn('has("pull_request_number")', workflow)
         self.assertIn('.pull_request_number == $pr_number', workflow)
+        self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
+        self.assertIn("lightning-it/.github", workflow)
+        self.assertIn("legacy `copilot`", workflow)
+        self.assertIn(
+            "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
+        )
+
+    def test_rerun_helper_binds_central_and_distributed_workflow_urls(self) -> None:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if $repository == "lightning-it/.github" then',
+            workflow,
+        )
+        self.assertIn(
+            '$api_url + "/repos/" + $repository + "/actions/workflows/"',
+            workflow,
+        )
+        self.assertIn(
+            '+ "/actions/required_workflows/"', workflow
+        )
+
+        def validate(repository: str, workflow_url: str) -> int:
+            run = {
+                "event": "pull_request_target",
+                "path": ".github/workflows/supplementary-current-revision-required.yml",
+                "workflow_id": 337993808,
+                "workflow_url": workflow_url,
+                "head_branch": "fix/final",
+                "head_sha": "b" * 40,
+                "html_url": f"https://github.example/{repository}/actions/runs/42",
+                "actor": {"login": "litroc"},
+                "triggering_actor": {"login": "litroc"},
+                "pull_requests": [
+                    {
+                        "number": 220,
+                        "url": f"https://api.github.example/repos/{repository}/pulls/220",
+                        "base": {
+                            "ref": "develop",
+                            "sha": "a" * 40,
+                            "repo": {
+                                "url": f"https://api.github.example/repos/{repository}"
+                            },
+                        },
+                        "head": {
+                            "ref": "fix/final",
+                            "sha": "b" * 40,
+                            "repo": {
+                                "url": f"https://api.github.example/repos/{repository}"
+                            },
+                        },
+                    }
+                ],
+                "status": "completed",
+            }
+            result = subprocess.run(
+                [
+                    "jq",
+                    "-e",
+                    "--arg",
+                    "api_url",
+                    "https://api.github.example",
+                    "--arg",
+                    "base_ref",
+                    "develop",
+                    "--arg",
+                    "base_sha",
+                    "a" * 40,
+                    "--arg",
+                    "head_ref",
+                    "fix/final",
+                    "--arg",
+                    "head_sha",
+                    "b" * 40,
+                    "--arg",
+                    "repository",
+                    repository,
+                    "--arg",
+                    "run_url",
+                    f"https://github.example/{repository}/actions/runs/42",
+                    "--argjson",
+                    "pr_number",
+                    "220",
+                    self._rerun_workflow_identity_filter(),
+                ],
+                input=json.dumps(run),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        central = "lightning-it/.github"
+        target = "lightning-it/shared-assets-lit"
+        central_url = (
+            f"https://api.github.example/repos/{central}/actions/workflows/337993808"
+        )
+        target_url = (
+            f"https://api.github.example/repos/{target}"
+            "/actions/required_workflows/337993808"
+        )
+        self.assertEqual(0, validate(central, central_url))
+        self.assertEqual(0, validate(target, target_url))
+        self.assertNotEqual(0, validate(central, target_url))
+        self.assertNotEqual(0, validate(target, central_url))
 
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
         head = "b" * 40
         release_app = "lightning-it-release-automation[bot]"
+        sync_app = "lightning-it-shared-assets-sync[bot]"
         cases = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (
@@ -156,6 +274,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (
                 release_app,
+                f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
+                None,
+            ),
+            (
+                sync_app,
+                f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
+                sync_app,
                 f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
                 None,
             ),
@@ -170,10 +298,28 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
 
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+        ):
+            with self.subTest(managed_distribution=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+
         rejected = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", None),
             ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", 999),
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
+            (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             ("litroc", f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}", None),
         )
         for author, external_id, pull_request_number in rejected:
@@ -182,6 +328,25 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     author=author,
                     external_id=external_id,
                     pull_request_number=pull_request_number,
+                )
+                self.assertNotEqual(0, result.returncode)
+
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
+                f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
+                None,
+            ),
+        ):
+            with self.subTest(outside_repository=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
                 )
                 self.assertNotEqual(0, result.returncode)
 
