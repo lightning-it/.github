@@ -66,6 +66,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     "--arg",
                     "pr",
                     "123",
+                    "--arg",
+                    "repository",
+                    "lightning-it/.github",
                     "--argjson",
                     "pr_number",
                     "123",
@@ -141,11 +144,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('if $evidence_version == "v6" then', workflow)
         self.assertIn('has("pull_request_number")', workflow)
         self.assertIn('.pull_request_number == $pr_number', workflow)
+        self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
+        self.assertIn("lightning-it/.github", workflow)
 
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
         head = "b" * 40
         release_app = "lightning-it-release-automation[bot]"
+        sync_app = "lightning-it-shared-assets-sync[bot]"
         cases = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (
@@ -156,6 +162,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (
                 release_app,
+                f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
+                None,
+            ),
+            (
+                sync_app,
+                f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
+                sync_app,
                 f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
                 None,
             ),

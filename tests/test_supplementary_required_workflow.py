@@ -132,6 +132,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
         self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
         self.assertIn('test "${producer_kind}" = copilot', workflow)
+        self.assertEqual(
+            2,
+            workflow.count(
+                "[ \"${REPOSITORY}\" = 'lightning-it/.github' ]"
+            ),
+        )
+        self.assertEqual(
+            3,
+            workflow.count(
+                "[ \"${author}\" = "
+                "'lightning-it-shared-assets-sync[bot]' ]"
+            ),
+        )
         self.assertIn(".producer_run_id == $run_id", workflow)
         self.assertIn(".schema == 4", workflow)
         self.assertIn(
