@@ -20,6 +20,7 @@ jobs:
   backmerge:
     if: github.repository_owner == 'lightning-it'
     runs-on: ubuntu-latest
+    environment: shared-assets-sync
     timeout-minutes: 10
 
     steps:
