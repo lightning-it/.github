@@ -56,6 +56,8 @@ jobs:
         if: >-
           github.event.pull_request.user.login
             == 'lightning-it-shared-assets-sync[bot]'
+          && github.event.pull_request.base.ref == 'develop'
+          && github.event.pull_request.head.repo.full_name == github.repository
           && !(
             github.repository == 'lightning-it/.github'
             && github.event.pull_request.base.ref == 'develop'
