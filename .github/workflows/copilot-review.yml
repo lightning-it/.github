@@ -1,6 +1,8 @@
 # Managed by lightning-it/shared-assets-lit.
 # Do not edit downstream copies directly.
 # Protected per-repository MLX-90/REP-60 current-revision controller.
+# Release-App review belongs only to the sibling protected controller at
+# .github/workflows/release-bot-exact-head-review.yml.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
