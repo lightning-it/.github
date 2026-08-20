@@ -49,43 +49,6 @@ jobs:
       statuses: read
 
     steps:
-      - name: Mint policy-read App token
-        id: policy-app
-        if: >-
-          github.event.pull_request.draft == false
-          && github.actor == 'lightning-it-shared-assets-sync[bot]'
-          && github.event.pull_request.user.login == 'lightning-it-shared-assets-sync[bot]'
-          && github.event.pull_request.head.repo.full_name == github.repository
-          && github.event.pull_request.base.ref == 'develop'
-          && (
-            startsWith(
-              github.event.pull_request.head.ref,
-              format(
-                'chore/sync-shared-assets-lit-{0}-',
-                github.event.repository.name
-              )
-            )
-            || startsWith(
-              github.event.pull_request.head.ref,
-              format(
-                'chore/sync-repository-quality-{0}-',
-                github.event.repository.name
-              )
-            )
-          )
-          && (
-            github.event.pull_request.title == 'chore: sync shared-assets-lit'
-            || github.event.pull_request.title == 'chore: sync shared assets'
-            || github.event.pull_request.title == 'chore: sync repository quality assets'
-          )
-          && contains(github.event.pull_request.labels.*.name, 'chore')
-          && contains(github.event.pull_request.labels.*.name, 'shared-assets-lit')
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.SHARED_ASSETS_SYNC_APP_CLIENT_ID }}
-          private-key: ${{ secrets.SHARED_ASSETS_SYNC_APP_PRIVATE_KEY }}
-          permission-administration: read
-
       - name: Verify automated sync PR identity
         id: guard
         env:
@@ -246,6 +209,15 @@ jobs:
             echo "kind=$sync_kind"
             echo "subject=$expected_subject"
           } >>"$GITHUB_OUTPUT"
+
+      - name: Mint policy-read App token
+        id: policy-app
+        if: steps.guard.outputs.trusted == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHARED_ASSETS_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SHARED_ASSETS_SYNC_APP_PRIVATE_KEY }}
+          permission-administration: read
 
       - name: Revoke auto-merge for an untrusted state or event
         if: steps.guard.outputs.trusted != 'true'
