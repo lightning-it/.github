@@ -684,8 +684,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'reservation_count="$(jq', 1
         )[0]
         self.assertIn("select(.head_sha == $head)", reservation_selection)
-        self.assertIn("startswith($prefix)", reservation_selection)
-        self.assertIn("endswith($suffix)", reservation_selection)
+        self.assertIn("startswith($v3_prefix)", reservation_selection)
+        self.assertIn("endswith($v3_suffix)", reservation_selection)
+        self.assertIn("startswith($v2_prefix)", reservation_selection)
+        self.assertIn("endswith($v2_suffix)", reservation_selection)
         self.assertIn('foreign_reservations="$(jq -c', reservation_selection)
         self.assertEqual(
             workflow.count('-f external_id="${reservation_external_id}"'),
@@ -693,6 +695,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
+            workflow,
+        )
+        self.assertIn(
+            "^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$",
+            workflow,
+        )
+        self.assertIn('prior_verifier_run="$(gh api', workflow)
+        self.assertIn('.workflow_id == $workflow_id', workflow)
+        self.assertIn('.status == "completed"', workflow)
+        self.assertIn(
+            '(.conclusion == "success" or .conclusion == "failure")',
             workflow,
         )
         self.assertLess(
@@ -749,6 +762,120 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             retirement,
         )
 
+    def test_v2_cutover_reuses_only_exact_protected_reservations(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        selection = workflow.split('          reservations="$(jq -c', 1)[1].split(
+            '          foreign_reservations="$(jq -c', 1
+        )[0]
+        selection_filter = selection.split(" '\n", 1)[1].split(
+            '\n            \' <<<"${all_reservations}")"', 1
+        )[0]
+        head = "a" * 40
+        base = "b" * 40
+        exact_v3 = {
+            "id": 1,
+            "external_id": f"rep60-required-workflow:v3:301:225:{base}:{head}",
+        }
+        exact_v2 = {
+            "id": 2,
+            "external_id": f"rep60-required-workflow:v2:201:225:{head}",
+        }
+        rejected = [
+            {
+                "id": 3,
+                "external_id": f"rep60-required-workflow:v3:302:225:{'c' * 40}:{head}",
+            },
+            {
+                "id": 4,
+                "external_id": f"rep60-required-workflow:v2:202:224:{head}",
+            },
+            {"id": 5, "external_id": "untrusted"},
+        ]
+        selected = subprocess.run(
+            [
+                "jq",
+                "-c",
+                "--arg",
+                "v3_prefix",
+                "rep60-required-workflow:v3:",
+                "--arg",
+                "v3_suffix",
+                f":225:{base}:{head}",
+                "--arg",
+                "v2_prefix",
+                "rep60-required-workflow:v2:",
+                "--arg",
+                "v2_suffix",
+                f":225:{head}",
+                selection_filter,
+            ],
+            input=json.dumps([exact_v3, exact_v2, *rejected]),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(
+            [item["id"] for item in json.loads(selected.stdout)],
+            [1, 2],
+        )
+
+        prior_block = workflow.split('prior_verifier_run="$(gh api', 1)[1].split(
+            '            reservation_url=', 1
+        )[0]
+        prior_filter = prior_block.split(
+            '--argjson workflow_id "${current_workflow_id}" \'\n', 1
+        )[1].split('\n                \' <<<"${prior_verifier_run}"', 1)[0]
+        title = f"Protected current revision PR #225 opened {head}"
+        protected_run = {
+            "id": 201,
+            "workflow_id": 335,
+            "event": "pull_request_target",
+            "path": ".github/workflows/supplementary-current-revision-required.yml",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_sha": head,
+            "run_attempt": 1,
+            "display_title": title,
+        }
+        prior_args = [
+            "--arg",
+            "head",
+            head,
+            "--argjson",
+            "pr_number",
+            "225",
+            "--argjson",
+            "run_id",
+            "201",
+            "--argjson",
+            "workflow_id",
+            "335",
+        ]
+
+        def accepts(payload: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    ["jq", "-e", *prior_args, prior_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(protected_run))
+        for forged in (
+            {**protected_run, "workflow_id": 336},
+            {**protected_run, "event": "pull_request"},
+            {**protected_run, "status": "in_progress"},
+            {**protected_run, "conclusion": None},
+            {**protected_run, "head_sha": "c" * 40},
+            {**protected_run, "display_title": f"Candidate workflow {head}"},
+        ):
+            with self.subTest(forged=forged):
+                self.assertFalse(accepts(forged))
+
     def test_retired_reservation_filters_reject_open_or_foreign_evidence(
         self,
     ) -> None:
@@ -782,7 +909,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         current_filter = extract(
             retirement.split('current_workflow_id="$(jq -er', 1)[1],
             '--argjson run_id "${GITHUB_RUN_ID}" \'\n',
-            '\n              \' <<<"${current_verifier_run}")"',
+            '\n            \' <<<"${current_verifier_run}")"',
         )
         head = "a" * 40
         current_title = f"Protected current revision PR #225 opened {head}"

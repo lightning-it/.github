@@ -253,19 +253,31 @@ jobs:
                 select(.head_sha == $head)]
             ' <<<"${reservation_checks}")"
           reservations="$(jq -c \
-            --arg prefix 'rep60-required-workflow:v3:' \
-            --arg suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" '
+            --arg v3_prefix 'rep60-required-workflow:v3:' \
+            --arg v3_suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" \
+            --arg v2_prefix 'rep60-required-workflow:v2:' \
+            --arg v2_suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
               [.[] |
                 select((.external_id | type) == "string") |
-                select(.external_id | startswith($prefix) and endswith($suffix))]
+                select(
+                  (.external_id | startswith($v3_prefix) and endswith($v3_suffix))
+                  or
+                  (.external_id | startswith($v2_prefix) and endswith($v2_suffix))
+                )]
             ' <<<"${all_reservations}")"
           foreign_reservations="$(jq -c \
-            --arg prefix 'rep60-required-workflow:v3:' \
-            --arg suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" '
+            --arg v3_prefix 'rep60-required-workflow:v3:' \
+            --arg v3_suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" \
+            --arg v2_prefix 'rep60-required-workflow:v2:' \
+            --arg v2_suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
               [.[] |
                 select((
                   ((.external_id | type) == "string")
-                  and (.external_id | startswith($prefix) and endswith($suffix))
+                  and (
+                    (.external_id | startswith($v3_prefix) and endswith($v3_suffix))
+                    or
+                    (.external_id | startswith($v2_prefix) and endswith($v2_suffix))
+                  )
                 ) | not)]
             ' <<<"${all_reservations}")"
           foreign_count="$(jq 'length' <<<"${foreign_reservations}")"
@@ -273,6 +285,29 @@ jobs:
             echo "Too many foreign protected verifier reservations exist for this commit." >&2
             exit 1
           fi
+          current_verifier_run="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+          current_workflow_id="$(jq -er \
+            --arg action "${EVENT_ACTION}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --argjson run_id "${GITHUB_RUN_ID}" '
+              select(
+                .id == $run_id
+                and .event == "pull_request_target"
+                and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                and .status == "in_progress"
+                and .conclusion == null
+                and .head_sha == $head
+                and ((.run_attempt == 1) or (.run_attempt == 2))
+                and .display_title == (
+                  "Protected current revision PR #"
+                  + ($pr_number | tostring) + " " + $action + " " + $head
+                )
+                and (.workflow_id | type == "number" and . > 0)
+              )
+              | .workflow_id
+            ' <<<"${current_verifier_run}")"
           if [ "${foreign_count}" -gt 0 ]; then
             jq -e \
               --arg head "${EVENT_HEAD}" \
@@ -288,30 +323,6 @@ jobs:
                 )
               ' <<<"${foreign_reservations}" >/dev/null
             test "$(jq '[.[].external_id] | unique | length' <<<"${foreign_reservations}")" -eq "${foreign_count}"
-
-            current_verifier_run="$(gh api \
-              "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
-            current_workflow_id="$(jq -er \
-              --arg action "${EVENT_ACTION}" \
-              --arg head "${EVENT_HEAD}" \
-              --argjson pr_number "${PR_NUMBER}" \
-              --argjson run_id "${GITHUB_RUN_ID}" '
-                select(
-                  .id == $run_id
-                  and .event == "pull_request_target"
-                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
-                  and .status == "in_progress"
-                  and .conclusion == null
-                  and .head_sha == $head
-                  and ((.run_attempt == 1) or (.run_attempt == 2))
-                  and .display_title == (
-                    "Protected current revision PR #"
-                    + ($pr_number | tostring) + " " + $action + " " + $head
-                  )
-                  and (.workflow_id | type == "number" and . > 0)
-                )
-                | .workflow_id
-              ' <<<"${current_verifier_run}")"
 
             declare -A retired_pr_numbers=()
             declare -A retired_run_ids=()
@@ -403,7 +414,35 @@ jobs:
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
-            [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]
+            if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              :
+            else
+              [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$ ]]
+              prior_run_id="${BASH_REMATCH[1]}"
+              prior_verifier_run="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${prior_run_id}")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" \
+                --argjson pr_number "${PR_NUMBER}" \
+                --argjson run_id "${prior_run_id}" \
+                --argjson workflow_id "${current_workflow_id}" '
+                  .id == $run_id
+                  and .workflow_id == $workflow_id
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                  and .status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure")
+                  and .head_sha == $head
+                  and ((.run_attempt == 1) or (.run_attempt == 2))
+                  and (
+                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
+                  )
+                ' <<<"${prior_verifier_run}" >/dev/null
+            fi
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
