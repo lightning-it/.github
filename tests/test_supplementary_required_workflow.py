@@ -444,6 +444,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "            == 'lightning-it-shared-assets-sync[bot]'",
             source_token,
         )
+        self.assertIn(
+            "github.event.pull_request.base.ref == 'develop'", source_token
+        )
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            source_token,
+        )
         self.assertIn("owner: lightning-it", source_token)
         self.assertIn("repositories: shared-assets-lit", source_token)
         self.assertIn("permission-actions: read", source_token)
