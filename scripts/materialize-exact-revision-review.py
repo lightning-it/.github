@@ -146,7 +146,7 @@ def close_descriptor_after_error(
 
 
 def add_error_notes(error: BaseException, notes: Sequence[str]) -> None:
-    """Attach cleanup details without requiring Python 3.11 exception notes."""
+    """Attach cleanup details when runtime exception-note support is available."""
     add_note = getattr(error, "add_note", None)
     if callable(add_note):
         for note in notes:
