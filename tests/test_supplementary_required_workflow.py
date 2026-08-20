@@ -427,7 +427,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         source_token = workflow.split(
-            "      - name: Mint source-read Shared Assets App token", 1
+            "      - name: Mint source-read Release Automation App token", 1
         )[1].split(
             "      - name: Verify one protected result for the exact live revision",
             1,
@@ -456,9 +456,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("permission-actions: read", source_token)
         self.assertIn("permission-contents: read", source_token)
         self.assertIn(
-            "private-key: ${{ secrets.SHARED_ASSETS_SYNC_APP_PRIVATE_KEY }}",
+            "client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}",
             source_token,
         )
+        self.assertIn(
+            "private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}",
+            source_token,
+        )
+        self.assertNotIn("SHARED_ASSETS_SYNC_APP", source_token)
         self.assertIn(
             "SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}", workflow
         )
