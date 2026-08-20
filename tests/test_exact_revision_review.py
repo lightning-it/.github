@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MATERIALIZER = ROOT / "scripts/materialize-exact-revision-review.py"
 REVIEW_WORKFLOW = ROOT / ".github/workflows/release-bot-exact-head-review.yml"
@@ -194,9 +193,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(
-                    any("simulated cleanup failure" in note for note in notes)
-                )
+                self.assertTrue(any("simulated cleanup failure" in note for note in notes))
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_protected_writer_close_does_not_mask_write_failure(self) -> None:
@@ -338,12 +335,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(
-                    any(
-                        "simulated directory close failure" in note
-                        for note in notes
-                    )
-                )
+                self.assertTrue(any("simulated directory close failure" in note for note in notes))
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_metadata_binding_rejects_non_object(self) -> None:
