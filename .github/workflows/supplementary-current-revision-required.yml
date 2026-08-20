@@ -449,6 +449,10 @@ jobs:
               /^Shared-Assets-Source-Run: [1-9][0-9]*$/ { count++ }
               END { print count + 0 }
             ' <<<"${commit_message}")"
+            source_attempt_count="$(awk '
+              /^Shared-Assets-Source-Attempt: [1-9][0-9]*$/ { count++ }
+              END { print count + 0 }
+            ' <<<"${commit_message}")"
             source_app_id_count="$(awk '
               $0 == "Shared-Assets-Sync-App-ID: 4351516" { count++ }
               END { print count + 0 }
@@ -460,13 +464,21 @@ jobs:
             test "${source_sha_count}" -eq 1
             test "${source_run_count}" -eq 1
             test "${source_app_id_count}" -eq 1
-            test "${managed_trailer_count}" -eq 3
+            test "${source_attempt_count}" -le 1
+            test "${managed_trailer_count}" -eq $((3 + source_attempt_count))
             source_sha="$(awk '/^Shared-Assets-Source-SHA: / { print $2 }' \
               <<<"${commit_message}")"
             source_run_id="$(awk '/^Shared-Assets-Source-Run: / { print $2 }' \
               <<<"${commit_message}")"
+            source_run_attempt=1
+            if [ "${source_attempt_count}" -eq 1 ]; then
+              source_run_attempt="$(awk \
+                '/^Shared-Assets-Source-Attempt: / { print $2 }' \
+                <<<"${commit_message}")"
+            fi
             [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
             [[ "${source_run_id}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${source_run_attempt}" =~ ^[1-9][0-9]*$ ]]
             source_run_url="${GITHUB_SERVER_URL}/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
             source_run="$(gh api \
               "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
@@ -494,13 +506,13 @@ jobs:
               <<<"${source_run}")"
             case "${source_path}" in
               .github/workflows/sync-repository-quality-repos.yml)
-                expected_head_ref="chore/sync-repository-quality-${target_name}"
+                expected_head_prefix="chore/sync-repository-quality-${target_name}"
                 expected_pr_title='chore: sync repository quality assets'
                 expected_subject='chore: sync repository quality assets'
                 expected_source_job="Sync repository-quality assets to ${target_name}"
                 ;;
               .github/workflows/sync-ansible-inventories.yml)
-                expected_head_ref="chore/sync-shared-assets-lit-${target_name}"
+                expected_head_prefix="chore/sync-shared-assets-lit-${target_name}"
                 expected_pr_title='chore: sync shared assets'
                 expected_subject='chore: sync shared assets from lightning-it/shared-assets-lit'
                 expected_source_job="Sync shared assets → ${target_name}"
@@ -508,7 +520,7 @@ jobs:
               .github/workflows/sync-ansible-collections.yml | \
               .github/workflows/sync-ee-containers.yml | \
               .github/workflows/sync-playbook-runbook-repos.yml)
-                expected_head_ref="chore/sync-shared-assets-lit-${target_name}"
+                expected_head_prefix="chore/sync-shared-assets-lit-${target_name}"
                 expected_pr_title='chore: sync shared-assets-lit'
                 expected_subject='chore: sync shared assets from lightning-it/shared-assets-lit'
                 expected_source_job="Sync shared-assets-lit to ${target_name}"
@@ -518,6 +530,27 @@ jobs:
                 exit 1
                 ;;
             esac
+            sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
+            sync_comment_schema='lit-shared-assets-sync-provenance/v1'
+            evidence_keys='[
+              "app_id","schema","source_job","source_repository",
+              "source_run_id","source_run_url","source_sha","source_workflow",
+              "target_base_sha","target_head_sha","target_pr",
+              "target_repository","target_tree_sha"
+            ]'
+            expected_head_ref="${expected_head_prefix}"
+            if [ "${source_attempt_count}" -eq 1 ]; then
+              sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v2 -->'
+              sync_comment_schema='lit-shared-assets-sync-provenance/v2'
+              evidence_keys='[
+                "app_id","schema","source_job","source_repository",
+                "source_run_attempt","source_run_id","source_run_url",
+                "source_sha","source_workflow","target_base_sha",
+                "target_head_sha","target_pr","target_repository",
+                "target_tree_sha"
+              ]'
+              expected_head_ref="${expected_head_prefix}-${source_run_id}-${source_run_attempt}"
+            fi
             test "${head_ref}" = "${expected_head_ref}"
             test "$(jq -r .title <<<"${pr}")" = "${expected_pr_title}"
             test "${first_line}" = "${expected_subject}"
@@ -526,6 +559,7 @@ jobs:
               --arg path "${source_path}" \
               --arg repository 'lightning-it/shared-assets-lit' \
               --arg run_url "${source_run_url}" \
+              --argjson run_attempt "${source_run_attempt}" \
               --argjson run_id "${source_run_id}" '
                 .id == $run_id
                 and .event == "push"
@@ -538,7 +572,7 @@ jobs:
                 and .repository.full_name == $repository
                 and .head_repository.full_name == $repository
                 and ((.run_attempt | type) == "number")
-                and .run_attempt == 1
+                and .run_attempt == $run_attempt
               ' <<<"${source_run}" >/dev/null
             source_commit="$(gh api \
               "repos/lightning-it/shared-assets-lit/commits/${source_sha}")"
@@ -567,7 +601,7 @@ jobs:
                 )
               ' <<<"${source_compare}" >/dev/null
             source_jobs="$(gh api \
-              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/jobs?per_page=100")"
+              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/${source_run_attempt}/jobs?per_page=100")"
             jq -e \
               --arg expected "${expected_source_job}" '
                 (.total_count | type == "number" and . > 0 and . <= 100)
@@ -581,7 +615,6 @@ jobs:
               .commit.tree.sha
               | select(type == "string" and test("^[0-9a-f]{40}$"))
             ' <<<"${target_commit}")"
-            sync_comment_marker='<!-- lit-shared-assets-sync-provenance:v1 -->'
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
             # The marker token is reserved anywhere in a comment. The strict
@@ -589,10 +622,13 @@ jobs:
             # prefix, suffix, edit, malformed proof, or duplicate stays counted
             # here but fails closed during exact validation.
             sync_comments="$(jq -c \
-              --arg marker "${sync_comment_marker}" '
+              --arg legacy_marker '<!-- lit-shared-assets-sync-provenance:v1 -->' \
+              --arg attempt_marker '<!-- lit-shared-assets-sync-provenance:v2 -->' '
                 [.[].[]? |
                   select((.body | type) == "string") |
-                  select(.body | contains($marker))]
+                  select(
+                    (.body | contains($legacy_marker))
+                    or (.body | contains($attempt_marker)))]
               ' <<<"${sync_comment_pages}")"
             # Any second marker is ambiguous evidence, even if its payload or
             # actor is invalid. Exactly one marker must exist before validating
@@ -611,10 +647,13 @@ jobs:
               --arg run_url "${source_run_url}" \
               --arg source "${source_sha}" \
               --arg source_path "${source_path}" \
+              --arg schema "${sync_comment_schema}" \
               --arg tree "${target_tree_sha}" \
               --arg web_url "${GITHUB_SERVER_URL}" \
               --argjson app_id 4351516 \
+              --argjson evidence_keys "${evidence_keys}" \
               --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_attempt "${source_run_attempt}" \
               --argjson run_id "${source_run_id}" '
                 [.[] as $comment |
                   ($comment.body | split("\n")) as $lines |
@@ -644,28 +683,17 @@ jobs:
                     >= ($run_started | fromdateiso8601)) |
                   select(($comment.updated_at | fromdateiso8601)
                     <= ($run_updated | fromdateiso8601)) |
-                  select(($evidence | keys) == [
-                    "app_id",
-                    "schema",
-                    "source_job",
-                    "source_repository",
-                    "source_run_id",
-                    "source_run_url",
-                    "source_sha",
-                    "source_workflow",
-                    "target_base_sha",
-                    "target_head_sha",
-                    "target_pr",
-                    "target_repository",
-                    "target_tree_sha"
-                  ]) |
-                  select($evidence.schema
-                    == "lit-shared-assets-sync-provenance/v1") |
+                  select(($evidence | keys) == ($evidence_keys | sort)) |
+                  select($evidence.schema == $schema) |
                   select($evidence.app_id == $app_id) |
                   select($evidence.source_repository
                     == "lightning-it/shared-assets-lit") |
                   select($evidence.source_sha == $source) |
                   select($evidence.source_run_id == $run_id) |
+                  select(
+                    ($schema == "lit-shared-assets-sync-provenance/v1")
+                    or ($evidence.source_run_attempt == $run_attempt)
+                  ) |
                   select($evidence.source_run_url == $run_url) |
                   select($evidence.source_workflow == $source_path) |
                   select($evidence.source_job == $job) |

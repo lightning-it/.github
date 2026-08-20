@@ -312,8 +312,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .committer.login == $bot', recovery)
         self.assertIn('Shared-Assets-Source-SHA:', recovery)
         self.assertIn('Shared-Assets-Source-Run:', recovery)
+        self.assertIn('Shared-Assets-Source-Attempt:', recovery)
         self.assertIn('Shared-Assets-Sync-App-ID: 4351516', recovery)
-        self.assertIn('test "${managed_trailer_count}" -eq 3', recovery)
+        self.assertIn(
+            'test "${managed_trailer_count}" -eq $((3 + source_attempt_count))',
+            recovery,
+        )
         for source_workflow in (
             "sync-repository-quality-repos.yml",
             "sync-ansible-inventories.yml",
@@ -341,7 +345,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
         self.assertIn('and .head_repository.full_name == $repository', recovery)
-        self.assertIn('and .run_attempt == 1', recovery)
+        self.assertIn('and .run_attempt == $run_attempt', recovery)
+        self.assertIn(
+            'attempts/${source_run_attempt}/jobs?per_page=100',
+            recovery,
+        )
         self.assertIn('.base_commit.sha == $source', recovery)
         self.assertIn('.merge_base_commit.sha == $source', recovery)
         self.assertIn('and .behind_by == 0', recovery)
@@ -355,8 +363,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             '<!-- lit-shared-assets-sync-provenance:v1 -->', recovery
         )
+        self.assertIn(
+            '<!-- lit-shared-assets-sync-provenance:v2 -->', recovery
+        )
         self.assertIn("The marker token is reserved anywhere", recovery)
-        self.assertIn("select(.body | contains($marker))", recovery)
+        self.assertIn("(.body | contains($legacy_marker))", recovery)
+        self.assertIn("(.body | contains($attempt_marker))", recovery)
         self.assertIn(
             '"repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100"',
             recovery,
@@ -372,6 +384,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '== "lit-shared-assets-sync-provenance/v1"', recovery
+        )
+        self.assertIn(
+            "sync_comment_schema='lit-shared-assets-sync-provenance/v2'",
+            recovery,
+        )
+        self.assertIn(
+            '$evidence.source_run_attempt == $run_attempt',
+            recovery,
         )
         self.assertIn(
             '$evidence.target_base_sha == $base', recovery
