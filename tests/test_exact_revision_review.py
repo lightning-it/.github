@@ -81,9 +81,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_reader_rejects_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "target"
+            target = Path(temporary).resolve() / "target"
             target.write_text("{}\n", encoding="utf-8")
-            link = Path(temporary) / "link"
+            link = Path(temporary).resolve() / "link"
             link.symlink_to(target)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
@@ -93,9 +93,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_reader_rejects_hardlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "target"
+            target = Path(temporary).resolve() / "target"
             target.write_text("protected\n", encoding="utf-8")
-            link = Path(temporary) / "link"
+            link = Path(temporary).resolve() / "link"
             os.link(target, link)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
@@ -105,9 +105,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_writer_rejects_replacement_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "target"
+            target = Path(temporary).resolve() / "target"
             target.write_text("unchanged", encoding="utf-8")
-            link = Path(temporary) / "link"
+            link = Path(temporary).resolve() / "link"
             link.symlink_to(target)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
@@ -118,9 +118,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_writer_rejects_hardlink_without_truncating_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            target = Path(temporary) / "target"
+            target = Path(temporary).resolve() / "target"
             target.write_text("unchanged", encoding="utf-8")
-            link = Path(temporary) / "link"
+            link = Path(temporary).resolve() / "link"
             os.link(target, link)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
@@ -131,7 +131,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_writer_overrides_restrictive_umask(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "asset"
+            path = Path(temporary).resolve() / "asset"
             previous = os.umask(0o777)
             try:
                 self.module.write_owned_regular_file(path, b"protected", "test")
@@ -140,9 +140,36 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             self.assertEqual(0o600, path.stat().st_mode & 0o777)
             self.assertEqual(b"protected", path.read_bytes())
 
+    def test_ambiguous_close_never_touches_a_reused_descriptor(self) -> None:
+        descriptor = os.dup(1)
+        replacement_source = os.dup(1)
+        real_close = self.module.os.close
+        real_close(descriptor)
+        os.dup2(replacement_source, descriptor)
+        try:
+            with (
+                mock.patch.object(self.module.os, "close") as close_mock,
+                mock.patch.object(self.module.os, "fstat") as fstat_mock,
+            ):
+                errors = self.module.close_descriptor_after_error(
+                    descriptor,
+                    "test descriptor",
+                    first_error=OSError("simulated ambiguous close failure"),
+                )
+            close_mock.assert_not_called()
+            fstat_mock.assert_not_called()
+            self.assertEqual(
+                ["test descriptor close failed: simulated ambiguous close failure"],
+                errors,
+            )
+            self.module.os.fstat(descriptor)
+        finally:
+            real_close(descriptor)
+            real_close(replacement_source)
+
     def test_protected_writer_cleanup_does_not_mask_write_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            protected = Path(temporary) / "protected"
+            protected = Path(temporary).resolve() / "protected"
             protected.write_bytes(b"unchanged")
             with (
                 mock.patch.object(
@@ -174,8 +201,13 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_writer_close_does_not_mask_write_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            protected = Path(temporary) / "protected"
+            protected = Path(temporary).resolve() / "protected"
             protected.write_bytes(b"unchanged")
+            opened_parent = self.module.open_owned_parent_directory(
+                protected,
+                "test",
+                "Protected file writing",
+            )
             real_close = self.module.os.close
             close_calls = 0
 
@@ -191,6 +223,11 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                     self.module.os,
                     "fsync",
                     side_effect=OSError("simulated write failure"),
+                ),
+                mock.patch.object(
+                    self.module,
+                    "open_owned_parent_directory",
+                    return_value=opened_parent,
                 ),
                 mock.patch.object(
                     self.module.os,
@@ -209,15 +246,18 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(
-                    any("simulated close failure" in note for note in notes)
-                )
+                self.assertTrue(any("simulated close failure" in note for note in notes))
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_protected_writer_directory_close_failure_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            protected = Path(temporary) / "protected"
+            protected = Path(temporary).resolve() / "protected"
             protected.write_bytes(b"unchanged")
+            opened_parent = self.module.open_owned_parent_directory(
+                protected,
+                "test",
+                "Protected file writing",
+            )
             real_close = self.module.os.close
             close_calls = 0
 
@@ -229,6 +269,11 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                     raise OSError("simulated directory close failure")
 
             with (
+                mock.patch.object(
+                    self.module,
+                    "open_owned_parent_directory",
+                    return_value=opened_parent,
+                ),
                 mock.patch.object(
                     self.module.os,
                     "close",
@@ -248,8 +293,13 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_protected_writer_directory_close_does_not_mask_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            protected = Path(temporary) / "protected"
+            protected = Path(temporary).resolve() / "protected"
             protected.write_bytes(b"unchanged")
+            opened_parent = self.module.open_owned_parent_directory(
+                protected,
+                "test",
+                "Protected file writing",
+            )
             real_close = self.module.os.close
             close_calls = 0
 
@@ -265,6 +315,11 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                     self.module.os,
                     "fsync",
                     side_effect=OSError("simulated write failure"),
+                ),
+                mock.patch.object(
+                    self.module,
+                    "open_owned_parent_directory",
+                    return_value=opened_parent,
                 ),
                 mock.patch.object(
                     self.module.os,
@@ -293,7 +348,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
 
     def test_metadata_binding_rejects_non_object(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            review = Path(temporary)
+            review = Path(temporary).resolve()
             (review / "review-metadata.json").write_text("[]\n", encoding="utf-8")
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
