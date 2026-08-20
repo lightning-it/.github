@@ -424,6 +424,58 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             recovery,
         )
 
+    def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_token = workflow.split(
+            "      - name: Mint source-read Shared Assets App token", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision",
+            1,
+        )[0]
+        recovery = workflow.split(
+            "managed_sync_verified=false", 1
+        )[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+
+        self.assertIn("id: source-app", source_token)
+        self.assertIn(
+            "github.event.pull_request.user.login\n"
+            "            == 'lightning-it-shared-assets-sync[bot]'",
+            source_token,
+        )
+        self.assertIn(
+            "github.event.pull_request.base.ref == 'develop'", source_token
+        )
+        self.assertIn(
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            source_token,
+        )
+        self.assertIn("owner: lightning-it", source_token)
+        self.assertIn("repositories: shared-assets-lit", source_token)
+        self.assertIn("permission-actions: read", source_token)
+        self.assertIn("permission-contents: read", source_token)
+        self.assertIn(
+            "private-key: ${{ secrets.SHARED_ASSETS_SYNC_APP_PRIVATE_KEY }}",
+            source_token,
+        )
+        self.assertIn(
+            "SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}", workflow
+        )
+        self.assertIn('test -n "${SOURCE_GH_TOKEN}"', recovery)
+        self.assertEqual(
+            6, recovery.count('GH_TOKEN="${SOURCE_GH_TOKEN}" gh api')
+        )
+        for query in (
+            '"repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"',
+            '"repos/lightning-it/shared-assets-lit/commits/${source_sha}"',
+            "repos/lightning-it/shared-assets-lit/branches/main --jq .commit.sha",
+            '"repos/lightning-it/shared-assets-lit/compare/${source_sha}...${source_main}"',
+            '"repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/${source_run_attempt}/jobs?per_page=100"',
+        ):
+            with self.subTest(query=query):
+                self.assertIn(query, recovery)
+
     def test_central_sync_backmerge_bypasses_only_distribution_provenance(
         self,
     ) -> None:

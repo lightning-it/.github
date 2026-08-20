@@ -51,9 +51,36 @@ jobs:
       WORKFLOW_SHA: ${{ github.workflow_sha }}
 
     steps:
+      - name: Mint source-read Shared Assets App token
+        id: source-app
+        if: >-
+          github.event.pull_request.user.login
+            == 'lightning-it-shared-assets-sync[bot]'
+          && github.event.pull_request.base.ref == 'develop'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && !(
+            github.repository == 'lightning-it/.github'
+            && github.event.pull_request.base.ref == 'develop'
+            && startsWith(github.event.pull_request.head.ref, 'backmerge/')
+            && endsWith(github.event.pull_request.head.ref, '-main')
+            && startsWith(
+              github.event.pull_request.title,
+              'chore(governance): record main ancestry before '
+            )
+          )
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.SHARED_ASSETS_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SHARED_ASSETS_SYNC_APP_PRIVATE_KEY }}
+          owner: lightning-it
+          repositories: shared-assets-lit
+          permission-actions: read
+          permission-contents: read
+
       - name: Verify one protected result for the exact live revision
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
         run: |
           # The job environment maps github.repository into REPOSITORY.
           # shellcheck disable=SC2153
@@ -479,8 +506,9 @@ jobs:
             [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
             [[ "${source_run_id}" =~ ^[1-9][0-9]*$ ]]
             [[ "${source_run_attempt}" =~ ^[1-9][0-9]*$ ]]
+            test -n "${SOURCE_GH_TOKEN}"
             source_run_url="${GITHUB_SERVER_URL}/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
-            source_run="$(gh api \
+            source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
             for ((attempt = 1; attempt <= 42; attempt++)); do
               source_run_status="$(jq -er \
@@ -498,7 +526,7 @@ jobs:
               esac
               test "${attempt}" -lt 42
               sleep 10
-              source_run="$(gh api \
+              source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
                 "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
             done
             test "$(jq -r .status <<<"${source_run}")" = completed
@@ -574,13 +602,13 @@ jobs:
                 and ((.run_attempt | type) == "number")
                 and .run_attempt == $run_attempt
               ' <<<"${source_run}" >/dev/null
-            source_commit="$(gh api \
+            source_commit="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/commits/${source_sha}")"
             test "$(jq -r .sha <<<"${source_commit}")" = "${source_sha}"
-            source_main="$(gh api \
+            source_main="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               repos/lightning-it/shared-assets-lit/branches/main --jq .commit.sha)"
             [[ "${source_main}" =~ ^[0-9a-f]{40}$ ]]
-            source_compare="$(gh api \
+            source_compare="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/compare/${source_sha}...${source_main}")"
             jq -e \
               --arg source "${source_sha}" \
@@ -600,7 +628,7 @@ jobs:
                     and .head_commit.sha == $current)
                 )
               ' <<<"${source_compare}" >/dev/null
-            source_jobs="$(gh api \
+            source_jobs="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/${source_run_attempt}/jobs?per_page=100")"
             jq -e \
               --arg expected "${expected_source_job}" '
