@@ -2,8 +2,9 @@
 # Organization rulesets bind this stable legacy source path and protected main
 # ref. The path keeps its historical name so the existing Supplementary gate is
 # never interrupted during the organization-wide rollout. Ruleset workflow
-# event filters are intentionally omitted because GitHub ignores them and uses
-# the supported event's default activity types.
+# Required Workflows ignore source event filters, while this repository also
+# executes the protected file directly. The explicit lifecycle list keeps that
+# self-hosted verifier current across Draft-to-Ready and base-branch edits.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Protected current-revision evidence verifier
@@ -14,6 +15,7 @@ run-name: >-
 
 on:
   pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -109,7 +111,7 @@ jobs:
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
           pr=""
           case "${WORKFLOW_REF}" in
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
@@ -238,7 +240,7 @@ jobs:
           fi
 
           failure_stage='reservation-inventory'
-          reservation_external_id="rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}"
+          reservation_external_id="rep60-required-workflow:v3:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}"
           reservation_name='Protected current-revision verifier'
           reservation_checks="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&per_page=100")"
@@ -251,15 +253,15 @@ jobs:
                 select(.head_sha == $head)]
             ' <<<"${reservation_checks}")"
           reservations="$(jq -c \
-            --arg prefix 'rep60-required-workflow:v2:' \
-            --arg suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
+            --arg prefix 'rep60-required-workflow:v3:' \
+            --arg suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" '
               [.[] |
                 select((.external_id | type) == "string") |
                 select(.external_id | startswith($prefix) and endswith($suffix))]
             ' <<<"${all_reservations}")"
           foreign_reservations="$(jq -c \
-            --arg prefix 'rep60-required-workflow:v2:' \
-            --arg suffix ":${PR_NUMBER}:${EVENT_HEAD}" '
+            --arg prefix 'rep60-required-workflow:v3:' \
+            --arg suffix ":${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" '
               [.[] |
                 select((
                   ((.external_id | type) == "string")
@@ -317,10 +319,20 @@ jobs:
               [[ "${foreign_check_id}" =~ ^[1-9][0-9]*$ ]]
               test "${foreign_status}" = completed
               [[ "${foreign_conclusion}" =~ ^(success|failure)$ ]]
-              [[ "${foreign_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):([1-9][0-9]*):${EVENT_HEAD}$ ]]
-              foreign_run_id="${BASH_REMATCH[1]}"
-              foreign_pr_number="${BASH_REMATCH[2]}"
-              test "${foreign_pr_number}" != "${PR_NUMBER}"
+              foreign_base=''
+              if [[ "${foreign_external_id}" =~ ^rep60-required-workflow:v3:([1-9][0-9]*):([1-9][0-9]*):([0-9a-f]{40}):${EVENT_HEAD}$ ]]; then
+                foreign_run_id="${BASH_REMATCH[1]}"
+                foreign_pr_number="${BASH_REMATCH[2]}"
+                foreign_base="${BASH_REMATCH[3]}"
+              else
+                [[ "${foreign_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):([1-9][0-9]*):${EVENT_HEAD}$ ]]
+                foreign_run_id="${BASH_REMATCH[1]}"
+                foreign_pr_number="${BASH_REMATCH[2]}"
+              fi
+              if [ "${foreign_pr_number}" = "${PR_NUMBER}" ]; then
+                test -n "${foreign_base}"
+                test "${foreign_base}" != "${EVENT_BASE}"
+              fi
               test -z "${retired_pr_numbers["${foreign_pr_number}"]:-}"
               test -z "${retired_run_ids["${foreign_run_id}"]:-}"
               retired_pr_numbers["${foreign_pr_number}"]=true
@@ -330,16 +342,31 @@ jobs:
 
               retired_pr="$(gh api \
                 "repos/${REPOSITORY}/pulls/${foreign_pr_number}")"
-              jq -e \
-                --arg head "${EVENT_HEAD}" \
-                --arg repository "${REPOSITORY}" \
-                --argjson number "${foreign_pr_number}" '
-                  .number == $number
-                  and .state == "closed"
-                  and .base.repo.full_name == $repository
-                  and .head.sha == $head
-                  and (.head.repo.full_name | type == "string" and length > 0)
-                ' <<<"${retired_pr}" >/dev/null
+              if [ "${foreign_pr_number}" = "${PR_NUMBER}" ]; then
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg repository "${REPOSITORY}" \
+                  --argjson number "${foreign_pr_number}" '
+                    .number == $number
+                    and .state == "open"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.sha == $head
+                    and (.head.repo.full_name | type == "string" and length > 0)
+                  ' <<<"${retired_pr}" >/dev/null
+              else
+                jq -e \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg repository "${REPOSITORY}" \
+                  --argjson number "${foreign_pr_number}" '
+                    .number == $number
+                    and .state == "closed"
+                    and .base.repo.full_name == $repository
+                    and .head.sha == $head
+                    and (.head.repo.full_name | type == "string" and length > 0)
+                  ' <<<"${retired_pr}" >/dev/null
+              fi
 
               retired_verifier_run="$(gh api \
                 "repos/${REPOSITORY}/actions/runs/${foreign_run_id}")"
@@ -361,6 +388,8 @@ jobs:
                     .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
                     or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
                     or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
+                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
                   )
                 ' <<<"${retired_verifier_run}" >/dev/null
             done < <(jq -r '.[] | [.id, .status, .conclusion, .external_id, .details_url] | @tsv' <<<"${foreign_reservations}")
@@ -374,7 +403,7 @@ jobs:
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
-            [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:[1-9][0-9]*:${PR_NUMBER}:${EVENT_HEAD}$ ]]
+            [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \

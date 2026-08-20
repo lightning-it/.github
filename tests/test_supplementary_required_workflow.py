@@ -18,7 +18,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
-        self.assertNotIn("types:", workflow)
+        self.assertIn(
+            "types: [opened, synchronize, reopened, ready_for_review, edited]",
+            workflow,
+        )
         self.assertNotIn("actions/checkout@", workflow)
         self.assertNotIn("openai/codex-action@", workflow)
         self.assertNotIn("if: github.repository ==", workflow)
@@ -83,7 +86,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '[[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]',
             '[[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]',
             '[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]',
-            '[[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]',
+            '[[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]',
         ):
             with self.subTest(validated_input=validated_input):
                 self.assertLess(workflow.index(validated_input), controller_case)
@@ -208,7 +211,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "rep60-required-workflow:v2:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_HEAD}",
+            "rep60-required-workflow:v3:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn(
@@ -689,7 +692,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             3,
         )
         self.assertIn(
-            "^rep60-required-workflow:v2:[1-9][0-9]*:${PR_NUMBER}:${EVENT_HEAD}$",
+            "^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
             workflow,
         )
         self.assertLess(
@@ -697,7 +700,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.index('-f external_id="${reservation_external_id}"'),
         )
 
-    def test_only_closed_same_workflow_foreign_reservations_are_retired(
+    def test_only_proven_same_workflow_foreign_reservations_are_retired(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -729,17 +732,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.conclusion == null', retirement)
         self.assertIn('.workflow_id == $workflow_id', retirement)
         self.assertIn('.state == "closed"', retirement)
+        self.assertIn('.state == "open"', retirement)
+        self.assertIn('.base.sha == $base', retirement)
         self.assertIn('.base.repo.full_name == $repository', retirement)
         self.assertIn('.head.sha == $head', retirement)
         self.assertIn(
-            'test "${foreign_pr_number}" != "${PR_NUMBER}"',
+            'test "${foreign_base}" != "${EVENT_BASE}"',
             retirement,
         )
+        self.assertIn("rep60-required-workflow:v3:", retirement)
+        self.assertIn("rep60-required-workflow:v2:", retirement)
+        self.assertIn("ready_for_review", retirement)
+        self.assertIn("edited", retirement)
         self.assertIn(
             'test "${foreign_details_url}" =',
             retirement,
         )
-        self.assertNotIn('.state == "open"', retirement)
 
     def test_retired_reservation_filters_reject_open_or_foreign_evidence(
         self,
@@ -820,11 +828,62 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(current=rejected):
                 self.assertFalse(accepts(current_filter, current_args, rejected))
 
-        retired_pr_filter = extract(
-            retirement.split('retired_pr="$(gh api', 1)[1],
-            '--argjson number "${foreign_pr_number}" \'\n',
-            '\n                \' <<<"${retired_pr}"',
+        retired_pr_block = retirement.split('retired_pr="$(gh api', 1)[1].split(
+            '              retired_verifier_run="$(gh api', 1
+        )[0]
+        same_pr_block, closed_pr_block = retired_pr_block.split(
+            "              else\n", 1
         )
+        same_pr_filter = extract(
+            same_pr_block,
+            '--argjson number "${foreign_pr_number}" \'\n',
+            '\n                  \' <<<"${retired_pr}"',
+        )
+        retired_pr_filter = extract(
+            closed_pr_block,
+            '--argjson number "${foreign_pr_number}" \'\n',
+            '\n                  \' <<<"${retired_pr}"',
+        )
+        current_pr = {
+            "number": 225,
+            "state": "open",
+            "base": {
+                "sha": "b" * 40,
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+            "head": {
+                "sha": head,
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+        }
+        same_pr_args = [
+            "--arg",
+            "base",
+            "b" * 40,
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "repository",
+            "lightning-it/.github",
+            "--argjson",
+            "number",
+            "225",
+        ]
+        self.assertTrue(accepts(same_pr_filter, same_pr_args, current_pr))
+        for rejected in (
+            {**current_pr, "state": "closed"},
+            {**current_pr, "number": 221},
+            {
+                **current_pr,
+                "base": {**current_pr["base"], "sha": "c" * 40},
+            },
+        ):
+            with self.subTest(current_pr=rejected):
+                self.assertFalse(
+                    accepts(same_pr_filter, same_pr_args, rejected)
+                )
+
         retired_pr = {
             "number": 221,
             "state": "closed",

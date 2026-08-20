@@ -159,6 +159,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn(
             "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
         )
+        self.assertIn('prefix "rep60-required-workflow:v3:"', workflow)
+        self.assertIn(
+            '":${PR_NUMBER}:${EXPECTED_BASE}:${EXPECTED_HEAD}"', workflow
+        )
+        self.assertIn(
+            "^rep60-required-workflow:v3:([1-9][0-9]*):${PR_NUMBER}:"
+            "${EXPECTED_BASE}:${EXPECTED_HEAD}$",
+            workflow,
+        )
+        self.assertNotIn("rep60-required-workflow:v2:", workflow)
 
     def test_rerun_helper_binds_central_and_distributed_workflow_urls(self) -> None:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
