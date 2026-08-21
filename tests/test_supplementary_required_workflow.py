@@ -1202,8 +1202,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("sleep ", dispatch)
         self.assertNotIn("gh workflow run", dispatch)
+
+        inspect = dispatch_and_after.split(inspect_marker, 1)[1]
+        enable_marker = "\n  enable-develop-automerge:\n"
+        self.assertIn(
+            enable_marker,
+            inspect,
+            "develop-only auto-merge job boundary is missing",
+        )
+        inspect = inspect.split(enable_marker, 1)[0]
+        self.assertIn(
+            "'.base.ref | select(. == \"develop\" or . == \"main\")'",
+            inspect,
+        )
+        self.assertIn('if [ "${base_ref}" = main ]; then', inspect)
+        self.assertIn(
+            "in-place remediation and auto-merge remain disabled",
+            inspect,
+        )
+        self.assertIn('echo "eligible=false"', inspect)
         self.assertEqual(
-            2,
+            1,
             workflow.count(
                 'test "$(jq -r .base.ref <<<"${pr}")" = develop'
             ),
