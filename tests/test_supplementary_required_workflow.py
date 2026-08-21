@@ -24,6 +24,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertTrue(
+            workflow.startswith(
+                "# Owned by the protected lightning-it/.github controller.\n"
+                "# Generic shared-assets sync must preserve this "
+                "repository-specific file.\n"
+            )
+        )
+        self.assertNotIn("Do not edit downstream copies directly.", workflow)
         publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
             1
         ]

@@ -1,6 +1,6 @@
-# Managed by lightning-it/shared-assets-lit.
-# Do not edit downstream copies directly.
-# Protected per-repository MLX-90/REP-60 current-revision controller.
+# Owned by the protected lightning-it/.github controller.
+# Generic shared-assets sync must preserve this repository-specific file.
+# Protected MLX-90/REP-60 current-revision controller.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
