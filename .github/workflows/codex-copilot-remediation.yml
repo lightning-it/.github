@@ -101,7 +101,7 @@ jobs:
           request_status=0
           request_response="$(
             gh api --method POST "repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
-              -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
+              -f "reviewers[]=${COPILOT_LOGIN}"
           )" || request_status=$?
           if [ "${request_status}" -eq 0 ]; then
             if jq -e \

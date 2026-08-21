@@ -1195,6 +1195,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '"repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers"'
         )
         self.assertEqual(1, dispatch.count(request))
+        self.assertIn('-f "reviewers[]=${COPILOT_LOGIN}"', dispatch)
+        self.assertNotIn(
+            "-f 'reviewers[]=copilot-pull-request-reviewer[bot]'",
+            dispatch,
+        )
         self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
         self.assertIn("request_response=\"$(", dispatch)
         self.assertIn("(.number | tostring) == $number", dispatch)
