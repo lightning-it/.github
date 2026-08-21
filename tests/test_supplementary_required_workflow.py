@@ -86,9 +86,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         repository: str,
         trusted_kind: str,
     ) -> int:
+        bash = shutil.which("bash")
+        if bash is None:
+            self.fail("bash is required to execute the publisher routing predicate")
         result = subprocess.run(
             [
-                "bash",
+                bash,
                 "-c",
                 "set -euo pipefail\n" + self._neutral_publisher_routing(),
             ],
