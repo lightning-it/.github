@@ -664,15 +664,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('exit "${exit_code}"', workflow)
         self.assertNotIn('return "${exit_code}"', workflow)
 
-    def test_draft_events_skip_before_materializing_a_failed_job(self) -> None:
+    def test_draft_events_reserve_before_failing_without_ai(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         job_header = workflow.split(
             "  verify-protected-current-revision-evidence:", 1
         )[1].split("    permissions:", 1)[0]
-        self.assertIn(
-            "if: github.event.pull_request.draft == false",
-            job_header,
-        )
+        self.assertNotIn("if:", job_header)
+        reservation = workflow.index("reservation_external_id=")
+        failure_trap = workflow.index("trap finalize_failure ERR")
+        draft_rejection = workflow.index('test "${draft}" = false')
+        self.assertLess(reservation, draft_rejection)
+        self.assertLess(failure_trap, draft_rejection)
+        self.assertNotIn("openai/", workflow.lower())
 
     def test_failed_ready_run_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
