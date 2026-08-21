@@ -186,6 +186,8 @@ jobs:
                       or
                       (($author == "lightning-it-shared-assets-sync[bot]"
                         and $repository != "lightning-it/.github")
+                        and $summary.review_path
+                          == "deterministic provenance-bound managed distribution exemption"
                         and ($check.external_id |
                           test("^mlx90-current-revision:managed-sync:v6:" + $pr
                             + ":[1-9][0-9]*:" + $base + ":" + $head + "$")))

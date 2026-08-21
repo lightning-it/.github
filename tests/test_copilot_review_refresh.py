@@ -50,6 +50,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         external_id: str,
         pull_request_number: int | None,
         repository: str = "lightning-it/.github",
+        review_path: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         base = "a" * 40
         head = "b" * 40
@@ -60,6 +61,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         }
         if pull_request_number is not None:
             summary["pull_request_number"] = pull_request_number
+        if review_path is not None:
+            summary["review_path"] = review_path
         check = {
             "status": "completed",
             "conclusion": "success",
@@ -358,8 +361,22 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     external_id=external_id,
                     pull_request_number=pull_request_number,
                     repository="lightning-it/website",
+                    review_path=(
+                        "deterministic provenance-bound managed distribution exemption"
+                    ),
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
+
+                for invalid_review_path in (None, "", "wrong review path"):
+                    with self.subTest(invalid_review_path=invalid_review_path):
+                        rejected = self._run_refresh_filter(
+                            author=sync_app,
+                            external_id=external_id,
+                            pull_request_number=pull_request_number,
+                            repository="lightning-it/website",
+                            review_path=invalid_review_path,
+                        )
+                        self.assertNotEqual(0, rejected.returncode)
 
         rejected = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", None),
