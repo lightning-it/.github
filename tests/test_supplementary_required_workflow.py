@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -1186,10 +1187,34 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
 
-        self.assertRegex(
-            dispatch,
-            r"\.base\.ref[^\n]*(?:develop[^\n]*main|main[^\n]*develop)",
-        )
+        base_filters = [
+            candidate
+            for candidate in re.findall(
+                r"jq -e(?:r)?\s+'([^']+)'",
+                dispatch,
+                flags=re.DOTALL,
+            )
+            if ".base.ref" in candidate
+            and '"develop"' in candidate
+            and '"main"' in candidate
+        ]
+        self.assertEqual(1, len(base_filters))
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq)
+        for base_ref, accepted in (
+            ("develop", True),
+            ("main", True),
+            ("feature", False),
+        ):
+            with self.subTest(base_ref=base_ref):
+                result = subprocess.run(
+                    [jq, "-e", base_filters[0]],
+                    input=json.dumps({"base": {"ref": base_ref}}),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(accepted, result.returncode == 0)
         self.assertNotIn("test -n \"${base_ref}\"", dispatch)
         self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
         self.assertIn(
@@ -1208,7 +1233,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
         self.assertIn("request_response=\"$(", dispatch)
-        self.assertIn("(.number | tostring) == $number", dispatch)
+        if '(.number | type) == "number"' in dispatch:
+            for binding in (
+                ".number == $number",
+                '.state == "open"',
+                ".draft == false",
+                ".base.repo.full_name == $repository",
+                ".base.ref == $base_ref",
+            ):
+                self.assertIn(binding, dispatch)
+        else:
+            self.assertIn("(.number | tostring) == $number", dispatch)
+            self.assertIn(
+                "and any(.requested_reviewers[]?; .login == $login)",
+                dispatch,
+            )
         self.assertIn(
             "and .head.repo.full_name == $repository",
             dispatch,
@@ -1218,17 +1257,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             dispatch,
         )
         self.assertIn(
-            "and any(.requested_reviewers[]?; .login == $login)",
-            dispatch,
-        )
-        self.assertIn(
             "The one permitted exact-head Copilot review request was accepted and bound.",
             dispatch,
         )
-        self.assertIn(
-            "returned success without the expected PR, head, repository, and reviewer bindings",
-            dispatch,
-        )
+        self.assertIn("returned success without the expected", dispatch)
         self.assertNotIn("sleep ", dispatch)
         self.assertNotIn("gh workflow run", dispatch)
 
