@@ -130,6 +130,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         for evidence_prefix in (
             "mlx90-current-revision:copilot:v6:",
+            "mlx90-current-revision:managed-sync:v6:",
             "mlx90-current-revision:ancestry-backmerge:v6:",
             "mlx90-current-revision:copilot:v5:",
             "mlx90-current-revision:ancestry-backmerge:v5:",
@@ -143,7 +144,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn(
-            "mlx90-current-revision:(copilot|ancestry-backmerge):v6", workflow
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6", workflow
         )
         self.assertIn(
             "mlx90-current-revision:(copilot|ancestry-backmerge):v5", workflow
@@ -327,6 +328,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
 
         for external_id, pull_request_number in (
             (
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
                 f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
                 123,
             ),
@@ -347,6 +352,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (
+                "litroc",
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
+                123,
+            ),
             ("litroc", f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}", None),
         )
         for author, external_id, pull_request_number in rejected:
