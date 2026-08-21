@@ -985,6 +985,7 @@ jobs:
             test "${TRUSTED_KIND}" != shared-assets
             test "${TRUSTED_KIND}" != repository-quality
             test "${TRUSTED_KIND}" != ancestry-backmerge
+            test "${author}" != 'lightning-it-shared-assets-sync[bot]'
           fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           evidence="$(jq -cn \

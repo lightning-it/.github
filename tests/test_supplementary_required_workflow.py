@@ -20,6 +20,46 @@ COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    @staticmethod
+    def _neutral_publisher_routing() -> str:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        start = publish.index(
+            '          if [[ "${TRUSTED_KIND}" =~ '
+            '^(shared-assets|repository-quality)$ ]]; then\n'
+        )
+        end = publish.index('          run_url="${GITHUB_SERVER_URL}', start)
+        return textwrap.dedent(publish[start:end])
+
+    def _run_neutral_publisher_routing(
+        self,
+        *,
+        author: str,
+        base_ref: str,
+        repository: str,
+        trusted_kind: str,
+    ) -> int:
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n" + self._neutral_publisher_routing(),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                "REPOSITORY": repository,
+                "TRUSTED_KIND": trusted_kind,
+                "author": author,
+                "base_ref": base_ref,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode
+
     def test_neutral_producer_distinguishes_managed_sync_from_backmerge(
         self,
     ) -> None:
@@ -55,6 +95,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             managed_sync,
         )
         self.assertIn(
+            'test "${author}" != \'lightning-it-shared-assets-sync[bot]\'',
+            ancestry,
+        )
+        self.assertIn(
             'test "${TRUSTED_KIND}" = ancestry-backmerge', ancestry
         )
         self.assertIn(
@@ -63,6 +107,56 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn(
             'if { [ "${author}" = \'lightning-it-release-automation[bot]\' ]',
             ancestry,
+        )
+
+    def test_neutral_producer_rejects_sync_actor_from_copilot_fallback(
+        self,
+    ) -> None:
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="none",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author="litroc",
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="none",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="shared-assets",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="main",
+                repository="lightning-it/website",
+                trusted_kind="shared-assets",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/.github",
+                trusted_kind="shared-assets",
+            ),
         )
 
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:

@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import subprocess
+import textwrap
 import unittest
 
 
@@ -10,6 +11,14 @@ RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    @staticmethod
+    def _rerun_evidence_kind_guard() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            if [ "${external_kind}" = ancestry-backmerge ]; then\n'
+        start = workflow.index(marker)
+        end = workflow.index('            controller_sha="$(jq -er', start)
+        return textwrap.dedent(workflow[start:end])
+
     @staticmethod
     def _refresh_validation_filter() -> str:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
@@ -97,6 +106,15 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def test_event_specific_payloads_are_guarded(self) -> None:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
 
+        self.assertTrue(
+            workflow.startswith(
+                "# Owned by the protected lightning-it/.github controller.\n"
+                "# Generic shared-assets sync must preserve this "
+                "repository-specific file.\n"
+            )
+        )
+        self.assertNotIn("Do not edit downstream copies directly.", workflow)
+
         self.assertEqual(
             1,
             workflow.count("github.event_name == 'pull_request_review' &&"),
@@ -157,6 +175,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
         self.assertIn("lightning-it/.github", workflow)
         self.assertIn('[ "${external_kind}" = managed-sync ]', workflow)
+        self.assertIn('test "${base_ref}" = develop', workflow)
         self.assertIn(
             "test \"${author}\" != 'lightning-it-shared-assets-sync[bot]'",
             workflow,
@@ -353,6 +372,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
                 123,
             ),
+            (
+                sync_app,
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
+                123,
+            ),
             ("litroc", f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}", None),
         )
         for author, external_id, pull_request_number in rejected:
@@ -398,6 +422,67 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     repository="lightning-it/website",
                 )
                 self.assertNotEqual(0, result.returncode)
+
+    def test_rerun_managed_sync_is_bound_to_develop_and_sync_actor(self) -> None:
+        guard = "set -euo pipefail\n" + self._rerun_evidence_kind_guard()
+        summary = json.dumps(
+            {
+                "review_path": (
+                    "deterministic provenance-bound managed distribution exemption"
+                )
+            }
+        )
+
+        def run(*, author: str, base_ref: str, repository: str) -> int:
+            result = subprocess.run(
+                ["bash", "-c", guard],
+                env={
+                    "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                    "REPOSITORY": repository,
+                    "author": author,
+                    "base_ref": base_ref,
+                    "external_kind": "managed-sync",
+                    "neutral_summary": summary,
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="main",
+                repository="lightning-it/website",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/.github",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author="litroc",
+                base_ref="develop",
+                repository="lightning-it/website",
+            ),
+        )
 
     def test_rerun_summary_requires_pr_binding_only_for_v6(self) -> None:
         summary = {

@@ -1,5 +1,5 @@
-# Managed by lightning-it/shared-assets-lit.
-# Do not edit downstream copies directly.
+# Owned by the protected lightning-it/.github controller.
+# Generic shared-assets sync must preserve this repository-specific file.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Refresh Copilot review gate

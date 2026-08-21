@@ -160,6 +160,7 @@ jobs:
             elif [ "${external_kind}" = managed-sync ]; then
               test "${author}" = 'lightning-it-shared-assets-sync[bot]'
               test "${REPOSITORY}" != 'lightning-it/.github'
+              test "${base_ref}" = develop
               test "$(jq -r .review_path <<<"${neutral_summary}")" = \
                 'deterministic provenance-bound managed distribution exemption'
             else
