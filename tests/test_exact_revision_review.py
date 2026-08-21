@@ -193,7 +193,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(any("simulated cleanup failure" in note for note in notes))
+                self.assertTrue(
+                    any("simulated cleanup failure" in note for note in notes)
+                )
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_protected_writer_close_does_not_mask_write_failure(self) -> None:
@@ -243,7 +245,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(any("simulated close failure" in note for note in notes))
+                self.assertTrue(
+                    any("simulated close failure" in note for note in notes)
+                )
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_protected_writer_directory_close_failure_fails_closed(self) -> None:
@@ -293,7 +297,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             self.assertEqual(b"replacement", protected.read_bytes())
 
-    def test_protected_writer_preserves_existing_close_note_when_fstat_fails(self) -> None:
+    def test_protected_writer_preserves_existing_close_note_when_fstat_fails(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             protected = Path(temporary).resolve() / "protected"
             protected.write_bytes(b"unchanged")
@@ -392,7 +398,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
                 )
             notes = getattr(raised.exception, "__notes__", ())
             if hasattr(raised.exception, "add_note"):
-                self.assertTrue(any("simulated directory close failure" in note for note in notes))
+                self.assertTrue(
+                    any("simulated directory close failure" in note for note in notes)
+                )
             self.assertEqual(b"unchanged", protected.read_bytes())
 
     def test_metadata_binding_rejects_non_object(self) -> None:
