@@ -905,6 +905,7 @@ jobs:
             elif [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
               test "${REPOSITORY}" != 'lightning-it/.github'
               test "${producer_kind}" = managed-sync
+              test "${base_ref}" = develop
               expected_review_path="deterministic provenance-bound managed distribution exemption"
             else
               test "${producer_kind}" = copilot

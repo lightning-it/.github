@@ -21,6 +21,51 @@ COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
     @staticmethod
+    def _required_verifier_producer_routing() -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            '            if { [ "${author}" = '
+            "'lightning-it-release-automation[bot]' ] \\\n"
+        )
+        start = workflow.index(marker)
+        end = workflow.index(
+            '            producer_run_url="${GITHUB_SERVER_URL}', start
+        )
+        return textwrap.dedent(workflow[start:end])
+
+    def _run_required_verifier_producer_routing(
+        self,
+        *,
+        author: str,
+        base_ref: str,
+        producer_kind: str,
+        repository: str = "lightning-it/website",
+    ) -> int:
+        bash = shutil.which("bash")
+        if bash is None:
+            self.fail("bash is required to execute the verifier routing predicate")
+        result = subprocess.run(
+            [
+                bash,
+                "-c",
+                "set -euo pipefail\n"
+                + self._required_verifier_producer_routing(),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                "REPOSITORY": repository,
+                "author": author,
+                "base_ref": base_ref,
+                "central_sync_backmerge": "false",
+                "producer_kind": producer_kind,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode
+
+    @staticmethod
     def _neutral_publisher_routing() -> str:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
@@ -424,6 +469,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
+
+    def test_required_verifier_managed_sync_is_develop_only(self) -> None:
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="develop",
+                producer_kind="managed-sync",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="main",
+                producer_kind="managed-sync",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="develop",
+                producer_kind="copilot",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author="litroc",
+                base_ref="main",
+                producer_kind="copilot",
+            ),
+        )
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
