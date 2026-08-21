@@ -275,10 +275,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        bridge = workflow.split(
-            "legacy_supplementary_pr819_copilot_v4_bridge=false",
-            1,
-        )[1]
+        bridge_marker = "legacy_supplementary_pr819_copilot_v4_bridge=false"
+        self.assertIn(
+            bridge_marker,
+            workflow,
+            "PR 819 legacy bridge declaration is missing from the workflow",
+        )
+        bridge = workflow.split(bridge_marker, 1)[1]
 
         for exact_binding in (
             "lightning-it/ansible-collection-supplementary",
@@ -312,13 +315,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_pr819_legacy_bridge_jq_predicates_reject_tampering(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        bridge = workflow.split(
-            'if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then',
-            1,
-        )[1]
+        bridge_marker = (
+            'if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then'
+        )
+        self.assertIn(
+            bridge_marker,
+            workflow,
+            "PR 819 legacy bridge verification block is missing from the workflow",
+        )
+        bridge = workflow.split(bridge_marker, 1)[1]
 
         def extract(start: str, end: str) -> str:
-            return bridge.split(start, 1)[1].split(end, 1)[0]
+            self.assertIn(
+                start,
+                bridge,
+                f"PR 819 bridge jq start marker is missing: {start!r}",
+            )
+            remainder = bridge.split(start, 1)[1]
+            self.assertIn(
+                end,
+                remainder,
+                f"PR 819 bridge jq end marker is missing: {end!r}",
+            )
+            return remainder.split(end, 1)[0]
 
         def changed(payload: Any, path: tuple[Any, ...], value: Any) -> Any:
             candidate = deepcopy(payload)
