@@ -62,7 +62,9 @@ jobs:
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           test "$(jq -r .state <<<"${pr}")" = open
           test "$(jq -r .draft <<<"${pr}")" = false
-          test "$(jq -r .base.ref <<<"${pr}")" = develop
+          base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' \
+            <<<"${pr}")"
+          test -n "${base_ref}"
           test "$(jq -r .head.repo.full_name <<<"${pr}")" = "${REPOSITORY}"
           author="$(jq -r .user.login <<<"${pr}")"
           if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
@@ -99,6 +101,10 @@ jobs:
           request_status=0
           gh api --method POST "repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
             -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null || request_status=$?
+          if [ "${request_status}" -eq 0 ]; then
+            echo "The one permitted exact-head Copilot review request was accepted."
+            exit 0
+          fi
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           reviews="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
           if jq -e --arg login "${COPILOT_LOGIN}" --arg head "${EXPECTED_HEAD}" \
