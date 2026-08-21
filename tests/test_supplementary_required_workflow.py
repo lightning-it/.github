@@ -263,11 +263,50 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         neutral_producer = workflow.split(
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
-        self.assertNotIn("and .run_attempt == 1", neutral_producer)
+        self.assertEqual(1, neutral_producer.count("and .run_attempt == 1"))
         self.assertEqual(workflow.count(".actor.login == $actor"), 2)
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
+
+    def test_pr819_legacy_copilot_bridge_is_immutable_and_fully_rebound(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        bridge = workflow.split(
+            "legacy_supplementary_pr819_copilot_v4_bridge=false",
+            1,
+        )[1]
+
+        for exact_binding in (
+            "lightning-it/ansible-collection-supplementary",
+            '[ "${author}" = litroc ]',
+            '[ "${PR_NUMBER}" = 819 ]',
+            "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f",
+            "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712",
+            "mlx90-current-revision:copilot:v4:32451268553:",
+            "producer_run_id=32451268553",
+            "legacy_supplementary_pr819_copilot_v4_bridge=true",
+            'test "${controller_sha}" = "${EVENT_BASE}"',
+            'select(.user.login == "copilot-pull-request-reviewer[bot]")',
+            ".run_attempt == 1",
+            "(.pull_requests | length) == 1",
+            ".pull_requests[0].number == $pr_number",
+            ".pull_requests[0].base.sha == $base",
+            ".pull_requests[0].head.sha == $head",
+            "4989987869",
+            "2026-08-21T05:42:23Z",
+            "Copilot reviewed 5 out of 5 changed files",
+            "generated no comments",
+            "suppressed comments",
+            'and (has("pull_request_number") | not)',
+        ):
+            with self.subTest(exact_binding=exact_binding):
+                self.assertIn(exact_binding, bridge)
+        self.assertEqual(
+            2,
+            workflow.count("mlx90-current-revision:copilot:v4:"),
+        )
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -658,13 +697,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('exit "${exit_code}"', workflow)
         self.assertNotIn('return "${exit_code}"', workflow)
 
-    def test_draft_open_reserves_a_single_later_rerun(self) -> None:
+    def test_draft_events_skip_before_materializing_a_failed_job(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        job_header = workflow.split(
+            "  verify-protected-current-revision-evidence:", 1
+        )[1].split("    permissions:", 1)[0]
+        self.assertIn(
+            "if: github.event.pull_request.draft == false",
+            job_header,
+        )
+
+    def test_failed_ready_run_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reservation = workflow.index("reservation_external_id=")
         trap = workflow.index("trap finalize_failure ERR")
-        draft = workflow.index('test "${draft}" = false')
         self.assertLess(reservation, trap)
-        self.assertLess(trap, draft)
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2',
             workflow,
