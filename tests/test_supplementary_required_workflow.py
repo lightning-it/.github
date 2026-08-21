@@ -1181,10 +1181,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
 
         self.assertIn(
-            "'.base.ref | select(. == \"develop\" or . == \"main\")'",
+            "'(.base.ref == \"develop\" or .base.ref == \"main\")'",
             dispatch,
         )
-        self.assertIn("test -n \"${base_ref}\"", dispatch)
+        self.assertNotIn("test -n \"${base_ref}\"", dispatch)
         self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
         self.assertIn(
             "Release-App pull requests use only the protected MLX-90 §7.2",
@@ -1215,7 +1215,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "'.base.ref | select(. == \"develop\" or . == \"main\")'",
             inspect,
         )
-        self.assertIn('if [ "${base_ref}" = main ]; then', inspect)
+        self.assertNotIn("test -n \"${base_ref}\"", inspect)
+        self.assertIn('if [ "${base_ref}" = "main" ]; then', inspect)
         self.assertIn(
             "in-place remediation and auto-merge remain disabled",
             inspect,
