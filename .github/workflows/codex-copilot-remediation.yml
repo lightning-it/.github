@@ -104,20 +104,24 @@ jobs:
               -f "reviewers[]=${COPILOT_LOGIN}"
           )" || request_status=$?
           if [ "${request_status}" -eq 0 ]; then
+            # GitHub can start the special Copilot dynamic review without
+            # echoing the bot in requested_reviewers. Bind the successful POST
+            # to the exact pull request here; the protected gate still requires
+            # the separate completed exact-head Copilot review object.
             if jq -e \
-                --arg login "${COPILOT_LOGIN}" \
                 --arg number "${PR_NUMBER}" \
                 --arg repository "${REPOSITORY}" \
                 --arg head "${EXPECTED_HEAD}" \
                 '(.number | tostring) == $number
+                  and .state == "open"
+                  and .draft == false
                   and .head.repo.full_name == $repository
-                  and .head.sha == $head
-                  and any(.requested_reviewers[]?; .login == $login)' \
+                  and .head.sha == $head' \
                 <<<"${request_response}" >/dev/null; then
-              echo "The one permitted exact-head Copilot review request was accepted and bound."
+              echo "The one permitted Copilot review request was accepted and bound to the exact pull request and head."
               exit 0
             fi
-            echo "Copilot request returned success without the expected PR, head, repository, and reviewer bindings; the consumed marker forbids an automatic retry." >&2
+            echo "Copilot request returned success without the expected open PR, repository, and head bindings; the consumed marker forbids an automatic retry." >&2
             exit 1
           fi
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"

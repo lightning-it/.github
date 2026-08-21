@@ -1214,16 +1214,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "and .head.sha == $head",
             dispatch,
         )
+        success_response_validation = dispatch.split(
+            'if [ "${request_status}" -eq 0 ]; then', 1
+        )[1].split('          pr="$(gh api', 1)[0]
+        self.assertIn('and .state == "open"', success_response_validation)
+        self.assertIn("and .draft == false", success_response_validation)
+        self.assertNotIn(
+            "any(.requested_reviewers",
+            success_response_validation,
+        )
         self.assertIn(
-            "and any(.requested_reviewers[]?; .login == $login)",
+            "The one permitted Copilot review request was accepted and bound to the exact pull request and head.",
             dispatch,
         )
         self.assertIn(
-            "The one permitted exact-head Copilot review request was accepted and bound.",
-            dispatch,
-        )
-        self.assertIn(
-            "returned success without the expected PR, head, repository, and reviewer bindings",
+            "returned success without the expected open PR, repository, and head bindings",
             dispatch,
         )
         self.assertNotIn("sleep ", dispatch)
