@@ -21,6 +21,14 @@ TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def _test_tool(self, name: str) -> str:
+        executable = shutil.which(name, path=TEST_TOOL_PATH)
+        if executable is None:
+            self.fail(
+                f"{name} is required in the deterministic test tool path"
+            )
+        return executable
+
     @staticmethod
     def _required_verifier_producer_routing() -> str:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -42,9 +50,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         producer_kind: str,
         repository: str = "lightning-it/website",
     ) -> int:
-        bash = shutil.which("bash", path=TEST_TOOL_PATH)
-        if bash is None:
-            self.fail("bash is required to execute the verifier routing predicate")
+        bash = self._test_tool("bash")
         result = subprocess.run(
             [
                 bash,
@@ -87,9 +93,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         repository: str,
         trusted_kind: str,
     ) -> int:
-        bash = shutil.which("bash", path=TEST_TOOL_PATH)
-        if bash is None:
-            self.fail("bash is required to execute the publisher routing predicate")
+        bash = self._test_tool("bash")
         result = subprocess.run(
             [
                 bash,
@@ -321,7 +325,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             try:
                 result = subprocess.run(
                     [
-                        "jq",
+                        self._test_tool("jq"),
                         "-e",
                         "--arg",
                         "base",
@@ -684,9 +688,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source_sha = "a" * 40
         source_path = ".github/workflows/sync-ansible-collections.yml"
         source_run_url = "https://github.example/actions/runs/42"
-        jq = shutil.which("jq")
-        if jq is None:
-            self.fail("jq is required to validate managed-sync source events")
+        jq = self._test_tool("jq")
 
         def accepts(event: str) -> bool:
             payload = {
@@ -870,9 +872,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ),
                 **overrides,
             }
-            bash = shutil.which("bash", path=TEST_TOOL_PATH)
-            if bash is None:
-                self.fail("bash is required to execute the workflow predicate")
+            bash = self._test_tool("bash")
             try:
                 result = subprocess.run(
                     [
@@ -1125,7 +1125,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         selected = subprocess.run(
             [
-                "jq",
+                self._test_tool("jq"),
                 "-c",
                 "--arg",
                 "v3_prefix",
@@ -1187,7 +1187,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         def accepts(payload: dict[str, object]) -> bool:
             return (
                 subprocess.run(
-                    ["jq", "-e", *prior_args, prior_filter],
+                    [self._test_tool("jq"), "-e", *prior_args, prior_filter],
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
@@ -1226,7 +1226,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ) -> bool:
             try:
                 result = subprocess.run(
-                    ["jq", "-e", *arguments, jq_filter],
+                    [self._test_tool("jq"), "-e", *arguments, jq_filter],
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
@@ -1512,11 +1512,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             and '"main"' in candidate
         ]
         self.assertEqual(1, len(base_filters))
-        jq = shutil.which("jq")
-        self.assertIsNotNone(
-            jq,
-            "jq is required to execute the promotion-base allowlist predicate",
-        )
+        jq = self._test_tool("jq")
         for base_ref, accepted in (
             ("develop", True),
             ("main", True),

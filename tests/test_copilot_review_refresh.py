@@ -13,6 +13,14 @@ TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def _test_tool(self, name: str) -> str:
+        executable = shutil.which(name, path=TEST_TOOL_PATH)
+        if executable is None:
+            self.fail(
+                f"{name} is required in the deterministic test tool path"
+            )
+        return executable
+
     @staticmethod
     def _rerun_evidence_kind_guard() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
@@ -75,7 +83,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         try:
             return subprocess.run(
                 [
-                    "jq",
+                    self._test_tool("jq"),
                     "-e",
                     "--arg",
                     "author",
@@ -263,7 +271,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             }
             result = subprocess.run(
                 [
-                    "jq",
+                    self._test_tool("jq"),
                     "-e",
                     "--arg",
                     "api_url",
@@ -453,9 +461,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
 
         def run(*, author: str, base_ref: str, repository: str) -> int:
-            bash = shutil.which("bash", path=TEST_TOOL_PATH)
-            if bash is None:
-                self.fail("bash is required to execute the rerun evidence guard")
+            bash = self._test_tool("bash")
             result = subprocess.run(
                 [bash, "-c", guard],
                 env={
@@ -519,7 +525,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             try:
                 result = subprocess.run(
                     [
-                        "jq",
+                        self._test_tool("jq"),
                         "-e",
                         "--arg",
                         "base",
