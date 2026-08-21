@@ -1,15 +1,34 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
+import textwrap
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 REFRESH_WORKFLOW = ROOT / ".github/workflows/copilot-review-refresh.yml"
 RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
+TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def _test_tool(self, name: str) -> str:
+        executable = shutil.which(name, path=TEST_TOOL_PATH)
+        if executable is None:
+            self.fail(
+                f"{name} is required in the deterministic test tool path"
+            )
+        return executable
+
+    @staticmethod
+    def _rerun_evidence_kind_guard() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            if [ "${external_kind}" = ancestry-backmerge ]; then\n'
+        start = workflow.index(marker)
+        end = workflow.index('            controller_sha="$(jq -er', start)
+        return textwrap.dedent(workflow[start:end])
+
     @staticmethod
     def _refresh_validation_filter() -> str:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
@@ -41,6 +60,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         external_id: str,
         pull_request_number: int | None,
         repository: str = "lightning-it/.github",
+        review_path: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         base = "a" * 40
         head = "b" * 40
@@ -51,6 +71,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         }
         if pull_request_number is not None:
             summary["pull_request_number"] = pull_request_number
+        if review_path is not None:
+            summary["review_path"] = review_path
         check = {
             "status": "completed",
             "conclusion": "success",
@@ -61,7 +83,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         try:
             return subprocess.run(
                 [
-                    "jq",
+                    self._test_tool("jq"),
                     "-e",
                     "--arg",
                     "author",
@@ -97,6 +119,15 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def test_event_specific_payloads_are_guarded(self) -> None:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
 
+        self.assertTrue(
+            workflow.startswith(
+                "# Owned by the protected lightning-it/.github controller.\n"
+                "# Generic shared-assets sync must preserve this "
+                "repository-specific file.\n"
+            )
+        )
+        self.assertNotIn("Do not edit downstream copies directly.", workflow)
+
         self.assertEqual(
             1,
             workflow.count("github.event_name == 'pull_request_review' &&"),
@@ -130,6 +161,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         for evidence_prefix in (
             "mlx90-current-revision:copilot:v6:",
+            "mlx90-current-revision:managed-sync:v6:",
             "mlx90-current-revision:ancestry-backmerge:v6:",
             "mlx90-current-revision:copilot:v5:",
             "mlx90-current-revision:ancestry-backmerge:v5:",
@@ -143,7 +175,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn(
-            "mlx90-current-revision:(copilot|ancestry-backmerge):v6", workflow
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6", workflow
         )
         self.assertIn(
             "mlx90-current-revision:(copilot|ancestry-backmerge):v5", workflow
@@ -155,9 +187,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('.pull_request_number == $pr_number', workflow)
         self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
         self.assertIn("lightning-it/.github", workflow)
-        self.assertIn("legacy `copilot`", workflow)
+        self.assertIn('[ "${external_kind}" = managed-sync ]', workflow)
+        self.assertIn('test "${base_ref}" = develop', workflow)
         self.assertIn(
-            "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
+            "test \"${author}\" != 'lightning-it-shared-assets-sync[bot]'",
+            workflow,
         )
         self.assertIn('prefix "rep60-required-workflow:v3:"', workflow)
         self.assertIn(
@@ -237,7 +271,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             }
             result = subprocess.run(
                 [
-                    "jq",
+                    self._test_tool("jq"),
                     "-e",
                     "--arg",
                     "api_url",
@@ -327,10 +361,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
 
         for external_id, pull_request_number in (
             (
-                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
                 123,
             ),
-            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
         ):
             with self.subTest(managed_distribution=external_id):
                 result = self._run_refresh_filter(
@@ -338,8 +371,22 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     external_id=external_id,
                     pull_request_number=pull_request_number,
                     repository="lightning-it/website",
+                    review_path=(
+                        "deterministic provenance-bound managed distribution exemption"
+                    ),
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
+
+                for invalid_review_path in (None, "", "wrong review path"):
+                    with self.subTest(invalid_review_path=invalid_review_path):
+                        rejected = self._run_refresh_filter(
+                            author=sync_app,
+                            external_id=external_id,
+                            pull_request_number=pull_request_number,
+                            repository="lightning-it/website",
+                            review_path=invalid_review_path,
+                        )
+                        self.assertNotEqual(0, rejected.returncode)
 
         rejected = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", None),
@@ -347,6 +394,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (
+                "litroc",
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (
+                sync_app,
+                f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
+                123,
+            ),
             ("litroc", f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}", None),
         )
         for author, external_id, pull_request_number in rejected:
@@ -377,6 +434,84 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
 
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+        ):
+            with self.subTest(sync_bot_copilot_rejected=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_rerun_managed_sync_is_bound_to_develop_and_sync_actor(self) -> None:
+        guard = "set -euo pipefail\n" + self._rerun_evidence_kind_guard()
+        summary = json.dumps(
+            {
+                "review_path": (
+                    "deterministic provenance-bound managed distribution exemption"
+                )
+            }
+        )
+
+        def run(*, author: str, base_ref: str, repository: str) -> int:
+            bash = self._test_tool("bash")
+            result = subprocess.run(
+                [bash, "-c", guard],
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "REPOSITORY": repository,
+                    "author": author,
+                    "base_ref": base_ref,
+                    "external_kind": "managed-sync",
+                    "neutral_summary": summary,
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="main",
+                repository="lightning-it/website",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/.github",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author="litroc",
+                base_ref="develop",
+                repository="lightning-it/website",
+            ),
+        )
+
     def test_rerun_summary_requires_pr_binding_only_for_v6(self) -> None:
         summary = {
             "schema": 4,
@@ -390,7 +525,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             try:
                 result = subprocess.run(
                     [
-                        "jq",
+                        self._test_tool("jq"),
                         "-e",
                         "--arg",
                         "base",
