@@ -32,6 +32,9 @@ jobs:
     # identical names would make the producer target this job instead of its
     # immutable evidence check.
     name: Required current-revision workflow
+    # Drafts cannot merge and must create neither AI traffic nor a terminal
+    # failed job that remains attached to the unchanged head after Ready.
+    if: github.event.pull_request.draft == false
     permissions:
       actions: read
       checks: write
