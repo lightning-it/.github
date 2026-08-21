@@ -164,13 +164,7 @@ jobs:
                 'deterministic provenance-bound managed distribution exemption'
             else
               test "${author}" != 'lightning-it-release-automation[bot]'
-              # Outside the central .github repository, the legacy `copilot`
-              # evidence kind also carries the separately provenance-verified
-              # managed-distribution exemption. In .github, this App actor is
-              # valid only through the ancestry-backmerge branch above.
-              if [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
-                test "${REPOSITORY}" != 'lightning-it/.github'
-              fi
+              test "${author}" != 'lightning-it-shared-assets-sync[bot]'
               test "$(jq -r .review_path <<<"${neutral_summary}")" = \
                 'applicable Copilot or governed automation exemption'
             fi

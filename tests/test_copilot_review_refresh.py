@@ -156,9 +156,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('.pull_request_number == $pr_number', workflow)
         self.assertIn("lightning-it-shared-assets-sync[bot]", workflow)
         self.assertIn("lightning-it/.github", workflow)
-        self.assertIn("legacy `copilot`", workflow)
+        self.assertIn('[ "${external_kind}" = managed-sync ]', workflow)
         self.assertIn(
-            "test \"${REPOSITORY}\" != 'lightning-it/.github'", workflow
+            "test \"${author}\" != 'lightning-it-shared-assets-sync[bot]'",
+            workflow,
         )
         self.assertIn('prefix "rep60-required-workflow:v3:"', workflow)
         self.assertIn(
@@ -331,11 +332,6 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
                 123,
             ),
-            (
-                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
-                123,
-            ),
-            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
         ):
             with self.subTest(managed_distribution=external_id):
                 result = self._run_refresh_filter(
@@ -379,6 +375,22 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ),
         ):
             with self.subTest(outside_repository=external_id):
+                result = self._run_refresh_filter(
+                    author=sync_app,
+                    external_id=external_id,
+                    pull_request_number=pull_request_number,
+                    repository="lightning-it/website",
+                )
+                self.assertNotEqual(0, result.returncode)
+
+        for external_id, pull_request_number in (
+            (
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
+            (f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+        ):
+            with self.subTest(sync_bot_copilot_rejected=external_id):
                 result = self._run_refresh_filter(
                     author=sync_app,
                     external_id=external_id,
