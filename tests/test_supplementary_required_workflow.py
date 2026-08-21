@@ -506,6 +506,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source_sha = "a" * 40
         source_path = ".github/workflows/sync-ansible-collections.yml"
         source_run_url = "https://github.example/actions/runs/42"
+        jq = shutil.which("jq")
+        if jq is None:
+            self.fail("jq is required to validate managed-sync source events")
 
         def accepts(event: str) -> bool:
             payload = {
@@ -525,7 +528,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             }
             result = subprocess.run(
                 [
-                    "jq",
+                    jq,
                     "-e",
                     "--arg",
                     "head",
