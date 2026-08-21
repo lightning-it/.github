@@ -17,6 +17,7 @@ REMEDIATION_WORKFLOW = (
     ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
 COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
+TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
@@ -41,7 +42,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         producer_kind: str,
         repository: str = "lightning-it/website",
     ) -> int:
-        bash = shutil.which("bash")
+        bash = shutil.which("bash", path=TEST_TOOL_PATH)
         if bash is None:
             self.fail("bash is required to execute the verifier routing predicate")
         result = subprocess.run(
@@ -52,7 +53,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 + self._required_verifier_producer_routing(),
             ],
             env={
-                "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                "PATH": TEST_TOOL_PATH,
                 "REPOSITORY": repository,
                 "author": author,
                 "base_ref": base_ref,
@@ -86,7 +87,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         repository: str,
         trusted_kind: str,
     ) -> int:
-        bash = shutil.which("bash")
+        bash = shutil.which("bash", path=TEST_TOOL_PATH)
         if bash is None:
             self.fail("bash is required to execute the publisher routing predicate")
         result = subprocess.run(
@@ -96,7 +97,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "set -euo pipefail\n" + self._neutral_publisher_routing(),
             ],
             env={
-                "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                "PATH": TEST_TOOL_PATH,
                 "REPOSITORY": repository,
                 "TRUSTED_KIND": trusted_kind,
                 "author": author,
@@ -869,7 +870,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ),
                 **overrides,
             }
-            bash = shutil.which("bash")
+            bash = shutil.which("bash", path=TEST_TOOL_PATH)
             if bash is None:
                 self.fail("bash is required to execute the workflow predicate")
             try:
@@ -885,7 +886,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     text=True,
                     capture_output=True,
                     check=False,
-                    env=environment,
+                    env={**environment, "PATH": TEST_TOOL_PATH},
                 )
             except FileNotFoundError as error:
                 self.fail(

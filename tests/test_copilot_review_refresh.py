@@ -9,6 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 REFRESH_WORKFLOW = ROOT / ".github/workflows/copilot-review-refresh.yml"
 RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
+TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
@@ -452,13 +453,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
 
         def run(*, author: str, base_ref: str, repository: str) -> int:
-            bash = shutil.which("bash")
+            bash = shutil.which("bash", path=TEST_TOOL_PATH)
             if bash is None:
                 self.fail("bash is required to execute the rerun evidence guard")
             result = subprocess.run(
                 [bash, "-c", guard],
                 env={
-                    "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+                    "PATH": TEST_TOOL_PATH,
                     "REPOSITORY": repository,
                     "author": author,
                     "base_ref": base_ref,
