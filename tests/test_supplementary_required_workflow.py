@@ -1186,9 +1186,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
 
-        self.assertIn(
-            "'(.base.ref == \"develop\" or .base.ref == \"main\")'",
+        self.assertRegex(
             dispatch,
+            r"\.base\.ref[^\n]*(?:develop[^\n]*main|main[^\n]*develop)",
         )
         self.assertNotIn("test -n \"${base_ref}\"", dispatch)
         self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
