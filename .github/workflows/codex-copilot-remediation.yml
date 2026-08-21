@@ -64,7 +64,6 @@ jobs:
           test "$(jq -r .draft <<<"${pr}")" = false
           base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' \
             <<<"${pr}")"
-          test -n "${base_ref}"
           test "$(jq -r .head.repo.full_name <<<"${pr}")" = "${REPOSITORY}"
           author="$(jq -r .user.login <<<"${pr}")"
           if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
@@ -163,7 +162,6 @@ jobs:
           test "$(jq -r .draft <<<"${pr}")" = false
           base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' \
             <<<"${pr}")"
-          test -n "${base_ref}"
           test "$(jq -r .head.repo.full_name <<<"${pr}")" = "${REPOSITORY}"
           test "$(jq -r .head.label <<<"${pr}")" != null
           head_sha="$(jq -r .head.sha <<<"${pr}")"
@@ -181,7 +179,7 @@ jobs:
             echo "Ignoring stale Copilot review for ${reviewed_sha}; current head is ${head_sha}."
             exit 0
           fi
-          if [ "${base_ref}" = main ]; then
+          if [ "${base_ref}" = "main" ]; then
             echo "Main promotion reviews are verified by the protected current-revision gate; in-place remediation and auto-merge remain disabled."
             exit 0
           fi
