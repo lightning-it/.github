@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import textwrap
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -307,6 +309,182 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             2,
             workflow.count("mlx90-current-revision:copilot:v4:"),
         )
+
+    def test_pr819_legacy_bridge_jq_predicates_reject_tampering(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        bridge = workflow.split(
+            'if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then',
+            1,
+        )[1]
+
+        def extract(start: str, end: str) -> str:
+            return bridge.split(start, 1)[1].split(end, 1)[0]
+
+        def changed(payload: Any, path: tuple[Any, ...], value: Any) -> Any:
+            candidate = deepcopy(payload)
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            return candidate
+
+        def accepts(
+            jq_filter: str,
+            arguments: list[str],
+            payload: object,
+        ) -> bool:
+            try:
+                result = subprocess.run(
+                    ["jq", "-e", *arguments, jq_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate the PR 819 bridge: {error}")
+            return result.returncode == 0
+
+        api_url = "https://api.github.com"
+        repository = "lightning-it/ansible-collection-supplementary"
+        base = "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f"
+        head = "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712"
+        head_ref = "fix/rep60-supplementary-ancestry-controller-final-20260820"
+        run_filter = extract(
+            '--argjson run_id "${producer_run_id}" \'\n',
+            '\n                \' <<<"${producer}"',
+        )
+        run_arguments = [
+            "--arg",
+            "api_url",
+            api_url,
+            "--arg",
+            "base",
+            base,
+            "--arg",
+            "base_ref",
+            "develop",
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "head_ref",
+            head_ref,
+            "--arg",
+            "repository",
+            repository,
+            "--argjson",
+            "pr_number",
+            "819",
+            "--argjson",
+            "run_id",
+            "32451268553",
+        ]
+        valid_run = {
+            "id": 32451268553,
+            "run_attempt": 1,
+            "pull_requests": [
+                {
+                    "number": 819,
+                    "url": f"{api_url}/repos/{repository}/pulls/819",
+                    "base": {
+                        "ref": "develop",
+                        "sha": base,
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
+                    },
+                    "head": {
+                        "ref": head_ref,
+                        "sha": head,
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
+                    },
+                }
+            ],
+        }
+        self.assertTrue(accepts(run_filter, run_arguments, valid_run))
+        rejected_runs = (
+            changed(valid_run, ("id",), 32451268554),
+            changed(valid_run, ("run_attempt",), 2),
+            changed(valid_run, ("pull_requests", 0, "number"), 820),
+            changed(valid_run, ("pull_requests", 0, "base", "sha"), "b" * 40),
+            changed(valid_run, ("pull_requests", 0, "head", "sha"), "c" * 40),
+            changed(valid_run, ("pull_requests", 0, "head", "ref"), "forged"),
+            {
+                **valid_run,
+                "pull_requests": [
+                    *valid_run["pull_requests"],
+                    deepcopy(valid_run["pull_requests"][0]),
+                ],
+            },
+        )
+        for candidate in rejected_runs:
+            with self.subTest(run=candidate):
+                self.assertFalse(accepts(run_filter, run_arguments, candidate))
+
+        review_filter = extract(
+            '--argjson review_id 4989987869 \'\n',
+            '\n                \' <<<"${legacy_reviews}")"',
+        )
+        review_arguments = [
+            "--arg",
+            "head",
+            head,
+            "--argjson",
+            "review_id",
+            "4989987869",
+        ]
+        valid_review = {
+            "id": 4989987869,
+            "user": {"login": "copilot-pull-request-reviewer[bot]"},
+            "commit_id": head,
+            "state": "COMMENTED",
+            "submitted_at": "2026-08-21T05:42:23Z",
+            "body": (
+                "Copilot reviewed 5 out of 5 changed files in this pull request "
+                "and generated no comments."
+            ),
+        }
+
+        def selects_one(payload: object) -> bool:
+            try:
+                result = subprocess.run(
+                    ["jq", "-c", *review_arguments, review_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate the PR 819 review: {error}")
+            return result.returncode == 0 and len(json.loads(result.stdout)) == 1
+
+        valid_review_pages = [[valid_review]]
+        self.assertTrue(selects_one(valid_review_pages))
+        rejected_reviews = (
+            changed(valid_review_pages, (0, 0, "id"), 4989987870),
+            changed(valid_review_pages, (0, 0, "user", "login"), "attacker"),
+            changed(valid_review_pages, (0, 0, "commit_id"), "d" * 40),
+            changed(valid_review_pages, (0, 0, "state"), "DISMISSED"),
+            changed(
+                valid_review_pages,
+                (0, 0, "submitted_at"),
+                "2026-08-21T05:42:24Z",
+            ),
+            changed(
+                valid_review_pages,
+                (0, 0, "body"),
+                "Copilot reviewed 4 out of 5 changed files and generated no comments.",
+            ),
+            changed(
+                valid_review_pages,
+                (0, 0, "body"),
+                "Copilot reviewed 5 out of 5 changed files; suppressed comments (1).",
+            ),
+            changed(valid_review_pages, (0, 0, "body"), "Unable to review."),
+            changed(valid_review_pages, (0, 0, "body"), "Quota exhausted."),
+        )
+        for candidate in rejected_reviews:
+            with self.subTest(review=candidate):
+                self.assertFalse(selects_one(candidate))
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
