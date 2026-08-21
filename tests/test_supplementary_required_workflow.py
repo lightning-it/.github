@@ -1205,6 +1205,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("develop", True),
             ("main", True),
             ("feature", False),
+            ("release", False),
+            ("master", False),
+            ("", False),
         ):
             with self.subTest(base_ref=base_ref):
                 result = subprocess.run(
@@ -1233,7 +1236,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
         self.assertIn("request_response=\"$(", dispatch)
-        if '(.number | type) == "number"' in dispatch:
+        response_filters = [
+            candidate
+            for candidate in re.findall(r"'([^']+)'", dispatch, flags=re.DOTALL)
+            if ".number" in candidate
+            and ".head.repo.full_name" in candidate
+            and ".head.sha" in candidate
+        ]
+        self.assertEqual(1, len(response_filters))
+        response_filter = response_filters[0]
+        if '(.number | type) == "number"' in response_filter:
             for binding in (
                 ".number == $number",
                 '.state == "open"',
@@ -1241,12 +1253,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ".base.repo.full_name == $repository",
                 ".base.ref == $base_ref",
             ):
-                self.assertIn(binding, dispatch)
+                self.assertIn(binding, response_filter)
+            # GitHub's special Copilot request can omit requested_reviewers from
+            # a successful response. The outbound POST binds COPILOT_LOGIN;
+            # the independent exact-head review lookup below binds the result.
+            self.assertNotIn("requested_reviewers", response_filter)
         else:
-            self.assertIn("(.number | tostring) == $number", dispatch)
+            self.assertIn("(.number | tostring) == $number", response_filter)
             self.assertIn(
                 "and any(.requested_reviewers[]?; .login == $login)",
-                dispatch,
+                response_filter,
             )
         self.assertIn(
             "and .head.repo.full_name == $repository",
@@ -1255,6 +1271,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "and .head.sha == $head",
             dispatch,
+        )
+        self.assertEqual(
+            2,
+            dispatch.count(
+                "any(add[]; .user.login == $login and .commit_id == $head)"
+            ),
         )
         self.assertIn(
             "The one permitted exact-head Copilot review request was accepted and bound.",
