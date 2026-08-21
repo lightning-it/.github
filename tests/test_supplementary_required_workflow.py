@@ -1181,7 +1181,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
 
         self.assertIn(
-            "'.base.ref | select(. == \"develop\" or . == \"main\")'",
+            "'(.base.ref == \"develop\" or .base.ref == \"main\")'",
             dispatch,
         )
         self.assertNotIn("test -n \"${base_ref}\"", dispatch)

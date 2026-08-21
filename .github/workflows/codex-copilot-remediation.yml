@@ -62,8 +62,8 @@ jobs:
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           test "$(jq -r .state <<<"${pr}")" = open
           test "$(jq -r .draft <<<"${pr}")" = false
-          base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' \
-            <<<"${pr}")"
+          jq -e '(.base.ref == "develop" or .base.ref == "main")' \
+            <<<"${pr}" >/dev/null
           test "$(jq -r .head.repo.full_name <<<"${pr}")" = "${REPOSITORY}"
           author="$(jq -r .user.login <<<"${pr}")"
           if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
