@@ -32,6 +32,9 @@ jobs:
     # identical names would make the producer target this job instead of its
     # immutable evidence check.
     name: Required current-revision workflow
+    # Drafts cannot merge and must create neither AI traffic nor a terminal
+    # failed job that remains attached to the unchanged head after Ready.
+    if: github.event.pull_request.draft == false
     permissions:
       actions: read
       checks: write
@@ -815,6 +818,7 @@ jobs:
               select((.external_id | type) == "string") |
               select(
                 (.external_id | startswith("mlx90-current-revision:v4:"))
+                or (.external_id | startswith("mlx90-current-revision:copilot:v4:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
@@ -836,6 +840,7 @@ jobs:
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
           failure_stage='permanent-producer-binding'
+          legacy_supplementary_pr819_copilot_v4_bridge=false
           if [ "${author}" = 'lightning-it-release-automation[bot]' ] \
             && [[ "${external_id}" =~ ^mlx90-current-revision:v4: ]]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
@@ -843,39 +848,15 @@ jobs:
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-            legacy_supplementary_v4_dispatch_bridge=false
-            if [ "${REPOSITORY}" = lightning-it/ansible-collection-supplementary ] \
-              && [ "${PR_NUMBER}" = 815 ] \
-              && [ "${EVENT_BASE}" = 9e7707f560d1d4c73e0f6d55a18313f5662f2c90 ] \
-              && [ "${EVENT_HEAD}" = cf481bb5959eb69ab8768f11fa9b6c8989a2e33f ] \
-              && [ "${producer_run_id}" = 32427915423 ]; then
-              # Immutable one-PR bootstrap bridge. The protected Codex job and
-              # both result checks passed, but this legacy base controller
-              # serialized workflow-dispatch pr_number as JSON number. GitHub
-              # rejected only the subsequent deterministic re-evaluation
-              # dispatch. The successor controller on the protected develop
-              # head uses string serialization and PR-bound evidence. No other
-              # repository, PR, base, head, or producer can enter this branch.
-              legacy_supplementary_v4_dispatch_bridge=true
-            fi
-            producer_conclusion=success
-            producer_attempt=''
-            if [ "${legacy_supplementary_v4_dispatch_bridge}" = true ]; then
-              producer_conclusion=failure
-              producer_attempt=1
-            fi
             jq -e \
               --arg actor "${author}" \
               --arg base_ref "${base_ref}" \
               --arg base_sha "${EVENT_BASE}" \
-              --arg conclusion "${producer_conclusion}" \
               --arg run_url "${producer_run_url}" \
-              --arg title "${expected_title}" \
-              --argjson attempt "${producer_attempt:-null}" '
+              --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
                 and .status == "completed"
-                and .conclusion == $conclusion
-                and ($attempt == null or .run_attempt == $attempt)
+                and .conclusion == "success"
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
                 and .path == ".github/workflows/release-bot-exact-head-review.yml"
@@ -900,80 +881,22 @@ jobs:
                 and (.diff_sha256 | test("^[0-9a-f]{64}$"))
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
-            if [ "${legacy_supplementary_v4_dispatch_bridge}" = true ]; then
-              legacy_input_sha256="$(jq -er \
-                '.input_sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' \
-                <<<"${summary}")"
-              legacy_result_external_id="mlx90-exact-revision:v4:${legacy_input_sha256}:${producer_run_id}"
-              legacy_result_pages="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&filter=all&per_page=100")"
-              legacy_results="$(jq -c \
-                --arg external_id "${legacy_result_external_id}" \
-                '[.[].check_runs[]? |
-                  select(.name == "Protected Exact-Revision Codex result") |
-                  select(.external_id == $external_id)]' \
-                <<<"${legacy_result_pages}")"
-              test "$(jq 'length' <<<"${legacy_results}")" -eq 1
-              legacy_result_id="$(jq -er \
-                '.[0].id | select(type == "number" and . > 0)' \
-                <<<"${legacy_results}")"
-              legacy_result_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${legacy_result_id}"
-              jq -e \
-                --arg evidence "${summary}" \
-                --arg external_id "${legacy_result_external_id}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg url "${legacy_result_url}" '
-                  .[0].app.id == 15368
-                  and .[0].app.slug == "github-actions"
-                  and .[0].head_sha == $head
-                  and .[0].details_url == $url
-                  and .[0].external_id == $external_id
-                  and .[0].status == "completed"
-                  and .[0].conclusion == "success"
-                  and .[0].output.summary == $evidence
-                ' <<<"${legacy_results}" >/dev/null
-              producer_jobs="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${producer_run_id}/jobs?filter=latest")"
-              jq -e '
-                .total_count == 2
-                and ([.jobs[] |
-                  select(.name == "Protected Exact-Revision Codex review") |
-                  select(.status == "completed" and .conclusion == "success") |
-                  select((.steps | length) == 7) |
-                  select(([.steps[] |
-                    select(.status != "completed" or .conclusion != "success")]
-                    | length) == 0) |
-                  select(([.steps[] |
-                    select(.name == "Run protected history-free Exact-Revision Codex review") |
-                    select(.status == "completed" and .conclusion == "success")]
-                    | length) == 1) |
-                  select(([.steps[] |
-                    select(.name == "Re-prove exact revision and enforce the Codex verdict") |
-                    select(.status == "completed" and .conclusion == "success")]
-                    | length) == 1)] | length) == 1
-                and ([.jobs[] |
-                  select(.name == "Request protected verifier re-evaluation") |
-                  select(.status == "completed" and .conclusion == "failure") |
-                  select((.steps | length) == 3) |
-                  select(([.steps[] |
-                    select(.status == "completed" and .conclusion == "failure")]
-                    | length) == 1) |
-                  select(([.steps[] |
-                    select(.name == "Set up job") |
-                    select(.status == "completed" and .conclusion == "success")]
-                    | length) == 1) |
-                  select(([.steps[] |
-                    select(.name == "Dispatch the protected re-evaluation helper from develop") |
-                    select(.status == "completed" and .conclusion == "failure")]
-                    | length) == 1) |
-                  select(([.steps[] |
-                    select(.name == "Complete job") |
-                    select(.status == "completed" and .conclusion == "success")]
-                    | length) == 1)] | length) == 1
-              ' <<<"${producer_jobs}" >/dev/null
-            fi
           else
-            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+            if [ "${REPOSITORY}" = lightning-it/ansible-collection-supplementary ] \
+              && [ "${author}" = litroc ] \
+              && [ "${PR_NUMBER}" = 819 ] \
+              && [ "${EVENT_BASE}" = cf481bb5959eb69ab8768f11fa9b6c8989a2e33f ] \
+              && [ "${EVENT_HEAD}" = a31b2dc8ffe78c86aa887f6e28045f6db6fd3712 ] \
+              && [ "${external_id}" = \
+                mlx90-current-revision:copilot:v4:32451268553:cf481bb5959eb69ab8768f11fa9b6c8989a2e33f:a31b2dc8ffe78c86aa887f6e28045f6db6fd3712 ]; then
+              # Immutable one-PR bootstrap bridge. The protected Base producer
+              # predates PR-number evidence, so the exact run, PR payload, and
+              # clean Copilot review are independently rebound below. No other
+              # repository, PR, base, head, producer, or review can enter it.
+              legacy_supplementary_pr819_copilot_v4_bridge=true
+              producer_kind=copilot
+              producer_run_id=32451268553
+            elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
@@ -1053,6 +976,60 @@ jobs:
                 and .run_url == $run_url
                 and .review_path == $review_path
               ' <<<"${summary}" >/dev/null
+            if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then
+              test "${controller_sha}" = "${EVENT_BASE}"
+              jq -e \
+                --arg api_url "${GITHUB_API_URL}" \
+                --arg base "${EVENT_BASE}" \
+                --arg base_ref "${base_ref}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg head_ref "${head_ref}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson pr_number "${PR_NUMBER}" \
+                --argjson run_id "${producer_run_id}" '
+                  .id == $run_id
+                  and .run_attempt == 1
+                  and (.pull_requests | length) == 1
+                  and .pull_requests[0].number == $pr_number
+                  and .pull_requests[0].url == ($api_url + "/repos/" + $repository
+                    + "/pulls/" + ($pr_number | tostring))
+                  and .pull_requests[0].base.ref == $base_ref
+                  and .pull_requests[0].base.sha == $base
+                  and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
+                  and .pull_requests[0].head.ref == $head_ref
+                  and .pull_requests[0].head.sha == $head
+                  and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
+                ' <<<"${producer}" >/dev/null
+              legacy_reviews="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+              test "$(jq '[.[][]? |
+                select(.user.login == "copilot-pull-request-reviewer[bot]")] | length' \
+                <<<"${legacy_reviews}")" -eq 1
+              exact_legacy_reviews="$(jq -c \
+                --arg head "${EVENT_HEAD}" \
+                --argjson review_id 4989987869 '
+                  [.[][]? |
+                    select(.id == $review_id) |
+                    select(.user.login == "copilot-pull-request-reviewer[bot]") |
+                    select(.commit_id == $head) |
+                    select(.state == "COMMENTED") |
+                    select(.submitted_at == "2026-08-21T05:42:23Z") |
+                    select((.body // "") | contains("Copilot reviewed 5 out of 5 changed files")) |
+                    select((.body // "") | contains("generated no comments")) |
+                    select(((.body // "") | ascii_downcase | contains("suppressed comments")) | not) |
+                    select(((.body // "") | ascii_downcase | contains("unable to review")) | not) |
+                    select(((.body // "") | ascii_downcase | contains("quota")) | not)]
+                ' <<<"${legacy_reviews}")"
+              test "$(jq 'length' <<<"${exact_legacy_reviews}")" -eq 1
+              legacy_review_comments="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100")"
+              test "$(jq '[.[][]? | select(.pull_request_review_id == 4989987869)] | length' \
+                <<<"${legacy_review_comments}")" -eq 0
+              jq -e '
+                .schema == 4
+                and (has("pull_request_number") | not)
+              ' <<<"${summary}" >/dev/null
+            fi
           fi
 
           fi

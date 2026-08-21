@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import textwrap
 import unittest
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -263,152 +265,245 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         neutral_producer = workflow.split(
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
-        self.assertNotIn("and .run_attempt == 1", neutral_producer)
+        self.assertEqual(1, neutral_producer.count("and .run_attempt == 1"))
         self.assertEqual(workflow.count(".actor.login == $actor"), 2)
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
+        self.assertIn("and .workflow_sha == $base", workflow)
 
-    def test_exact_legacy_v4_dispatch_bridge_is_immutable_and_job_bound(
+    def test_pr819_legacy_copilot_bridge_is_immutable_and_fully_rebound(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        bridge = workflow.split(
-            "legacy_supplementary_v4_dispatch_bridge=false", 1
-        )[1].split("          else", 1)[0]
+        bridge_marker = "legacy_supplementary_pr819_copilot_v4_bridge=false"
+        self.assertIn(
+            bridge_marker,
+            workflow,
+            "PR 819 legacy bridge declaration is missing from the workflow",
+        )
+        bridge = workflow.split(bridge_marker, 1)[1]
+
         for exact_binding in (
-            '[ "${REPOSITORY}" = lightning-it/ansible-collection-supplementary ]',
-            '[ "${PR_NUMBER}" = 815 ]',
-            "9e7707f560d1d4c73e0f6d55a18313f5662f2c90",
+            "lightning-it/ansible-collection-supplementary",
+            '[ "${author}" = litroc ]',
+            '[ "${PR_NUMBER}" = 819 ]',
             "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f",
-            '[ "${producer_run_id}" = 32427915423 ]',
-            "producer_conclusion=failure",
-            "producer_attempt=1",
-            'and .workflow_sha == $base',
-            "mlx90-exact-revision:v4:${legacy_input_sha256}:${producer_run_id}",
-            'and .[0].output.summary == $evidence',
+            "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712",
+            "mlx90-current-revision:copilot:v4:32451268553:",
+            "producer_run_id=32451268553",
+            "legacy_supplementary_pr819_copilot_v4_bridge=true",
+            'test "${controller_sha}" = "${EVENT_BASE}"',
+            'select(.user.login == "copilot-pull-request-reviewer[bot]")',
+            ".run_attempt == 1",
+            "(.pull_requests | length) == 1",
+            ".pull_requests[0].number == $pr_number",
+            ".pull_requests[0].base.sha == $base",
+            ".pull_requests[0].head.sha == $head",
+            "4989987869",
+            "2026-08-21T05:42:23Z",
+            "Copilot reviewed 5 out of 5 changed files",
+            "generated no comments",
+            "suppressed comments",
+            'and (has("pull_request_number") | not)',
         ):
             with self.subTest(exact_binding=exact_binding):
                 self.assertIn(exact_binding, bridge)
-
-        filter_start = bridge.index("              jq -e '\n                .total_count")
-        filter_start += len("              jq -e '")
-        filter_end = bridge.index(
-            '\n              \' <<<"${producer_jobs}"', filter_start
+        self.assertEqual(
+            2,
+            workflow.count("mlx90-current-revision:copilot:v4:"),
         )
-        job_filter = bridge[filter_start:filter_end]
-        successful_step = lambda name: {
-            "name": name,
-            "status": "completed",
-            "conclusion": "success",
-        }
-        review_steps = [
-            successful_step("Set up job"),
-            successful_step("Load protected materializer, prompt, and schema"),
-            successful_step(
-                "Reserve one immutable review input or reuse its protected PASS"
-            ),
-            successful_step(
-                "Run protected history-free Exact-Revision Codex review"
-            ),
-            successful_step(
-                "Re-prove exact revision and enforce the Codex verdict"
-            ),
-            successful_step(
-                "Post Run protected history-free Exact-Revision Codex review"
-            ),
-            successful_step("Complete job"),
-        ]
-        dispatch_steps = [
-            successful_step("Set up job"),
-            {
-                "name": (
-                    "Dispatch the protected re-evaluation helper from develop"
-                ),
-                "status": "completed",
-                "conclusion": "failure",
-            },
-            successful_step("Complete job"),
-        ]
-        valid = {
-            "total_count": 2,
-            "jobs": [
-                {
-                    "name": "Protected Exact-Revision Codex review",
-                    "status": "completed",
-                    "conclusion": "success",
-                    "steps": review_steps,
-                },
-                {
-                    "name": "Request protected verifier re-evaluation",
-                    "status": "completed",
-                    "conclusion": "failure",
-                    "steps": dispatch_steps,
-                },
-            ],
-        }
 
-        def accepts(payload: dict[str, object]) -> bool:
+    def test_pr819_legacy_bridge_jq_predicates_reject_tampering(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        bridge_marker = (
+            'if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then'
+        )
+        self.assertIn(
+            bridge_marker,
+            workflow,
+            "PR 819 legacy bridge verification block is missing from the workflow",
+        )
+        bridge = workflow.split(bridge_marker, 1)[1]
+
+        def extract(start: str, end: str) -> str:
+            self.assertIn(
+                start,
+                bridge,
+                f"PR 819 bridge jq start marker is missing: {start!r}",
+            )
+            remainder = bridge.split(start, 1)[1]
+            self.assertIn(
+                end,
+                remainder,
+                f"PR 819 bridge jq end marker is missing: {end!r}",
+            )
+            return remainder.split(end, 1)[0]
+
+        def changed(payload: Any, path: tuple[Any, ...], value: Any) -> Any:
+            candidate = deepcopy(payload)
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            return candidate
+
+        def accepts(
+            jq_filter: str,
+            arguments: list[str],
+            payload: object,
+        ) -> bool:
             try:
                 result = subprocess.run(
-                    ["jq", "-e", job_filter],
+                    ["jq", "-e", *arguments, jq_filter],
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
                     check=False,
                 )
             except FileNotFoundError as error:
-                self.fail(f"jq is required to validate the legacy bridge: {error}")
+                self.fail(f"jq is required to validate the PR 819 bridge: {error}")
             return result.returncode == 0
 
-        self.assertTrue(accepts(valid))
-        rejected = (
-            {**valid, "total_count": 3},
-            {
-                **valid,
-                "jobs": [
-                    {**valid["jobs"][0], "conclusion": "failure"},
-                    valid["jobs"][1],
-                ],
-            },
-            {
-                **valid,
-                "jobs": [
-                    {
-                        **valid["jobs"][0],
-                        "steps": [
-                            *review_steps[:4],
-                            {**review_steps[4], "conclusion": "failure"},
-                            *review_steps[5:],
-                        ],
+        api_url = "https://api.github.com"
+        repository = "lightning-it/ansible-collection-supplementary"
+        base = "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f"
+        head = "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712"
+        head_ref = "fix/rep60-supplementary-ancestry-controller-final-20260820"
+        run_filter = extract(
+            '--argjson run_id "${producer_run_id}" \'\n',
+            '\n                \' <<<"${producer}"',
+        )
+        run_arguments = [
+            "--arg",
+            "api_url",
+            api_url,
+            "--arg",
+            "base",
+            base,
+            "--arg",
+            "base_ref",
+            "develop",
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "head_ref",
+            head_ref,
+            "--arg",
+            "repository",
+            repository,
+            "--argjson",
+            "pr_number",
+            "819",
+            "--argjson",
+            "run_id",
+            "32451268553",
+        ]
+        valid_run = {
+            "id": 32451268553,
+            "run_attempt": 1,
+            "pull_requests": [
+                {
+                    "number": 819,
+                    "url": f"{api_url}/repos/{repository}/pulls/819",
+                    "base": {
+                        "ref": "develop",
+                        "sha": base,
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
                     },
-                    valid["jobs"][1],
-                ],
-            },
-            {
-                **valid,
-                "jobs": [
-                    valid["jobs"][0],
-                    {**valid["jobs"][1], "conclusion": "success"},
-                ],
-            },
-            {
-                **valid,
-                "jobs": [
-                    valid["jobs"][0],
-                    {
-                        **valid["jobs"][1],
-                        "steps": [
-                            dispatch_steps[0],
-                            {**dispatch_steps[1], "conclusion": "success"},
-                            dispatch_steps[2],
-                        ],
+                    "head": {
+                        "ref": head_ref,
+                        "sha": head,
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
                     },
+                }
+            ],
+        }
+        self.assertTrue(accepts(run_filter, run_arguments, valid_run))
+        rejected_runs = (
+            changed(valid_run, ("id",), 32451268554),
+            changed(valid_run, ("run_attempt",), 2),
+            changed(valid_run, ("pull_requests", 0, "number"), 820),
+            changed(valid_run, ("pull_requests", 0, "base", "sha"), "b" * 40),
+            changed(valid_run, ("pull_requests", 0, "head", "sha"), "c" * 40),
+            changed(valid_run, ("pull_requests", 0, "head", "ref"), "forged"),
+            {
+                **valid_run,
+                "pull_requests": [
+                    *valid_run["pull_requests"],
+                    deepcopy(valid_run["pull_requests"][0]),
                 ],
             },
         )
-        for payload in rejected:
-            with self.subTest(payload=payload):
-                self.assertFalse(accepts(payload))
+        for candidate in rejected_runs:
+            with self.subTest(run=candidate):
+                self.assertFalse(accepts(run_filter, run_arguments, candidate))
+
+        review_filter = extract(
+            '--argjson review_id 4989987869 \'\n',
+            '\n                \' <<<"${legacy_reviews}")"',
+        )
+        review_arguments = [
+            "--arg",
+            "head",
+            head,
+            "--argjson",
+            "review_id",
+            "4989987869",
+        ]
+        valid_review = {
+            "id": 4989987869,
+            "user": {"login": "copilot-pull-request-reviewer[bot]"},
+            "commit_id": head,
+            "state": "COMMENTED",
+            "submitted_at": "2026-08-21T05:42:23Z",
+            "body": (
+                "Copilot reviewed 5 out of 5 changed files in this pull request "
+                "and generated no comments."
+            ),
+        }
+
+        def selects_one(payload: object) -> bool:
+            try:
+                result = subprocess.run(
+                    ["jq", "-c", *review_arguments, review_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except FileNotFoundError as error:
+                self.fail(f"jq is required to validate the PR 819 review: {error}")
+            return result.returncode == 0 and len(json.loads(result.stdout)) == 1
+
+        valid_review_pages = [[valid_review]]
+        self.assertTrue(selects_one(valid_review_pages))
+        rejected_reviews = (
+            changed(valid_review_pages, (0, 0, "id"), 4989987870),
+            changed(valid_review_pages, (0, 0, "user", "login"), "attacker"),
+            changed(valid_review_pages, (0, 0, "commit_id"), "d" * 40),
+            changed(valid_review_pages, (0, 0, "state"), "DISMISSED"),
+            changed(
+                valid_review_pages,
+                (0, 0, "submitted_at"),
+                "2026-08-21T05:42:24Z",
+            ),
+            changed(
+                valid_review_pages,
+                (0, 0, "body"),
+                "Copilot reviewed 4 out of 5 changed files and generated no comments.",
+            ),
+            changed(
+                valid_review_pages,
+                (0, 0, "body"),
+                "Copilot reviewed 5 out of 5 changed files; suppressed comments (1).",
+            ),
+            changed(valid_review_pages, (0, 0, "body"), "Unable to review."),
+            changed(valid_review_pages, (0, 0, "body"), "Quota exhausted."),
+        )
+        for candidate in rejected_reviews:
+            with self.subTest(review=candidate):
+                self.assertFalse(selects_one(candidate))
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -799,13 +894,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('exit "${exit_code}"', workflow)
         self.assertNotIn('return "${exit_code}"', workflow)
 
-    def test_draft_open_reserves_a_single_later_rerun(self) -> None:
+    def test_draft_events_skip_before_materializing_a_failed_job(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        job_header = workflow.split(
+            "  verify-protected-current-revision-evidence:", 1
+        )[1].split("    permissions:", 1)[0]
+        self.assertIn(
+            "if: github.event.pull_request.draft == false",
+            job_header,
+        )
+
+    def test_failed_ready_run_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         reservation = workflow.index("reservation_external_id=")
         trap = workflow.index("trap finalize_failure ERR")
-        draft = workflow.index('test "${draft}" = false')
         self.assertLess(reservation, trap)
-        self.assertLess(trap, draft)
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2',
             workflow,
