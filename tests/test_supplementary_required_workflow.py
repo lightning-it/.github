@@ -266,7 +266,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         neutral_producer = workflow.split(
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
-        self.assertNotIn("and .run_attempt == 1", neutral_producer)
+        self.assertEqual(
+            2,
+            neutral_producer.count("and .run_attempt == 1"),
+        )
         self.assertEqual(workflow.count(".actor.login == $actor"), 2)
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
