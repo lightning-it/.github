@@ -853,6 +853,7 @@ jobs:
               --arg run_url "${producer_run_url}" \
               --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
+                and .run_attempt == 1
                 and .status == "completed"
                 and .conclusion == "success"
                 and .head_branch == $base_ref
@@ -932,6 +933,7 @@ jobs:
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EVENT_HEAD}" '
               .event == "pull_request_target"
+              and .run_attempt == 1
               and .status == "completed"
               and .conclusion == "success"
               and .path == ".github/workflows/copilot-review.yml"
