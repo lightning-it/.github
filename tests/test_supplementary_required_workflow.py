@@ -5,14 +5,15 @@ import shutil
 import subprocess
 import textwrap
 import unittest
-from copy import deepcopy
 from pathlib import Path
-from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (
     ROOT / ".github" / "workflows" / "supplementary-current-revision-required.yml"
+)
+REMEDIATION_WORKFLOW = (
+    ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
 
 
@@ -265,245 +266,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         neutral_producer = workflow.split(
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
-        self.assertEqual(1, neutral_producer.count("and .run_attempt == 1"))
+        self.assertNotIn("and .run_attempt == 1", neutral_producer)
         self.assertEqual(workflow.count(".actor.login == $actor"), 2)
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
-
-    def test_pr819_legacy_copilot_bridge_is_immutable_and_fully_rebound(
-        self,
-    ) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        bridge_marker = "legacy_supplementary_pr819_copilot_v4_bridge=false"
-        self.assertIn(
-            bridge_marker,
-            workflow,
-            "PR 819 legacy bridge declaration is missing from the workflow",
-        )
-        bridge = workflow.split(bridge_marker, 1)[1]
-
-        for exact_binding in (
-            "lightning-it/ansible-collection-supplementary",
-            '[ "${author}" = litroc ]',
-            '[ "${PR_NUMBER}" = 819 ]',
-            "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f",
-            "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712",
-            "mlx90-current-revision:copilot:v4:32451268553:",
-            "producer_run_id=32451268553",
-            "legacy_supplementary_pr819_copilot_v4_bridge=true",
-            'test "${controller_sha}" = "${EVENT_BASE}"',
-            'select(.user.login == "copilot-pull-request-reviewer[bot]")',
-            ".run_attempt == 1",
-            "(.pull_requests | length) == 1",
-            ".pull_requests[0].number == $pr_number",
-            ".pull_requests[0].base.sha == $base",
-            ".pull_requests[0].head.sha == $head",
-            "4989987869",
-            "2026-08-21T05:42:23Z",
-            "Copilot reviewed 5 out of 5 changed files",
-            "generated no comments",
-            "suppressed comments",
-            'and (has("pull_request_number") | not)',
-        ):
-            with self.subTest(exact_binding=exact_binding):
-                self.assertIn(exact_binding, bridge)
-        self.assertEqual(
-            2,
-            workflow.count("mlx90-current-revision:copilot:v4:"),
-        )
-
-    def test_pr819_legacy_bridge_jq_predicates_reject_tampering(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        bridge_marker = (
-            'if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then'
-        )
-        self.assertIn(
-            bridge_marker,
-            workflow,
-            "PR 819 legacy bridge verification block is missing from the workflow",
-        )
-        bridge = workflow.split(bridge_marker, 1)[1]
-
-        def extract(start: str, end: str) -> str:
-            self.assertIn(
-                start,
-                bridge,
-                f"PR 819 bridge jq start marker is missing: {start!r}",
-            )
-            remainder = bridge.split(start, 1)[1]
-            self.assertIn(
-                end,
-                remainder,
-                f"PR 819 bridge jq end marker is missing: {end!r}",
-            )
-            return remainder.split(end, 1)[0]
-
-        def changed(payload: Any, path: tuple[Any, ...], value: Any) -> Any:
-            candidate = deepcopy(payload)
-            target = candidate
-            for key in path[:-1]:
-                target = target[key]
-            target[path[-1]] = value
-            return candidate
-
-        def accepts(
-            jq_filter: str,
-            arguments: list[str],
-            payload: object,
-        ) -> bool:
-            try:
-                result = subprocess.run(
-                    ["jq", "-e", *arguments, jq_filter],
-                    input=json.dumps(payload),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-            except FileNotFoundError as error:
-                self.fail(f"jq is required to validate the PR 819 bridge: {error}")
-            return result.returncode == 0
-
-        api_url = "https://api.github.com"
-        repository = "lightning-it/ansible-collection-supplementary"
-        base = "cf481bb5959eb69ab8768f11fa9b6c8989a2e33f"
-        head = "a31b2dc8ffe78c86aa887f6e28045f6db6fd3712"
-        head_ref = "fix/rep60-supplementary-ancestry-controller-final-20260820"
-        run_filter = extract(
-            '--argjson run_id "${producer_run_id}" \'\n',
-            '\n                \' <<<"${producer}"',
-        )
-        run_arguments = [
-            "--arg",
-            "api_url",
-            api_url,
-            "--arg",
-            "base",
-            base,
-            "--arg",
-            "base_ref",
-            "develop",
-            "--arg",
-            "head",
-            head,
-            "--arg",
-            "head_ref",
-            head_ref,
-            "--arg",
-            "repository",
-            repository,
-            "--argjson",
-            "pr_number",
-            "819",
-            "--argjson",
-            "run_id",
-            "32451268553",
-        ]
-        valid_run = {
-            "id": 32451268553,
-            "run_attempt": 1,
-            "pull_requests": [
-                {
-                    "number": 819,
-                    "url": f"{api_url}/repos/{repository}/pulls/819",
-                    "base": {
-                        "ref": "develop",
-                        "sha": base,
-                        "repo": {"url": f"{api_url}/repos/{repository}"},
-                    },
-                    "head": {
-                        "ref": head_ref,
-                        "sha": head,
-                        "repo": {"url": f"{api_url}/repos/{repository}"},
-                    },
-                }
-            ],
-        }
-        self.assertTrue(accepts(run_filter, run_arguments, valid_run))
-        rejected_runs = (
-            changed(valid_run, ("id",), 32451268554),
-            changed(valid_run, ("run_attempt",), 2),
-            changed(valid_run, ("pull_requests", 0, "number"), 820),
-            changed(valid_run, ("pull_requests", 0, "base", "sha"), "b" * 40),
-            changed(valid_run, ("pull_requests", 0, "head", "sha"), "c" * 40),
-            changed(valid_run, ("pull_requests", 0, "head", "ref"), "forged"),
-            {
-                **valid_run,
-                "pull_requests": [
-                    *valid_run["pull_requests"],
-                    deepcopy(valid_run["pull_requests"][0]),
-                ],
-            },
-        )
-        for candidate in rejected_runs:
-            with self.subTest(run=candidate):
-                self.assertFalse(accepts(run_filter, run_arguments, candidate))
-
-        review_filter = extract(
-            '--argjson review_id 4989987869 \'\n',
-            '\n                \' <<<"${legacy_reviews}")"',
-        )
-        review_arguments = [
-            "--arg",
-            "head",
-            head,
-            "--argjson",
-            "review_id",
-            "4989987869",
-        ]
-        valid_review = {
-            "id": 4989987869,
-            "user": {"login": "copilot-pull-request-reviewer[bot]"},
-            "commit_id": head,
-            "state": "COMMENTED",
-            "submitted_at": "2026-08-21T05:42:23Z",
-            "body": (
-                "Copilot reviewed 5 out of 5 changed files in this pull request "
-                "and generated no comments."
-            ),
-        }
-
-        def selects_one(payload: object) -> bool:
-            try:
-                result = subprocess.run(
-                    ["jq", "-c", *review_arguments, review_filter],
-                    input=json.dumps(payload),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-            except FileNotFoundError as error:
-                self.fail(f"jq is required to validate the PR 819 review: {error}")
-            return result.returncode == 0 and len(json.loads(result.stdout)) == 1
-
-        valid_review_pages = [[valid_review]]
-        self.assertTrue(selects_one(valid_review_pages))
-        rejected_reviews = (
-            changed(valid_review_pages, (0, 0, "id"), 4989987870),
-            changed(valid_review_pages, (0, 0, "user", "login"), "attacker"),
-            changed(valid_review_pages, (0, 0, "commit_id"), "d" * 40),
-            changed(valid_review_pages, (0, 0, "state"), "DISMISSED"),
-            changed(
-                valid_review_pages,
-                (0, 0, "submitted_at"),
-                "2026-08-21T05:42:24Z",
-            ),
-            changed(
-                valid_review_pages,
-                (0, 0, "body"),
-                "Copilot reviewed 4 out of 5 changed files and generated no comments.",
-            ),
-            changed(
-                valid_review_pages,
-                (0, 0, "body"),
-                "Copilot reviewed 5 out of 5 changed files; suppressed comments (1).",
-            ),
-            changed(valid_review_pages, (0, 0, "body"), "Unable to review."),
-            changed(valid_review_pages, (0, 0, "body"), "Quota exhausted."),
-        )
-        for candidate in rejected_reviews:
-            with self.subTest(review=candidate):
-                self.assertFalse(selects_one(candidate))
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -1366,6 +1133,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "One-time immutable main-controller bootstrap verified",
             "One-time immutable result-parser bootstrap verified",
             "Exact human producer transition verified",
+            "legacy_supplementary_pr819_copilot_v4_bridge",
+            "mlx90-current-revision:copilot:v4:",
+            '[ "${PR_NUMBER}" = 819 ]',
+            "4989987869",
+            "32451268553",
             "temporary: true",
         ):
             self.assertNotIn(retired_binding, workflow)
@@ -1387,6 +1159,73 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "output[title]=Protected current-revision evidence verified"
             ),
             workflow.rindex("trap - ERR"),
+        )
+
+    def test_rereview_dispatch_supports_main_without_retrying_requests(
+        self,
+    ) -> None:
+        workflow = REMEDIATION_WORKFLOW.read_text(encoding="utf-8")
+        dispatch_marker = "  continue-after-push:\n"
+        inspect_marker = "\n  inspect:\n"
+        self.assertIn(
+            dispatch_marker,
+            workflow,
+            "one-time rereview dispatch job is missing",
+        )
+        dispatch_and_after = workflow.split(dispatch_marker, 1)[1]
+        self.assertIn(
+            inspect_marker,
+            dispatch_and_after,
+            "rereview dispatch job boundary is missing",
+        )
+        dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
+
+        self.assertIn(
+            "'.base.ref | select(. == \"develop\" or . == \"main\")'",
+            dispatch,
+        )
+        self.assertIn("test -n \"${base_ref}\"", dispatch)
+        self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
+        self.assertIn(
+            "Release-App pull requests use only the protected MLX-90 §7.2",
+            dispatch,
+        )
+        request = (
+            'gh api --method POST '
+            '"repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers"'
+        )
+        self.assertEqual(1, dispatch.count(request))
+        self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
+        self.assertIn(
+            "The one permitted exact-head Copilot review request was accepted.",
+            dispatch,
+        )
+        self.assertNotIn("sleep ", dispatch)
+        self.assertNotIn("gh workflow run", dispatch)
+
+        inspect = dispatch_and_after.split(inspect_marker, 1)[1]
+        enable_marker = "\n  enable-develop-automerge:\n"
+        self.assertIn(
+            enable_marker,
+            inspect,
+            "develop-only auto-merge job boundary is missing",
+        )
+        inspect = inspect.split(enable_marker, 1)[0]
+        self.assertIn(
+            "'.base.ref | select(. == \"develop\" or . == \"main\")'",
+            inspect,
+        )
+        self.assertIn('if [ "${base_ref}" = main ]; then', inspect)
+        self.assertIn(
+            "in-place remediation and auto-merge remain disabled",
+            inspect,
+        )
+        self.assertIn('echo "eligible=false"', inspect)
+        self.assertEqual(
+            1,
+            workflow.count(
+                'test "$(jq -r .base.ref <<<"${pr}")" = develop'
+            ),
         )
 
 

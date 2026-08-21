@@ -818,7 +818,6 @@ jobs:
               select((.external_id | type) == "string") |
               select(
                 (.external_id | startswith("mlx90-current-revision:v4:"))
-                or (.external_id | startswith("mlx90-current-revision:copilot:v4:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
@@ -840,7 +839,6 @@ jobs:
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
           failure_stage='permanent-producer-binding'
-          legacy_supplementary_pr819_copilot_v4_bridge=false
           if [ "${author}" = 'lightning-it-release-automation[bot]' ] \
             && [[ "${external_id}" =~ ^mlx90-current-revision:v4: ]]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
@@ -882,21 +880,7 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            if [ "${REPOSITORY}" = lightning-it/ansible-collection-supplementary ] \
-              && [ "${author}" = litroc ] \
-              && [ "${PR_NUMBER}" = 819 ] \
-              && [ "${EVENT_BASE}" = cf481bb5959eb69ab8768f11fa9b6c8989a2e33f ] \
-              && [ "${EVENT_HEAD}" = a31b2dc8ffe78c86aa887f6e28045f6db6fd3712 ] \
-              && [ "${external_id}" = \
-                mlx90-current-revision:copilot:v4:32451268553:cf481bb5959eb69ab8768f11fa9b6c8989a2e33f:a31b2dc8ffe78c86aa887f6e28045f6db6fd3712 ]; then
-              # Immutable one-PR bootstrap bridge. The protected Base producer
-              # predates PR-number evidence, so the exact run, PR payload, and
-              # clean Copilot review are independently rebound below. No other
-              # repository, PR, base, head, producer, or review can enter it.
-              legacy_supplementary_pr819_copilot_v4_bridge=true
-              producer_kind=copilot
-              producer_run_id=32451268553
-            elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
@@ -976,60 +960,6 @@ jobs:
                 and .run_url == $run_url
                 and .review_path == $review_path
               ' <<<"${summary}" >/dev/null
-            if [ "${legacy_supplementary_pr819_copilot_v4_bridge}" = true ]; then
-              test "${controller_sha}" = "${EVENT_BASE}"
-              jq -e \
-                --arg api_url "${GITHUB_API_URL}" \
-                --arg base "${EVENT_BASE}" \
-                --arg base_ref "${base_ref}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg head_ref "${head_ref}" \
-                --arg repository "${REPOSITORY}" \
-                --argjson pr_number "${PR_NUMBER}" \
-                --argjson run_id "${producer_run_id}" '
-                  .id == $run_id
-                  and .run_attempt == 1
-                  and (.pull_requests | length) == 1
-                  and .pull_requests[0].number == $pr_number
-                  and .pull_requests[0].url == ($api_url + "/repos/" + $repository
-                    + "/pulls/" + ($pr_number | tostring))
-                  and .pull_requests[0].base.ref == $base_ref
-                  and .pull_requests[0].base.sha == $base
-                  and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
-                  and .pull_requests[0].head.ref == $head_ref
-                  and .pull_requests[0].head.sha == $head
-                  and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
-                ' <<<"${producer}" >/dev/null
-              legacy_reviews="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
-              test "$(jq '[.[][]? |
-                select(.user.login == "copilot-pull-request-reviewer[bot]")] | length' \
-                <<<"${legacy_reviews}")" -eq 1
-              exact_legacy_reviews="$(jq -c \
-                --arg head "${EVENT_HEAD}" \
-                --argjson review_id 4989987869 '
-                  [.[][]? |
-                    select(.id == $review_id) |
-                    select(.user.login == "copilot-pull-request-reviewer[bot]") |
-                    select(.commit_id == $head) |
-                    select(.state == "COMMENTED") |
-                    select(.submitted_at == "2026-08-21T05:42:23Z") |
-                    select((.body // "") | contains("Copilot reviewed 5 out of 5 changed files")) |
-                    select((.body // "") | contains("generated no comments")) |
-                    select(((.body // "") | ascii_downcase | contains("suppressed comments")) | not) |
-                    select(((.body // "") | ascii_downcase | contains("unable to review")) | not) |
-                    select(((.body // "") | ascii_downcase | contains("quota")) | not)]
-                ' <<<"${legacy_reviews}")"
-              test "$(jq 'length' <<<"${exact_legacy_reviews}")" -eq 1
-              legacy_review_comments="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100")"
-              test "$(jq '[.[][]? | select(.pull_request_review_id == 4989987869)] | length' \
-                <<<"${legacy_review_comments}")" -eq 0
-              jq -e '
-                .schema == 4
-                and (has("pull_request_number") | not)
-              ' <<<"${summary}" >/dev/null
-            fi
           fi
 
           fi
