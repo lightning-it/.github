@@ -17,9 +17,102 @@ REMEDIATION_WORKFLOW = (
     ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
 COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
+TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def _test_tool(self, name: str) -> str:
+        executable = shutil.which(name, path=TEST_TOOL_PATH)
+        if executable is None:
+            self.fail(
+                f"{name} is required in the deterministic test tool path"
+            )
+        return executable
+
+    @staticmethod
+    def _required_verifier_producer_routing() -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            '            if { [ "${author}" = '
+            "'lightning-it-release-automation[bot]' ] \\\n"
+        )
+        start = workflow.index(marker)
+        end = workflow.index(
+            '            producer_run_url="${GITHUB_SERVER_URL}', start
+        )
+        return textwrap.dedent(workflow[start:end])
+
+    def _run_required_verifier_producer_routing(
+        self,
+        *,
+        author: str,
+        base_ref: str,
+        producer_kind: str,
+        repository: str = "lightning-it/website",
+    ) -> int:
+        bash = self._test_tool("bash")
+        result = subprocess.run(
+            [
+                bash,
+                "-c",
+                "set -euo pipefail\n"
+                + self._required_verifier_producer_routing(),
+            ],
+            env={
+                "PATH": TEST_TOOL_PATH,
+                "REPOSITORY": repository,
+                "author": author,
+                "base_ref": base_ref,
+                "central_sync_backmerge": "false",
+                "producer_kind": producer_kind,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode
+
+    @staticmethod
+    def _neutral_publisher_routing() -> str:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        start = publish.index(
+            '          if [[ "${TRUSTED_KIND}" =~ '
+            '^(shared-assets|repository-quality)$ ]]; then\n'
+        )
+        end = publish.index('          run_url="${GITHUB_SERVER_URL}', start)
+        return textwrap.dedent(publish[start:end])
+
+    def _run_neutral_publisher_routing(
+        self,
+        *,
+        author: str,
+        base_ref: str,
+        repository: str,
+        trusted_kind: str,
+    ) -> int:
+        bash = self._test_tool("bash")
+        result = subprocess.run(
+            [
+                bash,
+                "-c",
+                "set -euo pipefail\n" + self._neutral_publisher_routing(),
+            ],
+            env={
+                "PATH": TEST_TOOL_PATH,
+                "REPOSITORY": repository,
+                "TRUSTED_KIND": trusted_kind,
+                "author": author,
+                "base_ref": base_ref,
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode
+
     def test_neutral_producer_distinguishes_managed_sync_from_backmerge(
         self,
     ) -> None:
@@ -35,13 +128,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
             1
         ]
-        ancestry = publish.split(
-            '          if [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then\n',
+        managed_sync, ancestry_and_rest = publish.split(
+            '          elif [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then\n',
             1,
-        )[1].split("          run_url=", 1)[0]
+        )
+        ancestry = ancestry_and_rest.split("          run_url=", 1)[0]
 
         self.assertIn(
+            '[[ "${TRUSTED_KIND}" =~ ^(shared-assets|repository-quality)$ ]]',
+            managed_sync,
+        )
+        self.assertIn(
+            'review_path="deterministic provenance-bound managed distribution exemption"',
+            managed_sync,
+        )
+        self.assertIn('external_kind="managed-sync"', managed_sync)
+        self.assertIn(
             'test "${author}" = \'lightning-it-shared-assets-sync[bot]\'\n',
+            managed_sync,
+        )
+        self.assertIn(
+            'test "${author}" != \'lightning-it-shared-assets-sync[bot]\'',
             ancestry,
         )
         self.assertIn(
@@ -53,6 +160,56 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn(
             'if { [ "${author}" = \'lightning-it-release-automation[bot]\' ]',
             ancestry,
+        )
+
+    def test_neutral_producer_rejects_sync_actor_from_copilot_fallback(
+        self,
+    ) -> None:
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="none",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author="litroc",
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="none",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/website",
+                trusted_kind="shared-assets",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="main",
+                repository="lightning-it/website",
+                trusted_kind="shared-assets",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="develop",
+                repository="lightning-it/.github",
+                trusted_kind="shared-assets",
+            ),
         )
 
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
@@ -168,7 +325,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             try:
                 result = subprocess.run(
                     [
-                        "jq",
+                        self._test_tool("jq"),
                         "-e",
                         "--arg",
                         "base",
@@ -251,6 +408,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            'startswith("mlx90-current-revision:managed-sync:v6:")',
+            workflow,
+        )
+        self.assertIn(
             "rep60-required-workflow:v3:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
@@ -278,7 +439,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn("Keep v5 valid only for already-open pull requests", workflow)
@@ -286,7 +447,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("producer_kind=\"${BASH_REMATCH[1]}\"", workflow)
         self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
         self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
+        self.assertIn('test "${producer_kind}" = managed-sync', workflow)
         self.assertIn('test "${producer_kind}" = copilot', workflow)
+        self.assertIn(
+            'expected_review_path="deterministic provenance-bound managed distribution exemption"',
+            workflow,
+        )
         self.assertIn('central_sync_backmerge=false', workflow)
         self.assertIn('central_sync_backmerge=true', workflow)
         self.assertEqual(
@@ -311,6 +477,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
+
+    def test_required_verifier_managed_sync_is_develop_only(self) -> None:
+        sync_app = "lightning-it-shared-assets-sync[bot]"
+        self.assertEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="develop",
+                producer_kind="managed-sync",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="main",
+                producer_kind="managed-sync",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author=sync_app,
+                base_ref="develop",
+                producer_kind="copilot",
+            ),
+        )
+        self.assertEqual(
+            0,
+            self._run_required_verifier_producer_routing(
+                author="litroc",
+                base_ref="main",
+                producer_kind="copilot",
+            ),
+        )
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -374,7 +575,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(source_workflow=source_workflow):
                 self.assertIn(source_workflow, recovery)
-        self.assertIn('and .event == "push"', recovery)
+        self.assertIn(
+            'and (.event == "push" or .event == "workflow_dispatch")',
+            recovery,
+        )
+        self.assertNotIn('and .event == "push"\n', recovery)
         self.assertIn(
             'for ((attempt = 1; attempt <= 42; attempt++))', recovery
         )
@@ -470,6 +675,80 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "$(jq \'length\' <<<"${sync_app_comments}")" -eq 1',
             recovery,
         )
+
+    def test_managed_sync_source_event_allowlist_is_exact(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = '              --argjson run_id "${source_run_id}" \'\n'
+        start = recovery.index(marker) + len(marker)
+        end = recovery.index('\n              \' <<<"${source_run}"', start)
+        source_run_filter = recovery[start:end]
+        source_sha = "a" * 40
+        source_path = ".github/workflows/sync-ansible-collections.yml"
+        source_run_url = "https://github.example/actions/runs/42"
+        jq = self._test_tool("jq")
+
+        def accepts(event: str) -> bool:
+            payload = {
+                "id": 42,
+                "event": event,
+                "head_branch": "main",
+                "head_sha": source_sha,
+                "path": source_path,
+                "status": "completed",
+                "conclusion": "success",
+                "html_url": source_run_url,
+                "repository": {"full_name": "lightning-it/shared-assets-lit"},
+                "head_repository": {
+                    "full_name": "lightning-it/shared-assets-lit"
+                },
+                "run_attempt": 1,
+            }
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "head",
+                    source_sha,
+                    "--arg",
+                    "path",
+                    source_path,
+                    "--arg",
+                    "repository",
+                    "lightning-it/shared-assets-lit",
+                    "--arg",
+                    "run_url",
+                    source_run_url,
+                    "--argjson",
+                    "run_attempt",
+                    "1",
+                    "--argjson",
+                    "run_id",
+                    "42",
+                    source_run_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for accepted_event in ("push", "workflow_dispatch"):
+            with self.subTest(accepted_event=accepted_event):
+                self.assertTrue(accepts(accepted_event))
+        for rejected_event in (
+            "",
+            "schedule",
+            "pull_request",
+            "pull_request_target",
+            "workflow_run",
+        ):
+            with self.subTest(rejected_event=rejected_event):
+                self.assertFalse(accepts(rejected_event))
 
     def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -593,9 +872,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ),
                 **overrides,
             }
-            bash = shutil.which("bash")
-            if bash is None:
-                self.fail("bash is required to execute the workflow predicate")
+            bash = self._test_tool("bash")
             try:
                 result = subprocess.run(
                     [
@@ -609,7 +886,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     text=True,
                     capture_output=True,
                     check=False,
-                    env=environment,
+                    env={**environment, "PATH": TEST_TOOL_PATH},
                 )
             except FileNotFoundError as error:
                 self.fail(
@@ -848,7 +1125,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         selected = subprocess.run(
             [
-                "jq",
+                self._test_tool("jq"),
                 "-c",
                 "--arg",
                 "v3_prefix",
@@ -910,7 +1187,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         def accepts(payload: dict[str, object]) -> bool:
             return (
                 subprocess.run(
-                    ["jq", "-e", *prior_args, prior_filter],
+                    [self._test_tool("jq"), "-e", *prior_args, prior_filter],
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
@@ -949,7 +1226,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ) -> bool:
             try:
                 result = subprocess.run(
-                    ["jq", "-e", *arguments, jq_filter],
+                    [self._test_tool("jq"), "-e", *arguments, jq_filter],
                     input=json.dumps(payload),
                     text=True,
                     capture_output=True,
@@ -1235,11 +1512,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             and '"main"' in candidate
         ]
         self.assertEqual(1, len(base_filters))
-        jq = shutil.which("jq")
-        self.assertIsNotNone(
-            jq,
-            "jq is required to execute the promotion-base allowlist predicate",
-        )
+        jq = self._test_tool("jq")
         for base_ref, accepted in (
             ("develop", True),
             ("main", True),

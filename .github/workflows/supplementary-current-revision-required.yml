@@ -662,7 +662,7 @@ jobs:
               --argjson run_attempt "${source_run_attempt}" \
               --argjson run_id "${source_run_id}" '
                 .id == $run_id
-                and .event == "push"
+                and (.event == "push" or .event == "workflow_dispatch")
                 and .head_branch == "main"
                 and .head_sha == $head
                 and .path == $path
@@ -822,6 +822,7 @@ jobs:
                 or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
                 or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
+                or (.external_id | startswith("mlx90-current-revision:managed-sync:v6:"))
                 or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v6:"))
               )]
           ' <<<"${neutral_pages}")"
@@ -882,7 +883,7 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
@@ -901,6 +902,11 @@ jobs:
               [[ "${pr_title}" == \
                 "chore(governance): record main ancestry before "* ]]
               expected_review_path="deterministic evidence-bound ancestry exemption"
+            elif [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
+              test "${REPOSITORY}" != 'lightning-it/.github'
+              test "${producer_kind}" = managed-sync
+              test "${base_ref}" = develop
+              expected_review_path="deterministic provenance-bound managed distribution exemption"
             else
               test "${producer_kind}" = copilot
               expected_review_path="applicable Copilot or governed automation exemption"
