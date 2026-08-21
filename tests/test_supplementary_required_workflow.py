@@ -1200,7 +1200,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(base_filters))
         jq = shutil.which("jq")
-        self.assertIsNotNone(jq)
+        self.assertIsNotNone(
+            jq,
+            "jq is required to execute the promotion-base allowlist predicate",
+        )
         for base_ref, accepted in (
             ("develop", True),
             ("main", True),
@@ -1217,7 +1220,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     capture_output=True,
                     check=False,
                 )
-                self.assertEqual(accepted, result.returncode == 0)
+                expectation = "accept" if accepted else "reject"
+                self.assertEqual(
+                    accepted,
+                    result.returncode == 0,
+                    f"expected jq predicate to {expectation} {base_ref!r}; "
+                    f"exit={result.returncode}; stdout={result.stdout!r}; "
+                    f"stderr={result.stderr!r}",
+                )
         self.assertNotIn("test -n \"${base_ref}\"", dispatch)
         self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
         self.assertIn(
