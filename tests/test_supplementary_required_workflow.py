@@ -16,9 +16,45 @@ WORKFLOW = (
 REMEDIATION_WORKFLOW = (
     ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
+COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def test_neutral_producer_distinguishes_managed_sync_from_backmerge(
+        self,
+    ) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertTrue(
+            workflow.startswith(
+                "# Owned by the protected lightning-it/.github controller.\n"
+                "# Generic shared-assets sync must preserve this "
+                "repository-specific file.\n"
+            )
+        )
+        self.assertNotIn("Do not edit downstream copies directly.", workflow)
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        ancestry = publish.split(
+            '          if [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then\n',
+            1,
+        )[1].split("          run_url=", 1)[0]
+
+        self.assertIn(
+            'test "${author}" = \'lightning-it-shared-assets-sync[bot]\'\n',
+            ancestry,
+        )
+        self.assertIn(
+            'test "${TRUSTED_KIND}" = ancestry-backmerge', ancestry
+        )
+        self.assertIn(
+            'test "${TRUSTED_KIND}" != ancestry-backmerge', ancestry
+        )
+        self.assertNotIn(
+            'if { [ "${author}" = \'lightning-it-release-automation[bot]\' ]',
+            ancestry,
+        )
+
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
