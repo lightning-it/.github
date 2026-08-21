@@ -32,9 +32,10 @@ jobs:
     # identical names would make the producer target this job instead of its
     # immutable evidence check.
     name: Required current-revision workflow
-    # Drafts cannot merge and must create neither AI traffic nor a terminal
-    # failed job that remains attached to the unchanged head after Ready.
-    if: github.event.pull_request.draft == false
+    # Required Workflows do not reliably receive ready_for_review after their
+    # initial Draft event. Run the AI-free verifier on Drafts so it can create
+    # the exact fail-closed reservation before rejecting the live draft below.
+    # The protected helper may then rerun only that same run once after Ready.
     permissions:
       actions: read
       checks: write
