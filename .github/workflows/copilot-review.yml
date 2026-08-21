@@ -1,6 +1,6 @@
-# Managed by lightning-it/shared-assets-lit.
-# Do not edit downstream copies directly.
-# Protected per-repository MLX-90/REP-60 current-revision controller.
+# Owned by the protected lightning-it/.github controller.
+# Generic shared-assets sync must preserve this repository-specific file.
+# Protected MLX-90/REP-60 current-revision controller.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
@@ -919,9 +919,13 @@ jobs:
           review_path="applicable Copilot or governed automation exemption"
           external_kind="copilot"
           result_title="Current revision review passed"
-          if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
-              || { [ "${REPOSITORY}" = "lightning-it/.github" ] \
-                && [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; }; }; then
+          if [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then
+            if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
+              :
+            else
+              test "${REPOSITORY}" = "lightning-it/.github"
+              test "${author}" = 'lightning-it-shared-assets-sync[bot]'
+            fi
             test "${TRUSTED_KIND}" = ancestry-backmerge
             test "${base_ref}" = develop
             [[ "${EVENT_HEAD_REF}" == backmerge/*-main ]]

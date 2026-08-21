@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -15,9 +16,45 @@ WORKFLOW = (
 REMEDIATION_WORKFLOW = (
     ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
+COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def test_neutral_producer_distinguishes_managed_sync_from_backmerge(
+        self,
+    ) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertTrue(
+            workflow.startswith(
+                "# Owned by the protected lightning-it/.github controller.\n"
+                "# Generic shared-assets sync must preserve this "
+                "repository-specific file.\n"
+            )
+        )
+        self.assertNotIn("Do not edit downstream copies directly.", workflow)
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        ancestry = publish.split(
+            '          if [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then\n',
+            1,
+        )[1].split("          run_url=", 1)[0]
+
+        self.assertIn(
+            'test "${author}" = \'lightning-it-shared-assets-sync[bot]\'\n',
+            ancestry,
+        )
+        self.assertIn(
+            'test "${TRUSTED_KIND}" = ancestry-backmerge', ancestry
+        )
+        self.assertIn(
+            'test "${TRUSTED_KIND}" != ancestry-backmerge', ancestry
+        )
+        self.assertNotIn(
+            'if { [ "${author}" = \'lightning-it-release-automation[bot]\' ]',
+            ancestry,
+        )
+
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
@@ -1186,10 +1223,47 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         dispatch = dispatch_and_after.split(inspect_marker, 1)[0]
 
-        self.assertIn(
-            "'(.base.ref == \"develop\" or .base.ref == \"main\")'",
-            dispatch,
+        base_filters = [
+            candidate
+            for candidate in re.findall(
+                r"jq -e(?:r)?\s+'([^']+)'",
+                dispatch,
+                flags=re.DOTALL,
+            )
+            if ".base.ref" in candidate
+            and '"develop"' in candidate
+            and '"main"' in candidate
+        ]
+        self.assertEqual(1, len(base_filters))
+        jq = shutil.which("jq")
+        self.assertIsNotNone(
+            jq,
+            "jq is required to execute the promotion-base allowlist predicate",
         )
+        for base_ref, accepted in (
+            ("develop", True),
+            ("main", True),
+            ("feature", False),
+            ("release", False),
+            ("master", False),
+            ("", False),
+        ):
+            with self.subTest(base_ref=base_ref):
+                result = subprocess.run(
+                    [jq, "-e", base_filters[0]],
+                    input=json.dumps({"base": {"ref": base_ref}}),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                expectation = "accept" if accepted else "reject"
+                self.assertEqual(
+                    accepted,
+                    result.returncode == 0,
+                    f"expected jq predicate to {expectation} {base_ref!r}; "
+                    f"exit={result.returncode}; stdout={result.stdout!r}; "
+                    f"stderr={result.stderr!r}",
+                )
         self.assertNotIn("test -n \"${base_ref}\"", dispatch)
         self.assertIn("if [ \"${author}\" != litroc ]; then", dispatch)
         self.assertIn(
@@ -1208,7 +1282,34 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
         self.assertIn("request_response=\"$(", dispatch)
-        self.assertIn("(.number | tostring) == $number", dispatch)
+        response_filters = [
+            candidate
+            for candidate in re.findall(r"'([^']+)'", dispatch, flags=re.DOTALL)
+            if ".number" in candidate
+            and ".head.repo.full_name" in candidate
+            and ".head.sha" in candidate
+        ]
+        self.assertEqual(1, len(response_filters))
+        response_filter = response_filters[0]
+        if '(.number | type) == "number"' in response_filter:
+            for binding in (
+                ".number == $number",
+                '.state == "open"',
+                ".draft == false",
+                ".base.repo.full_name == $repository",
+                ".base.ref == $base_ref",
+            ):
+                self.assertIn(binding, response_filter)
+            # GitHub's special Copilot request can omit requested_reviewers from
+            # a successful response. The outbound POST binds COPILOT_LOGIN;
+            # the independent exact-head review lookup below binds the result.
+            self.assertNotIn("requested_reviewers", response_filter)
+        else:
+            self.assertIn("(.number | tostring) == $number", response_filter)
+            self.assertIn(
+                "and any(.requested_reviewers[]?; .login == $login)",
+                response_filter,
+            )
         self.assertIn(
             "and .head.repo.full_name == $repository",
             dispatch,
@@ -1217,18 +1318,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "and .head.sha == $head",
             dispatch,
         )
-        self.assertIn(
-            "and any(.requested_reviewers[]?; .login == $login)",
-            dispatch,
+        self.assertEqual(
+            2,
+            dispatch.count(
+                "any(add[]; .user.login == $login and .commit_id == $head)"
+            ),
         )
         self.assertIn(
             "The one permitted exact-head Copilot review request was accepted and bound.",
             dispatch,
         )
-        self.assertIn(
-            "returned success without the expected PR, head, repository, and reviewer bindings",
-            dispatch,
-        )
+        self.assertIn("returned success without the expected", dispatch)
         self.assertNotIn("sleep ", dispatch)
         self.assertNotIn("gh workflow run", dispatch)
 
