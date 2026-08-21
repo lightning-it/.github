@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import textwrap
 import unittest
@@ -451,8 +452,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
 
         def run(*, author: str, base_ref: str, repository: str) -> int:
+            bash = shutil.which("bash")
+            if bash is None:
+                self.fail("bash is required to execute the rerun evidence guard")
             result = subprocess.run(
-                ["bash", "-c", guard],
+                [bash, "-c", guard],
                 env={
                     "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
                     "REPOSITORY": repository,
