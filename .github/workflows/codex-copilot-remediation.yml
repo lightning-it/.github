@@ -97,12 +97,28 @@ jobs:
           fi
           gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
             -f body="${marker}" >/dev/null
+          request_response=""
           request_status=0
-          gh api --method POST "repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
-            -f 'reviewers[]=copilot-pull-request-reviewer[bot]' >/dev/null || request_status=$?
+          request_response="$(
+            gh api --method POST "repos/${REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+              -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
+          )" || request_status=$?
           if [ "${request_status}" -eq 0 ]; then
-            echo "The one permitted exact-head Copilot review request was accepted."
-            exit 0
+            if jq -e \
+                --arg login "${COPILOT_LOGIN}" \
+                --arg number "${PR_NUMBER}" \
+                --arg repository "${REPOSITORY}" \
+                --arg head "${EXPECTED_HEAD}" \
+                '(.number | tostring) == $number
+                  and .head.repo.full_name == $repository
+                  and .head.sha == $head
+                  and any(.requested_reviewers[]?; .login == $login)' \
+                <<<"${request_response}" >/dev/null; then
+              echo "The one permitted exact-head Copilot review request was accepted and bound."
+              exit 0
+            fi
+            echo "Copilot request returned success without the expected PR, head, repository, and reviewer bindings; the consumed marker forbids an automatic retry." >&2
+            exit 1
           fi
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           reviews="$(gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"

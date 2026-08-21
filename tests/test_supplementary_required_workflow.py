@@ -1196,8 +1196,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(1, dispatch.count(request))
         self.assertIn('if [ "${request_status}" -eq 0 ]; then', dispatch)
+        self.assertIn("request_response=\"$(", dispatch)
+        self.assertIn("(.number | tostring) == $number", dispatch)
         self.assertIn(
-            "The one permitted exact-head Copilot review request was accepted.",
+            "and .head.repo.full_name == $repository",
+            dispatch,
+        )
+        self.assertIn(
+            "and .head.sha == $head",
+            dispatch,
+        )
+        self.assertIn(
+            "and any(.requested_reviewers[]?; .login == $login)",
+            dispatch,
+        )
+        self.assertIn(
+            "The one permitted exact-head Copilot review request was accepted and bound.",
+            dispatch,
+        )
+        self.assertIn(
+            "returned success without the expected PR, head, repository, and reviewer bindings",
             dispatch,
         )
         self.assertNotIn("sleep ", dispatch)
