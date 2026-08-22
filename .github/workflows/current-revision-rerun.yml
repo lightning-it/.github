@@ -1,5 +1,7 @@
-# Protected helper: it can rerun only the single verifier reservation bound to
-# the exact live PR head, and only once after a neutral PASS exists.
+# Protected helper: it can rerun only the verifier reservations bound to the
+# exact live PR head, and each only once after a neutral PASS exists. The
+# lightning-it/.github controller additionally re-evaluates its independent
+# public cross-repository Required Workflow.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Re-evaluate protected current-revision evidence
@@ -30,14 +32,14 @@ concurrency:
 
 jobs:
   rerun-protected-verifier:
-    name: Re-run the one protected verifier attempt
+    name: Re-run the bounded protected verifier attempts
     permissions:
       actions: write
       checks: read
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Validate the live binding and rerun exactly once
@@ -287,39 +289,209 @@ jobs:
             ' <<<"${run}" >/dev/null
           if [ "$(jq -r .conclusion <<<"${run}")" = success ]; then
             echo "Protected verifier already passed; no rerun is needed."
-            exit 0
-          fi
-          test "$(jq -r .conclusion <<<"${run}")" = failure
-          run_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-          if [ "${run_attempt}" -ne 1 ]; then
-            echo "Protected verifier already consumed its single rerun; no further retry is allowed."
-            exit 0
-          fi
-          if ! gh api --method POST \
-              "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null; then
-            # GitHub can accept the rerun and still close the client request
-            # with a non-success response when another service-side request
-            # wins the same transition. Accept that outcome only after the
-            # live run proves that attempt two was actually materialized.
-            run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
-            observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-            if [ "${observed_attempt}" -lt 2 ]; then
-              echo "Rerun request failed without a materialized second attempt." >&2
+          else
+            test "$(jq -r .conclusion <<<"${run}")" = failure
+            run_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+            if [ "${run_attempt}" -ne 1 ]; then
+              echo "Protected verifier failed after consuming its single rerun." >&2
               exit 1
             fi
-            echo "A concurrent service-side request already materialized the protected rerun."
+            if ! gh api --method POST \
+                "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null; then
+              # GitHub can accept the rerun and still close the client request
+              # with a non-success response when another service-side request
+              # wins the same transition. Accept that outcome only after the
+              # live run proves that attempt two was actually materialized.
+              run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
+              observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+              if [ "${observed_attempt}" -ne 2 ]; then
+                echo "Rerun request failed without exactly one materialized second attempt." >&2
+                exit 1
+              fi
+              echo "A concurrent service-side request already materialized the protected rerun."
+            fi
+            protected_complete=false
+            for completion_attempt in $(seq 1 60); do
+              run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
+              observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
+              status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${run}")"
+              if [ "${observed_attempt}" -gt 2 ]; then
+                echo "Protected verifier exceeded its single allowed rerun." >&2
+                exit 1
+              fi
+              if [ "${observed_attempt}" -eq 2 ] && [ "${status}" = completed ]; then
+                test "$(jq -r .conclusion <<<"${run}")" = success
+                protected_complete=true
+                echo "Protected verifier rerun completed successfully."
+                break
+              fi
+              if [ "${completion_attempt}" -eq 60 ]; then
+                echo "Protected verifier rerun did not complete successfully in time." >&2
+                exit 1
+              fi
+              sleep 5
+            done
+            test "${protected_complete}" = true
           fi
-          for completion_attempt in $(seq 1 60); do
-            run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
-            observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-            status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${run}")"
-            if [ "${observed_attempt}" -ge 2 ] && [ "${status}" = completed ]; then
-              test "$(jq -r .conclusion <<<"${run}")" = success
-              echo "Protected verifier rerun completed successfully."
+
+          if [ "${REPOSITORY}" != 'lightning-it/.github' ]; then
+            echo "No independent dot-github cross-verifier applies to this repository."
+            exit 0
+          fi
+
+          cross_pages="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EXPECTED_HEAD}&per_page=100")"
+          jq -e '
+            type == "array"
+            and length > 0
+            and all(.[];
+              type == "object"
+              and (.total_count | type) == "number"
+              and (.workflow_runs | type) == "array")
+            and all(.[].workflow_runs[];
+              type == "object"
+              and (.id | type) == "number" and .id > 0
+              and (.run_attempt | type) == "number" and .run_attempt >= 1
+              and (.status | type) == "string"
+              and has("conclusion")
+              and ((.conclusion | type) == "string" or .conclusion == null)
+              and (.path | type) == "string"
+              and (.display_title | type) == "string"
+              and (.head_branch | type) == "string"
+              and (.head_sha | type) == "string"
+              and (.workflow_id | type) == "number" and .workflow_id > 0
+              and (.workflow_url | type) == "string"
+              and (.html_url | type) == "string"
+              and (.actor.login | type) == "string"
+              and (.triggering_actor.login | type) == "string"
+              and (.pull_requests | type) == "array")
+          ' <<<"${cross_pages}" >/dev/null
+          cross_runs="$(jq -c \
+            --arg api_url "${GITHUB_API_URL}" \
+            --arg author "${author}" \
+            --arg base_ref "${base_ref}" \
+            --arg base_sha "${EXPECTED_BASE}" \
+            --arg head_ref "${head_ref}" \
+            --arg head_sha "${EXPECTED_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --arg server_url "${GITHUB_SERVER_URL}" \
+            --argjson pr_number "${PR_NUMBER}" '
+              [.[].workflow_runs[] |
+                select(.event == "pull_request_target") |
+                select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
+                select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                select(.actor.login == $author) |
+                select(.status == "completed") |
+                select((.pull_requests | length) == 1) |
+                select(.pull_requests[0].number == $pr_number) |
+                select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
+                  + "/pulls/" + ($pr_number | tostring))) |
+                select(.pull_requests[0].base.ref == $base_ref) |
+                select(.pull_requests[0].base.sha == $base_sha) |
+                select(.pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)) |
+                select(.pull_requests[0].head.ref == $head_ref) |
+                select(.pull_requests[0].head.sha == $head_sha) |
+                select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
+                select(.workflow_url == ($api_url + "/repos/" + $repository
+                  + "/actions/required_workflows/" + (.workflow_id | tostring))) |
+                select(.html_url == ($server_url + "/" + $repository
+                  + "/actions/runs/" + (.id | tostring))) |
+                select(
+                  .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                    + " opened " + $head_sha)
+                  or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                    + " synchronize " + $head_sha)
+                  or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                    + " reopened " + $head_sha)
+                  or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                    + " ready_for_review " + $head_sha)
+                  or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                    + " edited " + $head_sha))]
+            ' <<<"${cross_pages}")"
+          test "$(jq 'length' <<<"${cross_runs}")" -eq 1
+          cross_run="$(jq -c '.[0]' <<<"${cross_runs}")"
+          cross_run_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${cross_run}")"
+          cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
+          expected_cross_trigger="${author}"
+          if [ "${cross_attempt}" -eq 2 ]; then
+            expected_cross_trigger='github-actions[bot]'
+          elif [ "${cross_attempt}" -ne 1 ]; then
+            echo "Dot-github cross-verifier exceeded its single allowed rerun." >&2
+            exit 1
+          fi
+          test "$(jq -r .triggering_actor.login <<<"${cross_run}")" = "${expected_cross_trigger}"
+          if [ "$(jq -r .conclusion <<<"${cross_run}")" = success ]; then
+            echo "Independent dot-github cross-verifier already passed."
+            exit 0
+          fi
+          test "$(jq -r .conclusion <<<"${cross_run}")" = failure
+          if [ "${cross_attempt}" -ne 1 ]; then
+            echo "Dot-github cross-verifier failed after consuming its single rerun." >&2
+            exit 1
+          fi
+
+          cross_attempt_one_jobs="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/1/jobs?filter=all&per_page=100")"
+          jq -e '
+            type == "object"
+            and (.total_count | type) == "number"
+            and (.jobs | type) == "array"
+            and .total_count == (.jobs | length)
+            and .total_count <= 100
+            and all(.jobs[];
+              type == "object"
+              and (.id | type) == "number" and .id > 0
+              and (.name | type) == "string"
+              and (.run_attempt | type) == "number" and .run_attempt == 1
+              and .status == "completed"
+              and (.conclusion | type) == "string")
+          ' <<<"${cross_attempt_one_jobs}" >/dev/null
+          cross_failed_jobs="$(jq -c '
+            [.jobs[] |
+              select(.name == "Required dot-github current-revision workflow") |
+              select(.run_attempt == 1) |
+              select(.status == "completed" and .conclusion == "failure")]
+          ' <<<"${cross_attempt_one_jobs}")"
+          test "$(jq 'length' <<<"${cross_failed_jobs}")" -eq 1
+          cross_job_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' \
+            <<<"${cross_failed_jobs}")"
+          if ! gh api --method POST \
+              "repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun" >/dev/null; then
+            cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
+            observed_cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
+            if [ "${observed_cross_attempt}" -ne 2 ]; then
+              echo "Cross-verifier rerun failed without exactly one materialized second attempt." >&2
+              exit 1
+            fi
+            echo "A concurrent service-side request already materialized the cross-verifier rerun."
+          fi
+
+          for cross_completion_attempt in $(seq 1 60); do
+            cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
+            observed_cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
+            cross_status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${cross_run}")"
+            if [ "${observed_cross_attempt}" -gt 2 ]; then
+              echo "Dot-github cross-verifier exceeded its single allowed rerun." >&2
+              exit 1
+            fi
+            if [ "${observed_cross_attempt}" -eq 2 ] && [ "${cross_status}" = completed ]; then
+              test "$(jq -r .conclusion <<<"${cross_run}")" = success
+              test "$(jq -r .actor.login <<<"${cross_run}")" = "${author}"
+              test "$(jq -r .triggering_actor.login <<<"${cross_run}")" = 'github-actions[bot]'
+              cross_attempt_two_jobs="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/2/jobs?filter=all&per_page=100")"
+              cross_success_jobs="$(jq -c '
+                [.jobs[] |
+                  select(.name == "Required dot-github current-revision workflow") |
+                  select(.run_attempt == 2) |
+                  select(.status == "completed" and .conclusion == "success")]
+              ' <<<"${cross_attempt_two_jobs}")"
+              test "$(jq 'length' <<<"${cross_success_jobs}")" -eq 1
+              echo "Independent dot-github cross-verifier rerun completed successfully."
               exit 0
             fi
-            if [ "${completion_attempt}" -eq 60 ]; then
-              echo "Protected verifier rerun did not complete successfully in time." >&2
+            if [ "${cross_completion_attempt}" -eq 60 ]; then
+              echo "Dot-github cross-verifier rerun did not complete successfully in time." >&2
               exit 1
             fi
             sleep 5
