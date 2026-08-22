@@ -470,11 +470,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
         self.assertEqual(
-            2,
+            4,
             neutral_producer.count("and .run_attempt == 1"),
         )
-        self.assertEqual(workflow.count(".actor.login == $actor"), 2)
-        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 2)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 5)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 3)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
 
@@ -488,6 +488,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 producer_kind="managed-sync",
             ),
         )
+
         self.assertNotEqual(
             0,
             self._run_required_verifier_producer_routing(
@@ -512,6 +513,64 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 producer_kind="copilot",
             ),
         )
+
+    def test_late_review_rerun_requires_protected_single_request_evidence(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        late = workflow.split(
+            "# A late Copilot review may authorize exactly one verifier-only",
+            1,
+        )[1]
+
+        self.assertIn('test "${producer_kind}" = copilot', late)
+        self.assertIn(
+            "check_name=Late%20review%20rerun%20authorization",
+            late,
+        )
+        self.assertIn(
+            "^rep60-late-review-rerun:v1:[1-9][0-9]*:",
+            late,
+        )
+        self.assertIn(
+            '.schema == "rep60-late-review-rerun/v1"',
+            late,
+        )
+        self.assertIn(
+            '.path == ".github/workflows/copilot-review-refresh.yml"',
+            late,
+        )
+        self.assertIn('.event == "pull_request_review"', late)
+        self.assertIn('.actor.login == "Copilot"', late)
+        self.assertIn(
+            'pulls/${PR_NUMBER}/reviews/${review_id}',
+            late,
+        )
+        self.assertIn(
+            '.user.login == "copilot-pull-request-reviewer[bot]"',
+            late,
+        )
+        self.assertIn(
+            'actions/runs/${producer_run_id}/attempts/1/jobs',
+            late,
+        )
+        self.assertIn('.conclusion == "failure"', late)
+        self.assertIn(
+            '.name == "Request Copilot review for current revision"',
+            late,
+        )
+        self.assertIn(
+            '.requested_reviewer.login == "Copilot"',
+            late,
+        )
+        self.assertIn('| length == 1', late)
+        self.assertIn(
+            'test "$(date -u -d "${review_submitted_at}" +%s)" -gt',
+            late,
+        )
+        self.assertIn('.run_attempt == 2', late)
+        self.assertIn('.triggering_actor.login == $refresh_actor', late)
+        self.assertNotIn('requested_reviewers', late)
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
