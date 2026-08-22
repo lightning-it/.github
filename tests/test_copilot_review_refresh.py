@@ -320,6 +320,50 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotEqual(0, validate(central, target_url))
         self.assertNotEqual(0, validate(target, central_url))
 
+    def test_central_rerun_helper_rechecks_the_independent_required_workflow(
+        self,
+    ) -> None:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("timeout-minutes: 20", workflow)
+        self.assertIn(
+            "repos/${REPOSITORY}/actions/runs?event=pull_request_target&"
+            "head_sha=${EXPECTED_HEAD}&per_page=100",
+            workflow,
+        )
+        self.assertIn(
+            '.path == ".github/workflows/'
+            'dot-github-current-revision-required.yml"',
+            workflow,
+        )
+        self.assertIn(
+            '.workflow_url == ($api_url + "/repos/" + $repository\n'
+            '                  + "/actions/required_workflows/"',
+            workflow,
+        )
+        self.assertIn(
+            'select(.name == "Required dot-github current-revision workflow")',
+            workflow,
+        )
+        self.assertIn(
+            '"repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun"',
+            workflow,
+        )
+        self.assertIn(
+            "test \"$(jq -r .triggering_actor.login "
+            "<<<\"${cross_run}\")\" = 'github-actions[bot]'",
+            workflow,
+        )
+        self.assertIn(
+            "Independent dot-github cross-verifier rerun completed "
+            "successfully.",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index("Protected verifier rerun completed successfully."),
+            workflow.index("cross_pages="),
+        )
+
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
         head = "b" * 40
