@@ -1127,7 +1127,7 @@ jobs:
                 --arg actor "${author}" \
                 --arg head_ref "${head_ref}" \
                 --arg head_sha "${EVENT_HEAD}" \
-                --arg refresh_actor "Copilot" '
+                --arg refresh_actor "github-actions[bot]" '
                   .event == "pull_request_target"
                   and .run_attempt == 2
                   and .status == "completed"
