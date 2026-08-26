@@ -185,7 +185,7 @@ def resolve_tree_asset(
     root_tree_sha: str,
     path: str,
     name: str,
-    cache: dict[str, dict[str, dict[str, Any]]],
+    cache: dict[str, dict[str, Any]],
     *,
     required: bool = True,
 ) -> dict[str, Any] | None:
@@ -354,7 +354,7 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
 
     base_commit = require_dict(api.target(f"repos/{repository}/commits/{base}"), "base commit")
     base_tree_sha = require_string(require_dict(require_dict(base_commit.get("commit"), "base commit data").get("tree"), "base tree").get("sha"), "base tree SHA")
-    target_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    target_tree_cache: dict[str, dict[str, Any]] = {}
 
     def target_tree(tree_sha: str) -> Any:
         return api.target(f"repos/{repository}/git/trees/{tree_sha}")
@@ -395,7 +395,7 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(SHA_RE.fullmatch(source_sha) is not None, "source SHA is invalid")
     source_commit = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}/commits/{source_sha}"), "source commit")
     source_tree_sha = require_string(require_dict(require_dict(source_commit.get("commit"), "source commit data").get("tree"), "source tree").get("sha"), "source tree SHA")
-    source_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    source_tree_cache: dict[str, dict[str, Any]] = {}
 
     def source_tree(tree_sha: str) -> Any:
         return api.source(f"repos/{SOURCE_REPOSITORY}/git/trees/{tree_sha}")
