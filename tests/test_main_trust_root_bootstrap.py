@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import pathlib
 import subprocess
@@ -32,6 +33,8 @@ class FakeAPI:
         self.head_tree_sha = "2" * 40
         self.source_tree_sha = "3" * 40
         self.copilot_blob = "4" * 40
+        self.target_endpoints: list[str] = []
+        self.source_endpoints: list[str] = []
         self.paths = {
             ".github/codex/prompts/review-exact-head.md": "5" * 40,
             ".github/codex/schemas/exact-head-review.schema.json": "6" * 40,
@@ -218,7 +221,66 @@ class FakeAPI:
     def _tree_entry(path: str, sha: str) -> dict[str, Any]:
         return {"path": path, "mode": "100644", "type": "blob", "sha": sha}
 
+    @staticmethod
+    def _tree_page(
+        flat_tree: dict[str, Any], root_sha: str, requested_sha: str
+    ) -> dict[str, Any] | None:
+        if flat_tree.get("truncated") is not False:
+            if requested_sha == root_sha:
+                return {"truncated": True, "tree": []}
+            return None
+        directories = {""}
+        for entry in flat_tree["tree"]:
+            parts = entry["path"].split("/")
+            directories.update(
+                "/".join(parts[:index])
+                for index in range(1, len(parts))
+            )
+        directory_shas = {
+            directory: (
+                root_sha
+                if not directory
+                else hashlib.sha1(
+                    f"{root_sha}:{directory}".encode("utf-8"),
+                    usedforsecurity=False,
+                ).hexdigest()
+            )
+            for directory in directories
+        }
+        prefixes = {
+            tree_sha: directory
+            for directory, tree_sha in directory_shas.items()
+        }
+        if requested_sha not in prefixes:
+            return None
+        prefix = prefixes[requested_sha]
+        prefix_with_separator = f"{prefix}/" if prefix else ""
+        entries: dict[str, dict[str, Any]] = {}
+        for raw_entry in flat_tree["tree"]:
+            path = raw_entry["path"]
+            if not path.startswith(prefix_with_separator):
+                continue
+            relative_path = path[len(prefix_with_separator) :]
+            component, separator, _remainder = relative_path.partition("/")
+            if separator:
+                directory = f"{prefix_with_separator}{component}"
+                entries[component] = {
+                    "path": component,
+                    "mode": "040000",
+                    "type": "tree",
+                    "sha": directory_shas[directory],
+                }
+            else:
+                entry = copy.deepcopy(raw_entry)
+                entry["path"] = component
+                entries[component] = entry
+        return {
+            "truncated": False,
+            "tree": [entries[key] for key in sorted(entries)],
+        }
+
     def target(self, endpoint: str) -> Any:
+        self.target_endpoints.append(endpoint)
         mapping = {
             f"repos/{self.repository}": {
                 "full_name": self.repository,
@@ -250,14 +312,23 @@ class FakeAPI:
                 "sha": self.base,
                 "commit": {"tree": {"sha": self.base_tree_sha}},
             },
-            f"repos/{self.repository}/git/trees/{self.base_tree_sha}?recursive=1": self.base_tree,
-            f"repos/{self.repository}/git/trees/{self.head_tree_sha}?recursive=1": self.head_tree,
         }
-        if endpoint not in mapping:
-            raise AssertionError(f"unexpected target endpoint: {endpoint}")
-        return copy.deepcopy(mapping[endpoint])
+        if endpoint in mapping:
+            return copy.deepcopy(mapping[endpoint])
+        tree_prefix = f"repos/{self.repository}/git/trees/"
+        if endpoint.startswith(tree_prefix):
+            requested_sha = endpoint.removeprefix(tree_prefix)
+            for flat_tree, root_sha in (
+                (self.base_tree, self.base_tree_sha),
+                (self.head_tree, self.head_tree_sha),
+            ):
+                page = self._tree_page(flat_tree, root_sha, requested_sha)
+                if page is not None:
+                    return page
+        raise AssertionError(f"unexpected target endpoint: {endpoint}")
 
     def source(self, endpoint: str) -> Any:
+        self.source_endpoints.append(endpoint)
         mapping = {
             f"repos/{MODULE.SOURCE_REPOSITORY}": {
                 "full_name": MODULE.SOURCE_REPOSITORY
@@ -271,11 +342,18 @@ class FakeAPI:
                 "sha": self.source_sha,
                 "commit": {"tree": {"sha": self.source_tree_sha}},
             },
-            f"repos/{MODULE.SOURCE_REPOSITORY}/git/trees/{self.source_tree_sha}?recursive=1": self.source_tree,
         }
-        if endpoint not in mapping:
-            raise AssertionError(f"unexpected source endpoint: {endpoint}")
-        return copy.deepcopy(mapping[endpoint])
+        if endpoint in mapping:
+            return copy.deepcopy(mapping[endpoint])
+        tree_prefix = f"repos/{MODULE.SOURCE_REPOSITORY}/git/trees/"
+        if endpoint.startswith(tree_prefix):
+            requested_sha = endpoint.removeprefix(tree_prefix)
+            page = self._tree_page(
+                self.source_tree, self.source_tree_sha, requested_sha
+            )
+            if page is not None:
+                return page
+        raise AssertionError(f"unexpected source endpoint: {endpoint}")
 
     def target_pages(self, endpoint: str) -> list[Any]:
         mapping = {
@@ -338,6 +416,12 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         self.assertEqual(api.review["id"], evidence["review_id"])
         self.assertEqual(api.paths, evidence["source_blobs"])
         self.assertEqual(1, evidence["threads_resolved"])
+        self.assertFalse(
+            any("recursive=1" in endpoint for endpoint in api.target_endpoints)
+        )
+        self.assertFalse(
+            any("recursive=1" in endpoint for endpoint in api.source_endpoints)
+        )
 
     def test_unrelated_pr_is_not_applicable(self) -> None:
         api = FakeAPI()
