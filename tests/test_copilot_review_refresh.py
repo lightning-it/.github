@@ -345,9 +345,12 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             'select(.name == "Required dot-github current-revision workflow")',
             workflow,
         )
-        cross_inventory = workflow.split('cross_runs="$(jq -c', 1)[1].split(
-            "          expected_cross_trigger=", 1
-        )[0]
+        inventory_start = 'cross_runs="$(jq -c'
+        inventory_end = "          expected_cross_trigger="
+        self.assertIn(inventory_start, workflow)
+        inventory_tail = workflow.partition(inventory_start)[2]
+        self.assertIn(inventory_end, inventory_tail)
+        cross_inventory = inventory_tail.partition(inventory_end)[0]
         self.assertNotIn('select(.status == "completed")', cross_inventory)
         self.assertIn("cross_initial_complete=false", cross_inventory)
         self.assertIn(
