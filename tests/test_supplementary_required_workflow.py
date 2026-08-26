@@ -849,9 +849,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             source_token,
         )
         self.assertNotIn("SHARED_ASSETS_SYNC_APP", source_token)
-        controller_token = source_token.split(
-            "      - name: Mint protected-controller read App token", 1
-        )[1]
+        controller_step = (
+            "      - name: Mint protected-controller read App token"
+        )
+        self.assertIn(controller_step, source_token)
+        controller_token = source_token.partition(controller_step)[2]
         self.assertIn("id: controller-app", controller_token)
         self.assertIn("repositories: .github", controller_token)
         self.assertIn("permission-contents: read", controller_token)
