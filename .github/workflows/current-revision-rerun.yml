@@ -412,13 +412,16 @@ jobs:
           cross_run_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${cross_run}")"
           cross_initial_complete=false
           for cross_initial_attempt in $(seq 1 60); do
-            if ! cross_run="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"; then
+            if cross_run="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${cross_run_id}" 2>&1)"; then
+              :
+            else
+              cross_api_status=$?
               if [ "${cross_initial_attempt}" -eq 60 ]; then
-                echo "Dot-github cross-verifier API remained unavailable." >&2
+                echo "Dot-github cross-verifier API failed after 60 attempts (exit ${cross_api_status}): ${cross_run}" >&2
                 exit 1
               fi
-              echo "Dot-github cross-verifier API is temporarily unavailable; waiting (${cross_initial_attempt}/60)." >&2
+              echo "Dot-github cross-verifier API request failed (exit ${cross_api_status}); retrying (${cross_initial_attempt}/60): ${cross_run}" >&2
               sleep 5
               continue
             fi

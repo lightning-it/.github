@@ -49,6 +49,10 @@ REPOSITORY_RE = re.compile(r"^lightning-it/[A-Za-z0-9_.-]+$")
 API_TIMEOUT_SECONDS = 30
 MAX_REVIEW_THREAD_PAGES = 10
 
+TreeEntry = dict[str, Any]
+TreeEntries = dict[str, TreeEntry]
+TreeCache = dict[str, TreeEntries]
+
 
 class VerificationError(RuntimeError):
     """The candidate resembles a bootstrap but violates its contract."""
@@ -168,10 +172,10 @@ def flatten_object_pages(pages: list[Any], key: str, name: str) -> list[Any]:
     return flattened
 
 
-def tree_entries(payload: Any, name: str) -> dict[str, dict[str, Any]]:
+def tree_entries(payload: Any, name: str) -> TreeEntries:
     tree = require_dict(payload, name)
     require(tree.get("truncated") is False, f"{name} is truncated")
-    entries: dict[str, dict[str, Any]] = {}
+    entries: TreeEntries = {}
     for raw_entry in require_list(tree.get("tree"), f"{name}.tree"):
         entry = require_dict(raw_entry, f"{name} entry")
         path = require_string(entry.get("path"), f"{name} entry path")
@@ -185,10 +189,10 @@ def resolve_tree_asset(
     root_tree_sha: str,
     path: str,
     name: str,
-    cache: dict[str, dict[str, dict[str, Any]]],
+    cache: TreeCache,
     *,
     required: bool = True,
-) -> dict[str, Any] | None:
+) -> TreeEntry | None:
     require(SHA_RE.fullmatch(root_tree_sha) is not None, f"{name} root tree is invalid")
     components = path.split("/")
     require(
@@ -354,7 +358,7 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
 
     base_commit = require_dict(api.target(f"repos/{repository}/commits/{base}"), "base commit")
     base_tree_sha = require_string(require_dict(require_dict(base_commit.get("commit"), "base commit data").get("tree"), "base tree").get("sha"), "base tree SHA")
-    target_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    target_tree_cache: TreeCache = {}
 
     def target_tree(tree_sha: str) -> Any:
         return api.target(f"repos/{repository}/git/trees/{tree_sha}")
@@ -395,7 +399,7 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(SHA_RE.fullmatch(source_sha) is not None, "source SHA is invalid")
     source_commit = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}/commits/{source_sha}"), "source commit")
     source_tree_sha = require_string(require_dict(require_dict(source_commit.get("commit"), "source commit data").get("tree"), "source tree").get("sha"), "source tree SHA")
-    source_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    source_tree_cache: TreeCache = {}
 
     def source_tree(tree_sha: str) -> Any:
         return api.source(f"repos/{SOURCE_REPOSITORY}/git/trees/{tree_sha}")
