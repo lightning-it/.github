@@ -381,7 +381,6 @@ jobs:
                 select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
                 select(.head_branch == $head_ref and .head_sha == $head_sha) |
                 select(.actor.login == $author) |
-                select(.status == "completed") |
                 select((.pull_requests | length) == 1) |
                 select(.pull_requests[0].number == $pr_number) |
                 select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
@@ -411,7 +410,41 @@ jobs:
           test "$(jq 'length' <<<"${cross_runs}")" -eq 1
           cross_run="$(jq -c '.[0]' <<<"${cross_runs}")"
           cross_run_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${cross_run}")"
-          cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
+          cross_initial_complete=false
+          for cross_initial_attempt in $(seq 1 60); do
+            cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
+            jq -e \
+              --arg head "${EXPECTED_HEAD}" \
+              --argjson id "${cross_run_id}" \
+              --argjson pr "${PR_NUMBER}" '
+                .id == $id
+                and .event == "pull_request_target"
+                and .path
+                  == ".github/workflows/dot-github-current-revision-required.yml"
+                and .head_sha == $head
+                and any(.pull_requests[]?; .number == $pr)
+              ' <<<"${cross_run}" >/dev/null
+            cross_attempt="$(jq -er \
+              '.run_attempt | select(type == "number" and . >= 1)' \
+              <<<"${cross_run}")"
+            cross_status="$(jq -er \
+              '.status | select(type == "string" and length > 0)' \
+              <<<"${cross_run}")"
+            if [ "${cross_attempt}" -gt 2 ]; then
+              echo "Dot-github cross-verifier exceeded its single allowed rerun." >&2
+              exit 1
+            fi
+            if [ "${cross_status}" = completed ]; then
+              cross_initial_complete=true
+              break
+            fi
+            if [ "${cross_initial_attempt}" -eq 60 ]; then
+              echo "Dot-github cross-verifier did not complete in time." >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          test "${cross_initial_complete}" = true
           expected_cross_trigger="${author}"
           if [ "${cross_attempt}" -eq 2 ]; then
             expected_cross_trigger='github-actions[bot]'
