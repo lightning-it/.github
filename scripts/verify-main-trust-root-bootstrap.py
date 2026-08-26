@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 SOURCE_REPOSITORY = "lightning-it/shared-assets-lit"
@@ -180,15 +180,55 @@ def tree_entries(payload: Any, name: str) -> dict[str, dict[str, Any]]:
     return entries
 
 
-def validate_tree_asset(
-    entries: dict[str, dict[str, Any]], path: str, name: str
-) -> dict[str, Any]:
-    require(path in entries, f"{name} is missing {path}")
-    entry = entries[path]
-    require(entry.get("type") == "blob", f"{name} {path} is not a blob")
-    require(entry.get("mode") == "100644", f"{name} {path} mode is not 100644")
-    require(SHA_RE.fullmatch(str(entry.get("sha", ""))) is not None, f"{name} {path} blob is invalid")
-    return entry
+def resolve_tree_asset(
+    fetch_tree: Callable[[str], Any],
+    root_tree_sha: str,
+    path: str,
+    name: str,
+    cache: dict[str, dict[str, dict[str, Any]]],
+    *,
+    required: bool = True,
+) -> dict[str, Any] | None:
+    require(SHA_RE.fullmatch(root_tree_sha) is not None, f"{name} root tree is invalid")
+    components = path.split("/")
+    require(
+        bool(components)
+        and all(component not in {"", ".", ".."} for component in components),
+        f"{name} path is invalid",
+    )
+    current_tree_sha = root_tree_sha
+    traversed: list[str] = []
+    for index, component in enumerate(components):
+        tree_name = "/".join(traversed) or "/"
+        if current_tree_sha not in cache:
+            cache[current_tree_sha] = tree_entries(
+                fetch_tree(current_tree_sha), f"{name} tree {tree_name}"
+            )
+        entries = cache[current_tree_sha]
+        if component not in entries:
+            if required:
+                raise VerificationError(f"{name} is missing {path}")
+            return None
+        entry = entries[component]
+        entry_sha = str(entry.get("sha", ""))
+        require(
+            SHA_RE.fullmatch(entry_sha) is not None,
+            f"{name} {path} object is invalid",
+        )
+        if index == len(components) - 1:
+            require(entry.get("type") == "blob", f"{name} {path} is not a blob")
+            require(
+                entry.get("mode") == "100644",
+                f"{name} {path} mode is not 100644",
+            )
+            return entry
+        require(
+            entry.get("type") == "tree" and entry.get("mode") == "040000",
+            f"{name} {'/'.join(components[: index + 1])} is not a tree",
+        )
+        traversed.append(component)
+        current_tree_sha = entry_sha
+    raise VerificationError(f"{name} path resolution ended unexpectedly")
 
 
 def exact_pull_binding(
@@ -314,12 +354,37 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
 
     base_commit = require_dict(api.target(f"repos/{repository}/commits/{base}"), "base commit")
     base_tree_sha = require_string(require_dict(require_dict(base_commit.get("commit"), "base commit data").get("tree"), "base tree").get("sha"), "base tree SHA")
-    base_tree = tree_entries(api.target(f"repos/{repository}/git/trees/{base_tree_sha}?recursive=1"), "base tree")
-    head_tree = tree_entries(api.target(f"repos/{repository}/git/trees/{head_tree_sha}?recursive=1"), "head tree")
-    base_copilot = validate_tree_asset(base_tree, ".github/workflows/copilot-review.yml", "base tree")
-    head_copilot = validate_tree_asset(head_tree, ".github/workflows/copilot-review.yml", "head tree")
+    target_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def target_tree(tree_sha: str) -> Any:
+        return api.target(f"repos/{repository}/git/trees/{tree_sha}")
+
+    base_copilot = resolve_tree_asset(
+        target_tree,
+        base_tree_sha,
+        ".github/workflows/copilot-review.yml",
+        "base tree",
+        target_tree_cache,
+    )
+    head_copilot = resolve_tree_asset(
+        target_tree,
+        head_tree_sha,
+        ".github/workflows/copilot-review.yml",
+        "head tree",
+        target_tree_cache,
+    )
+    require(base_copilot is not None, "base Copilot workflow is missing")
+    require(head_copilot is not None, "head Copilot workflow is missing")
     require(base_copilot.get("sha") == head_copilot.get("sha"), "candidate controls its Copilot workflow")
-    require("scripts/materialize-exact-revision-review.py" not in base_tree, "base already contains the permanent materializer")
+    base_materializer = resolve_tree_asset(
+        target_tree,
+        base_tree_sha,
+        "scripts/materialize-exact-revision-review.py",
+        "base tree",
+        target_tree_cache,
+        required=False,
+    )
+    require(base_materializer is None, "base already contains the permanent materializer")
 
     source_repository = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}"), "source repository")
     require(source_repository.get("full_name") == SOURCE_REPOSITORY, "source repository changed")
@@ -330,11 +395,29 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(SHA_RE.fullmatch(source_sha) is not None, "source SHA is invalid")
     source_commit = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}/commits/{source_sha}"), "source commit")
     source_tree_sha = require_string(require_dict(require_dict(source_commit.get("commit"), "source commit data").get("tree"), "source tree").get("sha"), "source tree SHA")
-    source_tree = tree_entries(api.source(f"repos/{SOURCE_REPOSITORY}/git/trees/{source_tree_sha}?recursive=1"), "source tree")
+    source_tree_cache: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def source_tree(tree_sha: str) -> Any:
+        return api.source(f"repos/{SOURCE_REPOSITORY}/git/trees/{tree_sha}")
+
     source_blobs: dict[str, str] = {}
     for path in sorted(EXPECTED_FILES):
-        source_entry = validate_tree_asset(source_tree, path, "source tree")
-        head_entry = validate_tree_asset(head_tree, path, "head tree")
+        source_entry = resolve_tree_asset(
+            source_tree,
+            source_tree_sha,
+            path,
+            "source tree",
+            source_tree_cache,
+        )
+        head_entry = resolve_tree_asset(
+            target_tree,
+            head_tree_sha,
+            path,
+            "head tree",
+            target_tree_cache,
+        )
+        require(source_entry is not None, f"source tree is missing {path}")
+        require(head_entry is not None, f"head tree is missing {path}")
         require(head_entry.get("sha") == source_entry.get("sha"), f"candidate {path} differs from protected source")
         source_blobs[path] = require_string(source_entry.get("sha"), f"source blob {path}")
     for raw_file in files:

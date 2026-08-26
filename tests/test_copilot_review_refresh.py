@@ -354,13 +354,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotIn('select(.status == "completed")', cross_inventory)
         self.assertIn("cross_initial_complete=false", cross_inventory)
         self.assertIn(
-            'cross_run="$(gh api '
-            '"repos/${REPOSITORY}/actions/runs/${cross_run_id}")"',
-            cross_inventory,
-        )
-        self.assertIn(
             'if [ "${cross_status}" = completed ]; then', cross_inventory
         )
+        self.assertIn(
+            'if ! cross_run="$(gh api', cross_inventory
+        )
+        self.assertIn(
+            "Dot-github cross-verifier API is temporarily unavailable",
+            cross_inventory,
+        )
+        self.assertIn("continue", cross_inventory)
         self.assertIn(
             'test "${cross_initial_complete}" = true', cross_inventory
         )
