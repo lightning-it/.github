@@ -46,6 +46,8 @@ REJECTED_REVIEW_MARKERS = {
 }
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_RE = re.compile(r"^lightning-it/[A-Za-z0-9_.-]+$")
+API_TIMEOUT_SECONDS = 30
+MAX_REVIEW_THREAD_PAGES = 10
 
 
 class VerificationError(RuntimeError):
@@ -117,9 +119,12 @@ class GitHubAPI:
                 capture_output=True,
                 env=environment,
                 text=True,
+                timeout=API_TIMEOUT_SECONDS,
             )
         except FileNotFoundError as error:
             raise VerificationError("gh is unavailable") from error
+        except subprocess.TimeoutExpired as error:
+            raise VerificationError("GitHub API request timed out") from error
         if result.returncode != 0:
             detail = result.stderr.strip() or "unknown GitHub API error"
             raise VerificationError(f"GitHub API request failed: {detail}")
@@ -454,8 +459,9 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     owner_name, repository_name = repository.split("/", 1)
     query = """query($owner:String!,$repository:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:100){pageInfo{hasNextPage} nodes{body author{login} pullRequestReview{commit{oid}}}}}}}}}"""
     after = ""
+    seen_cursors: set[str] = set()
     threads: list[Any] = []
-    while True:
+    for _page_number in range(1, MAX_REVIEW_THREAD_PAGES + 1):
         variables: dict[str, str | int] = {
             "owner": owner_name,
             "repository": repository_name,
@@ -473,9 +479,16 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         page_threads = require_list(connection.get("nodes"), "review thread nodes")
         threads.extend(page_threads)
         page_info = require_dict(connection.get("pageInfo"), "review thread page info")
-        if page_info.get("hasNextPage") is not True:
+        has_next_page = page_info.get("hasNextPage")
+        require(isinstance(has_next_page, bool), "review thread hasNextPage is invalid")
+        if not has_next_page:
             break
-        after = require_string(page_info.get("endCursor"), "review thread cursor")
+        next_cursor = require_string(page_info.get("endCursor"), "review thread cursor")
+        require(next_cursor not in seen_cursors, "review thread pagination repeats a cursor")
+        seen_cursors.add(next_cursor)
+        after = next_cursor
+    else:
+        raise VerificationError("review thread pagination exceeds the page limit")
 
     thread_texts: list[str] = []
     for raw_thread in threads:

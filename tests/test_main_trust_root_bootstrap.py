@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import importlib.util
 import pathlib
+import subprocess
 import sys
 import unittest
 from typing import Any
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -438,6 +440,47 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 MODULE.VerificationError
             ):
                 MODULE.verify(self.args(api), api)
+
+    def test_github_api_timeout_fails_closed(self) -> None:
+        with mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=30),
+        ):
+            with self.assertRaisesRegex(MODULE.VerificationError, "timed out"):
+                MODULE.GitHubAPI._invoke(["repos/lightning-it/example"], "token")
+
+    def test_review_thread_cursor_repetition_fails_closed(self) -> None:
+        api = FakeAPI()
+        page_info = api.graphql_payload["data"]["repository"]["pullRequest"][
+            "reviewThreads"
+        ]["pageInfo"]
+        page_info["hasNextPage"] = True
+        page_info["endCursor"] = "repeated"
+        with self.assertRaisesRegex(MODULE.VerificationError, "repeats"):
+            MODULE.verify(self.args(api), api)
+
+    def test_review_thread_page_limit_fails_closed(self) -> None:
+        api = FakeAPI()
+        call_count = 0
+
+        def target_graphql(
+            query: str, variables: dict[str, str | int]
+        ) -> Any:
+            nonlocal call_count
+            call_count += 1
+            payload = copy.deepcopy(api.graphql_payload)
+            page_info = payload["data"]["repository"]["pullRequest"][
+                "reviewThreads"
+            ]["pageInfo"]
+            page_info["hasNextPage"] = True
+            page_info["endCursor"] = f"cursor-{call_count}"
+            return payload
+
+        api.target_graphql = target_graphql  # type: ignore[method-assign]
+        with self.assertRaisesRegex(MODULE.VerificationError, "page limit"):
+            MODULE.verify(self.args(api), api)
+        self.assertEqual(MODULE.MAX_REVIEW_THREAD_PAGES, call_count)
 
 
 if __name__ == "__main__":
