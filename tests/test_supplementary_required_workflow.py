@@ -826,7 +826,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("id: source-app", source_token)
         self.assertIn(
             "github.event.pull_request.user.login\n"
-            "            == 'lightning-it-shared-assets-sync[bot]'",
+            "              == 'lightning-it-shared-assets-sync[bot]'",
             source_token,
         )
         self.assertIn(
@@ -849,8 +849,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             source_token,
         )
         self.assertNotIn("SHARED_ASSETS_SYNC_APP", source_token)
+        controller_step = (
+            "      - name: Mint protected-controller read App token"
+        )
+        self.assertIn(controller_step, source_token)
+        controller_token = source_token.partition(controller_step)[2]
+        self.assertIn("id: controller-app", controller_token)
+        self.assertIn("repositories: .github", controller_token)
+        self.assertIn("permission-contents: read", controller_token)
+        self.assertNotIn("permission-actions: write", controller_token)
+        self.assertNotIn("permission-contents: write", controller_token)
+        self.assertNotIn("permission-checks", controller_token)
         self.assertIn(
             "SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}", workflow
+        )
+        self.assertIn(
+            "CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}",
+            workflow,
         )
         self.assertIn('test -n "${SOURCE_GH_TOKEN}"', recovery)
         self.assertEqual(
@@ -1021,6 +1036,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "live-commit-binding",
             "reservation-inventory",
             "reservation-materialization",
+            "main-trust-root-bootstrap-classification",
+            "main-trust-root-bootstrap-evidence",
+            "main-trust-root-bootstrap-final-rebind",
             "managed-sync-provenance",
             "permanent-producer-inventory",
             "permanent-producer-binding",
@@ -1522,14 +1540,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             self.assertNotIn(retired_binding, workflow)
 
         failure_trap = workflow.index("trap finalize_failure ERR")
+        durable_bootstrap = workflow.index("bootstrap_verified=false")
         managed_sync = workflow.index("managed_sync_verified=false")
         permanent_inventory = workflow.index(
             "failure_stage='permanent-producer-inventory'"
         )
-        self.assertLess(failure_trap, managed_sync)
+        self.assertLess(failure_trap, durable_bootstrap)
+        self.assertLess(durable_bootstrap, managed_sync)
         self.assertLess(managed_sync, permanent_inventory)
-        between = workflow[failure_trap:managed_sync]
-        self.assertNotIn("if [", between)
+        bootstrap = workflow[durable_bootstrap:managed_sync]
+        self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
+        self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
+        self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
+        self.assertIn("main-trust-root-bootstrap-final-rebind", bootstrap)
+        self.assertIn("final_bootstrap_summary", bootstrap)
+        self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)
+        self.assertIn("-f name='Current revision review'", bootstrap)
+        self.assertNotIn("openai/codex-action@", bootstrap)
+        self.assertNotIn("copilot-requests", bootstrap)
+        self.assertNotIn("temporary", bootstrap)
+        self.assertNotRegex(bootstrap, r'\[ "\$\{PR_NUMBER\}" = [0-9]+ \]')
         recovery = workflow[managed_sync:permanent_inventory]
         self.assertNotIn("temporary", recovery)
         self.assertNotIn("bootstrap", recovery)

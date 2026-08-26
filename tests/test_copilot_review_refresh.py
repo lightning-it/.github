@@ -345,6 +345,40 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             'select(.name == "Required dot-github current-revision workflow")',
             workflow,
         )
+        inventory_start = 'cross_runs="$(jq -c'
+        inventory_end = "          expected_cross_trigger="
+        self.assertIn(inventory_start, workflow)
+        inventory_tail = workflow.partition(inventory_start)[2]
+        self.assertIn(inventory_end, inventory_tail)
+        cross_inventory = inventory_tail.partition(inventory_end)[0]
+        self.assertNotIn('select(.status == "completed")', cross_inventory)
+        self.assertIn("cross_initial_complete=false", cross_inventory)
+        self.assertIn(
+            'if [ "${cross_status}" = completed ]; then', cross_inventory
+        )
+        self.assertIn(
+            'if cross_run="$(gh api', cross_inventory
+        )
+        self.assertNotIn('if ! cross_run="$(gh api', cross_inventory)
+        self.assertIn(
+            '"repos/${REPOSITORY}/actions/runs/${cross_run_id}" 2>&1)"; then',
+            cross_inventory,
+        )
+        self.assertIn("cross_api_status=$?", cross_inventory)
+        self.assertIn(
+            "Dot-github cross-verifier API request failed "
+            "(exit ${cross_api_status}); retrying",
+            cross_inventory,
+        )
+        self.assertIn(
+            "Dot-github cross-verifier API failed after 60 attempts "
+            "(exit ${cross_api_status})",
+            cross_inventory,
+        )
+        self.assertIn("continue", cross_inventory)
+        self.assertIn(
+            'test "${cross_initial_complete}" = true', cross_inventory
+        )
         self.assertIn(
             '"repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun"',
             workflow,
