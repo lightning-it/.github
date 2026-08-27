@@ -114,6 +114,14 @@ def require_positive_int(value: Any, name: str) -> int:
     return value
 
 
+def require_nonnegative_int(value: Any, name: str) -> int:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{name} must be a non-negative integer",
+    )
+    return value
+
+
 def parse_timestamp(value: Any, name: str) -> dt.datetime:
     text = require_string(value, name)
     require(text.endswith("Z"), f"{name} must be UTC")
@@ -535,22 +543,28 @@ def verify_controller_seed(
         == CONTROLLER_SEED_SOURCE,
         "source main diverged from the pinned controller source",
     )
+    source_ahead_by = require_nonnegative_int(
+        source_ancestry.get("ahead_by"),
+        "source ancestry ahead_by",
+    )
+    source_behind_by = require_nonnegative_int(
+        source_ancestry.get("behind_by"),
+        "source ancestry behind_by",
+    )
     require(
-        source_ancestry.get("behind_by") == 0,
+        source_behind_by == 0,
         "source main is behind the pinned controller source",
     )
     if source_head_sha == CONTROLLER_SEED_SOURCE:
         require(
             source_ancestry.get("status") == "identical"
-            and source_ancestry.get("ahead_by") == 0,
+            and source_ahead_by == 0,
             "source ancestry is not identical to the pinned controller source",
         )
     else:
         require(
             source_ancestry.get("status") == "ahead"
-            and isinstance(source_ancestry.get("ahead_by"), int)
-            and not isinstance(source_ancestry.get("ahead_by"), bool)
-            and source_ancestry["ahead_by"] > 0,
+            and source_ahead_by > 0,
             "source main is not ahead of the pinned controller source",
         )
     source_sha = CONTROLLER_SEED_SOURCE

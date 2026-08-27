@@ -668,6 +668,53 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         ):
             MODULE.verify_controller_seed(self.controller_seed_args(api), api)
 
+    def test_controller_seed_rejects_source_rewind(self) -> None:
+        api = make_controller_seed_api()
+        api.source_head_sha = "c" * 40
+        original_source = api.source
+        ancestry_endpoint = (
+            f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+            f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}"
+        )
+
+        def source(endpoint: str) -> Any:
+            payload = original_source(endpoint)
+            if endpoint == ancestry_endpoint:
+                payload["status"] = "behind"
+                payload["ahead_by"] = 0
+                payload["behind_by"] = 1
+            return payload
+
+        api.source = source  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "source main is behind",
+        ):
+            MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_controller_seed_rejects_boolean_ancestry_counts(self) -> None:
+        for field, invalid_value in (("ahead_by", True), ("behind_by", False)):
+            api = make_controller_seed_api()
+            api.source_head_sha = "c" * 40
+            original_source = api.source
+            ancestry_endpoint = (
+                f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+                f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}"
+            )
+
+            def source(endpoint: str) -> Any:
+                payload = original_source(endpoint)
+                if endpoint == ancestry_endpoint:
+                    payload[field] = invalid_value
+                return payload
+
+            api.source = source  # type: ignore[method-assign]
+            with self.subTest(field=field), self.assertRaisesRegex(
+                MODULE.VerificationError,
+                f"source ancestry {field} must be a non-negative integer",
+            ):
+                MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
     def test_main_reports_the_active_verification_mode(self) -> None:
         common_args = [
             "--repository",
