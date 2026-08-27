@@ -1830,7 +1830,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         self.assertLess(workflow.index(classifier_name), workflow.index(wait_name))
         self.assertLess(workflow.index(wait_name), workflow.index(verifier_name))
-        self.assertIn("timeout-minutes: 30", workflow)
+        self.assertIn("timeout-minutes: 60", workflow)
         self.assertIn("--classify-only", classifier)
         self.assertIn("rep60-main-trust-root-handoff/v1", classifier)
         self.assertIn("active=true", classifier)
@@ -1859,6 +1859,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("select(.name == $name)", wait)
         self.assertNotIn('select(.event == "pull_request")', wait)
         self.assertNotIn('select(.name == "Copilot review gate")', wait)
+        self.assertIn("eligible_producers=0", wait)
+        self.assertIn(
+            "for producer_id in $(jq -r '.[].id'", wait
+        )
+        self.assertIn("select(.run_id == $run_id)", wait)
+        self.assertIn("select(.head_sha == $head)", wait)
+        self.assertIn('if [ "${eligible_producers}" -gt 1 ]', wait)
+        self.assertNotIn('if [ "${run_count}" -gt 1 ]', wait)
         self.assertIn(".pull_requests[0].base.sha == $base", wait)
         self.assertIn(".pull_requests[0].head.sha == $head", wait)
         self.assertIn(
@@ -1867,7 +1875,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('select(.name == "Successful Copilot review")', wait)
         self.assertIn('if [ "${review_count}" -gt 1 ]', wait)
-        self.assertIn('if [ "${run_count}" -gt 1 ]', wait)
         self.assertIn('if [ "${request_count}" -gt 1 ]', wait)
         self.assertNotIn("gh pr edit", wait)
         self.assertNotIn("requested_reviewers", wait)
@@ -1901,6 +1908,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${step_count}" -gt 1 ]',
         ):
             self.assertIn(fragment, classifier)
+        self.assertIn(
+            '" opened " + $head)', classifier
+        )
+        for excluded_action in (
+            '" synchronize " + $head)',
+            '" reopened " + $head)',
+            '" ready_for_review " + $head)',
+            '" edited " + $head)',
+        ):
+            self.assertNotIn(excluded_action, classifier)
         self.assertNotIn("startsWith(", classifier)
         self.assertNotIn("format(", classifier)
 

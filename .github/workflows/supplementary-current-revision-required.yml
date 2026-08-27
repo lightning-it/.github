@@ -46,7 +46,7 @@ jobs:
       issues: read
       pull-requests: read
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     env:
       EVENT_ACTION: ${{ github.event.action }}
@@ -254,6 +254,7 @@ jobs:
               --arg repository "${REPOSITORY}" \
               --argjson number "${PR_NUMBER}" '
                 [.[].workflow_runs[]? |
+                  select(.id | type == "number" and . > 0) |
                   select(.event == $event) |
                   select(.path == ".github/workflows/copilot-review.yml") |
                   select(.name == $name) |
@@ -270,26 +271,29 @@ jobs:
                   select(.pull_requests[0].head.ref == $head_ref) |
                   select(.pull_requests[0].head.sha == $head)]
               ' <<<"${run_pages}")"
-            run_count="$(jq 'length' <<<"${matching_runs}")"
-            if [ "${run_count}" -gt 1 ]; then
-              echo 'Multiple local Copilot producers exist for the bootstrap head.' >&2
-              exit 1
-            fi
-            if [ "${run_count}" -eq 1 ]; then
-              producer="$(jq -c '.[0]' <<<"${matching_runs}")"
-              producer_id="$(jq -er '.id | select(type == "number" and . > 0)' \
-                <<<"${producer}")"
+            eligible_producers=0
+            for producer_id in $(jq -r '.[].id' <<<"${matching_runs}"); do
+              producer="$(jq -ce --argjson id "${producer_id}" \
+                '.[] | select(.id == $id)' <<<"${matching_runs}")"
               jobs_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs/${producer_id}/jobs?filter=all&per_page=100")"
-              request_count="$(jq '
+              request_count="$(jq \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_id}" '
                 [.[].jobs[]? |
+                  select(.run_id == $run_id) |
+                  select(.head_sha == $head) |
                   select(.name == "Request Copilot review for current revision") |
                   select(.run_attempt == 1) |
                   select(.status == "completed" and .conclusion == "success")]
                 | length
                 ' <<<"${jobs_pages}")"
-              gate_count="$(jq '
+              gate_count="$(jq \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_id}" '
                 [.[].jobs[]? |
+                  select(.run_id == $run_id) |
+                  select(.head_sha == $head) |
                   select(.name == "Successful Copilot review") |
                   select(.run_attempt == 1) |
                   select(.status == "completed" and .conclusion == "success")]
@@ -301,18 +305,32 @@ jobs:
               fi
               producer_status="$(jq -r .status <<<"${producer}")"
               producer_conclusion="$(jq -r '.conclusion // ""' <<<"${producer}")"
-              if [ "${producer_status}" = completed ] \
-                && [ "${producer_conclusion}" != success ]; then
-                echo 'The one local Copilot producer failed closed.' >&2
+              if [ "${producer_status}" = completed ]; then
+                if [ "${producer_conclusion}" = success ] \
+                  && [ "${request_count}" -eq 1 ] \
+                  && [ "${gate_count}" -eq 1 ]; then
+                  eligible_producers=$((eligible_producers + 1))
+                elif [ "${producer_conclusion}" = skipped ] \
+                  && [ "${request_count}" -eq 0 ] \
+                  && [ "${gate_count}" -eq 0 ]; then
+                  :
+                else
+                  echo 'A local Copilot producer completed without the exact successful job ledger.' >&2
+                  exit 1
+                fi
+              elif [ "${producer_status}" != queued ] \
+                && [ "${producer_status}" != in_progress ]; then
+                echo 'A local Copilot producer has an invalid status.' >&2
                 exit 1
               fi
-              if [ "${producer_status}" = completed ] \
-                && [ "${producer_conclusion}" = success ] \
-                && [ "${request_count}" -eq 1 ] \
-                && [ "${gate_count}" -eq 1 ] \
-                && [ "${review_count}" -eq 1 ]; then
-                exit 0
-              fi
+            done
+            if [ "${eligible_producers}" -gt 1 ]; then
+              echo 'Multiple successful local Copilot producer ledgers exist for the bootstrap head.' >&2
+              exit 1
+            fi
+            if [ "${eligible_producers}" -eq 1 ] \
+              && [ "${review_count}" -eq 1 ]; then
+              exit 0
             fi
             sleep 5
           done

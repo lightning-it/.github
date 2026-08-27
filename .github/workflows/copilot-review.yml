@@ -126,10 +126,6 @@ jobs:
                   ) |
                   select(
                     .display_title == ("Protected current revision PR #" + ($number | tostring) + " opened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($number | tostring) + " synchronize " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($number | tostring) + " reopened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($number | tostring) + " ready_for_review " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($number | tostring) + " edited " + $head)
                   )]
               ' <<<"${run_pages}")"
             run_count="$(jq 'length' <<<"${matching_runs}")"
