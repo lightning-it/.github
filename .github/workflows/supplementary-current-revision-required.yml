@@ -365,6 +365,8 @@ jobs:
           && github.event.pull_request.head.repo.full_name
             == 'lightning-it/shared-assets-lit'
         env:
+          EXPECTED_PRIOR_INVENTORY: >-
+            [{"id":98498876339,"name":"Protected current-revision verifier","app_id":15368,"app_slug":"github-actions","head_sha":"5dc048e43ae2fd933c92af418f7b13e47a05f586","status":"completed","conclusion":"failure","external_id":"rep60-required-workflow:v3:33066823226:1498:b978d446c336ff2e6d86bef303f2dec5faad612c:5dc048e43ae2fd933c92af418f7b13e47a05f586","details_url":"https://github.com/lightning-it/shared-assets-lit/runs/98498876339","started_at":"2026-08-27T11:19:05Z","completed_at":"2026-08-27T11:19:07Z","output_title":"Protected current-revision evidence is absent or invalid","output_summary":"PR #1498; head 5dc048e43ae2fd933c92af418f7b13e47a05f586; stage permanent-producer-inventory; fail-closed."},{"id":98499001131,"name":"Protected current-revision verifier","app_id":15368,"app_slug":"github-actions","head_sha":"5dc048e43ae2fd933c92af418f7b13e47a05f586","status":"completed","conclusion":"failure","external_id":"rep60-required-workflow:v3:33066859444:1502:b978d446c336ff2e6d86bef303f2dec5faad612c:5dc048e43ae2fd933c92af418f7b13e47a05f586","details_url":"https://github.com/lightning-it/shared-assets-lit/runs/98499001131","started_at":"2026-08-27T11:19:36Z","completed_at":"2026-08-27T11:20:27Z","output_title":"Protected current-revision evidence is absent or invalid","output_summary":"PR #1502; head 5dc048e43ae2fd933c92af418f7b13e47a05f586; stage permanent-producer-binding; fail-closed."}]
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -454,6 +456,32 @@ jobs:
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100"
           }
           reservations="$(read_reservations)"
+          expected_prior_inventory="$(jq -ce \
+            'select(type == "array" and length == 2) | sort_by(.id)' \
+            <<<"${EXPECTED_PRIOR_INVENTORY}")"
+          prior_inventory="$(jq -c \
+            --arg head "${EVENT_HEAD}" '
+              [.[].check_runs[]? |
+                select(.name == "Protected current-revision verifier") |
+                select(.head_sha == $head) |
+                {
+                  id,
+                  name,
+                  app_id: .app.id,
+                  app_slug: .app.slug,
+                  head_sha,
+                  status,
+                  conclusion,
+                  external_id,
+                  details_url,
+                  started_at,
+                  completed_at,
+                  output_title: .output.title,
+                  output_summary: .output.summary
+                }
+              ] | sort_by(.id)
+            ' <<<"${reservations}")"
+          test "${prior_inventory}" = "${expected_prior_inventory}"
           same_revision="$(jq -c \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \
@@ -466,7 +494,8 @@ jobs:
                   "^rep60-required-workflow:v3:[1-9][0-9]*:"
                   + $pr + ":" + $base + ":" + $head + "$"))]
             ' <<<"${reservations}")"
-          test "$(jq 'length' <<<"${same_revision}")" -eq 0
+          test "$(jq 'length' <<<"${same_revision}")" -eq 1
+          test "$(jq -er '.[0].id' <<<"${same_revision}")" -eq 98499001131
           created=''
           if ! created="$(gh api --method POST \
               "repos/${REPOSITORY}/check-runs" \
@@ -517,21 +546,45 @@ jobs:
               and .status == "in_progress"
             ' <<<"${created}" >/dev/null
           visible="$(read_reservations | jq -c \
-            --arg base "${EVENT_BASE}" \
+            --arg external_id "${reservation_external_id}" \
             --arg head "${EVENT_HEAD}" \
-            --arg pr "${PR_NUMBER}" '
+            --argjson check_id "${reservation_id}" '
               [.[].check_runs[]? |
                 select(.name == "Protected current-revision verifier") |
                 select(.app.id == 15368 and .app.slug == "github-actions") |
                 select(.head_sha == $head) |
-                select((.external_id // "") | test(
-                  "^rep60-required-workflow:v3:[1-9][0-9]*:"
-                  + $pr + ":" + $base + ":" + $head + "$"))]
+                select(.id == $check_id) |
+                select(.external_id == $external_id)]
             ')"
           test "$(jq 'length' <<<"${visible}")" -eq 1
           test "$(jq -er '.[0].id' <<<"${visible}")" -eq "${reservation_id}"
           test "$(jq -er '.[0].external_id' <<<"${visible}")" = \
             "${reservation_external_id}"
+          post_inventory="$(read_reservations | jq -c \
+            --arg head "${EVENT_HEAD}" \
+            --argjson current_id "${reservation_id}" '
+              [.[].check_runs[]? |
+                select(.name == "Protected current-revision verifier") |
+                select(.head_sha == $head) |
+                select(.id != $current_id) |
+                {
+                  id,
+                  name,
+                  app_id: .app.id,
+                  app_slug: .app.slug,
+                  head_sha,
+                  status,
+                  conclusion,
+                  external_id,
+                  details_url,
+                  started_at,
+                  completed_at,
+                  output_title: .output.title,
+                  output_summary: .output.summary
+                }
+              ] | sort_by(.id)
+            ')"
+          test "${post_inventory}" = "${expected_prior_inventory}"
           for observation in $(seq 1 450); do
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -738,6 +791,114 @@ jobs:
             ' <<<"${finalized}" >/dev/null
           trap - EXIT
 
+      - name: Classify the exact live pull request readiness
+        id: live-pr
+        env:
+          EXPECTED_HEAD_REPOSITORY: >-
+            ${{ github.event.pull_request.head.repo.full_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_repository "${EXPECTED_HEAD_REPOSITORY}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and (.draft | type) == "boolean"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.repo.full_name == $head_repository
+            ' <<<"${pr}" >/dev/null
+          draft="$(jq -er \
+            '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
+          if [ "${draft}" = false ]; then
+            echo 'ready=true' >>"${GITHUB_OUTPUT}"
+          else
+            echo 'ready=false' >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: Await the exact protected producer run terminal state
+        id: terminal-producer
+        if: >-
+          steps.live-pr.outputs.ready == 'true'
+          && !(
+            github.repository == 'lightning-it/shared-assets-lit'
+            && github.event.pull_request.user.login
+              == 'lightning-it-release-automation[bot]'
+            && github.event.pull_request.base.ref == 'main'
+            && github.event.pull_request.base.sha
+              == 'b978d446c336ff2e6d86bef303f2dec5faad612c'
+            && github.event.pull_request.head.sha
+              == '5dc048e43ae2fd933c92af418f7b13e47a05f586'
+            && github.event.pull_request.head.repo.full_name
+              == 'lightning-it/shared-assets-lit'
+          )
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          producer_run_id=''
+          for observation in $(seq 1 450); do
+            pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+            neutral="$(jq -c \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg pr "${PR_NUMBER}" '
+                [.[].check_runs[]? |
+                  select(.name == "Current revision review") |
+                  select(.app.id == 15368 and .app.slug == "github-actions") |
+                  select(.head_sha == $head) |
+                  select(.status == "completed" and .conclusion == "success") |
+                  select((.external_id // "") as $external_id |
+                    ($external_id |
+                      test("^mlx90-current-revision:v4:[1-9][0-9]*:[0-9a-f]{64}$"))
+                    or ($external_id |
+                      test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:"
+                        + $pr + ":[1-9][0-9]*:" + $base + ":" + $head + "$"))
+                    or ($external_id |
+                      test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:"
+                        + $base + ":" + $head + "$")))]
+              ' <<<"${pages}")"
+            test "$(jq 'length' <<<"${neutral}")" -le 1
+            if [ "$(jq 'length' <<<"${neutral}")" -eq 1 ]; then
+              external_id="$(jq -er '.[0].external_id' <<<"${neutral}")"
+              if [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*): ]]; then
+                producer_run_id="${BASH_REMATCH[1]}"
+              elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+                producer_run_id="${BASH_REMATCH[2]}"
+              else
+                [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+                producer_run_id="${BASH_REMATCH[2]}"
+              fi
+              break
+            fi
+            test "${observation}" -lt 450
+            sleep 2
+          done
+          [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
+          for observation in $(seq 1 120); do
+            producer="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            jq -e --argjson run_id "${producer_run_id}" \
+              '.id == $run_id' <<<"${producer}" >/dev/null
+            status="$(jq -er \
+              '.status | select(type == "string")' <<<"${producer}")"
+            if [ "${status}" = completed ]; then
+              break
+            fi
+            [[ "${status}" =~ ^(queued|in_progress)$ ]]
+            test "${observation}" -lt 120
+            sleep 2
+          done
+          printf 'producer_run_id=%s\n' "${producer_run_id}" >>"${GITHUB_OUTPUT}"
+
       - name: Verify one protected result for the exact live revision
         if: >-
           !(
@@ -757,6 +918,8 @@ jobs:
           CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
           GH_TOKEN: ${{ github.token }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
+          TERMINAL_PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
         run: |
           # The job environment maps github.repository into REPOSITORY.
           # shellcheck disable=SC2153
@@ -1873,6 +2036,7 @@ jobs:
             && [[ "${external_id}" =~ ^mlx90-current-revision:v4: ]]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
             producer_run_id="${BASH_REMATCH[1]}"
+            test "${producer_run_id}" = "${TERMINAL_PRODUCER_RUN_ID}"
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
@@ -1922,6 +2086,7 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             fi
+            test "${producer_run_id}" = "${TERMINAL_PRODUCER_RUN_ID}"
             if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
                 || [ "${central_sync_backmerge}" = true ]; }; then
               test "${producer_kind}" = ancestry-backmerge
@@ -1943,9 +2108,6 @@ jobs:
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${summary}")"
-            # pull_request_target always runs the protected default-branch
-            # controller. PR base_ref remains independently valid as main or
-            # develop and is already bound to EVENT_BASE above.
             controller_branch="$(jq -er \
               '.default_branch | select(type == "string" and length > 0)' \
               <<<"${target_repository}")"
