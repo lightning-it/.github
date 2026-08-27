@@ -473,10 +473,224 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             4,
             neutral_producer.count("and .run_attempt == 1"),
         )
-        self.assertEqual(workflow.count(".actor.login == $actor"), 5)
-        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 3)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 6)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 4)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
+
+    def test_release_app_failed_producer_bridge_is_one_exact_promotion(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "      - name: Validate one immutable Shared Assets promotion handoff\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        release_path = workflow.split(
+            "failure_stage='permanent-producer-binding'", 1
+        )[1].split("          else", 1)[0]
+        permanent_step_header = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1].split("        env:\n", 1)[0]
+        positive_predicate = transition.split(
+            "        if: >-\n", 1
+        )[1].split("        env:\n", 1)[0]
+        negative_predicate = permanent_step_header.split(
+            "          !(\n", 1
+        )[1].rsplit("          )\n", 1)[0]
+
+        for exact_binding in (
+            "github.repository == 'lightning-it/shared-assets-lit'",
+            "== 'b978d446c336ff2e6d86bef303f2dec5faad612c'",
+            "== '5dc048e43ae2fd933c92af418f7b13e47a05f586'",
+            ".workflow_id == 332483855",
+            'and .conclusion == "failure"',
+            "and ([.[].jobs[]] | length) == 2",
+            'select(.name == "Current revision review")',
+            'select(.name == "Request protected verifier re-evaluation")',
+            'name == "Run protected history-free Exact-Revision Codex review"',
+            'name == "Re-prove exact revision and enforce the Codex verdict"',
+            'name: "Dispatch the protected re-evaluation helper from develop"',
+        ):
+            with self.subTest(exact_binding=exact_binding):
+                self.assertIn(exact_binding, transition)
+
+        self.assertIn(
+            'and .conclusion == "success"',
+            release_path,
+        )
+        self.assertNotIn('.conclusion == "failure"', release_path)
+        self.assertNotIn(
+            'if [ "${producer_conclusion}" != success ]; then',
+            release_path,
+        )
+        self.assertIn("          !(\n", permanent_step_header)
+        self.assertIn(
+            "github.repository == 'lightning-it/shared-assets-lit'",
+            permanent_step_header,
+        )
+        self.assertIn(
+            "== 'b978d446c336ff2e6d86bef303f2dec5faad612c'",
+            permanent_step_header,
+        )
+        self.assertIn(
+            "== '5dc048e43ae2fd933c92af418f7b13e47a05f586'",
+            permanent_step_header,
+        )
+        self.assertEqual(
+            re.sub(r"\s+", " ", positive_predicate).strip(),
+            re.sub(r"\s+", " ", negative_predicate).strip(),
+        )
+        for binding in (
+            'test "${GITHUB_RUN_ATTEMPT}" -eq 1',
+            "@refs/heads/main'",
+            "compare/${WORKFLOW_SHA}...${protected_source_sha}",
+            "rep60-required-workflow:v3:${GITHUB_RUN_ID}",
+            "test \"$(jq 'length' <<<\"${same_revision}\")\" -eq 0",
+            'and .repository.full_name == $repository',
+            'and .head_repository.full_name == $repository',
+            'and .user.type == "Bot"',
+            "test \"$(jq 'length' <<<\"${exact_open_prs}\")\" -eq 1",
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, transition)
+        self.assertIn(
+            "output[title]=Protected transition evidence verified",
+            transition,
+        )
+        self.assertIn("trap - EXIT", transition)
+
+    def test_release_app_failed_producer_bridge_rejects_mutated_job_ledgers(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "      - name: Validate one immutable Shared Assets promotion handoff\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        ledger = transition.split('          jobs_pages="$(gh api', 1)[1]
+        jq_filter = ledger.split(
+            '--argjson run_id "${producer_run_id}" \'\n', 1
+        )[1].split(
+            '\n            \' <<<"${jobs_pages}"', 1
+        )[0]
+        jq = self._test_tool("jq")
+        run_id = 33066858958
+        base = "b978d446c336ff2e6d86bef303f2dec5faad612c"
+        valid = [
+            {
+                "jobs": [
+                    {
+                        "run_id": run_id,
+                        "run_attempt": 1,
+                        "head_sha": base,
+                        "name": "Current revision review",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "steps": [
+                            {
+                                "name": "Set up job",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                            {
+                                "name": "Run protected history-free Exact-Revision Codex review",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                            {
+                                "name": "Re-prove exact revision and enforce the Codex verdict",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                            {
+                                "name": "Complete job",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                        ],
+                    },
+                    {
+                        "run_id": run_id,
+                        "run_attempt": 1,
+                        "head_sha": base,
+                        "name": "Request protected verifier re-evaluation",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "steps": [
+                            {
+                                "name": "Set up job",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                            {
+                                "name": "Dispatch the protected re-evaluation helper from develop",
+                                "status": "completed",
+                                "conclusion": "failure",
+                            },
+                            {
+                                "name": "Complete job",
+                                "status": "completed",
+                                "conclusion": "success",
+                            },
+                        ],
+                    },
+                ]
+            }
+        ]
+
+        def validate(
+            candidate: object,
+        ) -> int:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "base",
+                    base,
+                    "--argjson",
+                    "run_id",
+                    str(run_id),
+                    jq_filter,
+                ],
+                input=json.dumps(candidate),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": TEST_TOOL_PATH},
+            )
+            return result.returncode
+
+        self.assertEqual(0, validate(valid))
+        rejected: list[object] = []
+        for mutation in range(6):
+            candidate = json.loads(json.dumps(valid))
+            if mutation == 0:
+                candidate[0]["jobs"][0]["run_attempt"] = 2
+            elif mutation == 1:
+                candidate[0]["jobs"][0]["head_sha"] = "0" * 40
+            elif mutation == 2:
+                candidate[0]["jobs"].append(
+                    json.loads(json.dumps(candidate[0]["jobs"][0]))
+                )
+            elif mutation == 3:
+                candidate[0]["jobs"][0]["steps"][1]["conclusion"] = "failure"
+            elif mutation == 4:
+                candidate[0]["jobs"][1]["conclusion"] = "success"
+            else:
+                candidate[0]["jobs"][1]["steps"][1]["conclusion"] = "success"
+            rejected.append(candidate)
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                self.assertNotEqual(0, validate(candidate))
 
     def test_required_verifier_managed_sync_is_develop_only(self) -> None:
         sync_app = "lightning-it-shared-assets-sync[bot]"
@@ -1060,39 +1274,47 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_draft_events_reserve_before_failing_without_ai(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
         job_header = workflow.split(
             "  verify-protected-current-revision-evidence:", 1
         )[1].split("    permissions:", 1)[0]
         self.assertNotIn("if:", job_header)
-        reservation = workflow.index("reservation_external_id=")
-        failure_trap = workflow.index("trap finalize_failure ERR")
-        draft_rejection = workflow.index('test "${draft}" = false')
+        reservation = permanent.index("reservation_external_id=")
+        failure_trap = permanent.index("trap finalize_failure ERR")
+        draft_rejection = permanent.index('test "${draft}" = false')
         self.assertLess(reservation, draft_rejection)
         self.assertLess(failure_trap, draft_rejection)
         self.assertNotIn("openai/", workflow.lower())
 
     def test_failed_ready_run_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        reservation = workflow.index("reservation_external_id=")
-        trap = workflow.index("trap finalize_failure ERR")
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        reservation = permanent.index("reservation_external_id=")
+        trap = permanent.index("trap finalize_failure ERR")
         self.assertLess(reservation, trap)
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2',
-            workflow,
+            permanent,
         )
         self.assertIn(
             'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0)\'',
-            workflow,
+            permanent,
         )
         self.assertIn(
             'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
-            workflow,
+            permanent,
         )
         self.assertEqual(
-            workflow.count('-f "details_url=${reservation_url}"'),
+            permanent.count('-f "details_url=${reservation_url}"'),
             2,
         )
-        reservation_selection = workflow.split('all_reservations="$(jq -c', 1)[1].split(
+        reservation_selection = permanent.split('all_reservations="$(jq -c', 1)[1].split(
             'reservation_count="$(jq', 1
         )[0]
         self.assertIn("select(.head_sha == $head)", reservation_selection)
@@ -1102,27 +1324,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("endswith($v2_suffix)", reservation_selection)
         self.assertIn('foreign_reservations="$(jq -c', reservation_selection)
         self.assertEqual(
-            workflow.count('-f external_id="${reservation_external_id}"'),
+            permanent.count('-f external_id="${reservation_external_id}"'),
             3,
         )
         self.assertIn(
             "^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
-            workflow,
+            permanent,
         )
         self.assertIn(
             "^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$",
-            workflow,
+            permanent,
         )
-        self.assertIn('prior_verifier_run="$(gh api', workflow)
-        self.assertIn('.workflow_id == $workflow_id', workflow)
-        self.assertIn('.status == "completed"', workflow)
+        self.assertIn('prior_verifier_run="$(gh api', permanent)
+        self.assertIn('.workflow_id == $workflow_id', permanent)
+        self.assertIn('.status == "completed"', permanent)
         self.assertIn(
             '(.conclusion == "success" or .conclusion == "failure")',
-            workflow,
+            permanent,
         )
         self.assertLess(
-            workflow.index('prior_external_id="$(jq -er'),
-            workflow.index('-f external_id="${reservation_external_id}"'),
+            permanent.index('prior_external_id="$(jq -er'),
+            permanent.index('-f external_id="${reservation_external_id}"'),
         )
 
     def test_only_proven_same_workflow_foreign_reservations_are_retired(
