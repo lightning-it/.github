@@ -1429,14 +1429,7 @@ jobs:
               neutral_status="$(jq -er '.[0].status | select(type == "string")' \
                 <<<"${neutral}")"
               if [ "${neutral_status}" = completed ]; then
-                neutral_conclusion="$(jq -c '.[0].conclusion' <<<"${neutral}")"
-                if [ "${neutral_conclusion}" != '"success"' ]; then
-                  echo 'The protected current-revision result completed without success:' >&2
-                  jq -c \
-                    '.[0] | {id, status, conclusion, details_url, external_id}' \
-                    <<<"${neutral}" >&2
-                  exit 1
-                fi
+                test "$(jq -er '.[0].conclusion | debug | select(. == "success")' <<<"${neutral}")" = success
                 break
               fi
               [[ "${neutral_status}" =~ ^(queued|in_progress)$ ]]
@@ -1634,22 +1627,10 @@ jobs:
                     select(.name
                       == "Request Copilot review for current revision")]
                   ' <<<"${producer_jobs_pages}")"
-                disallowed_terminal_count="$(jq 'length' \
-                  <<<"${disallowed_terminal_jobs}")"
-                if [ "${disallowed_terminal_count}" -ne 0 ]; then
-                  echo 'Unexpected terminal producer jobs were observed:' >&2
-                  jq -c '[.[] | {id, name, status, conclusion}]' \
-                    <<<"${disallowed_terminal_jobs}" >&2
-                  exit 1
-                fi
-                allowed_skipped_request_count="$(jq 'length' \
-                  <<<"${allowed_skipped_request_jobs}")"
-                if [ "${allowed_skipped_request_count}" -gt 1 ]; then
-                  echo 'Multiple skipped Copilot-request jobs were observed:' >&2
-                  jq -c '[.[] | {id, name, status, conclusion}]' \
-                    <<<"${allowed_skipped_request_jobs}" >&2
-                  exit 1
-                fi
+                jq -e 'debug | length == 0' \
+                  <<<"${disallowed_terminal_jobs}" >/dev/null
+                jq -e 'debug | length <= 1' \
+                  <<<"${allowed_skipped_request_jobs}" >/dev/null
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
