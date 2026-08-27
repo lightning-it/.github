@@ -29,11 +29,18 @@ EXPECTED_FILES = frozenset(
     {
         ".github/codex/prompts/review-exact-head.md",
         ".github/codex/schemas/exact-head-review.schema.json",
+        ".github/workflows/current-revision-rerun.yml",
         ".github/workflows/release-bot-exact-head-review.yml",
         "scripts/materialize-exact-revision-review.py",
     }
 )
-PREDECESSOR_FILES = EXPECTED_FILES - {"scripts/materialize-exact-revision-review.py"}
+PREDECESSOR_FILES = frozenset(
+    {
+        ".github/codex/prompts/review-exact-head.md",
+        ".github/codex/schemas/exact-head-review.schema.json",
+        ".github/workflows/release-bot-exact-head-review.yml",
+    }
+)
 COPILOT_LOGINS = {
     "copilot-pull-request-reviewer",
     "copilot-pull-request-reviewer[bot]",
@@ -323,11 +330,20 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         for item in files
     }
     expected_paths = set(EXPECTED_FILES)
-    if observed_paths != expected_paths:
-        if observed_paths & expected_paths:
-            raise VerificationError("partial or expanded trust-root bootstrap diff")
+    if not observed_paths & expected_paths:
         raise NotApplicable("pull request is not an exact trust-root bootstrap")
-    require(len(files) == len(EXPECTED_FILES), "bootstrap comparison contains duplicate files")
+    require(
+        observed_paths <= expected_paths,
+        "trust-root bootstrap diff contains an unrelated path",
+    )
+    require(
+        "scripts/materialize-exact-revision-review.py" in observed_paths,
+        "trust-root bootstrap diff is missing the permanent materializer",
+    )
+    require(
+        len(files) == len(observed_paths),
+        "bootstrap comparison contains duplicate files",
+    )
     require(comparison.get("status") == "ahead", "bootstrap comparison is not ahead")
     require(comparison.get("ahead_by") == 1, "bootstrap must contain one commit")
     require(comparison.get("behind_by") == 0, "bootstrap comparison is behind")
@@ -407,6 +423,12 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         "base contains a partial trust-root predecessor set",
     )
     for path, base_entry in base_assets.items():
+        if path not in comparison_files:
+            require(
+                base_entry is not None,
+                f"unchanged trust-root asset is missing from base: {path}",
+            )
+            continue
         expected_status = "added" if base_entry is None else "modified"
         require(
             comparison_files[path].get("status") == expected_status,
@@ -449,6 +471,13 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         require(head_entry is not None, f"head tree is missing {path}")
         require(head_entry.get("sha") == source_entry.get("sha"), f"candidate {path} differs from protected source")
         source_blobs[path] = require_string(source_entry.get("sha"), f"source blob {path}")
+        if path not in comparison_files:
+            base_entry = base_assets[path]
+            require(base_entry is not None, f"unchanged base asset is missing {path}")
+            require(
+                base_entry.get("sha") == source_blobs[path],
+                f"unchanged protected base {path} differs from protected source",
+            )
     for raw_file in files:
         file_object = require_dict(raw_file, "comparison file")
         path = require_string(file_object.get("filename"), "comparison filename")
