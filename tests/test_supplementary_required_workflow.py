@@ -1683,6 +1683,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ".base.sha == $base",
             ".head.sha == $head",
             ".base.repo.full_name == $repository",
+            '(.head.repo.full_name | type) == "string"',
+            "(.head.repo.full_name | length) > 0",
         ):
             self.assertIn(binding, permanent)
         self.assertIn('if [ "${neutral_count}" -gt 1 ]', permanent)
@@ -1701,6 +1703,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("producer_evidence_ready=false", permanent)
         self.assertIn('"${producer_kind}" = copilot', permanent)
         self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn('if [ "${producer_status}" = queued ]', permanent)
+        self.assertIn(
+            "The protected producer run did not start in time.", permanent
+        )
+        self.assertIn("continue", permanent)
+        self.assertIn('test "${producer_status}" = in_progress', permanent)
         self.assertIn(
             "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
             permanent,
