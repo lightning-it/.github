@@ -645,7 +645,6 @@ jobs:
                 -f head_sha="${EVENT_HEAD}" \
                 -f status=completed \
                 -f conclusion=success \
-                -f details_url="${producer_run_url}" \
                 -f external_id="${bootstrap_external_id}" \
                 -f "output[title]=${bootstrap_title}" \
                 -f "output[summary]=${bootstrap_summary}")"
@@ -672,31 +671,11 @@ jobs:
                 and .output.title == $title
                 and .output.summary == $evidence
               ' <<<"${bootstrap_check}" >/dev/null
-            # GitHub Actions may replace details_url during check creation with
-            # its native check-run URL. Rebind that service-owned field after
-            # the immutable identity and evidence have been verified above.
-            bootstrap_check="$(gh api --method PATCH \
-              "repos/${REPOSITORY}/check-runs/${bootstrap_check_id}" \
-              -f "details_url=${producer_run_url}")"
-            jq -e \
-              --arg evidence "${bootstrap_summary}" \
-              --arg external_id "${bootstrap_external_id}" \
-              --arg head "${EVENT_HEAD}" \
-              --arg title "${bootstrap_title}" \
-              --arg url "${producer_run_url}" \
-              --argjson check_id "${bootstrap_check_id}" '
-                .id == $check_id
-                and .name == "Current revision review"
-                and .head_sha == $head
-                and .details_url == $url
-                and .external_id == $external_id
-                and .status == "completed"
-                and .conclusion == "success"
-                and .app.id == 15368
-                and .app.slug == "github-actions"
-                and .output.title == $title
-                and .output.summary == $evidence
-              ' <<<"${bootstrap_check}" >/dev/null
+            # details_url is service-owned navigation metadata. GitHub Actions
+            # replaces caller-supplied values with its native check-run URL,
+            # including after an update. It is therefore neither written nor
+            # accepted as evidence. The protected producer URL is bound in the
+            # verified JSON summary and its run ID is also in external_id.
 
             failure_stage='main-trust-root-bootstrap-final-rebind'
             final_bootstrap_summary="$(python3 protected-bootstrap/verify.py \
