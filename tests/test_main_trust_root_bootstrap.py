@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import importlib.util
+import io
 import pathlib
 import subprocess
 import sys
@@ -601,6 +603,57 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
 
         self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
         self.assertEqual(2, pull_reads)
+
+    def test_controller_seed_draft_state_must_be_boolean(self) -> None:
+        for invalid_draft in (None, "false", 0, [], {}):
+            api = make_controller_seed_api()
+            api.pull["draft"] = invalid_draft
+            with self.subTest(draft=invalid_draft), self.assertRaisesRegex(
+                MODULE.VerificationError,
+                "pull request draft state is invalid",
+            ):
+                MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_main_reports_the_active_verification_mode(self) -> None:
+        common_args = [
+            "--repository",
+            "lightning-it/example",
+            "--pull-request",
+            "1",
+            "--expected-base",
+            "b" * 40,
+            "--expected-head",
+            "a" * 40,
+            "--workflow-sha",
+            "e" * 40,
+        ]
+        cases = (
+            ([], "main-bootstrap"),
+            (["--classify-only"], "main-bootstrap classification"),
+            (["--controller-seed"], "controller-seed"),
+        )
+        for mode_args, expected_mode in cases:
+            stderr = io.StringIO()
+            with (
+                self.subTest(mode=expected_mode),
+                mock.patch.object(MODULE, "GitHubAPI", return_value=mock.sentinel.api),
+                mock.patch.object(
+                    MODULE,
+                    "verify",
+                    side_effect=MODULE.VerificationError("bound failure"),
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "verify_controller_seed",
+                    side_effect=MODULE.VerificationError("bound failure"),
+                ),
+                contextlib.redirect_stderr(stderr),
+            ):
+                self.assertEqual(1, MODULE.main([*common_args, *mode_args]))
+            self.assertEqual(
+                f"REP-60 {expected_mode} verification failed: bound failure\n",
+                stderr.getvalue(),
+            )
 
     def test_exact_protected_bootstrap_emits_bound_evidence(self) -> None:
         api = FakeAPI()

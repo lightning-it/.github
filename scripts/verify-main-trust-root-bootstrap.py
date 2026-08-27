@@ -333,7 +333,9 @@ def exact_controller_seed_pull_binding(
 ) -> None:
     require(pull.get("number") == number, "pull request number changed")
     require(pull.get("state") == "open", "pull request is not open")
-    require(pull.get("draft") is False, "pull request is still a draft")
+    draft = pull.get("draft")
+    require(isinstance(draft, bool), "pull request draft state is invalid")
+    require(draft is False, "pull request is still a draft")
     require(pull.get("title") == CONTROLLER_SEED_TITLE, "controller seed title changed")
     user = require_dict(pull.get("user"), "pull request user")
     require(user.get("login") == "litroc", "controller seed author is not litroc")
@@ -1144,6 +1146,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     target_token = os.environ.get("GH_TOKEN", "")
     source_token = os.environ.get("SOURCE_GH_TOKEN", "")
+    if args.controller_seed:
+        verification_mode = "controller-seed"
+    elif args.classify_only:
+        verification_mode = "main-bootstrap classification"
+    else:
+        verification_mode = "main-bootstrap"
     try:
         api = GitHubAPI(target_token, source_token)
         if args.controller_seed:
@@ -1154,7 +1162,10 @@ def main(argv: list[str] | None = None) -> int:
         print(str(error), file=sys.stderr)
         return 3
     except VerificationError as error:
-        print(f"REP-60 main bootstrap verification failed: {error}", file=sys.stderr)
+        print(
+            f"REP-60 {verification_mode} verification failed: {error}",
+            file=sys.stderr,
+        )
         return 1
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
     return 0
