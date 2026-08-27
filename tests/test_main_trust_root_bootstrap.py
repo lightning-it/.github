@@ -31,6 +31,7 @@ class FakeAPI:
         self.head = "a" * 40
         self.workflow = "e" * 40
         self.source_sha = "d" * 40
+        self.source_head_sha = self.source_sha
         self.base_tree_sha = "1" * 40
         self.head_tree_sha = "2" * 40
         self.source_tree_sha = "3" * 40
@@ -347,7 +348,23 @@ class FakeAPI:
             f"repos/{MODULE.SOURCE_REPOSITORY}/branches/{MODULE.SOURCE_BRANCH}": {
                 "name": MODULE.SOURCE_BRANCH,
                 "protected": True,
-                "commit": {"sha": self.source_sha},
+                "commit": {"sha": self.source_head_sha},
+            },
+            f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+            f"{MODULE.CONTROLLER_SEED_SOURCE}...{self.source_head_sha}": {
+                "status": (
+                    "identical"
+                    if self.source_head_sha == MODULE.CONTROLLER_SEED_SOURCE
+                    else "ahead"
+                ),
+                "ahead_by": (
+                    0
+                    if self.source_head_sha == MODULE.CONTROLLER_SEED_SOURCE
+                    else 1
+                ),
+                "behind_by": 0,
+                "base_commit": {"sha": MODULE.CONTROLLER_SEED_SOURCE},
+                "merge_base_commit": {"sha": MODULE.CONTROLLER_SEED_SOURCE},
             },
             f"repos/{MODULE.SOURCE_REPOSITORY}/commits/{self.source_sha}": {
                 "sha": self.source_sha,
@@ -406,6 +423,7 @@ def make_controller_seed_api() -> FakeAPI:
     api.base = MODULE.CONTROLLER_SEED_BASE
     api.head = MODULE.CONTROLLER_SEED_HEAD
     api.source_sha = MODULE.CONTROLLER_SEED_SOURCE
+    api.source_head_sha = api.source_sha
     api.head_tree_sha = MODULE.CONTROLLER_SEED_TREE
     api.pull = {
         "number": api.number,
@@ -611,6 +629,90 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             with self.subTest(draft=invalid_draft), self.assertRaisesRegex(
                 MODULE.VerificationError,
                 "pull request draft state is invalid",
+            ):
+                MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_controller_seed_accepts_pinned_source_ancestor(self) -> None:
+        api = make_controller_seed_api()
+        api.source_head_sha = "c" * 40
+
+        evidence = MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+        self.assertEqual(MODULE.CONTROLLER_SEED_SOURCE, evidence["source_sha"])
+        self.assertIn(
+            f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+            f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}",
+            api.source_endpoints,
+        )
+
+    def test_controller_seed_rejects_diverged_source_history(self) -> None:
+        api = make_controller_seed_api()
+        api.source_head_sha = "c" * 40
+        original_source = api.source
+        ancestry_endpoint = (
+            f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+            f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}"
+        )
+
+        def source(endpoint: str) -> Any:
+            payload = original_source(endpoint)
+            if endpoint == ancestry_endpoint:
+                payload["status"] = "diverged"
+                payload["merge_base_commit"]["sha"] = "f" * 40
+            return payload
+
+        api.source = source  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "source main diverged",
+        ):
+            MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_controller_seed_rejects_source_rewind(self) -> None:
+        api = make_controller_seed_api()
+        api.source_head_sha = "c" * 40
+        original_source = api.source
+        ancestry_endpoint = (
+            f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+            f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}"
+        )
+
+        def source(endpoint: str) -> Any:
+            payload = original_source(endpoint)
+            if endpoint == ancestry_endpoint:
+                payload["status"] = "behind"
+                payload["ahead_by"] = 0
+                payload["behind_by"] = 1
+                payload["merge_base_commit"]["sha"] = api.source_head_sha
+            return payload
+
+        api.source = source  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "source main is behind",
+        ):
+            MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_controller_seed_rejects_boolean_ancestry_counts(self) -> None:
+        for field, invalid_value in (("ahead_by", True), ("behind_by", False)):
+            api = make_controller_seed_api()
+            api.source_head_sha = "c" * 40
+            original_source = api.source
+            ancestry_endpoint = (
+                f"repos/{MODULE.SOURCE_REPOSITORY}/compare/"
+                f"{MODULE.CONTROLLER_SEED_SOURCE}...{api.source_head_sha}"
+            )
+
+            def source(endpoint: str) -> Any:
+                payload = original_source(endpoint)
+                if endpoint == ancestry_endpoint:
+                    payload[field] = invalid_value
+                return payload
+
+            api.source = source  # type: ignore[method-assign]
+            with self.subTest(field=field), self.assertRaisesRegex(
+                MODULE.VerificationError,
+                f"source ancestry {field} must be a non-negative integer",
             ):
                 MODULE.verify_controller_seed(self.controller_seed_args(api), api)
 
