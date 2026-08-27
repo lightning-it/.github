@@ -70,7 +70,11 @@ class FakeAPI:
             "files": [
                 {
                     "filename": path,
-                    "status": MODULE.EXPECTED_FILES[path],
+                    "status": (
+                        "added"
+                        if path == "scripts/materialize-exact-revision-review.py"
+                        else "modified"
+                    ),
                     "sha": blob,
                 }
                 for path, blob in self.paths.items()
@@ -422,6 +426,44 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         self.assertFalse(
             any("recursive=1" in endpoint for endpoint in api.source_endpoints)
         )
+
+    def test_exact_bootstrap_accepts_an_empty_base_trust_root(self) -> None:
+        api = FakeAPI()
+        api.base_tree["tree"] = [
+            entry
+            for entry in api.base_tree["tree"]
+            if entry["path"] not in MODULE.EXPECTED_FILES
+        ]
+        for file_object in api.comparison["files"]:
+            file_object["status"] = "added"
+        evidence = MODULE.verify(self.args(api), api)
+        self.assertEqual(api.head, evidence["head_sha"])
+        self.assertEqual(api.paths, evidence["source_blobs"])
+
+    def test_partial_base_predecessor_set_fails_closed(self) -> None:
+        api = FakeAPI()
+        retained = next(iter(MODULE.PREDECESSOR_FILES))
+        api.base_tree["tree"] = [
+            entry
+            for entry in api.base_tree["tree"]
+            if entry["path"] not in MODULE.PREDECESSOR_FILES
+            or entry["path"] == retained
+        ]
+        for file_object in api.comparison["files"]:
+            if file_object["filename"] in MODULE.PREDECESSOR_FILES:
+                file_object["status"] = (
+                    "modified"
+                    if file_object["filename"] == retained
+                    else "added"
+                )
+        with self.assertRaisesRegex(MODULE.VerificationError, "partial"):
+            MODULE.verify(self.args(api), api)
+
+    def test_comparison_status_must_match_base_presence(self) -> None:
+        api = FakeAPI()
+        api.comparison["files"][0]["status"] = "added"
+        with self.assertRaisesRegex(MODULE.VerificationError, "unexpected status"):
+            MODULE.verify(self.args(api), api)
 
     def test_unrelated_pr_is_not_applicable(self) -> None:
         api = FakeAPI()

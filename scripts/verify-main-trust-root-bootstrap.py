@@ -25,12 +25,15 @@ EXPECTED_TITLE = "fix(rep60): bootstrap protected main review trust root"
 EXPECTED_HEAD_REF = re.compile(
     r"^fix/rep60-main-trust-root-(?:successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$"
 )
-EXPECTED_FILES = {
-    ".github/codex/prompts/review-exact-head.md": "modified",
-    ".github/codex/schemas/exact-head-review.schema.json": "modified",
-    ".github/workflows/release-bot-exact-head-review.yml": "modified",
-    "scripts/materialize-exact-revision-review.py": "added",
-}
+EXPECTED_FILES = frozenset(
+    {
+        ".github/codex/prompts/review-exact-head.md",
+        ".github/codex/schemas/exact-head-review.schema.json",
+        ".github/workflows/release-bot-exact-head-review.yml",
+        "scripts/materialize-exact-revision-review.py",
+    }
+)
+PREDECESSOR_FILES = EXPECTED_FILES - {"scripts/materialize-exact-revision-review.py"}
 COPILOT_LOGINS = {
     "copilot-pull-request-reviewer",
     "copilot-pull-request-reviewer[bot]",
@@ -333,11 +336,16 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(require_dict(comparison.get("merge_base_commit"), "comparison merge base").get("sha") == base, "comparison merge base changed")
     commits = require_list(comparison.get("commits"), "comparison commits")
     require(len(commits) == 1 and require_dict(commits[0], "comparison commit").get("sha") == head, "comparison head changed")
+    comparison_files: dict[str, dict[str, Any]] = {}
     for raw_file in files:
         file_object = require_dict(raw_file, "comparison file")
         path = require_string(file_object.get("filename"), "comparison filename")
-        require(file_object.get("status") == EXPECTED_FILES[path], f"unexpected status for {path}")
-        require(SHA_RE.fullmatch(str(file_object.get("sha", ""))) is not None, f"invalid blob for {path}")
+        require(path not in comparison_files, f"duplicate comparison file {path}")
+        require(
+            SHA_RE.fullmatch(str(file_object.get("sha", ""))) is not None,
+            f"invalid blob for {path}",
+        )
+        comparison_files[path] = file_object
 
     main_branch = require_dict(api.target(f"repos/{repository}/branches/main"), "target main branch")
     require(main_branch.get("name") == "main", "target main branch name changed")
@@ -380,14 +388,31 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(base_copilot is not None, "base Copilot workflow is missing")
     require(head_copilot is not None, "head Copilot workflow is missing")
     require(base_copilot.get("sha") == head_copilot.get("sha"), "candidate controls its Copilot workflow")
-    base_materializer = resolve_tree_asset(
-        target_tree,
-        base_tree_sha,
-        "scripts/materialize-exact-revision-review.py",
-        "base tree",
-        target_tree_cache,
-        required=False,
+    base_assets = {
+        path: resolve_tree_asset(
+            target_tree,
+            base_tree_sha,
+            path,
+            "base tree",
+            target_tree_cache,
+            required=False,
+        )
+        for path in sorted(EXPECTED_FILES)
+    }
+    present_predecessors = {
+        path for path in PREDECESSOR_FILES if base_assets[path] is not None
+    }
+    require(
+        len(present_predecessors) in {0, len(PREDECESSOR_FILES)},
+        "base contains a partial trust-root predecessor set",
     )
+    for path, base_entry in base_assets.items():
+        expected_status = "added" if base_entry is None else "modified"
+        require(
+            comparison_files[path].get("status") == expected_status,
+            f"unexpected status for {path}",
+        )
+    base_materializer = base_assets["scripts/materialize-exact-revision-review.py"]
     require(base_materializer is None, "base already contains the permanent materializer")
 
     source_repository = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}"), "source repository")
