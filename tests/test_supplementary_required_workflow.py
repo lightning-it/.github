@@ -2056,8 +2056,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[0]
         self.assertIn("for observation in $(seq 1 450)", terminal_wait)
         self.assertIn("for observation in $(seq 1 120)", terminal_wait)
+        self.assertIn("producer_kind=''", terminal_wait)
+        self.assertIn('producer_kind=release-app', terminal_wait)
+        self.assertEqual(
+            2,
+            terminal_wait.count('producer_kind="${BASH_REMATCH[1]}"'),
+        )
+        self.assertIn('if [ "${producer_kind}" = copilot ]; then', terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
         self.assertIn('^(queued|in_progress)$', terminal_wait)
+        self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
+        copilot_readiness = terminal_wait.split(
+            'if [ "${producer_kind}" = copilot ]; then', 1
+        )[1].split("          else\n", 1)[0]
+        self.assertNotIn("for observation in $(seq 1 120)", copilot_readiness)
+        self.assertIn(
+            "The Copilot producer publishes the exact successful neutral",
+            copilot_readiness,
+        )
         self.assertIn(
             "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:",
             terminal_wait,
