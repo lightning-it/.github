@@ -939,7 +939,8 @@ jobs:
             test "$(jq -r .user.type <<<"${pr}")" = User
             test -n "${CONTROLLER_GH_TOKEN}"
             test -n "${SOURCE_GH_TOKEN}"
-            install -d -m 0700 protected-bootstrap
+            bootstrap_stage="$(mktemp -d \
+              "${RUNNER_TEMP}/protected-bootstrap-final.XXXXXX")"
             controller_asset="$(GH_TOKEN="${CONTROLLER_GH_TOKEN}" gh api \
               "repos/lightning-it/.github/contents/scripts/verify-main-trust-root-bootstrap.py?ref=${WORKFLOW_SHA}")"
             jq -e \
@@ -954,13 +955,13 @@ jobs:
                 and (.content | type == "string" and length > 0)
               ' <<<"${controller_asset}" >/dev/null
             jq -er .content <<<"${controller_asset}" \
-              | base64 --decode >protected-bootstrap/verify.py
-            test "$(git hash-object protected-bootstrap/verify.py)" = \
+              | base64 --decode >"${bootstrap_stage}/verify.py"
+            test "$(git hash-object "${bootstrap_stage}/verify.py")" = \
               "$(jq -r .sha <<<"${controller_asset}")"
-            chmod 0500 protected-bootstrap/verify.py
+            chmod 0500 "${bootstrap_stage}/verify.py"
 
             set +e
-            bootstrap_summary="$(python3 protected-bootstrap/verify.py \
+            bootstrap_summary="$(python3 "${bootstrap_stage}/verify.py" \
               --repository "${REPOSITORY}" \
               --pull-request "${PR_NUMBER}" \
               --expected-base "${EVENT_BASE}" \
@@ -1071,7 +1072,7 @@ jobs:
             # verified JSON summary and its run ID is also in external_id.
 
             failure_stage='main-trust-root-bootstrap-final-rebind'
-            final_bootstrap_summary="$(python3 protected-bootstrap/verify.py \
+            final_bootstrap_summary="$(python3 "${bootstrap_stage}/verify.py" \
               --repository "${REPOSITORY}" \
               --pull-request "${PR_NUMBER}" \
               --expected-base "${EVENT_BASE}" \
