@@ -21,6 +21,20 @@ from typing import Any, Callable
 
 SOURCE_REPOSITORY = "lightning-it/shared-assets-lit"
 SOURCE_BRANCH = "main"
+CONTROLLER_SEED_REPOSITORY = "lightning-it/identity-access-lit"
+CONTROLLER_SEED_PULL_REQUEST = 175
+CONTROLLER_SEED_TITLE = "fix(rep60): seed protected main review controller"
+CONTROLLER_SEED_HEAD_REF = "fix/rep60-main-controller-v1-20260826"
+CONTROLLER_SEED_BASE = "df342ddf37f8c6ed655beb8c753bfe99621f3506"
+CONTROLLER_SEED_HEAD = "3f9ccdee664b8af11041a6b8f6dccc050bed3a52"
+CONTROLLER_SEED_TREE = "6df66b6ae82984a984193cb8fae85132963cd760"
+CONTROLLER_SEED_FILE = ".github/workflows/copilot-review.yml"
+CONTROLLER_SEED_BLOB = "43db448f711cf870657fd449bf8d6ab18859e4cf"
+CONTROLLER_SEED_SOURCE = "88d43d3484c4105048a8295c9ae3b6823cf1ce21"
+CONTROLLER_SEED_REVIEW_ID = 5038006732
+CONTROLLER_SEED_REVIEW_SUBMITTED_AT = "2026-08-27T06:51:54Z"
+CONTROLLER_SEED_REQUEST_EVENT_ID = 30087018334
+CONTROLLER_SEED_REQUESTED_AT = "2026-08-27T06:47:49Z"
 EXPECTED_TITLE = "fix(rep60): bootstrap protected main review trust root"
 EXPECTED_HEAD_REF = re.compile(
     r"^fix/rep60-main-trust-root-(?:successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$"
@@ -308,6 +322,336 @@ def exact_run_pull_binding(
         and isinstance(head_repo, dict)
         and head_repo.get("url") == api_repository
     )
+
+
+def verify_controller_seed(
+    args: argparse.Namespace, api: GitHubAPI
+) -> dict[str, Any]:
+    """Verify the immutable identity-access-lit main controller seed."""
+
+    repository = args.repository
+    number = args.pull_request
+    base = args.expected_base
+    head = args.expected_head
+    require(
+        repository == CONTROLLER_SEED_REPOSITORY,
+        "controller seed repository is not immutable",
+    )
+    require(
+        number == CONTROLLER_SEED_PULL_REQUEST,
+        "controller seed pull request is not immutable",
+    )
+    require(base == CONTROLLER_SEED_BASE, "controller seed base changed")
+    require(head == CONTROLLER_SEED_HEAD, "controller seed head changed")
+    require(SHA_RE.fullmatch(args.workflow_sha) is not None, "workflow SHA is invalid")
+
+    target_repository = require_dict(
+        api.target(f"repos/{repository}"), "target repository"
+    )
+    owner = require_dict(target_repository.get("owner"), "target owner")
+    require(target_repository.get("full_name") == repository, "target repository changed")
+    require(owner.get("login") == "lightning-it", "target owner changed")
+    require(target_repository.get("archived") is False, "target repository is archived")
+    require(target_repository.get("disabled") is False, "target repository is disabled")
+    require(
+        target_repository.get("default_branch") == "develop",
+        "target default branch is not develop",
+    )
+
+    pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "pull request")
+    require(pull.get("number") == number, "pull request number changed")
+    require(pull.get("state") == "open", "pull request is not open")
+    require(pull.get("draft") is False, "pull request is still a draft")
+    require(pull.get("title") == CONTROLLER_SEED_TITLE, "controller seed title changed")
+    user = require_dict(pull.get("user"), "pull request user")
+    require(user.get("login") == "litroc", "controller seed author is not litroc")
+    require(user.get("type") == "User", "controller seed author type is invalid")
+    require(not require_list(pull.get("labels"), "pull request labels"), "controller seed must not have labels")
+    base_object = require_dict(pull.get("base"), "pull request base")
+    head_object = require_dict(pull.get("head"), "pull request head")
+    base_repository = require_dict(base_object.get("repo"), "base repository")
+    head_repository = require_dict(head_object.get("repo"), "head repository")
+    require(base_object.get("ref") == "main", "controller seed base ref changed")
+    require(base_object.get("sha") == base, "controller seed base SHA changed")
+    require(base_repository.get("full_name") == repository, "controller seed base repository changed")
+    require(head_object.get("ref") == CONTROLLER_SEED_HEAD_REF, "controller seed branch changed")
+    require(head_object.get("sha") == head, "controller seed head SHA changed")
+    require(head_repository.get("full_name") == repository, "controller seed is not same-repository")
+
+    comparison = require_dict(
+        api.target(f"repos/{repository}/compare/{base}...{head}"), "comparison"
+    )
+    require(comparison.get("status") == "ahead", "controller seed is not ahead")
+    require(comparison.get("ahead_by") == 1, "controller seed must contain one commit")
+    require(comparison.get("behind_by") == 0, "controller seed is behind")
+    require(comparison.get("total_commits") == 1, "controller seed commit count changed")
+    require(
+        require_dict(comparison.get("base_commit"), "comparison base").get("sha")
+        == base,
+        "comparison base changed",
+    )
+    require(
+        require_dict(comparison.get("merge_base_commit"), "comparison merge base").get("sha")
+        == base,
+        "comparison merge base changed",
+    )
+    commits = require_list(comparison.get("commits"), "comparison commits")
+    require(
+        len(commits) == 1
+        and require_dict(commits[0], "comparison commit").get("sha") == head,
+        "comparison head changed",
+    )
+    files = require_list(comparison.get("files"), "comparison files")
+    require(len(files) == 1, "controller seed must change exactly one file")
+    changed_file = require_dict(files[0], "comparison file")
+    require(changed_file.get("filename") == CONTROLLER_SEED_FILE, "controller seed path changed")
+    require(changed_file.get("status") == "added", "controller seed file is not added")
+    require(changed_file.get("sha") == CONTROLLER_SEED_BLOB, "controller seed blob changed")
+
+    main_branch = require_dict(api.target(f"repos/{repository}/branches/main"), "main branch")
+    require(main_branch.get("name") == "main", "main branch name changed")
+    require(main_branch.get("protected") is True, "main branch is not protected")
+    require(
+        require_dict(main_branch.get("commit"), "main commit").get("sha") == base,
+        "live main moved",
+    )
+    develop_branch = require_dict(
+        api.target(f"repos/{repository}/branches/develop"), "develop branch"
+    )
+    require(develop_branch.get("name") == "develop", "develop branch name changed")
+    require(develop_branch.get("protected") is True, "develop branch is not protected")
+
+    head_commit = require_dict(api.target(f"repos/{repository}/commits/{head}"), "head commit")
+    require(head_commit.get("sha") == head, "head commit changed")
+    parents = require_list(head_commit.get("parents"), "head parents")
+    require(
+        len(parents) == 1 and require_dict(parents[0], "head parent").get("sha") == base,
+        "controller seed is not a direct child of main",
+    )
+    require(require_dict(head_commit.get("author"), "head author").get("login") == "litroc", "head author is not litroc")
+    require(require_dict(head_commit.get("committer"), "head committer").get("login") == "litroc", "head committer is not litroc")
+    head_tree_sha = require_string(
+        require_dict(
+            require_dict(head_commit.get("commit"), "head commit data").get("tree"),
+            "head tree",
+        ).get("sha"),
+        "head tree SHA",
+    )
+    require(head_tree_sha == CONTROLLER_SEED_TREE, "controller seed tree changed")
+    base_commit = require_dict(api.target(f"repos/{repository}/commits/{base}"), "base commit")
+    base_tree_sha = require_string(
+        require_dict(
+            require_dict(base_commit.get("commit"), "base commit data").get("tree"),
+            "base tree",
+        ).get("sha"),
+        "base tree SHA",
+    )
+    target_tree_cache: TreeCache = {}
+
+    def target_tree(tree_sha: str) -> Any:
+        return api.target(f"repos/{repository}/git/trees/{tree_sha}")
+
+    require(
+        resolve_tree_asset(
+            target_tree,
+            base_tree_sha,
+            CONTROLLER_SEED_FILE,
+            "base tree",
+            target_tree_cache,
+            required=False,
+        )
+        is None,
+        "main already contains the controller",
+    )
+    head_controller = resolve_tree_asset(
+        target_tree,
+        head_tree_sha,
+        CONTROLLER_SEED_FILE,
+        "head tree",
+        target_tree_cache,
+    )
+    require(head_controller is not None, "head controller is missing")
+    require(head_controller.get("sha") == CONTROLLER_SEED_BLOB, "head controller blob changed")
+
+    source_repository = require_dict(api.source(f"repos/{SOURCE_REPOSITORY}"), "source repository")
+    require(source_repository.get("full_name") == SOURCE_REPOSITORY, "source repository changed")
+    source_branch = require_dict(
+        api.source(f"repos/{SOURCE_REPOSITORY}/branches/{SOURCE_BRANCH}"),
+        "source main branch",
+    )
+    require(source_branch.get("name") == SOURCE_BRANCH, "source branch changed")
+    require(source_branch.get("protected") is True, "source branch is not protected")
+    source_sha = require_string(
+        require_dict(source_branch.get("commit"), "source main commit").get("sha"),
+        "source SHA",
+    )
+    require(source_sha == CONTROLLER_SEED_SOURCE, "source main moved")
+    source_commit = require_dict(
+        api.source(f"repos/{SOURCE_REPOSITORY}/commits/{source_sha}"),
+        "source commit",
+    )
+    source_tree_sha = require_string(
+        require_dict(
+            require_dict(source_commit.get("commit"), "source commit data").get("tree"),
+            "source tree",
+        ).get("sha"),
+        "source tree SHA",
+    )
+    source_tree_cache: TreeCache = {}
+
+    def source_tree(tree_sha: str) -> Any:
+        return api.source(f"repos/{SOURCE_REPOSITORY}/git/trees/{tree_sha}")
+
+    source_controller = resolve_tree_asset(
+        source_tree,
+        source_tree_sha,
+        CONTROLLER_SEED_FILE,
+        "source tree",
+        source_tree_cache,
+    )
+    require(source_controller is not None, "source controller is missing")
+    require(source_controller.get("sha") == CONTROLLER_SEED_BLOB, "source controller blob changed")
+
+    exact_checks = flatten_object_pages(
+        api.target_pages(
+            f"repos/{repository}/commits/{head}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&filter=all&per_page=100"
+        ),
+        "check_runs",
+        "Exact-Revision checks",
+    )
+    require(not exact_checks, "controller seed must not have an Exact-Revision Codex check")
+
+    timeline = flatten_array_pages(
+        api.target_pages(f"repos/{repository}/issues/{number}/timeline?per_page=100"),
+        "pull request timeline",
+    )
+    requests = [
+        event
+        for event in timeline
+        if isinstance(event, dict)
+        and event.get("event") == "review_requested"
+        and isinstance(event.get("requested_reviewer"), dict)
+        and event["requested_reviewer"].get("login") == "Copilot"
+    ]
+    require(len(requests) == 1, "controller seed must contain one Copilot request")
+    request = require_dict(requests[0], "Copilot request")
+    require(request.get("id") == CONTROLLER_SEED_REQUEST_EVENT_ID, "Copilot request event changed")
+    require(require_dict(request.get("actor"), "request actor").get("login") == "litroc", "Copilot request actor is not litroc")
+    require(request.get("created_at") == CONTROLLER_SEED_REQUESTED_AT, "Copilot request timestamp changed")
+
+    reviews = flatten_array_pages(
+        api.target_pages(f"repos/{repository}/pulls/{number}/reviews?per_page=100"),
+        "pull request reviews",
+    )
+    copilot_reviews = [
+        review
+        for review in reviews
+        if isinstance(review, dict)
+        and isinstance(review.get("user"), dict)
+        and review["user"].get("login") in COPILOT_LOGINS
+    ]
+    require(len(copilot_reviews) == 1, "controller seed must contain one Copilot review")
+    review = require_dict(copilot_reviews[0], "Copilot review")
+    require(review.get("id") == CONTROLLER_SEED_REVIEW_ID, "Copilot review ID changed")
+    review_user = require_dict(review.get("user"), "Copilot review user")
+    require(review_user.get("login") == "copilot-pull-request-reviewer[bot]", "Copilot review login is invalid")
+    require(review_user.get("type") == "Bot", "Copilot review user type is invalid")
+    require(review.get("commit_id") == head, "Copilot review is not bound to the seed head")
+    require(review.get("state") in {"COMMENTED", "APPROVED"}, "Copilot review state is invalid")
+    require(review.get("submitted_at") == CONTROLLER_SEED_REVIEW_SUBMITTED_AT, "Copilot review timestamp changed")
+    request_at = parse_timestamp(request.get("created_at"), "Copilot request timestamp")
+    review_at = parse_timestamp(review.get("submitted_at"), "Copilot review timestamp")
+    require(request_at < review_at, "Copilot review predates its request")
+    review_comments = flatten_array_pages(
+        api.target_pages(
+            f"repos/{repository}/pulls/{number}/reviews/{CONTROLLER_SEED_REVIEW_ID}/comments?per_page=100"
+        ),
+        "Copilot review comments",
+    )
+    review_texts = [str(review.get("body") or "")]
+    for raw_comment in review_comments:
+        comment = require_dict(raw_comment, "Copilot review comment")
+        review_texts.append(str(comment.get("body") or ""))
+    require(any(text.strip() for text in review_texts), "Copilot review is empty")
+    normalized_texts = [normalized_review_text(text) for text in review_texts]
+    for marker in REJECTED_REVIEW_MARKERS:
+        require(
+            not any(marker in text for text in normalized_texts),
+            f"Copilot review contains rejected marker {marker}",
+        )
+
+    owner_name, repository_name = repository.split("/", 1)
+    query = """query($owner:String!,$repository:String!,$number:Int!,$after:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:100){pageInfo{hasNextPage} nodes{body author{login} pullRequestReview{commit{oid}}}}}}}}}"""
+    after = ""
+    seen_cursors: set[str] = set()
+    threads: list[Any] = []
+    for _page_number in range(1, MAX_REVIEW_THREAD_PAGES + 1):
+        variables: dict[str, str | int] = {
+            "owner": owner_name,
+            "repository": repository_name,
+            "number": number,
+        }
+        if after:
+            variables["after"] = after
+        response = require_dict(api.target_graphql(query, variables), "review thread response")
+        require(not response.get("errors"), "review thread query returned errors")
+        data = require_dict(response.get("data"), "review thread data")
+        graph_repository = require_dict(data.get("repository"), "review thread repository")
+        graph_pull = require_dict(graph_repository.get("pullRequest"), "review thread pull request")
+        require(graph_pull.get("headRefOid") == head, "head changed during thread verification")
+        connection = require_dict(graph_pull.get("reviewThreads"), "review threads")
+        threads.extend(require_list(connection.get("nodes"), "review thread nodes"))
+        page_info = require_dict(connection.get("pageInfo"), "review thread page info")
+        has_next_page = page_info.get("hasNextPage")
+        require(isinstance(has_next_page, bool), "review thread hasNextPage is invalid")
+        if not has_next_page:
+            break
+        next_cursor = require_string(page_info.get("endCursor"), "review thread cursor")
+        require(next_cursor not in seen_cursors, "review thread pagination repeats a cursor")
+        seen_cursors.add(next_cursor)
+        after = next_cursor
+    else:
+        raise VerificationError("review thread pagination exceeds the page limit")
+    for raw_thread in threads:
+        thread = require_dict(raw_thread, "review thread")
+        require(thread.get("isResolved") is True, "an unresolved review thread remains")
+        comments = require_dict(thread.get("comments"), "review thread comments")
+        require(
+            require_dict(comments.get("pageInfo"), "review comments page info").get("hasNextPage")
+            is False,
+            "review thread comment pagination is incomplete",
+        )
+
+    final_pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "final pull request")
+    require(final_pull == pull, "controller seed pull request changed during verification")
+    final_main = require_dict(api.target(f"repos/{repository}/branches/main"), "final main branch")
+    require(final_main.get("protected") is True, "main lost protection")
+    require(require_dict(final_main.get("commit"), "final main commit").get("sha") == base, "main moved during verification")
+    final_source = require_dict(
+        api.source(f"repos/{SOURCE_REPOSITORY}/branches/{SOURCE_BRANCH}"),
+        "final source branch",
+    )
+    require(final_source.get("protected") is True, "source main lost protection")
+    require(require_dict(final_source.get("commit"), "final source commit").get("sha") == source_sha, "source main moved during verification")
+
+    return {
+        "base_sha": base,
+        "candidate_tree_sha": head_tree_sha,
+        "controller_blob_sha": CONTROLLER_SEED_BLOB,
+        "head_sha": head,
+        "pull_request_number": number,
+        "repository": repository,
+        "review_id": CONTROLLER_SEED_REVIEW_ID,
+        "review_path": "immutable protected-source controller seed with exact Copilot review",
+        "review_request_event_id": CONTROLLER_SEED_REQUEST_EVENT_ID,
+        "review_submitted_at": CONTROLLER_SEED_REVIEW_SUBMITTED_AT,
+        "schema": "rep60-main-controller-seed/v1",
+        "source_repository": SOURCE_REPOSITORY,
+        "source_sha": source_sha,
+        "source_tree_sha": source_tree_sha,
+        "threads_resolved": len(threads),
+        "workflow_sha": args.workflow_sha,
+    }
 
 
 def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
@@ -762,7 +1106,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-base", required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--workflow-sha", required=True)
-    parser.add_argument("--classify-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--classify-only", action="store_true")
+    mode.add_argument("--controller-seed", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -771,12 +1117,16 @@ def main(argv: list[str] | None = None) -> int:
     target_token = os.environ.get("GH_TOKEN", "")
     source_token = os.environ.get("SOURCE_GH_TOKEN", "")
     try:
-        evidence = verify(args, GitHubAPI(target_token, source_token))
+        api = GitHubAPI(target_token, source_token)
+        if args.controller_seed:
+            evidence = verify_controller_seed(args, api)
+        else:
+            evidence = verify(args, api)
     except NotApplicable as error:
         print(str(error), file=sys.stderr)
         return 3
     except VerificationError as error:
-        print(f"REP-60 trust-root bootstrap verification failed: {error}", file=sys.stderr)
+        print(f"REP-60 main bootstrap verification failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(evidence, sort_keys=True, separators=(",", ":")))
     return 0

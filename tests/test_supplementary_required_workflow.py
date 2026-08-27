@@ -1516,6 +1516,50 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     accepts(retired_run_filter, retired_run_args, rejected)
                 )
 
+    def test_identity_access_controller_seed_is_script_bound_and_fail_closed(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        seed = workflow.split("controller_seed_verified=false", 1)[1].split(
+            "bootstrap_verified=false", 1
+        )[0]
+
+        self.assertEqual(
+            3,
+            workflow.count(
+                "fix(rep60): seed protected main review controller"
+            ),
+        )
+        self.assertIn("verify-main-trust-root-bootstrap.py", seed)
+        self.assertEqual(2, seed.count("--controller-seed"))
+        self.assertIn("rep60-main-controller-seed/v1:", seed)
+        self.assertIn('"rep60-main-controller-seed/v1"', seed)
+        self.assertIn(
+            "immutable protected-source controller seed with exact Copilot review",
+            seed,
+        )
+        self.assertIn("main-controller-seed-final-rebind", seed)
+        self.assertIn("final_controller_seed_summary", seed)
+        self.assertIn(
+            'test "${final_controller_seed_summary}" =',
+            seed,
+        )
+        self.assertIn("GH_TOKEN=\"${CONTROLLER_GH_TOKEN}\" gh api", seed)
+        self.assertIn('test -n "${SOURCE_GH_TOKEN}"', seed)
+        self.assertIn("git hash-object protected-controller-seed/verify.py", seed)
+        self.assertIn("-f name='Current revision review'", seed)
+        self.assertIn(".app.id == 15368", seed)
+        self.assertIn('.app.slug == "github-actions"', seed)
+        self.assertNotIn("temporary", seed)
+        self.assertNotIn("openai/codex-action@", seed)
+        self.assertNotRegex(seed, r'\[ "\$\{PR_NUMBER\}" = [0-9]+ \]')
+
+        failure_trap = workflow.index("trap finalize_failure ERR")
+        controller_seed = workflow.index("controller_seed_verified=false")
+        durable_bootstrap = workflow.index("bootstrap_verified=false")
+        self.assertLess(failure_trap, controller_seed)
+        self.assertLess(controller_seed, durable_bootstrap)
+
     def test_historical_bootstrap_transitions_are_absent(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         for retired_binding in (
