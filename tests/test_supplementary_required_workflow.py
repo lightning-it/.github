@@ -552,10 +552,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "rep60-required-workflow:v3:${GITHUB_RUN_ID}",
             "test \"$(jq 'length' <<<\"${same_revision}\")\" -eq 1",
             "test \"$(jq -er '.[0].id' <<<\"${same_revision}\")\" -eq 98499001131",
-            'id: 98498876339',
-            'id: 98499001131',
-            '"rep60-required-workflow:v3:33066823226:1498:"',
-            '"rep60-required-workflow:v3:33066859444:1502:"',
+            '"id":98498876339',
+            '"id":98499001131',
+            '"external_id":"rep60-required-workflow:v3:33066823226:1498:',
+            '"external_id":"rep60-required-workflow:v3:33066859444:1502:',
             'test "${prior_inventory}" = "${expected_prior_inventory}"',
             'test "${post_inventory}" = "${expected_prior_inventory}"',
             'and .repository.full_name == $repository',
@@ -586,6 +586,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "          expected_prior_inventory=", 1
         )[1].split("          same_revision=", 1)[0]
         inventory_guard = textwrap.dedent(inventory_guard)
+        expected_inventory = transition.split(
+            "          EXPECTED_PRIOR_INVENTORY: >-\n", 1
+        )[1].splitlines()[0].strip()
         bash = self._test_tool("bash")
         base = "b978d446c336ff2e6d86bef303f2dec5faad612c"
         head = "5dc048e43ae2fd933c92af418f7b13e47a05f586"
@@ -647,22 +650,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             }
         ]
 
-        def validate(candidate: object) -> int:
-            result = subprocess.run(
+        def validate(candidate: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
                 [bash, "-c", "set -euo pipefail\n" + inventory_guard],
                 env={
                     "PATH": TEST_TOOL_PATH,
                     "EVENT_BASE": base,
                     "EVENT_HEAD": head,
+                    "EXPECTED_PRIOR_INVENTORY": expected_inventory,
                     "reservations": json.dumps(candidate),
                 },
                 text=True,
                 capture_output=True,
                 check=False,
             )
-            return result.returncode
 
-        self.assertEqual(0, validate(valid))
+        valid_result = validate(valid)
+        self.assertEqual(0, valid_result.returncode, valid_result.stderr)
         rejected: list[object] = []
         for mutation in range(5):
             candidate = json.loads(json.dumps(valid))
@@ -682,7 +686,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             rejected.append(candidate)
         for candidate in rejected:
             with self.subTest(candidate=candidate):
-                self.assertNotEqual(0, validate(candidate))
+                self.assertNotEqual(0, validate(candidate).returncode)
 
     def test_release_app_failed_producer_bridge_rejects_mutated_job_ledgers(
         self,
@@ -1337,7 +1341,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".head_branch == $head_ref", human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
         self.assertIn("and .controller_sha == $controller", human_path)
-        self.assertIn("PR base_ref remains independently valid as main or", human_path)
+        self.assertIn(".base.ref == $base_ref", human_path)
         self.assertNotIn(".head_branch == $controller_branch", human_path)
         self.assertNotIn(".head_sha == $controller_sha", human_path)
 
@@ -2042,18 +2046,39 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("producer_evidence_ready=false", permanent)
-        self.assertIn("wait_for_terminal_producer()", permanent)
-        self.assertIn("for observation in $(seq 1 120)", permanent)
-        self.assertIn(".id == $run_id", permanent)
-        self.assertIn('^(queued|in_progress)$', permanent)
+        terminal_wait = workflow.split(
+            "      - name: Await the exact protected producer run terminal state\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        self.assertIn("for observation in $(seq 1 450)", terminal_wait)
+        self.assertIn("for observation in $(seq 1 120)", terminal_wait)
+        self.assertIn(".id == $run_id", terminal_wait)
+        self.assertIn('^(queued|in_progress)$', terminal_wait)
+        self.assertIn(
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:",
+            terminal_wait,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(copilot|ancestry-backmerge):v5:",
+            terminal_wait,
+        )
+        self.assertIn("mlx90-current-revision:v4:", terminal_wait)
+        self.assertIn(
+            "producer_run_id=%s\\n", terminal_wait
+        )
+        self.assertNotIn("wait_for_terminal_producer()", permanent)
         self.assertEqual(
             2,
             permanent.count(
-                'producer="$(wait_for_terminal_producer "${producer_run_id}")"'
+                'test "${producer_run_id}" = "${TERMINAL_PRODUCER_RUN_ID}"'
             ),
         )
         self.assertIn('"${producer_kind}" = copilot', permanent)
         self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+
         self.assertIn('if [ "${producer_status}" = queued ]', permanent)
         self.assertIn(
             "The protected producer run did not start in time.", permanent
@@ -2100,6 +2125,89 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
+
+    def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        terminal_wait = workflow.split(
+            "      - name: Await the exact protected producer run terminal state\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        selector = 'neutral="$(jq -c \\\n' + terminal_wait.split(
+            '            neutral="$(jq -c \\\n', 1
+        )[1].split('            test "${observation}" -lt 450\n', 1)[0]
+        selector = textwrap.dedent(selector)
+        bash = self._test_tool("bash")
+        base = "a" * 40
+        head = "b" * 40
+        pr_number = "1502"
+
+        def extract(external_ids: list[str]) -> subprocess.CompletedProcess[str]:
+            pages = [
+                {
+                    "check_runs": [
+                        {
+                            "name": "Current revision review",
+                            "app": {"id": 15368, "slug": "github-actions"},
+                            "head_sha": head,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "external_id": external_id,
+                        }
+                        for external_id in external_ids
+                    ]
+                }
+            ]
+            script = (
+                "set -euo pipefail\n"
+                "producer_run_id=''\n"
+                "for observation in 1; do\n"
+                f"{textwrap.indent(selector, '  ')}"
+                "done\n"
+                '[[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]\n'
+                'printf "%s" "${producer_run_id}"\n'
+            )
+            return subprocess.run(
+                [bash, "-c", script],
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "EVENT_BASE": base,
+                    "EVENT_HEAD": head,
+                    "PR_NUMBER": pr_number,
+                    "pages": json.dumps(pages),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        accepted = {
+            f"mlx90-current-revision:v4:123:{'c' * 64}": "123",
+            f"mlx90-current-revision:copilot:v5:456:{base}:{head}": "456",
+            (
+                "mlx90-current-revision:managed-sync:v6:"
+                f"{pr_number}:789:{base}:{head}"
+            ): "789",
+        }
+        for external_id, run_id in accepted.items():
+            with self.subTest(external_id=external_id):
+                result = extract([external_id])
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(run_id, result.stdout)
+
+        rejected = (
+            [f"mlx90-current-revision:copilot:v6:99:789:{base}:{head}"],
+            [f"mlx90-current-revision:copilot:v5:789:{head}:{base}"],
+            [
+                f"mlx90-current-revision:v4:123:{'c' * 64}",
+                f"mlx90-current-revision:v4:456:{'d' * 64}",
+            ],
+        )
+        for external_ids in rejected:
+            with self.subTest(external_ids=external_ids):
+                self.assertNotEqual(0, extract(external_ids).returncode)
 
     def test_permanent_verifier_rejects_every_unexpected_terminal_job(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
