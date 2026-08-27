@@ -93,22 +93,31 @@ jobs:
           fi
 
           required_workflow_path='.github/workflows/supplementary-current-revision-required.yml'
-          required_workflow_url_prefix="${GITHUB_API_URL}/repos/${REPOSITORY}/actions/required_workflows/"
           for observation in $(seq 1 60); do
             run_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")"
             matching_runs="$(jq -c \
+              --arg api_url "${GITHUB_API_URL}" \
               --arg head "${EVENT_HEAD}" \
               --arg head_ref "${EVENT_HEAD_REF}" \
               --arg path "${required_workflow_path}" \
               --arg repository "${REPOSITORY}" \
-              --arg url_prefix "${required_workflow_url_prefix}" \
               --argjson number "${PR_NUMBER}" \
               '
                 [.[].workflow_runs[]? |
                   select(.workflow_id | type == "number" and . > 0) |
                   select(
-                    .workflow_url == ($url_prefix + (.workflow_id | tostring))
+                    .workflow_url == (
+                      if $repository == "lightning-it/.github" then
+                        $api_url + "/repos/" + $repository
+                          + "/actions/workflows/"
+                          + (.workflow_id | tostring)
+                      else
+                        $api_url + "/repos/" + $repository
+                          + "/actions/required_workflows/"
+                          + (.workflow_id | tostring)
+                      end
+                    )
                     and .path == $path
                   ) |
                   select(.event == "pull_request_target") |

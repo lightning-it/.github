@@ -1895,8 +1895,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split("\n  request-protected-verifier-reevaluation:", 1)[0]
 
         for fragment in (
-            'actions/required_workflows/"',
-            '.workflow_url == ($url_prefix + (.workflow_id | tostring))',
+            'if $repository == "lightning-it/.github" then',
+            '+ "/actions/workflows/"',
+            '+ "/actions/required_workflows/"',
+            '+ (.workflow_id | tostring)',
             'select(.repository.full_name == $repository)',
             'select(.head_repository.full_name == $repository)',
             'select(.actor.login == "litroc")',
@@ -1908,6 +1910,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${step_count}" -gt 1 ]',
         ):
             self.assertIn(fragment, classifier)
+        self.assertEqual(1, classifier.count('+ "/actions/workflows/"'))
+        self.assertEqual(
+            1, classifier.count('+ "/actions/required_workflows/"')
+        )
+        self.assertNotIn("required_workflow_url_prefix", classifier)
         self.assertNotIn("contents: read", classifier)
         self.assertIn(
             '" opened " + $head)', classifier
