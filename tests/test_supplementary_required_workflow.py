@@ -1690,9 +1690,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "${neutral_count}" -gt 1 ]', permanent)
         self.assertIn('if [ "${neutral_count}" -eq 1 ]', permanent)
         self.assertIn('if [ "${neutral_status}" = completed ]', permanent)
+        self.assertIn("neutral_conclusion", permanent)
         self.assertIn(
-            'test "$(jq -r \'.[0].conclusion\' <<<"${neutral}")" = success',
+            "The protected current-revision result completed without success:",
             permanent,
+        )
+        self.assertIn(
+            "{id, status, conclusion, details_url, external_id}", permanent
         )
         self.assertIn('^(queued|in_progress)$', permanent)
         self.assertIn(
@@ -1726,10 +1730,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Request Copilot review for current revision"', permanent
         )
         self.assertIn('and .conclusion == "skipped"', permanent)
-        self.assertIn(
-            'test "$(jq \'length\' <<<"${allowed_skipped_request_jobs}")" -le 1',
-            permanent,
-        )
+        self.assertIn("disallowed_terminal_count", permanent)
+        self.assertIn("Unexpected terminal producer jobs were observed:", permanent)
+        self.assertIn("allowed_skipped_request_count", permanent)
+        self.assertIn("Multiple skipped Copilot-request jobs were observed:", permanent)
+        self.assertIn("{id, name, status, conclusion}", permanent)
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
