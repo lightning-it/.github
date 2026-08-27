@@ -1036,6 +1036,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "live-commit-binding",
             "reservation-inventory",
             "reservation-materialization",
+            "main-controller-seed-classification",
+            "main-controller-seed-evidence",
+            "main-controller-seed-final-rebind",
             "main-trust-root-bootstrap-classification",
             "main-trust-root-bootstrap-evidence",
             "main-trust-root-bootstrap-final-rebind",
@@ -1532,7 +1535,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("verify-main-trust-root-bootstrap.py", seed)
         self.assertEqual(2, seed.count("--controller-seed"))
-        self.assertIn("rep60-main-controller-seed/v1:", seed)
+        self.assertIn("rep60-main-controller-seed:v1:", seed)
         self.assertIn('"rep60-main-controller-seed/v1"', seed)
         self.assertIn(
             "immutable protected-source controller seed with exact Copilot review",
