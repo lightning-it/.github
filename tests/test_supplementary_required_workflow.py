@@ -1552,6 +1552,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
         self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
         self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
+        self.assertIn('".github/workflows/current-revision-rerun.yml"', bootstrap)
         self.assertIn("main-trust-root-bootstrap-final-rebind", bootstrap)
         self.assertIn("final_bootstrap_summary", bootstrap)
         self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)

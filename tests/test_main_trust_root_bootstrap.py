@@ -40,6 +40,7 @@ class FakeAPI:
             ".github/codex/schemas/exact-head-review.schema.json": "6" * 40,
             ".github/workflows/release-bot-exact-head-review.yml": "7" * 40,
             "scripts/materialize-exact-revision-review.py": "8" * 40,
+            ".github/workflows/current-revision-rerun.yml": "a" * 40,
         }
         self.pull = {
             "number": self.number,
@@ -72,7 +73,11 @@ class FakeAPI:
                     "filename": path,
                     "status": (
                         "added"
-                        if path == "scripts/materialize-exact-revision-review.py"
+                        if path
+                        in {
+                            ".github/workflows/current-revision-rerun.yml",
+                            "scripts/materialize-exact-revision-review.py",
+                        }
                         else "modified"
                     ),
                     "sha": blob,
@@ -174,7 +179,7 @@ class FakeAPI:
             "commit_id": self.head,
             "state": "COMMENTED",
             "submitted_at": "2026-08-26T07:31:18Z",
-            "body": "Copilot reviewed 4 out of 4 changed files.",
+            "body": "Copilot reviewed 5 out of 5 changed files.",
         }
         self.review_comments = [
             {"body": "A documented false positive with deterministic proof."}
@@ -439,6 +444,33 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         evidence = MODULE.verify(self.args(api), api)
         self.assertEqual(api.head, evidence["head_sha"])
         self.assertEqual(api.paths, evidence["source_blobs"])
+
+    def test_exact_bootstrap_reuses_source_identical_protected_helper(self) -> None:
+        api = FakeAPI()
+        helper = ".github/workflows/current-revision-rerun.yml"
+        api.base_tree["tree"].append(api._tree_entry(helper, api.paths[helper]))
+        api.comparison["files"] = [
+            file_object
+            for file_object in api.comparison["files"]
+            if file_object["filename"] != helper
+        ]
+        evidence = MODULE.verify(self.args(api), api)
+        self.assertEqual(api.paths, evidence["source_blobs"])
+
+    def test_unchanged_helper_must_match_protected_source(self) -> None:
+        api = FakeAPI()
+        helper = ".github/workflows/current-revision-rerun.yml"
+        api.base_tree["tree"].append(api._tree_entry(helper, "f" * 40))
+        api.comparison["files"] = [
+            file_object
+            for file_object in api.comparison["files"]
+            if file_object["filename"] != helper
+        ]
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "unchanged protected base",
+        ):
+            MODULE.verify(self.args(api), api)
 
     def test_partial_base_predecessor_set_fails_closed(self) -> None:
         api = FakeAPI()
