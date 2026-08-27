@@ -1708,7 +1708,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "The protected producer run did not start in time.", permanent
         )
         self.assertIn("continue", permanent)
-        self.assertIn('test "${producer_status}" = in_progress', permanent)
+        self.assertIn('^(in_progress|completed)$', permanent)
         self.assertIn(
             "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
             permanent,
@@ -1727,7 +1727,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('and .conclusion == "skipped"', permanent)
         self.assertIn(
-            '"${allowed_skipped_request_jobs}")" -le 1', permanent
+            'test "$(jq \'length\' <<<"${allowed_skipped_request_jobs}")" -le 1',
+            permanent,
+        )
+        producer_loop = permanent.split(
+            "for producer_observation in $(seq 1 60)", 1
+        )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
+        self.assertLess(
+            producer_loop.index("disallowed_terminal_jobs"),
+            producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
         self.assertIn(

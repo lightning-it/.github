@@ -1573,9 +1573,6 @@ jobs:
                 producer_status="$(jq -er \
                   '.status | select(type == "string" and length > 0)' \
                   <<<"${producer}")"
-                if [ "${producer_status}" = completed ]; then
-                  break
-                fi
                 if [ "${producer_status}" = queued ]; then
                   if [ "${producer_observation}" -eq 60 ]; then
                     echo 'The protected producer run did not start in time.' >&2
@@ -1584,7 +1581,7 @@ jobs:
                   sleep 1
                   continue
                 fi
-                test "${producer_status}" = in_progress
+                [[ "${producer_status}" =~ ^(in_progress|completed)$ ]]
                 producer_jobs_pages="$(gh api --paginate --slurp \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}/jobs?filter=all&per_page=100")"
                 jq -e '
@@ -1630,9 +1627,12 @@ jobs:
                     select(.name
                       == "Request Copilot review for current revision")]
                   ' <<<"${producer_jobs_pages}")"
-                if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ] \
-                  && [ "$(jq 'length' <<<"${disallowed_terminal_jobs}")" -eq 0 ] \
-                  && [ "$(jq 'length' <<<"${allowed_skipped_request_jobs}")" -le 1 ]; then
+                test "$(jq 'length' <<<"${disallowed_terminal_jobs}")" -eq 0
+                test "$(jq 'length' <<<"${allowed_skipped_request_jobs}")" -le 1
+                if [ "${producer_status}" = completed ]; then
+                  break
+                fi
+                if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
                   critical_steps="$(jq -c '
                     [.[0].steps[] |
                       select(
