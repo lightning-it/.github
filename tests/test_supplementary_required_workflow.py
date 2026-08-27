@@ -1844,8 +1844,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("for _observation in $(seq 1 300)", wait)
         self.assertIn("sleep 5", wait)
         self.assertIn(".draft | type", wait)
+        self.assertIn(
+            'if [ "${REPOSITORY}" = "lightning-it/.github" ]; then', wait
+        )
+        self.assertIn('producer_event="pull_request_target"', wait)
+        self.assertIn('producer_name="Current revision review gate"', wait)
+        self.assertIn('producer_event="pull_request"', wait)
+        self.assertIn('producer_name="Copilot review gate"', wait)
+        self.assertIn("event=${producer_event}&head_sha=${EVENT_HEAD}", wait)
+        self.assertIn('--arg event "${producer_event}"', wait)
+        self.assertIn('--arg name "${producer_name}"', wait)
+        self.assertIn("select(.event == $event)", wait)
         self.assertIn('select(.path == ".github/workflows/copilot-review.yml")', wait)
-        self.assertIn('select(.name == "Copilot review gate")', wait)
+        self.assertIn("select(.name == $name)", wait)
+        self.assertNotIn('select(.event == "pull_request")', wait)
+        self.assertNotIn('select(.name == "Copilot review gate")', wait)
         self.assertIn(".pull_requests[0].base.sha == $base", wait)
         self.assertIn(".pull_requests[0].head.sha == $head", wait)
         self.assertIn(

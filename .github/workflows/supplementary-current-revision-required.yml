@@ -221,6 +221,14 @@ jobs:
               continue
             fi
 
+            if [ "${REPOSITORY}" = "lightning-it/.github" ]; then
+              producer_event="pull_request_target"
+              producer_name="Current revision review gate"
+            else
+              producer_event="pull_request"
+              producer_name="Copilot review gate"
+            fi
+
             review_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
             reviews="$(jq -c \
@@ -236,17 +244,19 @@ jobs:
             fi
 
             run_pages="$(gh api --paginate --slurp \
-              "repos/${REPOSITORY}/actions/runs?event=pull_request&head_sha=${EVENT_HEAD}&per_page=100")"
+              "repos/${REPOSITORY}/actions/runs?event=${producer_event}&head_sha=${EVENT_HEAD}&per_page=100")"
             matching_runs="$(jq -c \
               --arg base "${EVENT_BASE}" \
+              --arg event "${producer_event}" \
               --arg head "${EVENT_HEAD}" \
               --arg head_ref "${expected_head_ref}" \
+              --arg name "${producer_name}" \
               --arg repository "${REPOSITORY}" \
               --argjson number "${PR_NUMBER}" '
                 [.[].workflow_runs[]? |
-                  select(.event == "pull_request") |
+                  select(.event == $event) |
                   select(.path == ".github/workflows/copilot-review.yml") |
-                  select(.name == "Copilot review gate") |
+                  select(.name == $name) |
                   select(.head_branch == $head_ref and .head_sha == $head) |
                   select(.repository.full_name == $repository) |
                   select(.head_repository.full_name == $repository) |
