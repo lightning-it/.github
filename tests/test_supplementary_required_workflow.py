@@ -1666,6 +1666,185 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.rindex("trap - ERR"),
         )
 
+    def test_permanent_verifier_awaits_protected_evidence_without_a_rerun_race(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+
+        self.assertIn("for evidence_observation in $(seq 1 450)", permanent)
+        self.assertIn("sleep 2", permanent)
+        self.assertIn('current_pr="$(gh api', permanent)
+        for binding in (
+            '.state == "open"',
+            ".draft == false",
+            ".base.sha == $base",
+            ".head.sha == $head",
+            ".base.repo.full_name == $repository",
+            '(.head.repo.full_name | type) == "string"',
+            "(.head.repo.full_name | length) > 0",
+        ):
+            self.assertIn(binding, permanent)
+        self.assertIn('if [ "${neutral_count}" -gt 1 ]', permanent)
+        self.assertIn('if [ "${neutral_count}" -eq 1 ]', permanent)
+        self.assertIn('if [ "${neutral_status}" = completed ]', permanent)
+        self.assertIn(
+            '.[0].conclusion | debug | select(. == "success")', permanent
+        )
+        self.assertIn('^(queued|in_progress)$', permanent)
+        self.assertIn(
+            "The protected current-revision result did not become successful in time.",
+            permanent,
+        )
+
+        self.assertIn("producer_evidence_ready=false", permanent)
+        self.assertIn('"${producer_kind}" = copilot', permanent)
+        self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn('if [ "${producer_status}" = queued ]', permanent)
+        self.assertIn(
+            "The protected producer run did not start in time.", permanent
+        )
+        self.assertIn("continue", permanent)
+        self.assertIn('^(in_progress|completed)$', permanent)
+        self.assertIn(
+            "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
+            permanent,
+        )
+        self.assertIn('.name == "Verify current revision policy"', permanent)
+        self.assertIn(
+            '.name == "Verify current Copilot review and resolved findings"',
+            permanent,
+        )
+        self.assertIn('.name == "Publish bound neutral result"', permanent)
+        self.assertIn("disallowed_terminal_jobs", permanent)
+        self.assertIn('and .conclusion != "success"', permanent)
+        self.assertIn("allowed_skipped_request_jobs", permanent)
+        self.assertIn(
+            '.name == "Request Copilot review for current revision"', permanent
+        )
+        self.assertIn('and .conclusion == "skipped"', permanent)
+        self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
+        self.assertIn("jq -e 'length <= 1 or error(tojson)'", permanent)
+        producer_loop = permanent.split(
+            "for producer_observation in $(seq 1 60)", 1
+        )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
+        self.assertLess(
+            producer_loop.index("disallowed_terminal_jobs"),
+            producer_loop.index('if [ "${producer_status}" = completed ]'),
+        )
+        self.assertIn('producer_evidence_ready=true', permanent)
+        self.assertIn(
+            '--argjson evidence_ready "${producer_evidence_ready}"', permanent
+        )
+        self.assertIn(
+            '($evidence_ready\n                      and .status == "in_progress"',
+            permanent,
+        )
+        self.assertLess(
+            permanent.index("for evidence_observation in $(seq 1 450)"),
+            permanent.index("producer_evidence_ready=false"),
+        )
+        self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
+        self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
+
+    def test_permanent_verifier_rejects_every_unexpected_terminal_job(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+
+        def assignment_filter(name: str) -> str:
+            marker = f'{name}="$(jq -c \'\n'
+            start = permanent.index(marker) + len(marker)
+            end = permanent.index(
+                '\n                  \' <<<"${producer_jobs_pages}")"', start
+            )
+            return permanent[start:end]
+
+        jobs = [
+            {
+                "name": "Verify current revision policy",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Request Copilot review for current revision",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "name": "cancelled job",
+                "status": "completed",
+                "conclusion": "cancelled",
+            },
+            {
+                "name": "timed out job",
+                "status": "completed",
+                "conclusion": "timed_out",
+            },
+            {
+                "name": "unexpected skipped job",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "name": "running job",
+                "status": "in_progress",
+                "conclusion": None,
+            },
+        ]
+        source = json.dumps([{"jobs": jobs}])
+        jq = self._test_tool("jq")
+
+        def evaluate(name: str) -> list[dict[str, object]]:
+            result = subprocess.run(
+                [jq, "-c", assignment_filter(name)],
+                input=source,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        self.assertEqual(
+            [job["name"] for job in evaluate("disallowed_terminal_jobs")],
+            ["cancelled job", "timed out job", "unexpected skipped job"],
+        )
+        self.assertEqual(
+            [job["name"] for job in evaluate("allowed_skipped_request_jobs")],
+            ["Request Copilot review for current revision"],
+        )
+
+        for predicate, passing, failing in (
+            ("length == 0 or error(tojson)", [], evaluate("disallowed_terminal_jobs")),
+            (
+                "length <= 1 or error(tojson)",
+                evaluate("allowed_skipped_request_jobs"),
+                [{"name": "first"}, {"name": "second"}],
+            ),
+        ):
+            success = subprocess.run(
+                [jq, "-e", predicate],
+                input=json.dumps(passing),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(success.returncode, 0)
+            self.assertEqual(success.stderr, "")
+
+            failure = subprocess.run(
+                [jq, "-e", predicate],
+                input=json.dumps(failing),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn(json.dumps(failing, separators=(",", ":")), failure.stderr)
+
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
     ) -> None:
