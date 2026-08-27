@@ -114,6 +114,14 @@ def require_positive_int(value: Any, name: str) -> int:
     return value
 
 
+def require_nonnegative_int(value: Any, name: str) -> int:
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0,
+        f"{name} must be a non-negative integer",
+    )
+    return value
+
+
 def parse_timestamp(value: Any, name: str) -> dt.datetime:
     text = require_string(value, name)
     require(text.endswith("Z"), f"{name} must be UTC")
@@ -505,11 +513,71 @@ def verify_controller_seed(
     )
     require(source_branch.get("name") == SOURCE_BRANCH, "source branch changed")
     require(source_branch.get("protected") is True, "source branch is not protected")
-    source_sha = require_string(
+    source_head_sha = require_string(
         require_dict(source_branch.get("commit"), "source main commit").get("sha"),
-        "source SHA",
+        "source head SHA",
     )
-    require(source_sha == CONTROLLER_SEED_SOURCE, "source main moved")
+    require(
+        SHA_RE.fullmatch(source_head_sha) is not None,
+        "source head SHA is invalid",
+    )
+    source_ancestry = require_dict(
+        api.source(
+            f"repos/{SOURCE_REPOSITORY}/compare/"
+            f"{CONTROLLER_SEED_SOURCE}...{source_head_sha}"
+        ),
+        "source ancestry comparison",
+    )
+    require(
+        require_dict(source_ancestry.get("base_commit"), "source ancestry base").get(
+            "sha"
+        )
+        == CONTROLLER_SEED_SOURCE,
+        "source ancestry base changed",
+    )
+    source_status = require_string(
+        source_ancestry.get("status"),
+        "source ancestry status",
+    )
+    source_ahead_by = require_nonnegative_int(
+        source_ancestry.get("ahead_by"),
+        "source ancestry ahead_by",
+    )
+    source_behind_by = require_nonnegative_int(
+        source_ancestry.get("behind_by"),
+        "source ancestry behind_by",
+    )
+    if source_status == "behind":
+        require(
+            source_ahead_by == 0 and source_behind_by > 0,
+            "source ancestry behind counts are invalid",
+        )
+        raise VerificationError(
+            "source main is behind the pinned controller source"
+        )
+    require(
+        require_dict(
+            source_ancestry.get("merge_base_commit"),
+            "source ancestry merge base",
+        ).get("sha")
+        == CONTROLLER_SEED_SOURCE,
+        "source main diverged from the pinned controller source",
+    )
+    require(
+        source_behind_by == 0,
+        "source main is behind the pinned controller source",
+    )
+    if source_head_sha == CONTROLLER_SEED_SOURCE:
+        require(
+            source_status == "identical" and source_ahead_by == 0,
+            "source ancestry is not identical to the pinned controller source",
+        )
+    else:
+        require(
+            source_status == "ahead" and source_ahead_by > 0,
+            "source main is not ahead of the pinned controller source",
+        )
+    source_sha = CONTROLLER_SEED_SOURCE
     source_commit = require_dict(
         api.source(f"repos/{SOURCE_REPOSITORY}/commits/{source_sha}"),
         "source commit",
@@ -662,7 +730,11 @@ def verify_controller_seed(
         "final source branch",
     )
     require(final_source.get("protected") is True, "source main lost protection")
-    require(require_dict(final_source.get("commit"), "final source commit").get("sha") == source_sha, "source main moved during verification")
+    require(
+        require_dict(final_source.get("commit"), "final source commit").get("sha")
+        == source_head_sha,
+        "source main moved during verification",
+    )
 
     return {
         "base_sha": base,
