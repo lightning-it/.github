@@ -397,6 +397,99 @@ class FakeAPI:
         return copy.deepcopy(self.graphql_payload)
 
 
+def make_controller_seed_api() -> FakeAPI:
+    api = FakeAPI()
+    api.repository = MODULE.CONTROLLER_SEED_REPOSITORY
+    api.number = MODULE.CONTROLLER_SEED_PULL_REQUEST
+    api.base = MODULE.CONTROLLER_SEED_BASE
+    api.head = MODULE.CONTROLLER_SEED_HEAD
+    api.source_sha = MODULE.CONTROLLER_SEED_SOURCE
+    api.head_tree_sha = MODULE.CONTROLLER_SEED_TREE
+    api.pull = {
+        "number": api.number,
+        "state": "open",
+        "draft": False,
+        "title": MODULE.CONTROLLER_SEED_TITLE,
+        "user": {"login": "litroc", "type": "User"},
+        "labels": [],
+        "base": {
+            "ref": "main",
+            "sha": api.base,
+            "repo": {"full_name": api.repository},
+        },
+        "head": {
+            "ref": MODULE.CONTROLLER_SEED_HEAD_REF,
+            "sha": api.head,
+            "repo": {"full_name": api.repository},
+        },
+    }
+    api.comparison = {
+        "status": "ahead",
+        "ahead_by": 1,
+        "behind_by": 0,
+        "total_commits": 1,
+        "base_commit": {"sha": api.base},
+        "merge_base_commit": {"sha": api.base},
+        "commits": [{"sha": api.head}],
+        "files": [
+            {
+                "filename": MODULE.CONTROLLER_SEED_FILE,
+                "status": "added",
+                "sha": MODULE.CONTROLLER_SEED_BLOB,
+            }
+        ],
+    }
+    api.base_tree = {"truncated": False, "tree": []}
+    api.head_tree = {
+        "truncated": False,
+        "tree": [
+            api._tree_entry(
+                MODULE.CONTROLLER_SEED_FILE,
+                MODULE.CONTROLLER_SEED_BLOB,
+            )
+        ],
+    }
+    api.source_tree = copy.deepcopy(api.head_tree)
+    api.timeline = [
+        {
+            "id": MODULE.CONTROLLER_SEED_REQUEST_EVENT_ID,
+            "event": "review_requested",
+            "created_at": MODULE.CONTROLLER_SEED_REQUESTED_AT,
+            "actor": {"login": "litroc"},
+            "requested_reviewer": {"login": "Copilot"},
+        }
+    ]
+    api.review = {
+        "id": MODULE.CONTROLLER_SEED_REVIEW_ID,
+        "user": {
+            "login": "copilot-pull-request-reviewer[bot]",
+            "type": "Bot",
+        },
+        "commit_id": api.head,
+        "state": "COMMENTED",
+        "submitted_at": MODULE.CONTROLLER_SEED_REVIEW_SUBMITTED_AT,
+        "body": "Copilot reviewed the exact protected controller seed.",
+    }
+    api.review_comments = []
+    api.graphql_payload = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "headRefOid": api.head,
+                    "reviewThreads": {
+                        "pageInfo": {
+                            "hasNextPage": False,
+                            "endCursor": None,
+                        },
+                        "nodes": [],
+                    },
+                }
+            }
+        }
+    }
+    return api
+
+
 class MainTrustRootBootstrapTests(unittest.TestCase):
     def args(self, api: FakeAPI) -> Any:
         return MODULE.parse_args(
@@ -413,6 +506,101 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 api.workflow,
             ]
         )
+
+    def controller_seed_args(self, api: FakeAPI) -> Any:
+        return MODULE.parse_args(
+            [
+                "--repository",
+                api.repository,
+                "--pull-request",
+                str(api.number),
+                "--expected-base",
+                api.base,
+                "--expected-head",
+                api.head,
+                "--workflow-sha",
+                api.workflow,
+                "--controller-seed",
+            ]
+        )
+
+    def test_immutable_controller_seed_emits_bound_evidence(self) -> None:
+        api = make_controller_seed_api()
+        evidence = MODULE.verify_controller_seed(
+            self.controller_seed_args(api), api
+        )
+
+        self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
+        self.assertEqual(MODULE.CONTROLLER_SEED_REPOSITORY, evidence["repository"])
+        self.assertEqual(MODULE.CONTROLLER_SEED_BASE, evidence["base_sha"])
+        self.assertEqual(MODULE.CONTROLLER_SEED_HEAD, evidence["head_sha"])
+        self.assertEqual(
+            MODULE.CONTROLLER_SEED_BLOB,
+            evidence["controller_blob_sha"],
+        )
+        self.assertEqual(MODULE.CONTROLLER_SEED_REVIEW_ID, evidence["review_id"])
+        self.assertEqual(0, evidence["threads_resolved"])
+
+    def test_controller_seed_immutable_bindings_fail_closed(self) -> None:
+        mutations = ("repository", "path", "blob", "review", "thread")
+        for mutation in mutations:
+            api = make_controller_seed_api()
+            if mutation == "repository":
+                api.repository = "lightning-it/another-repository"
+            elif mutation == "path":
+                api.comparison["files"].append(
+                    {
+                        "filename": "README.md",
+                        "status": "modified",
+                        "sha": "f" * 40,
+                    }
+                )
+            elif mutation == "blob":
+                api.head_tree["tree"][0]["sha"] = "f" * 40
+            elif mutation == "review":
+                api.review["id"] += 1
+            else:
+                api.graphql_payload["data"]["repository"]["pullRequest"][
+                    "reviewThreads"
+                ]["nodes"] = [
+                    {
+                        "isResolved": False,
+                        "comments": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [],
+                        },
+                    }
+                ]
+            with self.subTest(mutation=mutation), self.assertRaises(
+                MODULE.VerificationError
+            ):
+                MODULE.verify_controller_seed(self.controller_seed_args(api), api)
+
+    def test_controller_seed_final_rebind_ignores_volatile_pr_fields(
+        self,
+    ) -> None:
+        api = make_controller_seed_api()
+        original_target = api.target
+        pull_endpoint = f"repos/{api.repository}/pulls/{api.number}"
+        pull_reads = 0
+
+        def target(endpoint: str) -> Any:
+            nonlocal pull_reads
+            payload = original_target(endpoint)
+            if endpoint == pull_endpoint:
+                pull_reads += 1
+                if pull_reads == 2:
+                    payload["updated_at"] = "2026-08-27T07:23:14Z"
+                    payload["comments"] = 1
+            return payload
+
+        api.target = target  # type: ignore[method-assign]
+        evidence = MODULE.verify_controller_seed(
+            self.controller_seed_args(api), api
+        )
+
+        self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
+        self.assertEqual(2, pull_reads)
 
     def test_exact_protected_bootstrap_emits_bound_evidence(self) -> None:
         api = FakeAPI()
