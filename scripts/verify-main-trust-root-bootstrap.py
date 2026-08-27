@@ -324,6 +324,45 @@ def exact_run_pull_binding(
     )
 
 
+def exact_controller_seed_pull_binding(
+    pull: dict[str, Any],
+    repository: str,
+    number: int,
+    base: str,
+    head: str,
+) -> None:
+    require(pull.get("number") == number, "pull request number changed")
+    require(pull.get("state") == "open", "pull request is not open")
+    require(pull.get("draft") is False, "pull request is still a draft")
+    require(pull.get("title") == CONTROLLER_SEED_TITLE, "controller seed title changed")
+    user = require_dict(pull.get("user"), "pull request user")
+    require(user.get("login") == "litroc", "controller seed author is not litroc")
+    require(user.get("type") == "User", "controller seed author type is invalid")
+    require(
+        not require_list(pull.get("labels"), "pull request labels"),
+        "controller seed must not have labels",
+    )
+    base_object = require_dict(pull.get("base"), "pull request base")
+    head_object = require_dict(pull.get("head"), "pull request head")
+    base_repository = require_dict(base_object.get("repo"), "base repository")
+    head_repository = require_dict(head_object.get("repo"), "head repository")
+    require(base_object.get("ref") == "main", "controller seed base ref changed")
+    require(base_object.get("sha") == base, "controller seed base SHA changed")
+    require(
+        base_repository.get("full_name") == repository,
+        "controller seed base repository changed",
+    )
+    require(
+        head_object.get("ref") == CONTROLLER_SEED_HEAD_REF,
+        "controller seed branch changed",
+    )
+    require(head_object.get("sha") == head, "controller seed head SHA changed")
+    require(
+        head_repository.get("full_name") == repository,
+        "controller seed is not same-repository",
+    )
+
+
 def verify_controller_seed(
     args: argparse.Namespace, api: GitHubAPI
 ) -> dict[str, Any]:
@@ -359,24 +398,7 @@ def verify_controller_seed(
     )
 
     pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "pull request")
-    require(pull.get("number") == number, "pull request number changed")
-    require(pull.get("state") == "open", "pull request is not open")
-    require(pull.get("draft") is False, "pull request is still a draft")
-    require(pull.get("title") == CONTROLLER_SEED_TITLE, "controller seed title changed")
-    user = require_dict(pull.get("user"), "pull request user")
-    require(user.get("login") == "litroc", "controller seed author is not litroc")
-    require(user.get("type") == "User", "controller seed author type is invalid")
-    require(not require_list(pull.get("labels"), "pull request labels"), "controller seed must not have labels")
-    base_object = require_dict(pull.get("base"), "pull request base")
-    head_object = require_dict(pull.get("head"), "pull request head")
-    base_repository = require_dict(base_object.get("repo"), "base repository")
-    head_repository = require_dict(head_object.get("repo"), "head repository")
-    require(base_object.get("ref") == "main", "controller seed base ref changed")
-    require(base_object.get("sha") == base, "controller seed base SHA changed")
-    require(base_repository.get("full_name") == repository, "controller seed base repository changed")
-    require(head_object.get("ref") == CONTROLLER_SEED_HEAD_REF, "controller seed branch changed")
-    require(head_object.get("sha") == head, "controller seed head SHA changed")
-    require(head_repository.get("full_name") == repository, "controller seed is not same-repository")
+    exact_controller_seed_pull_binding(pull, repository, number, base, head)
 
     comparison = require_dict(
         api.target(f"repos/{repository}/compare/{base}...{head}"), "comparison"
@@ -623,7 +645,13 @@ def verify_controller_seed(
         )
 
     final_pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "final pull request")
-    require(final_pull == pull, "controller seed pull request changed during verification")
+    exact_controller_seed_pull_binding(
+        final_pull,
+        repository,
+        number,
+        base,
+        head,
+    )
     final_main = require_dict(api.target(f"repos/{repository}/branches/main"), "final main branch")
     require(final_main.get("protected") is True, "main lost protection")
     require(require_dict(final_main.get("commit"), "final main commit").get("sha") == base, "main moved during verification")

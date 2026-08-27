@@ -576,6 +576,32 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             ):
                 MODULE.verify_controller_seed(self.controller_seed_args(api), api)
 
+    def test_controller_seed_final_rebind_ignores_volatile_pr_fields(
+        self,
+    ) -> None:
+        api = make_controller_seed_api()
+        original_target = api.target
+        pull_endpoint = f"repos/{api.repository}/pulls/{api.number}"
+        pull_reads = 0
+
+        def target(endpoint: str) -> Any:
+            nonlocal pull_reads
+            payload = original_target(endpoint)
+            if endpoint == pull_endpoint:
+                pull_reads += 1
+                if pull_reads == 2:
+                    payload["updated_at"] = "2026-08-27T07:23:14Z"
+                    payload["comments"] = 1
+            return payload
+
+        api.target = target  # type: ignore[method-assign]
+        evidence = MODULE.verify_controller_seed(
+            self.controller_seed_args(api), api
+        )
+
+        self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
+        self.assertEqual(2, pull_reads)
+
     def test_exact_protected_bootstrap_emits_bound_evidence(self) -> None:
         api = FakeAPI()
         evidence = MODULE.verify(self.args(api), api)
