@@ -1556,6 +1556,46 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("final_bootstrap_summary", bootstrap)
         self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)
         self.assertIn("-f name='Current revision review'", bootstrap)
+        check_id = bootstrap.index('bootstrap_check_id="$(jq -er')
+        identity_verify = bootstrap.index(
+            '--arg evidence "${bootstrap_summary}"', check_id
+        )
+        identity_verified = bootstrap.index(
+            '<<<"${bootstrap_check}" >/dev/null', identity_verify
+        )
+        details_rebind = bootstrap.index(
+            'bootstrap_check="$(gh api --method PATCH', check_id
+        )
+        final_rebind = bootstrap.index(
+            "failure_stage='main-trust-root-bootstrap-final-rebind'"
+        )
+        self.assertLess(check_id, identity_verify)
+        self.assertLess(identity_verify, identity_verified)
+        self.assertLess(identity_verified, details_rebind)
+        self.assertLess(details_rebind, final_rebind)
+        identity_binding = bootstrap[identity_verify:details_rebind]
+        for immutable_predicate in (
+            '.id == $check_id',
+            '.name == "Current revision review"',
+            ".head_sha == $head",
+            ".external_id == $external_id",
+            '.status == "completed"',
+            '.conclusion == "success"',
+            '.app.id == 15368',
+            '.app.slug == "github-actions"',
+            ".output.title == $title",
+            ".output.summary == $evidence",
+        ):
+            self.assertIn(immutable_predicate, identity_binding)
+        details_binding = bootstrap[details_rebind:final_rebind]
+        self.assertIn(
+            '"repos/${REPOSITORY}/check-runs/${bootstrap_check_id}"',
+            details_binding,
+        )
+        self.assertIn('-f "details_url=${producer_run_url}"', details_binding)
+        self.assertNotIn("-f status=", details_binding)
+        self.assertNotIn("-f conclusion=", details_binding)
+        self.assertNotIn("-f external_id=", details_binding)
         self.assertNotIn("openai/codex-action@", bootstrap)
         self.assertNotIn("copilot-requests", bootstrap)
         self.assertNotIn("temporary", bootstrap)
