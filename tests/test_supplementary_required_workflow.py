@@ -1598,13 +1598,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         bootstrap = workflow[durable_bootstrap:managed_sync]
         self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
         self.assertIn(
-            "install -d -m 0700 protected-bootstrap-final", bootstrap
+            'bootstrap_stage="$(mktemp -d', bootstrap
         )
         self.assertIn(
-            ">protected-bootstrap-final/verify.py", bootstrap
+            '"${RUNNER_TEMP}/protected-bootstrap-final.XXXXXX"', bootstrap
         )
         self.assertIn(
-            "python3 protected-bootstrap-final/verify.py", bootstrap
+            '>"${bootstrap_stage}/verify.py"', bootstrap
+        )
+        self.assertIn(
+            'python3 "${bootstrap_stage}/verify.py"', bootstrap
         )
         self.assertNotIn(">protected-bootstrap/verify.py", bootstrap)
         self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
