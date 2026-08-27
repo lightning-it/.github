@@ -126,7 +126,7 @@ jobs:
           set -euo pipefail
           test -n "${CONTROLLER_GH_TOKEN}"
           test -n "${SOURCE_GH_TOKEN}"
-          mkdir -p protected-bootstrap
+          install -d -m 0700 protected-bootstrap
           verifier_payload="$(GH_TOKEN="${CONTROLLER_GH_TOKEN}" gh api \
             "repos/lightning-it/.github/contents/scripts/verify-main-trust-root-bootstrap.py?ref=${WORKFLOW_SHA}")"
           jq -e \
@@ -135,12 +135,16 @@ jobs:
               .type == "file"
               and .path == $path
               and .url == $url
-              and (.sha | test("^[0-9a-f]{40}$"))
+              and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
               and .encoding == "base64"
+              and ((.size | type) == "number" and .size > 0 and .size < 100000)
               and (.content | type == "string" and length > 0)
             ' <<<"${verifier_payload}" >/dev/null
-          printf '%s' "$(jq -r .content <<<"${verifier_payload}")" \
+          jq -er .content <<<"${verifier_payload}" \
             | base64 --decode >protected-bootstrap/verify.py
+          test "$(git hash-object protected-bootstrap/verify.py)" = \
+            "$(jq -r .sha <<<"${verifier_payload}")"
+          chmod 0500 protected-bootstrap/verify.py
           classification="$(python3 protected-bootstrap/verify.py \
             --repository "${REPOSITORY}" \
             --pull-request "${PR_NUMBER}" \
