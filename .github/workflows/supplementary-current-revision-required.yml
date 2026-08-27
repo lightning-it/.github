@@ -617,6 +617,7 @@ jobs:
                 and (.source_blobs | keys | sort) == ([
                   ".github/codex/prompts/review-exact-head.md",
                   ".github/codex/schemas/exact-head-review.schema.json",
+                  ".github/workflows/current-revision-rerun.yml",
                   ".github/workflows/release-bot-exact-head-review.yml",
                   "scripts/materialize-exact-revision-review.py"
                 ] | sort)
