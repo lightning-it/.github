@@ -2209,6 +2209,101 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(external_ids=external_ids):
                 self.assertNotEqual(0, extract(external_ids).returncode)
 
+    def test_terminal_wait_uses_exact_live_readiness_on_rerun(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        readiness = workflow.split(
+            "      - name: Classify the exact live pull request readiness\n",
+            1,
+        )[1].split(
+            "      - name: Await the exact protected producer run terminal state\n",
+            1,
+        )[0]
+        terminal_header = workflow.split(
+            "      - name: Await the exact protected producer run terminal state\n",
+            1,
+        )[1].split("        env:\n", 1)[0]
+        for binding in (
+            "EXPECTED_HEAD_REPOSITORY: >-",
+            "github.event.pull_request.head.repo.full_name",
+            '[[ "${EXPECTED_HEAD_REPOSITORY}" =~ '
+            '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]',
+            'pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"',
+            ".number == $number",
+            '.state == "open"',
+            '(.draft | type) == "boolean"',
+            ".base.sha == $base",
+            ".base.repo.full_name == $repository",
+            ".head.sha == $head",
+            ".head.repo.full_name == $head_repository",
+            'echo \'ready=true\' >>"${GITHUB_OUTPUT}"',
+            'echo \'ready=false\' >>"${GITHUB_OUTPUT}"',
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, readiness)
+        self.assertIn("steps.live-pr.outputs.ready == 'true'", terminal_header)
+        self.assertNotIn(
+            "github.event.pull_request.draft == false", terminal_header
+        )
+        jq_filter = readiness.split(
+            '--argjson number "${PR_NUMBER}" \'\n', 1
+        )[1].split('\n            \' <<<"${pr}"', 1)[0]
+        jq = self._test_tool("jq")
+        base = "a" * 40
+        head = "b" * 40
+        repository = "lightning-it/.github"
+        head_repository = "external-contributor/fork"
+
+        def validate(payload: object) -> int:
+            return subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "base",
+                    base,
+                    "--arg",
+                    "head",
+                    head,
+                    "--arg",
+                    "head_repository",
+                    head_repository,
+                    "--arg",
+                    "repository",
+                    repository,
+                    "--argjson",
+                    "number",
+                    "358",
+                    jq_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": TEST_TOOL_PATH},
+            ).returncode
+
+        live_pr = {
+            "number": 358,
+            "state": "open",
+            "draft": False,
+            "base": {"sha": base, "repo": {"full_name": repository}},
+            "head": {"sha": head, "repo": {"full_name": head_repository}},
+        }
+        self.assertEqual(0, validate(live_pr))
+        draft_pr = json.loads(json.dumps(live_pr))
+        draft_pr["draft"] = True
+        self.assertEqual(0, validate(draft_pr))
+        for mutation in ("head", "state", "draft"):
+            candidate = json.loads(json.dumps(live_pr))
+            if mutation == "head":
+                candidate["head"]["sha"] = "c" * 40
+            elif mutation == "state":
+                candidate["state"] = "closed"
+            else:
+                candidate["draft"] = "false"
+            with self.subTest(mutation=mutation):
+                self.assertNotEqual(0, validate(candidate))
+
     def test_permanent_verifier_rejects_every_unexpected_terminal_job(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         permanent = workflow.split(

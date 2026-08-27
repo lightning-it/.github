@@ -791,10 +791,42 @@ jobs:
             ' <<<"${finalized}" >/dev/null
           trap - EXIT
 
+      - name: Classify the exact live pull request readiness
+        id: live-pr
+        env:
+          EXPECTED_HEAD_REPOSITORY: >-
+            ${{ github.event.pull_request.head.repo.full_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "${EXPECTED_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_repository "${EXPECTED_HEAD_REPOSITORY}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and (.draft | type) == "boolean"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.repo.full_name == $head_repository
+            ' <<<"${pr}" >/dev/null
+          draft="$(jq -er \
+            '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
+          if [ "${draft}" = false ]; then
+            echo 'ready=true' >>"${GITHUB_OUTPUT}"
+          else
+            echo 'ready=false' >>"${GITHUB_OUTPUT}"
+          fi
+
       - name: Await the exact protected producer run terminal state
         id: terminal-producer
         if: >-
-          github.event.pull_request.draft == false
+          steps.live-pr.outputs.ready == 'true'
           && !(
             github.repository == 'lightning-it/shared-assets-lit'
             && github.event.pull_request.user.login
