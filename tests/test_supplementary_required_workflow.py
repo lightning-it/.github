@@ -1725,8 +1725,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Request Copilot review for current revision"', permanent
         )
         self.assertIn('and .conclusion == "skipped"', permanent)
-        self.assertIn("debug | length == 0", permanent)
-        self.assertIn("debug | length <= 1", permanent)
+        self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
+        self.assertIn("jq -e 'length <= 1 or error(tojson)'", permanent)
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
@@ -1816,6 +1816,34 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [job["name"] for job in evaluate("allowed_skipped_request_jobs")],
             ["Request Copilot review for current revision"],
         )
+
+        for predicate, passing, failing in (
+            ("length == 0 or error(tojson)", [], evaluate("disallowed_terminal_jobs")),
+            (
+                "length <= 1 or error(tojson)",
+                evaluate("allowed_skipped_request_jobs"),
+                [{"name": "first"}, {"name": "second"}],
+            ),
+        ):
+            success = subprocess.run(
+                [jq, "-e", predicate],
+                input=json.dumps(passing),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(success.returncode, 0)
+            self.assertEqual(success.stderr, "")
+
+            failure = subprocess.run(
+                [jq, "-e", predicate],
+                input=json.dumps(failing),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(failure.returncode, 0)
+            self.assertIn(json.dumps(failing, separators=(",", ":")), failure.stderr)
 
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,

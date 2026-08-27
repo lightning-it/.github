@@ -1627,9 +1627,9 @@ jobs:
                     select(.name
                       == "Request Copilot review for current revision")]
                   ' <<<"${producer_jobs_pages}")"
-                jq -e 'debug | length == 0' \
+                jq -e 'length == 0 or error(tojson)' \
                   <<<"${disallowed_terminal_jobs}" >/dev/null
-                jq -e 'debug | length <= 1' \
+                jq -e 'length <= 1 or error(tojson)' \
                   <<<"${allowed_skipped_request_jobs}" >/dev/null
                 if [ "${producer_status}" = completed ]; then
                   break
