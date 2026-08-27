@@ -475,31 +475,80 @@ jobs:
             exit 1
           fi
 
-          cross_attempt_one_jobs="$(gh api \
-            "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/1/jobs?filter=all&per_page=100")"
-          jq -e '
-            type == "object"
-            and (.total_count | type) == "number"
-            and (.jobs | type) == "array"
-            and .total_count == (.jobs | length)
-            and .total_count <= 100
-            and all(.jobs[];
-              type == "object"
-              and (.id | type) == "number" and .id > 0
-              and (.name | type) == "string"
-              and (.run_attempt | type) == "number" and .run_attempt == 1
+          # A Required-Workflow run can become terminal before its complete job
+          # ledger is visible through the separate jobs endpoint. Converge only
+          # the immutable attempt-one read before issuing the one allowed rerun.
+          cross_job_id=''
+          for cross_job_observation in $(seq 1 30); do
+            if cross_attempt_one_jobs="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/1/jobs?filter=all&per_page=100" 2>&1)"; then
+              :
+            else
+              cross_jobs_api_status=$?
+              if [ "${cross_job_observation}" -eq 30 ]; then
+                echo "Dot-github attempt-one job ledger API failed after 30 attempts (exit ${cross_jobs_api_status}): ${cross_attempt_one_jobs}" >&2
+                exit 1
+              fi
+              sleep 2
+              continue
+            fi
+            if ! jq -e '
+                type == "object"
+                and (.total_count | type) == "number"
+                and (.jobs | type) == "array"
+                and .total_count == (.jobs | length)
+                and .total_count <= 100
+                and all(.jobs[];
+                  type == "object"
+                  and (.id | type) == "number" and .id > 0
+                  and (.name | type) == "string"
+                  and (.run_attempt | type) == "number" and .run_attempt == 1
+                  and .status == "completed"
+                  and (.conclusion | type) == "string")
+              ' <<<"${cross_attempt_one_jobs}" >/dev/null; then
+              if [ "${cross_job_observation}" -eq 30 ]; then
+                echo 'The dot-github attempt-one job ledger did not converge.' >&2
+                exit 1
+              fi
+              sleep 2
+              continue
+            fi
+            cross_failed_jobs="$(jq -c '
+              [.jobs[] |
+                select(.name == "Required dot-github current-revision workflow") |
+                select(.run_attempt == 1) |
+                select(.status == "completed" and .conclusion == "failure")]
+            ' <<<"${cross_attempt_one_jobs}")"
+            cross_failed_count="$(jq 'length' <<<"${cross_failed_jobs}")"
+            if [ "${cross_failed_count}" -gt 1 ]; then
+              echo 'Multiple failed dot-github verifier jobs claim attempt one.' >&2
+              exit 1
+            fi
+            if [ "${cross_failed_count}" -eq 1 ]; then
+              cross_job_id="$(jq -er \
+                '.[0].id | select(type == "number" and . > 0)' \
+                <<<"${cross_failed_jobs}")"
+              break
+            fi
+            if [ "${cross_job_observation}" -eq 30 ]; then
+              echo 'The failed dot-github verifier job did not become visible.' >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          [[ "${cross_job_id}" =~ ^[1-9][0-9]*$ ]]
+          pre_rerun_cross="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
+          jq -e \
+            --arg actor "${author}" \
+            --argjson id "${cross_run_id}" '
+              .id == $id
+              and .run_attempt == 1
               and .status == "completed"
-              and (.conclusion | type) == "string")
-          ' <<<"${cross_attempt_one_jobs}" >/dev/null
-          cross_failed_jobs="$(jq -c '
-            [.jobs[] |
-              select(.name == "Required dot-github current-revision workflow") |
-              select(.run_attempt == 1) |
-              select(.status == "completed" and .conclusion == "failure")]
-          ' <<<"${cross_attempt_one_jobs}")"
-          test "$(jq 'length' <<<"${cross_failed_jobs}")" -eq 1
-          cross_job_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' \
-            <<<"${cross_failed_jobs}")"
+              and .conclusion == "failure"
+              and .actor.login == $actor
+              and .triggering_actor.login == $actor
+            ' <<<"${pre_rerun_cross}" >/dev/null
           if ! gh api --method POST \
               "repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun" >/dev/null; then
             cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
