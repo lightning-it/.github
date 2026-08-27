@@ -843,6 +843,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          producer_kind=''
           producer_run_id=''
           for observation in $(seq 1 450); do
             pages="$(gh api --paginate --slurp \
@@ -870,11 +871,14 @@ jobs:
             if [ "$(jq 'length' <<<"${neutral}")" -eq 1 ]; then
               external_id="$(jq -er '.[0].external_id' <<<"${neutral}")"
               if [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*): ]]; then
+                producer_kind=release-app
                 producer_run_id="${BASH_REMATCH[1]}"
               elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+                producer_kind="${BASH_REMATCH[1]}"
                 producer_run_id="${BASH_REMATCH[2]}"
               else
                 [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+                producer_kind="${BASH_REMATCH[1]}"
                 producer_run_id="${BASH_REMATCH[2]}"
               fi
               break
@@ -883,20 +887,36 @@ jobs:
             sleep 2
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          for observation in $(seq 1 120); do
+          if [ "${producer_kind}" = copilot ]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
               '.id == $run_id' <<<"${producer}" >/dev/null
-            status="$(jq -er \
+            producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            if [ "${status}" = completed ]; then
-              break
-            fi
-            [[ "${status}" =~ ^(queued|in_progress)$ ]]
-            test "${observation}" -lt 120
-            sleep 2
-          done
+            # The Copilot producer publishes the exact successful neutral
+            # result before its optional verifier-rerun helper completes.
+            # Waiting for the whole producer here creates a circular wait:
+            # that helper is itself waiting for this Required Workflow. The
+            # permanent verifier below already binds the one evidence job and
+            # both critical steps before accepting an in-progress producer.
+            [[ "${producer_status}" =~ ^(queued|in_progress|completed)$ ]]
+          else
+            for observation in $(seq 1 120); do
+              producer="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+              jq -e --argjson run_id "${producer_run_id}" \
+                '.id == $run_id' <<<"${producer}" >/dev/null
+              producer_status="$(jq -er \
+                '.status | select(type == "string")' <<<"${producer}")"
+              if [ "${producer_status}" = completed ]; then
+                break
+              fi
+              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+              test "${observation}" -lt 120
+              sleep 2
+            done
+          fi
           printf 'producer_run_id=%s\n' "${producer_run_id}" >>"${GITHUB_OUTPUT}"
 
       - name: Verify one protected result for the exact live revision
