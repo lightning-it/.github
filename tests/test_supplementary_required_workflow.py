@@ -1556,6 +1556,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("final_bootstrap_summary", bootstrap)
         self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)
         self.assertIn("-f name='Current revision review'", bootstrap)
+        check_id = bootstrap.index('bootstrap_check_id="$(jq -er')
+        details_rebind = bootstrap.index(
+            'bootstrap_check="$(gh api --method PATCH', check_id
+        )
+        final_rebind = bootstrap.index(
+            "failure_stage='main-trust-root-bootstrap-final-rebind'"
+        )
+        self.assertLess(check_id, details_rebind)
+        self.assertLess(details_rebind, final_rebind)
+        details_binding = bootstrap[details_rebind:final_rebind]
+        self.assertIn(
+            '"repos/${REPOSITORY}/check-runs/${bootstrap_check_id}"',
+            details_binding,
+        )
+        self.assertIn('-f "details_url=${producer_run_url}"', details_binding)
+        self.assertNotIn("-f status=", details_binding)
+        self.assertNotIn("-f conclusion=", details_binding)
+        self.assertNotIn("-f external_id=", details_binding)
         self.assertNotIn("openai/codex-action@", bootstrap)
         self.assertNotIn("copilot-requests", bootstrap)
         self.assertNotIn("temporary", bootstrap)

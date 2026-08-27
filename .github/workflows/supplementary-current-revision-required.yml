@@ -660,6 +660,29 @@ jobs:
               --arg external_id "${bootstrap_external_id}" \
               --arg head "${EVENT_HEAD}" \
               --arg title "${bootstrap_title}" \
+              --argjson check_id "${bootstrap_check_id}" '
+                .id == $check_id
+                and .name == "Current revision review"
+                and .head_sha == $head
+                and .external_id == $external_id
+                and .status == "completed"
+                and .conclusion == "success"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .output.title == $title
+                and .output.summary == $evidence
+              ' <<<"${bootstrap_check}" >/dev/null
+            # GitHub Actions may replace details_url during check creation with
+            # its native check-run URL. Rebind that service-owned field after
+            # the immutable identity and evidence have been verified above.
+            bootstrap_check="$(gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${bootstrap_check_id}" \
+              -f "details_url=${producer_run_url}")"
+            jq -e \
+              --arg evidence "${bootstrap_summary}" \
+              --arg external_id "${bootstrap_external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg title "${bootstrap_title}" \
               --arg url "${producer_run_url}" \
               --argjson check_id "${bootstrap_check_id}" '
                 .id == $check_id
