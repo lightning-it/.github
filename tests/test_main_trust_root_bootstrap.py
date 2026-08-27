@@ -432,6 +432,40 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             any("recursive=1" in endpoint for endpoint in api.source_endpoints)
         )
 
+    def test_draft_classifier_emits_only_static_protected_handoff(self) -> None:
+        api = FakeAPI()
+        api.pull["draft"] = True
+        args = self.args(api)
+        args.classify_only = True
+
+        def unexpected_pages(_endpoint: str) -> list[Any]:
+            self.fail("classification must not inspect review evidence")
+
+        def unexpected_graphql(
+            _query: str, _variables: dict[str, str | int]
+        ) -> Any:
+            self.fail("classification must not inspect review threads")
+
+        api.target_pages = unexpected_pages  # type: ignore[method-assign]
+        api.target_graphql = unexpected_graphql  # type: ignore[method-assign]
+        evidence = MODULE.verify(args, api)
+
+        self.assertEqual("rep60-main-trust-root-handoff/v1", evidence["schema"])
+        self.assertEqual(api.repository, evidence["repository"])
+        self.assertEqual(api.number, evidence["pull_request_number"])
+        self.assertEqual(api.base, evidence["base_sha"])
+        self.assertEqual(api.head, evidence["head_sha"])
+        self.assertEqual(api.pull["head"]["ref"], evidence["head_ref"])
+        self.assertEqual(api.paths, evidence["source_blobs"])
+        self.assertNotIn("producer_run_id", evidence)
+        self.assertNotIn("review_id", evidence)
+
+    def test_full_verifier_still_rejects_a_draft(self) -> None:
+        api = FakeAPI()
+        api.pull["draft"] = True
+        with self.assertRaisesRegex(MODULE.VerificationError, "still a draft"):
+            MODULE.verify(self.args(api), api)
+
     def test_exact_bootstrap_accepts_an_empty_base_trust_root(self) -> None:
         api = FakeAPI()
         api.base_tree["tree"] = [

@@ -33,9 +33,10 @@ jobs:
     # immutable evidence check.
     name: Required current-revision workflow
     # Required Workflows do not reliably receive ready_for_review after their
-    # initial Draft event. Run the AI-free verifier on Drafts so it can create
-    # the exact fail-closed reservation before rejecting the live draft below.
-    # The protected helper may then rerun only that same run once after Ready.
+    # initial Draft event. The exact trust-root bootstrap therefore classifies
+    # its immutable candidate while Draft and keeps this same protected run
+    # alive until the one local pipeline review is final. Other paths retain
+    # the reservation plus one protected verifier-only re-evaluation contract.
     permissions:
       actions: read
       checks: write
@@ -45,7 +46,7 @@ jobs:
       issues: read
       pull-requests: read
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
 
     env:
       EVENT_ACTION: ${{ github.event.action }}
@@ -107,6 +108,238 @@ jobs:
           owner: lightning-it
           repositories: .github
           permission-contents: read
+
+      - name: Classify protected main trust-root bootstrap handoff
+        id: bootstrap-handoff
+        if: >-
+          github.event.pull_request.user.login == 'litroc'
+          && github.event.pull_request.user.type == 'User'
+          && github.event.pull_request.base.ref == 'main'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && github.event.pull_request.title
+            == 'fix(rep60): bootstrap protected main review trust root'
+        env:
+          CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
+        run: |
+          set -euo pipefail
+          test -n "${CONTROLLER_GH_TOKEN}"
+          test -n "${SOURCE_GH_TOKEN}"
+          install -d -m 0700 protected-bootstrap
+          verifier_payload="$(GH_TOKEN="${CONTROLLER_GH_TOKEN}" gh api \
+            "repos/lightning-it/.github/contents/scripts/verify-main-trust-root-bootstrap.py?ref=${WORKFLOW_SHA}")"
+          jq -e \
+            --arg path scripts/verify-main-trust-root-bootstrap.py \
+            --arg url "${GITHUB_API_URL}/repos/lightning-it/.github/contents/scripts/verify-main-trust-root-bootstrap.py?ref=${WORKFLOW_SHA}" '
+              .type == "file"
+              and .path == $path
+              and .url == $url
+              and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and .encoding == "base64"
+              and ((.size | type) == "number" and .size > 0 and .size < 100000)
+              and (.content | type == "string" and length > 0)
+            ' <<<"${verifier_payload}" >/dev/null
+          jq -er .content <<<"${verifier_payload}" \
+            | base64 --decode >protected-bootstrap/verify.py
+          test "$(git hash-object protected-bootstrap/verify.py)" = \
+            "$(jq -r .sha <<<"${verifier_payload}")"
+          chmod 0500 protected-bootstrap/verify.py
+          classification="$(python3 protected-bootstrap/verify.py \
+            --repository "${REPOSITORY}" \
+            --pull-request "${PR_NUMBER}" \
+            --expected-base "${EVENT_BASE}" \
+            --expected-head "${EVENT_HEAD}" \
+            --workflow-sha "${WORKFLOW_SHA}" \
+            --classify-only)"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --arg workflow "${WORKFLOW_SHA}" \
+            --argjson pr_number "${PR_NUMBER}" '
+              (keys | sort) == ([
+                "base_sha", "candidate_tree_sha", "controller_blob_sha",
+                "head_ref", "head_sha", "pull_request_number", "repository",
+                "schema", "source_blobs", "source_repository", "source_sha",
+                "source_tree_sha", "workflow_sha"
+              ] | sort)
+              and .schema == "rep60-main-trust-root-handoff/v1"
+              and .repository == $repository
+              and .pull_request_number == $pr_number
+              and .base_sha == $base
+              and .head_sha == $head
+              and .workflow_sha == $workflow
+              and .source_repository == "lightning-it/shared-assets-lit"
+              and (.head_ref | test("^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$"))
+              and (.candidate_tree_sha | test("^[0-9a-f]{40}$"))
+              and (.controller_blob_sha | test("^[0-9a-f]{40}$"))
+              and (.source_sha | test("^[0-9a-f]{40}$"))
+              and (.source_tree_sha | test("^[0-9a-f]{40}$"))
+              and (.source_blobs | keys | sort) == ([
+                ".github/codex/prompts/review-exact-head.md",
+                ".github/codex/schemas/exact-head-review.schema.json",
+                ".github/workflows/current-revision-rerun.yml",
+                ".github/workflows/release-bot-exact-head-review.yml",
+                "scripts/materialize-exact-revision-review.py"
+              ] | sort)
+              and all(.source_blobs[]; test("^[0-9a-f]{40}$"))
+            ' <<<"${classification}" >/dev/null
+          echo 'active=true' >>"${GITHUB_OUTPUT}"
+
+      - name: Wait for one finalized bootstrap pipeline review
+        if: steps.bootstrap-handoff.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          expected_head_ref="$(gh api \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.ref)"
+          [[ "${expected_head_ref}" =~ ^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$ ]]
+          for _observation in $(seq 1 300); do
+            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${expected_head_ref}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson number "${PR_NUMBER}" '
+                .number == $number
+                and .state == "open"
+                and (.draft | type == "boolean")
+                and .title
+                  == "fix(rep60): bootstrap protected main review trust root"
+                and .user.login == "litroc"
+                and .user.type == "User"
+                and .base.ref == "main"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+              ' <<<"${pr}" >/dev/null
+            draft="$(jq -er \
+              '.draft | select(type == "boolean") | tostring' <<<"${pr}")"
+            if [ "${draft}" = true ]; then
+              sleep 5
+              continue
+            fi
+
+            if [ "${REPOSITORY}" = "lightning-it/.github" ]; then
+              producer_event="pull_request_target"
+              producer_name="Current revision review gate"
+            else
+              producer_event="pull_request"
+              producer_name="Copilot review gate"
+            fi
+
+            review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+            reviews="$(jq -c \
+              --arg head "${EVENT_HEAD}" '
+                [add[]? |
+                  select(.user.login == "copilot-pull-request-reviewer[bot]") |
+                  select(.commit_id == $head)]
+              ' <<<"${review_pages}")"
+            review_count="$(jq 'length' <<<"${reviews}")"
+            if [ "${review_count}" -gt 1 ]; then
+              echo 'Multiple Copilot reviews exist for the bootstrap head.' >&2
+              exit 1
+            fi
+
+            run_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs?event=${producer_event}&head_sha=${EVENT_HEAD}&per_page=100")"
+            matching_runs="$(jq -c \
+              --arg base "${EVENT_BASE}" \
+              --arg event "${producer_event}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${expected_head_ref}" \
+              --arg name "${producer_name}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson number "${PR_NUMBER}" '
+                [.[].workflow_runs[]? |
+                  select(.id | type == "number" and . > 0) |
+                  select(.event == $event) |
+                  select(.path == ".github/workflows/copilot-review.yml") |
+                  select(.name == $name) |
+                  select(.head_branch == $head_ref and .head_sha == $head) |
+                  select(.repository.full_name == $repository) |
+                  select(.head_repository.full_name == $repository) |
+                  select(.actor.login == "litroc") |
+                  select(.triggering_actor.login == "litroc") |
+                  select(.run_attempt == 1) |
+                  select((.pull_requests | length) == 1) |
+                  select(.pull_requests[0].number == $number) |
+                  select(.pull_requests[0].base.ref == "main") |
+                  select(.pull_requests[0].base.sha == $base) |
+                  select(.pull_requests[0].head.ref == $head_ref) |
+                  select(.pull_requests[0].head.sha == $head)]
+              ' <<<"${run_pages}")"
+            eligible_producers=0
+            for producer_id in $(jq -r '.[].id' <<<"${matching_runs}"); do
+              producer="$(jq -ce --argjson id "${producer_id}" \
+                '.[] | select(.id == $id)' <<<"${matching_runs}")"
+              jobs_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs/${producer_id}/jobs?filter=all&per_page=100")"
+              request_count="$(jq \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_id}" '
+                [.[].jobs[]? |
+                  select(.run_id == $run_id) |
+                  select(.head_sha == $head) |
+                  select(.name == "Request Copilot review for current revision") |
+                  select(.run_attempt == 1) |
+                  select(.status == "completed" and .conclusion == "success")]
+                | length
+                ' <<<"${jobs_pages}")"
+              gate_count="$(jq \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_id}" '
+                [.[].jobs[]? |
+                  select(.run_id == $run_id) |
+                  select(.head_sha == $head) |
+                  select(.name == "Successful Copilot review") |
+                  select(.run_attempt == 1) |
+                  select(.status == "completed" and .conclusion == "success")]
+                | length
+                ' <<<"${jobs_pages}")"
+              if [ "${request_count}" -gt 1 ] || [ "${gate_count}" -gt 1 ]; then
+                echo 'The local Copilot producer job ledger is ambiguous.' >&2
+                exit 1
+              fi
+              producer_status="$(jq -r .status <<<"${producer}")"
+              producer_conclusion="$(jq -r '.conclusion // ""' <<<"${producer}")"
+              if [ "${producer_status}" = completed ]; then
+                if [ "${producer_conclusion}" = success ] \
+                  && [ "${request_count}" -eq 1 ] \
+                  && [ "${gate_count}" -eq 1 ]; then
+                  eligible_producers=$((eligible_producers + 1))
+                elif [ "${producer_conclusion}" = skipped ] \
+                  && [ "${request_count}" -eq 0 ] \
+                  && [ "${gate_count}" -eq 0 ]; then
+                  :
+                else
+                  echo 'A local Copilot producer completed without the exact successful job ledger.' >&2
+                  exit 1
+                fi
+              elif [ "${producer_status}" != queued ] \
+                && [ "${producer_status}" != in_progress ]; then
+                echo 'A local Copilot producer has an invalid status.' >&2
+                exit 1
+              fi
+            done
+            if [ "${eligible_producers}" -gt 1 ]; then
+              echo 'Multiple successful local Copilot producer ledgers exist for the bootstrap head.' >&2
+              exit 1
+            fi
+            if [ "${eligible_producers}" -eq 1 ] \
+              && [ "${review_count}" -eq 1 ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'The finalized bootstrap pipeline review did not converge.' >&2
+          exit 1
 
       - name: Verify one protected result for the exact live revision
         env:

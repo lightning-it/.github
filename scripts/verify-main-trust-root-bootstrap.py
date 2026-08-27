@@ -246,11 +246,20 @@ def resolve_tree_asset(
 
 
 def exact_pull_binding(
-    pull: dict[str, Any], repository: str, number: int, base: str, head: str
+    pull: dict[str, Any],
+    repository: str,
+    number: int,
+    base: str,
+    head: str,
+    *,
+    require_ready: bool = True,
 ) -> tuple[str, str]:
     require(pull.get("number") == number, "pull request number changed")
     require(pull.get("state") == "open", "pull request is not open")
-    require(pull.get("draft") is False, "pull request is still a draft")
+    draft = pull.get("draft")
+    require(isinstance(draft, bool), "pull request draft state is invalid")
+    if require_ready:
+        require(draft is False, "pull request is still a draft")
     require(pull.get("title") == EXPECTED_TITLE, "bootstrap title is not exact")
     user = require_dict(pull.get("user"), "pull request user")
     require(user.get("login") == "litroc", "bootstrap author is not litroc")
@@ -321,7 +330,14 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(target_repository.get("default_branch") == "develop", "target default branch is not develop")
 
     pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "pull request")
-    _, head_ref = exact_pull_binding(pull, repository, number, base, head)
+    _, head_ref = exact_pull_binding(
+        pull,
+        repository,
+        number,
+        base,
+        head,
+        require_ready=not args.classify_only,
+    )
 
     comparison = require_dict(api.target(f"repos/{repository}/compare/{base}...{head}"), "comparison")
     files = require_list(comparison.get("files"), "comparison files")
@@ -482,6 +498,70 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         file_object = require_dict(raw_file, "comparison file")
         path = require_string(file_object.get("filename"), "comparison filename")
         require(file_object.get("sha") == source_blobs[path], f"comparison blob differs for {path}")
+
+    classification = {
+        "base_sha": base,
+        "candidate_tree_sha": head_tree_sha,
+        "controller_blob_sha": require_string(
+            base_copilot.get("sha"), "controller blob SHA"
+        ),
+        "head_ref": head_ref,
+        "head_sha": head,
+        "pull_request_number": number,
+        "repository": repository,
+        "schema": "rep60-main-trust-root-handoff/v1",
+        "source_blobs": source_blobs,
+        "source_repository": SOURCE_REPOSITORY,
+        "source_sha": source_sha,
+        "source_tree_sha": source_tree_sha,
+        "workflow_sha": args.workflow_sha,
+    }
+    if args.classify_only:
+        final_pull = require_dict(
+            api.target(f"repos/{repository}/pulls/{number}"),
+            "final pull request",
+        )
+        exact_pull_binding(
+            final_pull,
+            repository,
+            number,
+            base,
+            head,
+            require_ready=False,
+        )
+        final_main = require_dict(
+            api.target(f"repos/{repository}/branches/main"),
+            "final target main branch",
+        )
+        require(
+            final_main.get("protected") is True,
+            "target main lost protection",
+        )
+        require(
+            require_dict(
+                final_main.get("commit"), "final target main commit"
+            ).get("sha")
+            == base,
+            "target main moved during classification",
+        )
+        final_source = require_dict(
+            api.source(
+                f"repos/{SOURCE_REPOSITORY}/branches/{SOURCE_BRANCH}"
+            ),
+            "final source main branch",
+        )
+        require(
+            final_source.get("protected") is True,
+            "source main lost protection",
+        )
+        require(
+            require_dict(
+                final_source.get("commit"), "final source main commit"
+            ).get("sha")
+            == source_sha,
+            "source main moved during classification",
+        )
+        return classification
 
     exact_checks = flatten_object_pages(
         api.target_pages(f"repos/{repository}/commits/{head}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&filter=all&per_page=100"),
@@ -682,6 +762,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-base", required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--workflow-sha", required=True)
+    parser.add_argument("--classify-only", action="store_true")
     return parser.parse_args(argv)
 
 
