@@ -1943,18 +1943,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertLess(managed_sync, permanent_inventory)
         bootstrap = workflow[durable_bootstrap:managed_sync]
         self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
-        self.assertIn(
-            'bootstrap_stage="$(mktemp -d', bootstrap
-        )
-        self.assertIn(
-            '"${RUNNER_TEMP}/protected-bootstrap-final.XXXXXX"', bootstrap
-        )
-        self.assertIn(
-            '>"${bootstrap_stage}/verify.py"', bootstrap
-        )
-        self.assertIn(
-            'python3 "${bootstrap_stage}/verify.py"', bootstrap
-        )
+        self.assertIn('bootstrap_content="$(jq -er .content', bootstrap)
+        self.assertIn('base64 --decode <<<"${bootstrap_content}"', bootstrap)
+        self.assertIn("git hash-object --stdin", bootstrap)
+        self.assertIn("| python3 -", bootstrap)
+        self.assertNotIn("bootstrap_stage", bootstrap)
+        self.assertNotIn("protected-bootstrap-final", bootstrap)
+        self.assertNotIn("verify.py\"", bootstrap)
         self.assertNotIn(">protected-bootstrap/verify.py", bootstrap)
         self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
         self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
