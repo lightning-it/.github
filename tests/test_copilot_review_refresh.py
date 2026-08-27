@@ -345,6 +345,24 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             'select(.name == "Required dot-github current-revision workflow")',
             workflow,
         )
+        self.assertIn(
+            "for cross_job_observation in $(seq 1 30)", workflow
+        )
+        self.assertIn("cross_job_id=''", workflow)
+        self.assertIn("cross_jobs_api_status=$?", workflow)
+        self.assertIn(
+            "The dot-github attempt-one job ledger did not converge.", workflow
+        )
+        self.assertIn(
+            "Multiple failed dot-github verifier jobs claim attempt one.",
+            workflow,
+        )
+        self.assertIn(
+            '[[ "${cross_job_id}" =~ ^[1-9][0-9]*$ ]]', workflow
+        )
+        self.assertIn('pre_rerun_cross="$(gh api', workflow)
+        self.assertIn("and .run_attempt == 1", workflow)
+        self.assertIn('and .triggering_actor.login == $actor', workflow)
         inventory_start = 'cross_runs="$(jq -c'
         inventory_end = "          expected_cross_trigger="
         self.assertIn(inventory_start, workflow)
@@ -383,6 +401,12 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             '"repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun"',
             workflow,
         )
+        self.assertLess(
+            workflow.index('pre_rerun_cross="$(gh api'),
+            workflow.index(
+                '"repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun"'
+            ),
+        )
         self.assertIn(
             "test \"$(jq -r .triggering_actor.login "
             "<<<\"${cross_run}\")\" = 'github-actions[bot]'",
@@ -397,6 +421,70 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             workflow.index("Protected verifier rerun completed successfully."),
             workflow.index("cross_pages="),
         )
+
+    def test_cross_verifier_job_ledger_converges_only_to_one_failed_job(
+        self,
+    ) -> None:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        ledger = workflow.split(
+            "for cross_job_observation in $(seq 1 30); do", 1
+        )[1].split("          if ! gh api --method POST", 1)[0]
+        shape_filter = ledger.split("            if ! jq -e '\n", 1)[1].split(
+            '\n              \' <<<"${cross_attempt_one_jobs}"', 1
+        )[0]
+        failed_filter = ledger.split(
+            '            cross_failed_jobs="$(jq -c \'\n', 1
+        )[1].split(
+            '\n            \' <<<"${cross_attempt_one_jobs}")"', 1
+        )[0]
+        jq = self._test_tool("jq")
+
+        def evaluate(
+            payload: object, jq_filter: str
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [jq, "-ce", jq_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": TEST_TOOL_PATH},
+            )
+
+        valid = {
+            "total_count": 1,
+            "jobs": [
+                {
+                    "id": 98563887790,
+                    "name": "Required dot-github current-revision workflow",
+                    "run_attempt": 1,
+                    "status": "completed",
+                    "conclusion": "failure",
+                }
+            ],
+        }
+        self.assertEqual(0, evaluate(valid, shape_filter).returncode)
+        failed = evaluate(valid, failed_filter)
+        self.assertEqual(0, failed.returncode, failed.stderr)
+        self.assertEqual([valid["jobs"][0]], json.loads(failed.stdout))
+
+        incomplete = {"total_count": 0, "jobs": []}
+        self.assertEqual(0, evaluate(incomplete, shape_filter).returncode)
+        self.assertEqual(
+            [], json.loads(evaluate(incomplete, failed_filter).stdout)
+        )
+
+        duplicate = json.loads(json.dumps(valid))
+        duplicate["jobs"].append(json.loads(json.dumps(valid["jobs"][0])))
+        duplicate["jobs"][1]["id"] += 1
+        duplicate["total_count"] = 2
+        self.assertEqual(
+            2, len(json.loads(evaluate(duplicate, failed_filter).stdout))
+        )
+
+        malformed = json.loads(json.dumps(valid))
+        malformed["jobs"][0]["run_attempt"] = 2
+        self.assertNotEqual(0, evaluate(malformed, shape_filter).returncode)
 
     def test_refresh_evidence_matrix_is_author_and_version_bound(self) -> None:
         base = "a" * 40
