@@ -1908,6 +1908,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${step_count}" -gt 1 ]',
         ):
             self.assertIn(fragment, classifier)
+        self.assertNotIn("contents: read", classifier)
         self.assertIn(
             '" opened " + $head)', classifier
         )

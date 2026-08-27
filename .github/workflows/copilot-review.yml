@@ -43,7 +43,6 @@ jobs:
       github.event.pull_request.user.login == 'litroc'
     permissions:
       actions: read
-      contents: read
       pull-requests: read
     outputs:
       active: ${{ steps.handoff.outputs.active }}
