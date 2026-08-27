@@ -1570,6 +1570,61 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.rindex("trap - ERR"),
         )
 
+    def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        bootstrap = workflow.split("bootstrap_verified=false", 1)[1].split(
+            "managed_sync_verified=false", 1
+        )[0]
+        marker = (
+            '              --arg url "${GITHUB_API_URL}/repos/lightning-it/'
+            '.github/contents/scripts/verify-main-trust-root-bootstrap.py'
+            '?ref=${WORKFLOW_SHA}" \'\n'
+        )
+        start = bootstrap.index(marker) + len(marker)
+        end = bootstrap.index(
+            '\n              \' <<<"${controller_asset}"', start
+        )
+        predicate = bootstrap[start:end]
+        path = "scripts/verify-main-trust-root-bootstrap.py"
+        url = f"https://api.github.test/repos/lightning-it/.github/contents/{path}?ref={'a' * 40}"
+        jq = self._test_tool("jq")
+
+        def accepts(candidate: dict[str, object]) -> bool:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "path",
+                    path,
+                    "--arg",
+                    "url",
+                    url,
+                    predicate,
+                ],
+                input=json.dumps(candidate),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        valid = {
+            "type": "file",
+            "encoding": "base64",
+            "path": path,
+            "url": url,
+            "sha": "b" * 40,
+            "size": 32768,
+            "content": "dmVyaWZpZXI=",
+        }
+        self.assertTrue(accepts(valid))
+        for invalid_size in (0, 100000, "32768", True, None):
+            with self.subTest(size=invalid_size):
+                self.assertFalse(accepts({**valid, "size": invalid_size}))
+
     def test_rereview_dispatch_supports_main_without_retrying_requests(
         self,
     ) -> None:

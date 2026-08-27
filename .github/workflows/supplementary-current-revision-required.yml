@@ -558,7 +558,7 @@ jobs:
                 and .path == $path
                 and .url == $url
                 and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
-                and (.size | type == "number" and .size > 0 and .size < 100000)
+                and ((.size | type) == "number" and .size > 0 and .size < 100000)
                 and (.content | type == "string" and length > 0)
               ' <<<"${controller_asset}" >/dev/null
             jq -er .content <<<"${controller_asset}" \
