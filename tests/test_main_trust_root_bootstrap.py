@@ -683,6 +683,7 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 payload["status"] = "behind"
                 payload["ahead_by"] = 0
                 payload["behind_by"] = 1
+                payload["merge_base_commit"]["sha"] = api.source_head_sha
             return payload
 
         api.source = source  # type: ignore[method-assign]

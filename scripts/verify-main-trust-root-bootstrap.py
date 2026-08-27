@@ -535,13 +535,9 @@ def verify_controller_seed(
         == CONTROLLER_SEED_SOURCE,
         "source ancestry base changed",
     )
-    require(
-        require_dict(
-            source_ancestry.get("merge_base_commit"),
-            "source ancestry merge base",
-        ).get("sha")
-        == CONTROLLER_SEED_SOURCE,
-        "source main diverged from the pinned controller source",
+    source_status = require_string(
+        source_ancestry.get("status"),
+        "source ancestry status",
     )
     source_ahead_by = require_nonnegative_int(
         source_ancestry.get("ahead_by"),
@@ -551,20 +547,34 @@ def verify_controller_seed(
         source_ancestry.get("behind_by"),
         "source ancestry behind_by",
     )
+    if source_status == "behind":
+        require(
+            source_ahead_by == 0 and source_behind_by > 0,
+            "source ancestry behind counts are invalid",
+        )
+        raise VerificationError(
+            "source main is behind the pinned controller source"
+        )
+    require(
+        require_dict(
+            source_ancestry.get("merge_base_commit"),
+            "source ancestry merge base",
+        ).get("sha")
+        == CONTROLLER_SEED_SOURCE,
+        "source main diverged from the pinned controller source",
+    )
     require(
         source_behind_by == 0,
         "source main is behind the pinned controller source",
     )
     if source_head_sha == CONTROLLER_SEED_SOURCE:
         require(
-            source_ancestry.get("status") == "identical"
-            and source_ahead_by == 0,
+            source_status == "identical" and source_ahead_by == 0,
             "source ancestry is not identical to the pinned controller source",
         )
     else:
         require(
-            source_ancestry.get("status") == "ahead"
-            and source_ahead_by > 0,
+            source_status == "ahead" and source_ahead_by > 0,
             "source main is not ahead of the pinned controller source",
         )
     source_sha = CONTROLLER_SEED_SOURCE
