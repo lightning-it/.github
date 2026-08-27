@@ -550,7 +550,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "@refs/heads/main'",
             "compare/${WORKFLOW_SHA}...${protected_source_sha}",
             "rep60-required-workflow:v3:${GITHUB_RUN_ID}",
-            "test \"$(jq 'length' <<<\"${same_revision}\")\" -eq 0",
+            "test \"$(jq 'length' <<<\"${same_revision}\")\" -eq 1",
+            "test \"$(jq -er '.[0].id' <<<\"${same_revision}\")\" -eq 98499001131",
+            'id: 98498876339',
+            'id: 98499001131',
+            '"rep60-required-workflow:v3:33066823226:1498:"',
+            '"rep60-required-workflow:v3:33066859444:1502:"',
+            'test "${prior_inventory}" = "${expected_prior_inventory}"',
+            'test "${post_inventory}" = "${expected_prior_inventory}"',
             'and .repository.full_name == $repository',
             'and .head_repository.full_name == $repository',
             'and .user.type == "Bot"',
@@ -563,6 +570,119 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             transition,
         )
         self.assertIn("trap - EXIT", transition)
+
+    def test_release_transition_accepts_only_the_exact_failed_inventory(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        transition = workflow.split(
+            "      - name: Validate one immutable Shared Assets promotion handoff\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        inventory_guard = "expected_prior_inventory=" + transition.split(
+            "          expected_prior_inventory=", 1
+        )[1].split("          same_revision=", 1)[0]
+        inventory_guard = textwrap.dedent(inventory_guard)
+        bash = self._test_tool("bash")
+        base = "b978d446c336ff2e6d86bef303f2dec5faad612c"
+        head = "5dc048e43ae2fd933c92af418f7b13e47a05f586"
+        title = "Protected current-revision evidence is absent or invalid"
+        valid = [
+            {
+                "check_runs": [
+                    {
+                        "id": 98498876339,
+                        "name": "Protected current-revision verifier",
+                        "app": {"id": 15368, "slug": "github-actions"},
+                        "head_sha": head,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "external_id": (
+                            "rep60-required-workflow:v3:33066823226:1498:"
+                            f"{base}:{head}"
+                        ),
+                        "details_url": (
+                            "https://github.com/lightning-it/shared-assets-lit/"
+                            "runs/98498876339"
+                        ),
+                        "started_at": "2026-08-27T11:19:05Z",
+                        "completed_at": "2026-08-27T11:19:07Z",
+                        "output": {
+                            "title": title,
+                            "summary": (
+                                f"PR #1498; head {head}; stage "
+                                "permanent-producer-inventory; fail-closed."
+                            ),
+                        },
+                    },
+                    {
+                        "id": 98499001131,
+                        "name": "Protected current-revision verifier",
+                        "app": {"id": 15368, "slug": "github-actions"},
+                        "head_sha": head,
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "external_id": (
+                            "rep60-required-workflow:v3:33066859444:1502:"
+                            f"{base}:{head}"
+                        ),
+                        "details_url": (
+                            "https://github.com/lightning-it/shared-assets-lit/"
+                            "runs/98499001131"
+                        ),
+                        "started_at": "2026-08-27T11:19:36Z",
+                        "completed_at": "2026-08-27T11:20:27Z",
+                        "output": {
+                            "title": title,
+                            "summary": (
+                                f"PR #1502; head {head}; stage "
+                                "permanent-producer-binding; fail-closed."
+                            ),
+                        },
+                    },
+                ]
+            }
+        ]
+
+        def validate(candidate: object) -> int:
+            result = subprocess.run(
+                [bash, "-c", "set -euo pipefail\n" + inventory_guard],
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "EVENT_BASE": base,
+                    "EVENT_HEAD": head,
+                    "reservations": json.dumps(candidate),
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        self.assertEqual(0, validate(valid))
+        rejected: list[object] = []
+        for mutation in range(5):
+            candidate = json.loads(json.dumps(valid))
+            if mutation == 0:
+                candidate[0]["check_runs"][0]["conclusion"] = "success"
+            elif mutation == 1:
+                candidate[0]["check_runs"][1]["id"] += 1
+            elif mutation == 2:
+                candidate[0]["check_runs"][1]["external_id"] += "-drift"
+            elif mutation == 3:
+                candidate[0]["check_runs"][0]["output"]["summary"] += " drift"
+            else:
+                candidate[0]["check_runs"].append(
+                    json.loads(json.dumps(candidate[0]["check_runs"][0]))
+                )
+                candidate[0]["check_runs"][-1]["id"] = 99999999999
+            rejected.append(candidate)
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                self.assertNotEqual(0, validate(candidate))
 
     def test_release_app_failed_producer_bridge_rejects_mutated_job_ledgers(
         self,
@@ -1922,6 +2042,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("producer_evidence_ready=false", permanent)
+        self.assertIn("wait_for_terminal_producer()", permanent)
+        self.assertIn("for observation in $(seq 1 120)", permanent)
+        self.assertIn(".id == $run_id", permanent)
+        self.assertIn('^(queued|in_progress)$', permanent)
+        self.assertEqual(
+            2,
+            permanent.count(
+                'producer="$(wait_for_terminal_producer "${producer_run_id}")"'
+            ),
+        )
         self.assertIn('"${producer_kind}" = copilot', permanent)
         self.assertIn("for producer_observation in $(seq 1 60)", permanent)
         self.assertIn('if [ "${producer_status}" = queued ]', permanent)

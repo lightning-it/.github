@@ -454,6 +454,67 @@ jobs:
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100"
           }
           reservations="$(read_reservations)"
+          expected_prior_inventory="$(jq -cn \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" '[
+              {
+                id: 98498876339,
+                name: "Protected current-revision verifier",
+                app_id: 15368,
+                app_slug: "github-actions",
+                head_sha: $head,
+                status: "completed",
+                conclusion: "failure",
+                external_id: ("rep60-required-workflow:v3:33066823226:1498:"
+                  + $base + ":" + $head),
+                details_url: "https://github.com/lightning-it/shared-assets-lit/runs/98498876339",
+                started_at: "2026-08-27T11:19:05Z",
+                completed_at: "2026-08-27T11:19:07Z",
+                output_title: "Protected current-revision evidence is absent or invalid",
+                output_summary: ("PR #1498; head " + $head
+                  + "; stage permanent-producer-inventory; fail-closed.")
+              },
+              {
+                id: 98499001131,
+                name: "Protected current-revision verifier",
+                app_id: 15368,
+                app_slug: "github-actions",
+                head_sha: $head,
+                status: "completed",
+                conclusion: "failure",
+                external_id: ("rep60-required-workflow:v3:33066859444:1502:"
+                  + $base + ":" + $head),
+                details_url: "https://github.com/lightning-it/shared-assets-lit/runs/98499001131",
+                started_at: "2026-08-27T11:19:36Z",
+                completed_at: "2026-08-27T11:20:27Z",
+                output_title: "Protected current-revision evidence is absent or invalid",
+                output_summary: ("PR #1502; head " + $head
+                  + "; stage permanent-producer-binding; fail-closed.")
+              }
+            ] | sort_by(.id)')"
+          prior_inventory="$(jq -c \
+            --arg head "${EVENT_HEAD}" '
+              [.[].check_runs[]? |
+                select(.name == "Protected current-revision verifier") |
+                select(.head_sha == $head) |
+                {
+                  id,
+                  name,
+                  app_id: .app.id,
+                  app_slug: .app.slug,
+                  head_sha,
+                  status,
+                  conclusion,
+                  external_id,
+                  details_url,
+                  started_at,
+                  completed_at,
+                  output_title: .output.title,
+                  output_summary: .output.summary
+                }
+              ] | sort_by(.id)
+            ' <<<"${reservations}")"
+          test "${prior_inventory}" = "${expected_prior_inventory}"
           same_revision="$(jq -c \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \
@@ -466,7 +527,8 @@ jobs:
                   "^rep60-required-workflow:v3:[1-9][0-9]*:"
                   + $pr + ":" + $base + ":" + $head + "$"))]
             ' <<<"${reservations}")"
-          test "$(jq 'length' <<<"${same_revision}")" -eq 0
+          test "$(jq 'length' <<<"${same_revision}")" -eq 1
+          test "$(jq -er '.[0].id' <<<"${same_revision}")" -eq 98499001131
           created=''
           if ! created="$(gh api --method POST \
               "repos/${REPOSITORY}/check-runs" \
@@ -517,21 +579,45 @@ jobs:
               and .status == "in_progress"
             ' <<<"${created}" >/dev/null
           visible="$(read_reservations | jq -c \
-            --arg base "${EVENT_BASE}" \
+            --arg external_id "${reservation_external_id}" \
             --arg head "${EVENT_HEAD}" \
-            --arg pr "${PR_NUMBER}" '
+            --argjson check_id "${reservation_id}" '
               [.[].check_runs[]? |
                 select(.name == "Protected current-revision verifier") |
                 select(.app.id == 15368 and .app.slug == "github-actions") |
                 select(.head_sha == $head) |
-                select((.external_id // "") | test(
-                  "^rep60-required-workflow:v3:[1-9][0-9]*:"
-                  + $pr + ":" + $base + ":" + $head + "$"))]
+                select(.id == $check_id) |
+                select(.external_id == $external_id)]
             ')"
           test "$(jq 'length' <<<"${visible}")" -eq 1
           test "$(jq -er '.[0].id' <<<"${visible}")" -eq "${reservation_id}"
           test "$(jq -er '.[0].external_id' <<<"${visible}")" = \
             "${reservation_external_id}"
+          post_inventory="$(read_reservations | jq -c \
+            --arg head "${EVENT_HEAD}" \
+            --argjson current_id "${reservation_id}" '
+              [.[].check_runs[]? |
+                select(.name == "Protected current-revision verifier") |
+                select(.head_sha == $head) |
+                select(.id != $current_id) |
+                {
+                  id,
+                  name,
+                  app_id: .app.id,
+                  app_slug: .app.slug,
+                  head_sha,
+                  status,
+                  conclusion,
+                  external_id,
+                  details_url,
+                  started_at,
+                  completed_at,
+                  output_title: .output.title,
+                  output_summary: .output.summary
+                }
+              ] | sort_by(.id)
+            ')"
+          test "${post_inventory}" = "${expected_prior_inventory}"
           for observation in $(seq 1 450); do
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -1869,13 +1955,34 @@ jobs:
           summary="$(jq -r '.output.summary // empty' <<<"${check}")"
           test -n "${summary}"
           failure_stage='permanent-producer-binding'
+          wait_for_terminal_producer() {
+            local run_id="$1"
+            local observation
+            local run
+            local status
+            for observation in $(seq 1 120); do
+              run="$(gh api \
+                "repos/${REPOSITORY}/actions/runs/${run_id}")"
+              jq -e --argjson run_id "${run_id}" \
+                '.id == $run_id' <<<"${run}" >/dev/null
+              status="$(jq -er \
+                '.status | select(type == "string")' <<<"${run}")"
+              if [ "${status}" = completed ]; then
+                printf '%s\n' "${run}"
+                return 0
+              fi
+              [[ "${status}" =~ ^(queued|in_progress)$ ]]
+              test "${observation}" -lt 120
+              sleep 2
+            done
+          }
           if [ "${author}" = 'lightning-it-release-automation[bot]' ] \
             && [[ "${external_id}" =~ ^mlx90-current-revision:v4: ]]; then
             [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):[0-9a-f]{64}$ ]]
             producer_run_id="${BASH_REMATCH[1]}"
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
-            producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            producer="$(wait_for_terminal_producer "${producer_run_id}")"
             jq -e \
               --arg actor "${author}" \
               --arg base_ref "${base_ref}" \
@@ -2058,6 +2165,7 @@ jobs:
                 sleep 1
               done
             fi
+            producer="$(wait_for_terminal_producer "${producer_run_id}")"
             if [ "${producer_run_attempt}" -eq 1 ]; then
               jq -e \
                 --arg actor "${author}" \
