@@ -1597,6 +1597,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertLess(managed_sync, permanent_inventory)
         bootstrap = workflow[durable_bootstrap:managed_sync]
         self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
+        self.assertIn(
+            "install -d -m 0700 protected-bootstrap-final", bootstrap
+        )
+        self.assertIn(
+            ">protected-bootstrap-final/verify.py", bootstrap
+        )
+        self.assertIn(
+            "python3 protected-bootstrap-final/verify.py", bootstrap
+        )
+        self.assertNotIn(">protected-bootstrap/verify.py", bootstrap)
         self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
         self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
         self.assertIn('".github/workflows/current-revision-rerun.yml"', bootstrap)
