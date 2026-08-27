@@ -35,8 +35,9 @@ jobs:
     # Required Workflows do not reliably receive ready_for_review after their
     # initial Draft event. The exact trust-root bootstrap therefore classifies
     # its immutable candidate while Draft and keeps this same protected run
-    # alive until the one local pipeline review is final. Other paths retain
-    # the reservation plus one protected verifier-only re-evaluation contract.
+    # alive until the one local pipeline review is final. Other paths keep the
+    # reservation alive while boundedly awaiting protected producer evidence;
+    # the historical single verifier-only re-evaluation remains verifiable.
     permissions:
       actions: read
       checks: write
@@ -1388,22 +1389,67 @@ jobs:
 
           if [ "${managed_sync_verified}" = false ]; then
             failure_stage='permanent-producer-inventory'
-          neutral_pages="$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
-          neutral="$(jq -c '
-            [.[].check_runs[]? |
-              select(.name == "Current revision review") |
-              select((.external_id | type) == "string") |
-              select(
-                (.external_id | startswith("mlx90-current-revision:v4:"))
-                or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
-                or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
-                or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
-                or (.external_id | startswith("mlx90-current-revision:managed-sync:v6:"))
-                or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v6:"))
-              )]
-          ' <<<"${neutral_pages}")"
-          test "$(jq 'length' <<<"${neutral}")" -eq 1
+          neutral='[]'
+          current_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" '
+              .state == "open"
+              and .draft == false
+              and .base.sha == $base
+              and .head.sha == $head
+              and .base.repo.full_name == $repository
+              and (.head.repo.full_name | type) == "string"
+            ' <<<"${current_pr}" >/dev/null
+          for evidence_observation in $(seq 1 450); do
+            neutral_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+            neutral="$(jq -c '
+              [.[].check_runs[]? |
+                select(.name == "Current revision review") |
+                select((.external_id | type) == "string") |
+                select(
+                  (.external_id | startswith("mlx90-current-revision:v4:"))
+                  or (.external_id | startswith("mlx90-current-revision:copilot:v5:"))
+                  or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v5:"))
+                  or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
+                  or (.external_id | startswith("mlx90-current-revision:managed-sync:v6:"))
+                  or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v6:"))
+                )]
+            ' <<<"${neutral_pages}")"
+            neutral_count="$(jq 'length' <<<"${neutral}")"
+            if [ "${neutral_count}" -gt 1 ]; then
+              echo 'Multiple protected current-revision results exist for the exact head.' >&2
+              exit 1
+            fi
+            if [ "${neutral_count}" -eq 1 ]; then
+              neutral_status="$(jq -er '.[0].status | select(type == "string")' \
+                <<<"${neutral}")"
+              if [ "${neutral_status}" = completed ]; then
+                test "$(jq -r '.[0].conclusion' <<<"${neutral}")" = success
+                break
+              fi
+              [[ "${neutral_status}" =~ ^(queued|in_progress)$ ]]
+            fi
+            if [ "${evidence_observation}" -eq 450 ]; then
+              echo 'The protected current-revision result did not become successful in time.' >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          current_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" '
+              .state == "open"
+              and .draft == false
+              and .base.sha == $base
+              and .head.sha == $head
+              and .base.repo.full_name == $repository
+              and (.head.repo.full_name | type) == "string"
+            ' <<<"${current_pr}" >/dev/null
           check="$(jq -c '.[0]' <<<"${neutral}")"
           jq -e '
             .app.id == 15368
@@ -1515,15 +1561,90 @@ jobs:
             producer_run_attempt="$(jq -er \
               '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
               <<<"${producer}")"
+            producer_evidence_ready=false
+            if [ "${producer_run_attempt}" -eq 1 ] \
+              && [ "${producer_kind}" = copilot ]; then
+              for producer_observation in $(seq 1 60); do
+                producer="$(gh api \
+                  "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+                producer_status="$(jq -er \
+                  '.status | select(type == "string" and length > 0)' \
+                  <<<"${producer}")"
+                if [ "${producer_status}" = completed ]; then
+                  break
+                fi
+                test "${producer_status}" = in_progress
+                producer_jobs_pages="$(gh api --paginate --slurp \
+                  "repos/${REPOSITORY}/actions/runs/${producer_run_id}/jobs?filter=all&per_page=100")"
+                jq -e '
+                  type == "array"
+                  and length > 0
+                  and all(.[];
+                    type == "object"
+                    and (.jobs | type) == "array")
+                  and all(.[].jobs[];
+                    type == "object"
+                    and (.id | type) == "number" and .id > 0
+                    and (.name | type) == "string"
+                    and (.head_sha | type) == "string"
+                    and (.run_attempt | type) == "number"
+                    and (.status | type) == "string"
+                    and has("conclusion")
+                    and ((.conclusion | type) == "string"
+                      or .conclusion == null))
+                  ' <<<"${producer_jobs_pages}" >/dev/null
+                evidence_jobs="$(jq -c \
+                  --arg head "${EVENT_HEAD}" '
+                    [.[].jobs[] |
+                      select(.name == "Verify current revision policy") |
+                      select(.head_sha == $head) |
+                      select(.run_attempt == 1) |
+                      select(.status == "completed"
+                        and .conclusion == "success") |
+                      select((.steps | type) == "array")]
+                  ' <<<"${producer_jobs_pages}")"
+                failed_jobs="$(jq -c '
+                  [.[].jobs[] |
+                    select(.status == "completed"
+                      and .conclusion == "failure")]
+                  ' <<<"${producer_jobs_pages}")"
+                if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ] \
+                  && [ "$(jq 'length' <<<"${failed_jobs}")" -eq 0 ]; then
+                  critical_steps="$(jq -c '
+                    [.[0].steps[] |
+                      select(
+                        .name == "Verify current Copilot review and resolved findings"
+                        or .name == "Publish bound neutral result") |
+                      select(.status == "completed"
+                        and .conclusion == "success")]
+                    ' <<<"${evidence_jobs}")"
+                  test "$(jq 'length' <<<"${critical_steps}")" -eq 2
+                  test "$(jq '[.[].name] | unique | length' \
+                    <<<"${critical_steps}")" -eq 2
+                  producer_evidence_ready=true
+                  break
+                fi
+                if [ "${producer_observation}" -eq 60 ]; then
+                  echo 'The protected producer evidence job did not complete in time.' >&2
+                  exit 1
+                fi
+                sleep 1
+              done
+            fi
             if [ "${producer_run_attempt}" -eq 1 ]; then
               jq -e \
                 --arg actor "${author}" \
                 --arg head_ref "${head_ref}" \
-                --arg head_sha "${EVENT_HEAD}" '
+                --arg head_sha "${EVENT_HEAD}" \
+                --argjson evidence_ready "${producer_evidence_ready}" '
                   .event == "pull_request_target"
                   and .run_attempt == 1
-                  and .status == "completed"
-                  and .conclusion == "success"
+                  and (
+                    (.status == "completed" and .conclusion == "success")
+                    or ($evidence_ready
+                      and .status == "in_progress"
+                      and .conclusion == null)
+                  )
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
                   and .head_branch == $head_ref

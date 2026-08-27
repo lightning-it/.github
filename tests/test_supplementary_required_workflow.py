@@ -1653,6 +1653,67 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.rindex("trap - ERR"),
         )
 
+    def test_permanent_verifier_awaits_protected_evidence_without_a_rerun_race(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+
+        self.assertIn("for evidence_observation in $(seq 1 450)", permanent)
+        self.assertIn("sleep 2", permanent)
+        self.assertIn('current_pr="$(gh api', permanent)
+        for binding in (
+            '.state == "open"',
+            ".draft == false",
+            ".base.sha == $base",
+            ".head.sha == $head",
+            ".base.repo.full_name == $repository",
+        ):
+            self.assertIn(binding, permanent)
+        self.assertIn('if [ "${neutral_count}" -gt 1 ]', permanent)
+        self.assertIn('if [ "${neutral_count}" -eq 1 ]', permanent)
+        self.assertIn('if [ "${neutral_status}" = completed ]', permanent)
+        self.assertIn(
+            'test "$(jq -r \'.[0].conclusion\' <<<"${neutral}")" = success',
+            permanent,
+        )
+        self.assertIn('^(queued|in_progress)$', permanent)
+        self.assertIn(
+            "The protected current-revision result did not become successful in time.",
+            permanent,
+        )
+
+        self.assertIn("producer_evidence_ready=false", permanent)
+        self.assertIn('"${producer_kind}" = copilot', permanent)
+        self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn(
+            "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
+            permanent,
+        )
+        self.assertIn('.name == "Verify current revision policy"', permanent)
+        self.assertIn(
+            '.name == "Verify current Copilot review and resolved findings"',
+            permanent,
+        )
+        self.assertIn('.name == "Publish bound neutral result"', permanent)
+        self.assertIn('and .conclusion == "failure"', permanent)
+        self.assertIn('producer_evidence_ready=true', permanent)
+        self.assertIn(
+            '--argjson evidence_ready "${producer_evidence_ready}"', permanent
+        )
+        self.assertIn(
+            '($evidence_ready\n                      and .status == "in_progress"',
+            permanent,
+        )
+        self.assertLess(
+            permanent.index("for evidence_observation in $(seq 1 450)"),
+            permanent.index("producer_evidence_ready=false"),
+        )
+        self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
+        self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
+
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
     ) -> None:
