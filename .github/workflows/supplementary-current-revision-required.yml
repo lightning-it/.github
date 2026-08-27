@@ -1518,8 +1518,9 @@ jobs:
                 and (.content | type == "string" and length > 0)
               ' <<<"${controller_asset}" >/dev/null
             bootstrap_content="$(jq -er .content <<<"${controller_asset}")"
-            test "$(base64 --decode <<<"${bootstrap_content}" \
-              | git hash-object --stdin)" = \
+            bootstrap_blob_sha="$(base64 --decode <<<"${bootstrap_content}" \
+              | git hash-object --stdin)"
+            test "${bootstrap_blob_sha}" = \
               "$(jq -r .sha <<<"${controller_asset}")"
 
             set +e

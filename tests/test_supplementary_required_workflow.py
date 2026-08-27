@@ -1945,12 +1945,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("verify-main-trust-root-bootstrap.py", bootstrap)
         self.assertIn('bootstrap_content="$(jq -er .content', bootstrap)
         self.assertIn('base64 --decode <<<"${bootstrap_content}"', bootstrap)
+        self.assertIn('bootstrap_blob_sha="$(base64 --decode', bootstrap)
         self.assertIn("git hash-object --stdin", bootstrap)
+        self.assertIn('test "${bootstrap_blob_sha}" =', bootstrap)
         self.assertIn("| python3 -", bootstrap)
         self.assertNotIn("bootstrap_stage", bootstrap)
         self.assertNotIn("protected-bootstrap-final", bootstrap)
         self.assertNotIn("verify.py\"", bootstrap)
         self.assertNotIn(">protected-bootstrap/verify.py", bootstrap)
+        self.assertLess(
+            bootstrap.index('bootstrap_blob_sha="$(base64 --decode'),
+            bootstrap.index('test "${bootstrap_blob_sha}" ='),
+        )
         self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
         self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
         self.assertIn('".github/workflows/current-revision-rerun.yml"', bootstrap)
