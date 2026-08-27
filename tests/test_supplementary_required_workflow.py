@@ -1835,6 +1835,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("rep60-main-trust-root-handoff/v1", classifier)
         self.assertIn("active=true", classifier)
         self.assertIn("source_blobs", classifier)
+        self.assertIn("install -d -m 0700 protected-bootstrap", classifier)
+        self.assertIn(
+            'test "$(git hash-object protected-bootstrap/verify.py)" =',
+            classifier,
+        )
+        self.assertIn(
+            '"$(jq -r .sha <<<"${verifier_payload}")"', classifier
+        )
+        self.assertIn("chmod 0500 protected-bootstrap/verify.py", classifier)
         self.assertNotIn("openai/", classifier.lower())
         self.assertNotIn("copilot-requests", classifier)
 
