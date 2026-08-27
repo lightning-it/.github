@@ -1614,13 +1614,25 @@ jobs:
                         and .conclusion == "success") |
                       select((.steps | type) == "array")]
                   ' <<<"${producer_jobs_pages}")"
-                failed_jobs="$(jq -c '
+                disallowed_terminal_jobs="$(jq -c '
                   [.[].jobs[] |
                     select(.status == "completed"
-                      and .conclusion == "failure")]
+                      and .conclusion != "success") |
+                    select(
+                      (.name == "Request Copilot review for current revision"
+                        and .conclusion == "skipped")
+                      | not)]
+                  ' <<<"${producer_jobs_pages}")"
+                allowed_skipped_request_jobs="$(jq -c '
+                  [.[].jobs[] |
+                    select(.status == "completed"
+                      and .conclusion == "skipped") |
+                    select(.name
+                      == "Request Copilot review for current revision")]
                   ' <<<"${producer_jobs_pages}")"
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ] \
-                  && [ "$(jq 'length' <<<"${failed_jobs}")" -eq 0 ]; then
+                  && [ "$(jq 'length' <<<"${disallowed_terminal_jobs}")" -eq 0 ] \
+                  && [ "$(jq 'length' <<<"${allowed_skipped_request_jobs}")" -le 1 ]; then
                   critical_steps="$(jq -c '
                     [.[0].steps[] |
                       select(

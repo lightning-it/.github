@@ -1719,7 +1719,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn('.name == "Publish bound neutral result"', permanent)
-        self.assertIn('and .conclusion == "failure"', permanent)
+        self.assertIn("disallowed_terminal_jobs", permanent)
+        self.assertIn('and .conclusion != "success"', permanent)
+        self.assertIn("allowed_skipped_request_jobs", permanent)
+        self.assertIn(
+            '.name == "Request Copilot review for current revision"', permanent
+        )
+        self.assertIn('and .conclusion == "skipped"', permanent)
+        self.assertIn(
+            '"${allowed_skipped_request_jobs}")" -le 1', permanent
+        )
         self.assertIn('producer_evidence_ready=true', permanent)
         self.assertIn(
             '--argjson evidence_ready "${producer_evidence_ready}"', permanent
@@ -1734,6 +1743,74 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
+
+    def test_permanent_verifier_rejects_every_unexpected_terminal_job(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+
+        def assignment_filter(name: str) -> str:
+            marker = f'{name}="$(jq -c \'\n'
+            start = permanent.index(marker) + len(marker)
+            end = permanent.index(
+                '\n                  \' <<<"${producer_jobs_pages}")"', start
+            )
+            return permanent[start:end]
+
+        jobs = [
+            {
+                "name": "Verify current revision policy",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "name": "Request Copilot review for current revision",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "name": "cancelled job",
+                "status": "completed",
+                "conclusion": "cancelled",
+            },
+            {
+                "name": "timed out job",
+                "status": "completed",
+                "conclusion": "timed_out",
+            },
+            {
+                "name": "unexpected skipped job",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "name": "running job",
+                "status": "in_progress",
+                "conclusion": None,
+            },
+        ]
+        source = json.dumps([{"jobs": jobs}])
+        jq = self._test_tool("jq")
+
+        def evaluate(name: str) -> list[dict[str, object]]:
+            result = subprocess.run(
+                [jq, "-c", assignment_filter(name)],
+                input=source,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        self.assertEqual(
+            [job["name"] for job in evaluate("disallowed_terminal_jobs")],
+            ["cancelled job", "timed out job", "unexpected skipped job"],
+        )
+        self.assertEqual(
+            [job["name"] for job in evaluate("allowed_skipped_request_jobs")],
+            ["Request Copilot review for current revision"],
+        )
 
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
