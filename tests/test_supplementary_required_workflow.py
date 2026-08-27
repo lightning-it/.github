@@ -1811,6 +1811,97 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
 
+    def test_bootstrap_handoff_is_classified_before_bounded_review_wait(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        classifier_name = (
+            "      - name: Classify protected main trust-root bootstrap "
+            "handoff\n"
+        )
+        wait_name = "      - name: Wait for one finalized bootstrap pipeline review\n"
+        verifier_name = (
+            "      - name: Verify one protected result for the exact live revision\n"
+        )
+        classifier = workflow.split(classifier_name, 1)[1].split(
+            wait_name, 1
+        )[0]
+        wait = workflow.split(wait_name, 1)[1].split(verifier_name, 1)[0]
+
+        self.assertLess(workflow.index(classifier_name), workflow.index(wait_name))
+        self.assertLess(workflow.index(wait_name), workflow.index(verifier_name))
+        self.assertIn("timeout-minutes: 30", workflow)
+        self.assertIn("--classify-only", classifier)
+        self.assertIn("rep60-main-trust-root-handoff/v1", classifier)
+        self.assertIn("active=true", classifier)
+        self.assertIn("source_blobs", classifier)
+        self.assertNotIn("openai/", classifier.lower())
+        self.assertNotIn("copilot-requests", classifier)
+
+        self.assertIn(
+            "if: steps.bootstrap-handoff.outputs.active == 'true'", wait
+        )
+        self.assertIn("for _observation in $(seq 1 300)", wait)
+        self.assertIn("sleep 5", wait)
+        self.assertIn(".draft | type", wait)
+        self.assertIn('select(.path == ".github/workflows/copilot-review.yml")', wait)
+        self.assertIn('select(.name == "Copilot review gate")', wait)
+        self.assertIn(".pull_requests[0].base.sha == $base", wait)
+        self.assertIn(".pull_requests[0].head.sha == $head", wait)
+        self.assertIn(
+            'select(.name == "Request Copilot review for current revision")',
+            wait,
+        )
+        self.assertIn('select(.name == "Successful Copilot review")', wait)
+        self.assertIn('if [ "${review_count}" -gt 1 ]', wait)
+        self.assertIn('if [ "${run_count}" -gt 1 ]', wait)
+        self.assertIn('if [ "${request_count}" -gt 1 ]', wait)
+        self.assertNotIn("gh pr edit", wait)
+        self.assertNotIn("requested_reviewers", wait)
+        self.assertNotIn("openai/", wait.lower())
+
+    def test_copilot_controller_trusts_only_required_workflow_job_ledger(
+        self,
+    ) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        classifier = workflow.split(
+            "\n  classify-main-trust-root-handoff:", 1
+        )[1].split("\n  request-current-revision-review:", 1)[0]
+        request = workflow.split(
+            "\n  request-current-revision-review:", 1
+        )[1].split("\n  verify-current-revision-policy:", 1)[0]
+        verify = workflow.split(
+            "\n  verify-current-revision-policy:", 1
+        )[1].split("\n  request-protected-verifier-reevaluation:", 1)[0]
+
+        for fragment in (
+            'actions/required_workflows/"',
+            '.workflow_url == ($url_prefix + (.workflow_id | tostring))',
+            'select(.repository.full_name == $repository)',
+            'select(.head_repository.full_name == $repository)',
+            'select(.actor.login == "litroc")',
+            '.triggering_actor.login == "github-actions[bot]"',
+            'select(.name == "Required current-revision workflow")',
+            'select(.name == "Classify protected main trust-root bootstrap handoff")',
+            'if [ "${run_count}" -gt 1 ]',
+            'if [ "${job_count}" -gt 1 ]',
+            'if [ "${step_count}" -gt 1 ]',
+        ):
+            self.assertIn(fragment, classifier)
+        self.assertNotIn("startsWith(", classifier)
+        self.assertNotIn("format(", classifier)
+
+        for job in (request, verify):
+            self.assertIn("needs: classify-main-trust-root-handoff", job)
+            self.assertIn("always()", job)
+            self.assertIn(
+                "needs.classify-main-trust-root-handoff.outputs.active != 'true'",
+                job,
+            )
+            self.assertNotIn(
+                "bootstrap protected main review trust root", job
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
