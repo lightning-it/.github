@@ -1045,6 +1045,9 @@ jobs:
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
           TERMINAL_PRODUCER_RUN_ID: >-
             ${{ steps.terminal-producer.outputs.producer_run_id }}
+        # actionlint 1.7.12 deadlocks before ShellCheck starts when one run
+        # payload reaches the Linux 65,536-byte pipe capacity (upstream #712).
+        # The deterministic unit test keeps this protected payload bounded.
         run: |
           # The job environment maps github.repository into REPOSITORY.
           # shellcheck disable=SC2153
@@ -1102,11 +1105,6 @@ jobs:
                 ' <<<"${source_compare}" >/dev/null
               ;;
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
-              # The central repository self-hosts this controller on its
-              # protected default branch. A PR to develop is evaluated by the
-              # protected base copy. A direct develop-to-main promotion is
-              # evaluated by the protected develop head itself. No feature
-              # branch can satisfy either exact live branch binding.
               test "${REPOSITORY}" = lightning-it/.github
               protected_develop="$(gh api repos/lightning-it/.github/branches/develop)"
               if [ "${WORKFLOW_SHA}" = "${EVENT_BASE}" ]; then
@@ -1754,12 +1752,7 @@ jobs:
                 and .output.title == $title
                 and .output.summary == $evidence
               ' <<<"${bootstrap_check}" >/dev/null
-            # details_url is service-owned navigation metadata. GitHub Actions
-            # replaces caller-supplied values with its native check-run URL,
-            # including after an update. It is therefore neither written nor
-            # accepted as evidence. The protected producer URL is bound in the
-            # verified JSON summary and its run ID is also in external_id.
-
+            # details_url is service-owned navigation metadata.
             failure_stage='main-trust-root-bootstrap-final-rebind'
             final_bootstrap_summary="$(base64 --decode <<<"${bootstrap_content}" \
               | python3 - \
@@ -1986,10 +1979,7 @@ jobs:
             ' <<<"${target_commit}")"
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
-            # The marker token is reserved anywhere in a comment. The strict
-            # parser below accepts only the exact two-line App proof, so any
-            # prefix, suffix, edit, malformed proof, or duplicate stays counted
-            # here but fails closed during exact validation.
+            # The marker token is reserved anywhere in a comment.
             sync_comments="$(jq -c \
               --arg legacy_marker '<!-- lit-shared-assets-sync-provenance:v1 -->' \
               --arg attempt_marker '<!-- lit-shared-assets-sync-provenance:v2 -->' '
@@ -1999,9 +1989,6 @@ jobs:
                     (.body | contains($legacy_marker))
                     or (.body | contains($attempt_marker)))]
               ' <<<"${sync_comment_pages}")"
-            # Any second marker is ambiguous evidence, even if its payload or
-            # actor is invalid. Exactly one marker must exist before validating
-            # the App identity and immutable bindings below.
             test "$(jq 'length' <<<"${sync_comments}")" -eq 1
             sync_app_comments="$(jq -c \
               --arg api_url "${GITHUB_API_URL}" \
@@ -2209,9 +2196,7 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
-              # Keep v5 valid only for already-open pull requests during the
-              # atomic producer/verifier rollout. Exact-one inventory above
-              # prevents v5 and v6 from satisfying the gate together.
+              # Keep v5 valid only for already-open pull requests; exact-one inventory prevents v5 and v6 from satisfying the gate together.
               [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
@@ -2372,11 +2357,7 @@ jobs:
                   and .triggering_actor.login == $actor
                 ' <<<"${producer}" >/dev/null
             else
-              # A late Copilot review may authorize exactly one verifier-only
-              # rerun. The protected review-event controller must publish the
-              # unique authorization before it requests that rerun. This keeps
-              # arbitrary UI/API reruns and candidate workflows from becoming
-              # a permanent producer.
+              # A late Copilot review may authorize exactly one verifier-only rerun.
               test "${producer_kind}" = copilot
               authorization_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Late%20review%20rerun%20authorization&filter=all&per_page=100")"

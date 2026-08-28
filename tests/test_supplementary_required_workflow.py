@@ -17,6 +17,9 @@ REMEDIATION_WORKFLOW = (
     ROOT / ".github" / "workflows" / "codex-copilot-remediation.yml"
 )
 COPILOT_WORKFLOW = ROOT / ".github" / "workflows" / "copilot-review.yml"
+REPOSITORY_QUALITY_WORKFLOW = (
+    ROOT / ".github" / "workflows" / "repository-quality.yml"
+)
 TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
@@ -2209,6 +2212,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ' and .conclusion == null)',
             final_verifier,
         )
+
+    def test_required_verifier_stays_below_actionlint_pipe_deadlock_limit(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        verifier = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        script = verifier.split("        run: |\n", 1)[1]
+        normalized = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in script.splitlines()
+        ) + "\n"
+        self.assertLessEqual(
+            len(normalized.encode("utf-8")),
+            64_500,
+            "actionlint 1.7.12 deadlocks before ShellCheck starts when one "
+            "run block approaches the Linux 65,536-byte pipe capacity",
+        )
+
+        quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("    timeout-minutes: 10\n", quality)
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
