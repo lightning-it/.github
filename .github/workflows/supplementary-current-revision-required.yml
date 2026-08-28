@@ -922,7 +922,7 @@ jobs:
           printf 'producer_kind=%s\nproducer_run_id=%s\n' \
             "${producer_kind}" "${producer_run_id}" >>"${GITHUB_OUTPUT}"
 
-      - name: Validate an in-progress Exact-Revision producer
+      - name: Validate an Exact-Revision producer handoff
         id: release-app-producer
         if: >-
           steps.terminal-producer.outputs.producer_run_id != ''
@@ -943,10 +943,25 @@ jobs:
               "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            if [ "${producer_status}" = completed ]; then
+            producer_conclusion="$(jq -r '.conclusion // empty' \
+              <<<"${producer}")"
+            if [ "${producer_status}" = completed ] \
+              && [ "${producer_conclusion}" = success ]; then
               exit 0
             fi
-            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+            terminal_helper_handoff=false
+            if [ "${producer_status}" = completed ]; then
+              test "${producer_conclusion}" = failure
+              # Controllers deployed before the protected deadlock fix can
+              # finish red after publishing a fully successful exact-review
+              # job because their optional verifier helper cannot start. The
+              # exact-one job and critical-step proof below isolates only that
+              # terminal handoff; every other failed shape remains invalid.
+              terminal_helper_handoff=true
+            else
+              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+              test -z "${producer_conclusion}"
+            fi
             jobs_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
             jq -e \
@@ -971,6 +986,27 @@ jobs:
                 and ([.[].jobs[]? |
                   select(.name == "Current revision review")] | length) == 1
               ' <<<"${jobs_pages}" >/dev/null
+            if [ "${terminal_helper_handoff}" = true ]; then
+              jq -e '
+                [.[].jobs[]?] as $jobs
+                | ($jobs | length) == 1
+                and $jobs[0].name == "Current revision review"
+                and $jobs[0].status == "completed"
+                and $jobs[0].conclusion == "success"
+                and ($jobs[0].steps | type) == "array"
+                and ([$jobs[0].steps[]? |
+                  select(.name ==
+                    "Run protected history-free Exact-Revision Codex review") |
+                  select(.status == "completed") |
+                  select(.conclusion == "success" or .conclusion == "skipped")]
+                  | length) == 1
+                and ([$jobs[0].steps[]? |
+                  select(.name ==
+                    "Re-prove exact revision and enforce the Codex verdict") |
+                  select(.status == "completed" and .conclusion == "success")]
+                  | length) == 1
+              ' <<<"${jobs_pages}" >/dev/null
+            fi
             exact_jobs="$(jq -c \
               --arg base "${EVENT_BASE}" '
                 [.[].jobs[]? |
@@ -990,12 +1026,18 @@ jobs:
                 --arg base_sha "${EVENT_BASE}" \
                 --arg head "${EVENT_HEAD}" \
                 --arg title "${expected_title}" \
+                --argjson terminal_helper_handoff \
+                  "${terminal_helper_handoff}" \
                 --argjson run_id "${PRODUCER_RUN_ID}" '
                   .id == $run_id
                   and .event == "workflow_dispatch"
                   and .run_attempt == 1
-                  and .status == "in_progress"
-                  and .conclusion == null
+                  and (
+                    (.status == "in_progress" and .conclusion == null)
+                    or ($terminal_helper_handoff
+                      and .status == "completed"
+                      and .conclusion == "failure")
+                  )
                   and .head_branch == $base_ref
                   and .head_sha == $base_sha
                   and .path == ".github/workflows/release-bot-exact-head-review.yml"
@@ -2165,7 +2207,11 @@ jobs:
                 and (
                   (.status == "completed" and .conclusion == "success")
                   or ($evidence_ready
-                    and .status == "in_progress" and .conclusion == null)
+                    and (
+                      (.status == "in_progress" and .conclusion == null)
+                      or (.status == "completed"
+                        and .conclusion == "failure")
+                    ))
                 )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
