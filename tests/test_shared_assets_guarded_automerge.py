@@ -11,7 +11,9 @@ class SharedAssetsGuardedAutomergeTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         guard = workflow.index("- name: Verify automated sync PR identity")
         mint = workflow.index("- name: Mint policy-read App token")
-        approve = workflow.index("- name: Approve and enable auto-merge")
+        approve = workflow.index(
+            "- name: Verify required checks and merge exact head"
+        )
 
         self.assertLess(guard, mint)
         self.assertLess(mint, approve)
