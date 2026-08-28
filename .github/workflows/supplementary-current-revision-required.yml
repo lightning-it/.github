@@ -2342,13 +2342,13 @@ jobs:
                   [.[].jobs[] |
                     select(.status == "completed"
                       and .conclusion != "success") |
-                    select(
+                    select((
                       (.name == "Request Copilot review for current revision"
                         and .conclusion == "skipped")
                       or (.name == $d and .conclusion == "skipped"
                         and has("runner_id") and .runner_id == null
                         and (.steps | type) == "array" and (.steps | length) == 0)
-                      | not)]
+                      ) | not)]
                   ' <<<"${producer_jobs_pages}")"
                 skips="$(jq -c \
                   --arg d "${d}" '
