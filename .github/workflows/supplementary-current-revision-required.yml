@@ -919,12 +919,14 @@ jobs:
               sleep 2
             done
           fi
-          printf 'producer_run_id=%s\n' "${producer_run_id}" >>"${GITHUB_OUTPUT}"
+          printf 'producer_kind=%s\nproducer_run_id=%s\n' \
+            "${producer_kind}" "${producer_run_id}" >>"${GITHUB_OUTPUT}"
 
       - name: Validate an in-progress Exact-Revision producer
         id: release-app-producer
         if: >-
           steps.terminal-producer.outputs.producer_run_id != ''
+          && steps.terminal-producer.outputs.producer_kind == 'release-app'
           && github.event.pull_request.user.login
             == 'lightning-it-release-automation[bot]'
         env:

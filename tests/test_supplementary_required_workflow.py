@@ -2089,7 +2089,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("mlx90-current-revision:v4:", terminal_wait)
         self.assertIn(
-            "producer_run_id=%s\\n", terminal_wait
+            "producer_kind=%s\\nproducer_run_id=%s\\n", terminal_wait
         )
         self.assertNotIn("wait_for_terminal_producer()", permanent)
         self.assertEqual(
@@ -2159,6 +2159,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Verify one protected result for the exact live revision\n",
             1,
         )[0]
+        self.assertIn(
+            "steps.terminal-producer.outputs.producer_kind == 'release-app'",
+            validator,
+        )
         for binding in (
             "producer_status",
             ".run_id == $run_id",
