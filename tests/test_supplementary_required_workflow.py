@@ -2178,6 +2178,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for binding in (
             "producer_status",
             "producer_conclusion",
+            'select(has("conclusion"))',
+            'if .conclusion == null then ""',
+            '.conclusion | select(type == "string")',
             "terminal_helper_handoff=false",
             'test "${producer_conclusion}" = failure',
             "terminal_helper_handoff=true",
@@ -2216,6 +2219,42 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(binding, validator)
 
+        conclusion_filter = validator.split(
+            'producer_conclusion="$(jq -er \'\n', 1
+        )[1].split(
+            '\n              \' <<<"${producer}")"', 1
+        )[0]
+        jq = self._test_tool("jq")
+        for payload, expected in (
+            ({"conclusion": None}, ""),
+            ({"conclusion": "success"}, "success"),
+            ({"conclusion": "failure"}, "failure"),
+        ):
+            result = subprocess.run(
+                [jq, "-er", conclusion_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.rstrip("\n"), expected)
+        for payload in (
+            {},
+            {"conclusion": 1},
+            {"conclusion": True},
+            {"conclusion": {}},
+            {"conclusion": []},
+        ):
+            result = subprocess.run(
+                [jq, "-er", conclusion_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+
         terminal_filter = validator.split(
             'if [ "${terminal_helper_handoff}" = true ]; then\n'
             "              jq -e '\n",
@@ -2246,8 +2285,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 },
             ],
         }
-        jq = self._test_tool("jq")
-
         def validates(jobs: list[dict[str, object]]) -> bool:
             result = subprocess.run(
                 [jq, "-e", terminal_filter],
