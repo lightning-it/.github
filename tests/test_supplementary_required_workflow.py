@@ -8,6 +8,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (
@@ -30,16 +32,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         return executable
 
     @staticmethod
-    def _late_authorization_summary_filter() -> str:
+    def _late_review_authorization_step() -> str:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        late = workflow.split(
-            "# A late Copilot review may authorize exactly one verifier-only",
+        return workflow.split(
+            "      - name: Validate protected late-review rerun authorization\n",
             1,
-        )[1]
-        marker = '                --argjson review_id "${review_id}" \'\n'
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+
+    @classmethod
+    def _late_authorization_summary_filter(cls) -> str:
+        late = cls._late_review_authorization_step()
+        marker = '            --argjson review_id "${review_id}" \'\n'
         start = late.index(marker) + len(marker)
         end = late.index(
-            '\n                \' <<<"${authorization_summary}"', start
+            '\n            \' <<<"${authorization_summary}"', start
         )
         return late[start:end]
 
@@ -484,11 +493,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
         self.assertEqual(
-            4,
+            2,
             neutral_producer.count("and .run_attempt == 1"),
         )
-        self.assertEqual(workflow.count(".actor.login == $actor"), 8)
-        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 6)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 9)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 7)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
 
@@ -596,13 +605,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Verify one protected result for the exact live revision\n",
             1,
         )[0]
+        expected_inventory = transition.split(
+            "          readonly expected_prior_inventory='", 1
+        )[1].split("'\n", 1)[0]
         inventory_guard = "expected_prior_inventory=" + transition.split(
             "          expected_prior_inventory=", 1
         )[1].split("          same_revision=", 1)[0]
-        inventory_guard = textwrap.dedent(inventory_guard)
-        expected_inventory = transition.split(
-            "          EXPECTED_PRIOR_INVENTORY: >-\n", 1
-        )[1].splitlines()[0].strip()
+        inventory_guard = (
+            f"expected_prior_inventory='{expected_inventory}'\n"
+            + textwrap.dedent(inventory_guard)
+        )
         bash = self._test_tool("bash")
         base = "b978d446c336ff2e6d86bef303f2dec5faad612c"
         head = "5dc048e43ae2fd933c92af418f7b13e47a05f586"
@@ -671,7 +683,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "PATH": TEST_TOOL_PATH,
                     "EVENT_BASE": base,
                     "EVENT_HEAD": head,
-                    "EXPECTED_PRIOR_INVENTORY": expected_inventory,
                     "reservations": json.dumps(candidate),
                 },
                 text=True,
@@ -870,12 +881,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        late = workflow.split(
-            "# A late Copilot review may authorize exactly one verifier-only",
+        late = self._late_review_authorization_step()
+        final_verifier = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
             1,
         )[1]
 
-        self.assertIn('test "${producer_kind}" = copilot', late)
         self.assertIn(
             "check_name=Late%20review%20rerun%20authorization",
             late,
@@ -895,7 +906,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.path == ".github/workflows/copilot-review-refresh.yml"',
             late,
         )
-        self.assertIn('.event == "pull_request_review"', late)
+        self.assertIn("expected_event=pull_request_review", late)
+        self.assertIn("expected_event=pull_request_review_comment", late)
+        self.assertIn(".event == $event", late)
         self.assertIn('.actor.login == "Copilot"', late)
         self.assertIn(
             'pulls/${PR_NUMBER}/reviews/${review_id}',
@@ -906,7 +919,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn(
-            'actions/runs/${producer_run_id}/attempts/1/jobs',
+            'actions/runs/${TERMINAL_PRODUCER_RUN_ID}/attempts/1/jobs',
             late,
         )
         self.assertIn('.conclusion == "failure"', late)
@@ -947,8 +960,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn('.run_attempt == 2', late)
-        self.assertIn('.triggering_actor.login == $refresh_actor', late)
+        self.assertIn(
+            '.triggering_actor.login == "github-actions[bot]"', late
+        )
         self.assertNotIn('requested_reviewers', late)
+        self.assertIn('test "${producer_kind}" = copilot', final_verifier)
+        self.assertIn(
+            'test "${LATE_REVIEW_AUTHORIZED}" = true', final_verifier
+        )
+        self.assertIn(
+            'test "${LATE_REVIEW_PRODUCER_RUN_ID}" = "${producer_run_id}"',
+            final_verifier,
+        )
+        self.assertNotIn(
+            "check_name=Late%20review%20rerun%20authorization",
+            final_verifier,
+        )
+
+    def test_each_workflow_shell_block_stays_below_actionlint_pipe_limit(
+        self,
+    ) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        run_blocks = [
+            (step.get("name", "<unnamed>"), step["run"])
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if isinstance(step, dict) and isinstance(step.get("run"), str)
+        ]
+        self.assertTrue(run_blocks)
+        for name, run_block in run_blocks:
+            with self.subTest(step=name):
+                self.assertLess(
+                    len(run_block.encode("utf-8")),
+                    60_000,
+                    "split this protected shell block before actionlint",
+                )
 
     def test_late_authorization_v2_summary_is_exact_and_fail_closed(
         self,
@@ -1481,7 +1527,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".head_branch == $head_ref", human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
         self.assertIn("and .controller_sha == $controller", human_path)
-        self.assertIn(".base.ref == $base_ref", human_path)
+        self.assertIn(".base.ref == $base_ref", workflow)
         self.assertNotIn(".head_branch == $controller_branch", human_path)
         self.assertNotIn(".head_sha == $controller_sha", human_path)
 
@@ -1523,6 +1569,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "managed-sync-provenance",
             "permanent-producer-inventory",
             "permanent-producer-binding",
+            "late-review-rerun-binding",
             "permanent-finalization",
         }
         observed_stages = {
