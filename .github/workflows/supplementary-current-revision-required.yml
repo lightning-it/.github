@@ -943,8 +943,12 @@ jobs:
               "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            producer_conclusion="$(jq -r '.conclusion // empty' \
-              <<<"${producer}")"
+            producer_conclusion="$(jq -er '
+              select(has("conclusion"))
+              | if .conclusion == null then ""
+                else .conclusion | select(type == "string")
+                end
+              ' <<<"${producer}")"
             if [ "${producer_status}" = completed ] \
               && [ "${producer_conclusion}" = success ]; then
               exit 0
