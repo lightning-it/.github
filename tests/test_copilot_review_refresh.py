@@ -68,6 +68,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "schema": 4,
             "base_sha": base,
             "head_sha": head,
+            "controller_ref": "develop",
+            "controller_sha": base,
+            "head_repository": repository,
+            "pull_request_labels_sha256": "d" * 64,
+            "pull_request_last_edited_at": None,
         }
         if pull_request_number is not None:
             summary["pull_request_number"] = pull_request_number
@@ -92,8 +97,20 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     "base",
                     base,
                     "--arg",
+                    "base_ref",
+                    "develop",
+                    "--arg",
                     "head",
                     head,
+                    "--arg",
+                    "head_repository",
+                    repository,
+                    "--arg",
+                    "labels_sha256",
+                    "d" * 64,
+                    "--arg",
+                    "last_edited_at",
+                    "null",
                     "--arg",
                     "pr",
                     "123",
@@ -153,6 +170,34 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ),
         )
 
+    def test_late_review_authorization_v2_binds_protected_request_provenance(
+        self,
+    ) -> None:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        for binding in (
+            "rep60-late-review-rerun:v2:${rerun_reason}",
+            'schema:"rep60-late-review-rerun/v2"',
+            "initial-protected-request",
+            "protected-correction-rereview",
+            'request_conclusion}" = success',
+            'request_conclusion}" = skipped',
+            "rep60-copilot-rereview-scope/v2",
+            "rep60-copilot-rereview-evidence/v2",
+            '.event == "workflow_dispatch"',
+            '.path == ".github/workflows/codex-copilot-remediation.yml"',
+            '.name == "Codex Copilot remediation"',
+            'and .display_title == $display_title',
+            'and .head_sha == $controller',
+            'and .triggering_actor.login == $actor',
+            'has_live_write_permission "${request_actor}"',
+            "compare/${request_controller_sha}...${request_controller_head}",
+            '--arg actor github-actions[bot]',
+            'select(.created_at >= $request_created_at)',
+            'select(.created_at <= $review_submitted_at)',
+        ):
+            self.assertIn(binding, workflow)
+        self.assertNotIn('expected_request_actor="${PR_AUTHOR}"', workflow)
+
     def test_refresh_preserves_every_supported_protected_evidence_version(self) -> None:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
 
@@ -165,10 +210,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "mlx90-current-revision:ancestry-backmerge:v6:",
             "mlx90-current-revision:copilot:v5:",
             "mlx90-current-revision:ancestry-backmerge:v5:",
-            "mlx90-current-revision:v4:",
         ):
             self.assertIn(evidence_prefix, workflow)
-        self.assertIn('has("pull_request_number")', workflow)
         self.assertIn('$summary.pull_request_number == $pr_number', workflow)
 
     def test_rerun_helper_accepts_pr_bound_and_transition_evidence(self) -> None:
@@ -493,17 +536,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         sync_app = "lightning-it-shared-assets-sync[bot]"
         cases = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
-            (
-                release_app,
-                f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
-                123,
-            ),
-            ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
-            (
-                release_app,
-                f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
-                None,
-            ),
+            ("litroc", f"mlx90-current-revision:copilot:v5:77:{base}:{head}", 123),
             (
                 sync_app,
                 f"mlx90-current-revision:ancestry-backmerge:v6:123:77:{base}:{head}",
@@ -512,9 +545,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             (
                 sync_app,
                 f"mlx90-current-revision:ancestry-backmerge:v5:77:{base}:{head}",
-                None,
+                123,
             ),
-            (release_app, f"mlx90-current-revision:v4:77:{'c' * 64}", None),
         )
         for author, external_id, pull_request_number in cases:
             with self.subTest(external_id=external_id):

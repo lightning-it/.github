@@ -30,6 +30,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         return executable
 
     @staticmethod
+    def _late_authorization_summary_filter() -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        late = workflow.split(
+            "# A late Copilot review may authorize exactly one verifier-only",
+            1,
+        )[1]
+        marker = '                --argjson review_id "${review_id}" \'\n'
+        start = late.index(marker) + len(marker)
+        end = late.index(
+            '\n                \' <<<"${authorization_summary}"', start
+        )
+        return late[start:end]
+
+    @staticmethod
     def _required_verifier_producer_routing() -> str:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         marker = (
@@ -473,8 +487,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             4,
             neutral_producer.count("and .run_attempt == 1"),
         )
-        self.assertEqual(workflow.count(".actor.login == $actor"), 6)
-        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 4)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 8)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 6)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
 
@@ -867,13 +881,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn(
-            "^rep60-late-review-rerun:v1:[1-9][0-9]*:",
+            "^rep60-late-review-rerun:v2:",
             late,
         )
         self.assertIn(
-            '.schema == "rep60-late-review-rerun/v1"',
+            '.schema == "rep60-late-review-rerun/v2"',
             late,
         )
+        self.assertNotIn("rep60-late-review-rerun:v1", late)
+        self.assertIn("initial-protected-request", late)
+        self.assertIn("protected-correction-rereview", late)
         self.assertIn(
             '.path == ".github/workflows/copilot-review-refresh.yml"',
             late,
@@ -897,6 +914,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Request Copilot review for current revision"',
             late,
         )
+        self.assertIn('test "${request_conclusion}" = success', late)
+        self.assertIn('test "${request_conclusion}" = skipped', late)
+        self.assertIn(
+            '.path == ".github/workflows/codex-copilot-remediation.yml"',
+            late,
+        )
+        self.assertIn('.event == "workflow_dispatch"', late)
+        self.assertIn(
+            'REP-60 Copilot rereview PR #${PR_NUMBER} head ${EVENT_HEAD} round 1',
+            late,
+        )
+        self.assertIn(
+            'issues/comments/${request_comment_id}',
+            late,
+        )
+        self.assertIn(
+            "rep60-copilot-rereview-evidence/v2",
+            late,
+        )
+        self.assertIn(
+            "compare/${request_controller_sha}...${request_controller_head}",
+            late,
+        )
         self.assertIn(
             '.requested_reviewer.login == "Copilot"',
             late,
@@ -909,6 +949,106 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
         self.assertNotIn('requested_reviewers', late)
+
+    def test_late_authorization_v2_summary_is_exact_and_fail_closed(
+        self,
+    ) -> None:
+        jq = self._test_tool("jq")
+        base = "a" * 40
+        controller = "b" * 40
+        head = "c" * 40
+        refresh_url = "https://github.example/actions/runs/701"
+        valid: dict[str, object] = {
+            "schema": "rep60-late-review-rerun/v2",
+            "base_sha": base,
+            "blocked_refresh_run_id": None,
+            "controller_sha": controller,
+            "head_sha": head,
+            "producer_run_id": 601,
+            "pull_request_number": 91,
+            "refresh_run_id": 701,
+            "refresh_run_url": refresh_url,
+            "reason": "delayed-review",
+            "request_actor": "github-actions[bot]",
+            "request_comment_id": None,
+            "request_controller_sha": controller,
+            "request_kind": "initial-protected-request",
+            "request_run_id": 601,
+            "request_run_url": "https://github.example/actions/runs/601",
+            "review_id": 801,
+            "review_submitted_at": "2026-08-27T20:00:00Z",
+            "trigger_occurred_at": "2026-08-27T20:00:00Z",
+        }
+
+        def accepts(summary: dict[str, object], *, reason: str = "delayed-review") -> bool:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "base",
+                    base,
+                    "--arg",
+                    "controller",
+                    controller,
+                    "--arg",
+                    "head",
+                    head,
+                    "--arg",
+                    "reason",
+                    reason,
+                    "--arg",
+                    "refresh_url",
+                    refresh_url,
+                    "--arg",
+                    "request_kind",
+                    str(summary.get("request_kind", "")),
+                    "--argjson",
+                    "pr_number",
+                    "91",
+                    "--argjson",
+                    "producer_id",
+                    "601",
+                    "--argjson",
+                    "refresh_id",
+                    "701",
+                    "--argjson",
+                    "request_id",
+                    "601",
+                    "--argjson",
+                    "review_id",
+                    "801",
+                    self._late_authorization_summary_filter(),
+                ],
+                input=json.dumps(summary),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": TEST_TOOL_PATH},
+            )
+            return result.returncode == 0
+
+        self.assertTrue(accepts(valid))
+        for mutation in (
+            {**valid, "schema": "rep60-late-review-rerun/v1"},
+            {**valid, "request_run_id": 602},
+            {**valid, "blocked_refresh_run_id": 99},
+            {**valid, "unexpected": True},
+        ):
+            with self.subTest(mutation=mutation):
+                self.assertFalse(accepts(mutation))
+        manual = {
+            **valid,
+            "reason": "manual-delayed-review",
+            "blocked_refresh_run_id": 901,
+        }
+        self.assertTrue(accepts(manual, reason="manual-delayed-review"))
+        self.assertFalse(
+            accepts(
+                {**manual, "blocked_refresh_run_id": None},
+                reason="manual-delayed-review",
+            )
+        )
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -2595,6 +2735,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("returned success without the expected", dispatch)
         self.assertNotIn("sleep ", dispatch)
         self.assertNotIn("gh workflow run", dispatch)
+        for binding in (
+            "REP-60 Copilot rereview PR #${{ inputs.pr_number",
+            "CONTROLLER_REF: ${{ github.workflow_ref }}",
+            "CONTROLLER_SHA: ${{ github.workflow_sha }}",
+            'test "${ROUND}" = 1',
+            "rep60-copilot-rereview-scope/v2",
+            "rep60-copilot-rereview-evidence/v2",
+            "run=${GITHUB_RUN_ID}",
+            "controller=${CONTROLLER_SHA}",
+            "compare/${CONTROLLER_SHA}...${protected_head}",
+        ):
+            self.assertIn(binding, workflow)
+        self.assertIn("legacy_marker=", dispatch)
 
         inspect = dispatch_and_after.split(inspect_marker, 1)[1]
         enable_marker = "\n  enable-develop-automerge:\n"
