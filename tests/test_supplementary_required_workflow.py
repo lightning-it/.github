@@ -2490,6 +2490,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Await the exact protected producer run terminal state\n",
             1,
         )[0]
+        readiness_header = readiness.split("        env:\n", 1)[0]
         terminal_header = workflow.split(
             "      - name: Await the exact protected producer run terminal state\n",
             1,
@@ -2512,6 +2513,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(binding=binding):
                 self.assertIn(binding, readiness)
+        self.assertIn(
+            "if: steps.bootstrap-handoff.outputs.active != 'true'",
+            readiness_header,
+        )
         self.assertIn("steps.live-pr.outputs.ready == 'true'", terminal_header)
         self.assertNotIn(
             "github.event.pull_request.draft == false", terminal_header
