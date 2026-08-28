@@ -793,6 +793,7 @@ jobs:
 
       - name: Classify the exact live pull request readiness
         id: live-pr
+        if: steps.bootstrap-handoff.outputs.active != 'true'
         env:
           EXPECTED_HEAD_REPOSITORY: >-
             ${{ github.event.pull_request.head.repo.full_name }}
