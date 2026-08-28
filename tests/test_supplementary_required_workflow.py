@@ -473,8 +473,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             4,
             neutral_producer.count("and .run_attempt == 1"),
         )
-        self.assertEqual(workflow.count(".actor.login == $actor"), 6)
-        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 4)
+        self.assertEqual(workflow.count(".actor.login == $actor"), 7)
+        self.assertEqual(workflow.count(".triggering_actor.login == $actor"), 5)
         self.assertIn(".input_sha256 | test", workflow)
         self.assertIn("and .workflow_sha == $base", workflow)
 
@@ -2062,16 +2062,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             2,
             terminal_wait.count('producer_kind="${BASH_REMATCH[1]}"'),
         )
-        self.assertIn('if [ "${producer_kind}" = copilot ]; then', terminal_wait)
+        self.assertIn(
+            'if [ "${producer_kind}" = copilot ] \\\n'
+            '            || [ "${producer_kind}" = release-app ]; then',
+            terminal_wait,
+        )
         self.assertIn(".id == $run_id", terminal_wait)
         self.assertIn('^(queued|in_progress)$', terminal_wait)
         self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
         copilot_readiness = terminal_wait.split(
-            'if [ "${producer_kind}" = copilot ]; then', 1
+            'if [ "${producer_kind}" = copilot ] \\\n'
+            '            || [ "${producer_kind}" = release-app ]; then', 1
         )[1].split("          else\n", 1)[0]
         self.assertNotIn("for observation in $(seq 1 120)", copilot_readiness)
         self.assertIn(
-            "The Copilot producer publishes the exact successful neutral",
+            "The Copilot and Exact-Revision producers publish the exact",
             copilot_readiness,
         )
         self.assertIn(
@@ -2142,6 +2147,64 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
+
+    def test_release_app_producer_breaks_only_the_verified_rerun_deadlock(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        validator = workflow.split(
+            "      - name: Validate an in-progress Exact-Revision producer\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        for binding in (
+            "producer_status",
+            ".run_id == $run_id",
+            ".run_attempt == 1",
+            ".head_sha == $base",
+            'or (.name | startswith(',
+            '"Request protected verifier re-evaluation"',
+            '(.status == "completed" and .conclusion == "success")',
+            'and .conclusion == null)',
+            'select(.name == "Current revision review")] | length) == 1',
+            'select(.name == "Current revision review")',
+            'select(.head_sha == $base and .run_attempt == 1)',
+            'select(.status == "completed" and .conclusion == "success")',
+            '.event == "workflow_dispatch"',
+            '.run_attempt == 1',
+            '.status == "in_progress"',
+            '.conclusion == null',
+            '.path == ".github/workflows/release-bot-exact-head-review.yml"',
+            '.actor.login == $actor',
+            '.triggering_actor.login == $actor',
+            '.base.sha == $base',
+            '.head.sha == $head',
+            '.head.repo.full_name == $repository',
+            '.user.login == "lightning-it-release-automation[bot]"',
+            "ready=true",
+        ):
+            self.assertIn(binding, validator)
+
+        final_verifier = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        self.assertIn(
+            "RELEASE_APP_PRODUCER_EVIDENCE_READY", final_verifier
+        )
+        self.assertIn(
+            '--argjson evidence_ready \\\n'
+            '                "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}"',
+            final_verifier,
+        )
+        self.assertIn(
+            '($evidence_ready\n'
+            '                    and .status == "in_progress"'
+            ' and .conclusion == null)',
+            final_verifier,
+        )
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

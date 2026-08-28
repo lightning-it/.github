@@ -887,15 +887,17 @@ jobs:
             sleep 2
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          if [ "${producer_kind}" = copilot ]; then
+          if [ "${producer_kind}" = copilot ] \
+            || [ "${producer_kind}" = release-app ]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
               '.id == $run_id' <<<"${producer}" >/dev/null
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            # The Copilot producer publishes the exact successful neutral
-            # result before its optional verifier-rerun helper completes.
+            # The Copilot and Exact-Revision producers publish the exact
+            # successful neutral result before their optional verifier-rerun
+            # helper completes.
             # Waiting for the whole producer here creates a circular wait:
             # that helper is itself waiting for this Required Workflow. The
             # permanent verifier below already binds the one evidence job and
@@ -919,6 +921,105 @@ jobs:
           fi
           printf 'producer_run_id=%s\n' "${producer_run_id}" >>"${GITHUB_OUTPUT}"
 
+      - name: Validate an in-progress Exact-Revision producer
+        id: release-app-producer
+        if: >-
+          steps.terminal-producer.outputs.producer_run_id != ''
+          && github.event.pull_request.user.login
+            == 'lightning-it-release-automation[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
+        run: |
+          set -euo pipefail
+          echo 'ready=false' >>"${GITHUB_OUTPUT}"
+          [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
+          for observation in $(seq 1 60); do
+            producer="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
+            producer_status="$(jq -er \
+              '.status | select(type == "string")' <<<"${producer}")"
+            if [ "${producer_status}" = completed ]; then
+              exit 0
+            fi
+            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+            jobs_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --argjson run_id "${PRODUCER_RUN_ID}" '
+                type == "array" and length > 0
+                and all(.[]; type == "object" and (.jobs | type) == "array")
+                and all(.[].jobs[]?;
+                  .run_id == $run_id
+                  and .run_attempt == 1
+                  and .head_sha == $base
+                  and (
+                    .name == "Current revision review"
+                    or (.name | startswith(
+                      "Request protected verifier re-evaluation"))
+                  )
+                  and (
+                    (.status == "completed" and .conclusion == "success")
+                    or ((.status == "queued" or .status == "in_progress")
+                      and .conclusion == null)
+                  ))
+                and ([.[].jobs[]? |
+                  select(.name == "Current revision review")] | length) == 1
+              ' <<<"${jobs_pages}" >/dev/null
+            exact_jobs="$(jq -c \
+              --arg base "${EVENT_BASE}" '
+                [.[].jobs[]? |
+                  select(.name == "Current revision review") |
+                  select(.head_sha == $base and .run_attempt == 1) |
+                  select(.status == "completed" and .conclusion == "success")]
+              ' <<<"${jobs_pages}")"
+            if [ "$(jq 'length' <<<"${exact_jobs}")" -eq 1 ]; then
+              current_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+              base_ref="$(jq -er \
+                '.base.ref | select(. == "develop" or . == "main")' \
+                <<<"${current_pr}")"
+              jq -e \
+                --arg actor 'lightning-it-release-automation[bot]' \
+                --arg base_ref "${base_ref}" \
+                --arg base_sha "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg title "${expected_title}" \
+                --argjson run_id "${PRODUCER_RUN_ID}" '
+                  .id == $run_id
+                  and .event == "workflow_dispatch"
+                  and .run_attempt == 1
+                  and .status == "in_progress"
+                  and .conclusion == null
+                  and .head_branch == $base_ref
+                  and .head_sha == $base_sha
+                  and .path == ".github/workflows/release-bot-exact-head-review.yml"
+                  and .display_title == $title
+                  and .actor.login == $actor
+                  and .triggering_actor.login == $actor
+                ' <<<"${producer}" >/dev/null
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg repository "${REPOSITORY}" '
+                  .state == "open"
+                  and .draft == false
+                  and .base.sha == $base
+                  and .head.sha == $head
+                  and .base.repo.full_name == $repository
+                  and .head.repo.full_name == $repository
+                  and .user.login == "lightning-it-release-automation[bot]"
+                ' <<<"${current_pr}" >/dev/null
+              echo 'ready=true' >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            test "${observation}" -lt 60
+            sleep 1
+          done
+
       - name: Verify one protected result for the exact live revision
         if: >-
           !(
@@ -937,6 +1038,8 @@ jobs:
         env:
           CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
           GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
+            ${{ steps.release-app-producer.outputs.ready }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
           TERMINAL_PRODUCER_RUN_ID: >-
             ${{ steps.terminal-producer.outputs.producer_run_id }}
@@ -2065,11 +2168,16 @@ jobs:
               --arg base_ref "${base_ref}" \
               --arg base_sha "${EVENT_BASE}" \
               --arg run_url "${producer_run_url}" \
+              --argjson evidence_ready \
+                "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}" \
               --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
                 and .run_attempt == 1
-                and .status == "completed"
-                and .conclusion == "success"
+                and (
+                  (.status == "completed" and .conclusion == "success")
+                  or ($evidence_ready
+                    and .status == "in_progress" and .conclusion == null)
+                )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
                 and .path == ".github/workflows/release-bot-exact-head-review.yml"
