@@ -2381,29 +2381,24 @@ jobs:
                         and .conclusion == "success") |
                       select((.steps | type) == "array")]
                   ' <<<"${producer_jobs_pages}")"
-                d='Request protected verifier re-evaluation / Diagnose Release-App reusable context and fail closed'
-                disallowed_terminal_jobs="$(jq -c \
-                  --arg d "${d}" '
+                d='^Request protected verifier re-evaluation / (Diagnose Release-App reusable context and fail closed|Re-run the one protected verifier attempt)$'
+                disallowed_terminal_jobs="$(jq -c --arg d "${d}" '
                   [.[].jobs[] |
-                    select(.status == "completed" and .conclusion != "success") |
-                    select((
-                      (.name == "Request Copilot review for current revision"
-                        and .conclusion == "skipped")
-                      or (.name == $d and .conclusion == "skipped"
-                        and has("runner_id") and .runner_id == null and (.steps | type) == "array" and (.steps | length) == 0)
+                    select(.status=="completed" and .conclusion!="success") |
+                    select(((.name=="Request Copilot review for current revision"
+                        and .conclusion=="skipped")
+                      or ((.name|test($d)) and .conclusion=="skipped" and has("runner_id") and .runner_id==null and (.steps|type)=="array" and (.steps|length)==0)
                       ) | not)]
                   ' <<<"${producer_jobs_pages}")"
-                allowed_skipped_terminal_jobs="$(jq -c \
-                  --arg d "${d}" '
+                allowed_skipped_terminal_jobs="$(jq -c --arg d "${d}" '
                   [.[].jobs[] |
-                    select(.status == "completed" and .conclusion == "skipped") |
+                    select(.status=="completed" and .conclusion=="skipped") |
                     select(
-                      .name == "Request Copilot review for current revision"
-                      or (.name == $d and has("runner_id")
-                        and .runner_id == null and (.steps | type) == "array" and (.steps | length) == 0))]
+                      .name=="Request Copilot review for current revision"
+                      or ((.name|test($d)) and has("runner_id") and .runner_id==null and (.steps|type)=="array" and (.steps|length)==0))]
                   ' <<<"${producer_jobs_pages}")"
                 jq -e 'length == 0 or error(tojson)' <<<"${disallowed_terminal_jobs}" >/dev/null
-                jq -e '((length<=2 and (map(.name) | unique | length) == length) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
+                jq -e --arg d "${d}" '((length<=2 and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
