@@ -870,10 +870,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        late = workflow.split(
-            '              test "${producer_kind}" = copilot\n',
-            1,
-        )[1]
+        late_authorization_marker = (
+            '              authorization_pages="$(gh api --paginate --slurp \\\n'
+        )
+        self.assertEqual(1, workflow.count(late_authorization_marker))
+        late = workflow.split(late_authorization_marker, 1)[1]
 
         self.assertIn(
             "check_name=Late%20review%20rerun%20authorization",
