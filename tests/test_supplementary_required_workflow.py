@@ -871,6 +871,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         late_authorization_marker = (
+            '              test "${producer_kind}" = copilot\n'
             '              authorization_pages="$(gh api --paginate --slurp \\\n'
         )
         self.assertEqual(1, workflow.count(late_authorization_marker))
