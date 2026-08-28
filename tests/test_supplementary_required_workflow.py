@@ -2128,9 +2128,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn('.name == "Publish bound neutral result"', permanent)
-        self.assertIn('bad="$(jq -c', permanent)
+        self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion != "success"', permanent)
-        self.assertIn('skips="$(jq -c', permanent)
+        self.assertIn('allowed_skipped_terminal_jobs="$(jq -c', permanent)
         self.assertIn(
             '.name == "Request Copilot review for current revision"', permanent
         )
@@ -2146,13 +2146,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("select((\n", permanent)
         self.assertIn(") | not)]", permanent)
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("(length <= 2", permanent)
+        self.assertIn("(length<=2", permanent)
         self.assertIn("(map(.name) | unique | length) == length", permanent)
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
-            producer_loop.index('bad="$(jq -c'),
+            producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
@@ -2664,7 +2664,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return json.loads(result.stdout)
 
         self.assertEqual(
-            [job["name"] for job in evaluate("bad")],
+            [job["name"] for job in evaluate("disallowed_terminal_jobs")],
             [
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
@@ -2674,7 +2674,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [job["name"] for job in evaluate("skips")],
+            [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
             [
                 "Request Copilot review for current revision",
                 "Request protected verifier re-evaluation / "
@@ -2683,12 +2683,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         for predicate, passing, failing in (
-            ("length == 0 or error(tojson)", [], evaluate("bad")),
+            (
+                "length == 0 or error(tojson)",
+                [],
+                evaluate("disallowed_terminal_jobs"),
+            ),
             (
                 "(length <= 2 and "
                 "(map(.name) | unique | length) == length) "
                 "or error(tojson)",
-                evaluate("skips"),
+                evaluate("allowed_skipped_terminal_jobs"),
                 [{"name": "duplicate"}, {"name": "duplicate"}],
             ),
         ):
