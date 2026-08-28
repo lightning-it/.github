@@ -887,15 +887,17 @@ jobs:
             sleep 2
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          if [ "${producer_kind}" = copilot ]; then
+          if [ "${producer_kind}" = copilot ] \
+            || [ "${producer_kind}" = release-app ]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
               '.id == $run_id' <<<"${producer}" >/dev/null
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            # The Copilot producer publishes the exact successful neutral
-            # result before its optional verifier-rerun helper completes.
+            # The Copilot and Exact-Revision producers publish the exact
+            # successful neutral result before their optional verifier-rerun
+            # helper completes.
             # Waiting for the whole producer here creates a circular wait:
             # that helper is itself waiting for this Required Workflow. The
             # permanent verifier below already binds the one evidence job and
@@ -917,7 +919,108 @@ jobs:
               sleep 2
             done
           fi
-          printf 'producer_run_id=%s\n' "${producer_run_id}" >>"${GITHUB_OUTPUT}"
+          printf 'producer_kind=%s\nproducer_run_id=%s\n' \
+            "${producer_kind}" "${producer_run_id}" >>"${GITHUB_OUTPUT}"
+
+      - name: Validate an in-progress Exact-Revision producer
+        id: release-app-producer
+        if: >-
+          steps.terminal-producer.outputs.producer_run_id != ''
+          && steps.terminal-producer.outputs.producer_kind == 'release-app'
+          && github.event.pull_request.user.login
+            == 'lightning-it-release-automation[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
+        run: |
+          set -euo pipefail
+          echo 'ready=false' >>"${GITHUB_OUTPUT}"
+          [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
+          for observation in $(seq 1 60); do
+            producer="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
+            producer_status="$(jq -er \
+              '.status | select(type == "string")' <<<"${producer}")"
+            if [ "${producer_status}" = completed ]; then
+              exit 0
+            fi
+            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+            jobs_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --argjson run_id "${PRODUCER_RUN_ID}" '
+                type == "array" and length > 0
+                and all(.[]; type == "object" and (.jobs | type) == "array")
+                and all(.[].jobs[]?;
+                  .run_id == $run_id
+                  and .run_attempt == 1
+                  and .head_sha == $base
+                  and (
+                    .name == "Current revision review"
+                    or (.name | startswith(
+                      "Request protected verifier re-evaluation"))
+                  )
+                  and (
+                    (.status == "completed" and .conclusion == "success")
+                    or ((.status == "queued" or .status == "in_progress")
+                      and .conclusion == null)
+                  ))
+                and ([.[].jobs[]? |
+                  select(.name == "Current revision review")] | length) == 1
+              ' <<<"${jobs_pages}" >/dev/null
+            exact_jobs="$(jq -c \
+              --arg base "${EVENT_BASE}" '
+                [.[].jobs[]? |
+                  select(.name == "Current revision review") |
+                  select(.head_sha == $base and .run_attempt == 1) |
+                  select(.status == "completed" and .conclusion == "success")]
+              ' <<<"${jobs_pages}")"
+            if [ "$(jq 'length' <<<"${exact_jobs}")" -eq 1 ]; then
+              current_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+              base_ref="$(jq -er \
+                '.base.ref | select(. == "develop" or . == "main")' \
+                <<<"${current_pr}")"
+              jq -e \
+                --arg actor 'lightning-it-release-automation[bot]' \
+                --arg base_ref "${base_ref}" \
+                --arg base_sha "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg title "${expected_title}" \
+                --argjson run_id "${PRODUCER_RUN_ID}" '
+                  .id == $run_id
+                  and .event == "workflow_dispatch"
+                  and .run_attempt == 1
+                  and .status == "in_progress"
+                  and .conclusion == null
+                  and .head_branch == $base_ref
+                  and .head_sha == $base_sha
+                  and .path == ".github/workflows/release-bot-exact-head-review.yml"
+                  and .display_title == $title
+                  and .actor.login == $actor
+                  and .triggering_actor.login == $actor
+                ' <<<"${producer}" >/dev/null
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg repository "${REPOSITORY}" '
+                  .state == "open"
+                  and .draft == false
+                  and .base.sha == $base
+                  and .head.sha == $head
+                  and .base.repo.full_name == $repository
+                  and .head.repo.full_name == $repository
+                  and .user.login == "lightning-it-release-automation[bot]"
+                ' <<<"${current_pr}" >/dev/null
+              echo 'ready=true' >>"${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            test "${observation}" -lt 60
+            sleep 1
+          done
 
       - name: Verify one protected result for the exact live revision
         if: >-
@@ -937,9 +1040,14 @@ jobs:
         env:
           CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
           GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
+            ${{ steps.release-app-producer.outputs.ready }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
           TERMINAL_PRODUCER_RUN_ID: >-
             ${{ steps.terminal-producer.outputs.producer_run_id }}
+        # actionlint 1.7.12 deadlocks before ShellCheck starts when one run
+        # payload reaches the Linux 65,536-byte pipe capacity (upstream #712).
+        # The deterministic unit test keeps this protected payload bounded.
         run: |
           # The job environment maps github.repository into REPOSITORY.
           # shellcheck disable=SC2153
@@ -997,11 +1105,6 @@ jobs:
                 ' <<<"${source_compare}" >/dev/null
               ;;
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
-              # The central repository self-hosts this controller on its
-              # protected default branch. A PR to develop is evaluated by the
-              # protected base copy. A direct develop-to-main promotion is
-              # evaluated by the protected develop head itself. No feature
-              # branch can satisfy either exact live branch binding.
               test "${REPOSITORY}" = lightning-it/.github
               protected_develop="$(gh api repos/lightning-it/.github/branches/develop)"
               if [ "${WORKFLOW_SHA}" = "${EVENT_BASE}" ]; then
@@ -1649,12 +1752,7 @@ jobs:
                 and .output.title == $title
                 and .output.summary == $evidence
               ' <<<"${bootstrap_check}" >/dev/null
-            # details_url is service-owned navigation metadata. GitHub Actions
-            # replaces caller-supplied values with its native check-run URL,
-            # including after an update. It is therefore neither written nor
-            # accepted as evidence. The protected producer URL is bound in the
-            # verified JSON summary and its run ID is also in external_id.
-
+            # details_url is service-owned navigation metadata.
             failure_stage='main-trust-root-bootstrap-final-rebind'
             final_bootstrap_summary="$(base64 --decode <<<"${bootstrap_content}" \
               | python3 - \
@@ -1881,10 +1979,7 @@ jobs:
             ' <<<"${target_commit}")"
             sync_comment_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
-            # The marker token is reserved anywhere in a comment. The strict
-            # parser below accepts only the exact two-line App proof, so any
-            # prefix, suffix, edit, malformed proof, or duplicate stays counted
-            # here but fails closed during exact validation.
+            # The marker token is reserved anywhere in a comment.
             sync_comments="$(jq -c \
               --arg legacy_marker '<!-- lit-shared-assets-sync-provenance:v1 -->' \
               --arg attempt_marker '<!-- lit-shared-assets-sync-provenance:v2 -->' '
@@ -1894,9 +1989,6 @@ jobs:
                     (.body | contains($legacy_marker))
                     or (.body | contains($attempt_marker)))]
               ' <<<"${sync_comment_pages}")"
-            # Any second marker is ambiguous evidence, even if its payload or
-            # actor is invalid. Exactly one marker must exist before validating
-            # the App identity and immutable bindings below.
             test "$(jq 'length' <<<"${sync_comments}")" -eq 1
             sync_app_comments="$(jq -c \
               --arg api_url "${GITHUB_API_URL}" \
@@ -2065,11 +2157,16 @@ jobs:
               --arg base_ref "${base_ref}" \
               --arg base_sha "${EVENT_BASE}" \
               --arg run_url "${producer_run_url}" \
+              --argjson evidence_ready \
+                "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}" \
               --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
                 and .run_attempt == 1
-                and .status == "completed"
-                and .conclusion == "success"
+                and (
+                  (.status == "completed" and .conclusion == "success")
+                  or ($evidence_ready
+                    and .status == "in_progress" and .conclusion == null)
+                )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
                 and .path == ".github/workflows/release-bot-exact-head-review.yml"
@@ -2099,9 +2196,7 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
-              # Keep v5 valid only for already-open pull requests during the
-              # atomic producer/verifier rollout. Exact-one inventory above
-              # prevents v5 and v6 from satisfying the gate together.
+              # Keep v5 valid only for already-open pull requests; exact-one inventory prevents v5 and v6 from satisfying the gate together.
               [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
@@ -2262,11 +2357,7 @@ jobs:
                   and .triggering_actor.login == $actor
                 ' <<<"${producer}" >/dev/null
             else
-              # A late Copilot review may authorize exactly one verifier-only
-              # rerun. The protected review-event controller must publish the
-              # unique authorization before it requests that rerun. This keeps
-              # arbitrary UI/API reruns and candidate workflows from becoming
-              # a permanent producer.
+              # A late Copilot review may authorize exactly one verifier-only rerun.
               test "${producer_kind}" = copilot
               authorization_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Late%20review%20rerun%20authorization&filter=all&per_page=100")"
