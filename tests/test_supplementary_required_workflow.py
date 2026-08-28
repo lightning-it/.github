@@ -445,8 +445,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
-        self.assertIn("Keep v5 valid only for already-open pull requests", workflow)
-        self.assertIn("prevents v5 and v6 from satisfying the gate together", workflow)
+        self.assertIn(
+            "test \"$(jq 'length' <<<\"${neutral}\")\" -le 1",
+            workflow,
+        )
         self.assertIn("producer_kind=\"${BASH_REMATCH[1]}\"", workflow)
         self.assertIn("producer_run_id=\"${BASH_REMATCH[2]}\"", workflow)
         self.assertIn('test "${producer_kind}" = ancestry-backmerge', workflow)
@@ -526,7 +528,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'and .conclusion == "success"',
             release_path,
         )
-        self.assertNotIn('.conclusion == "failure"', release_path)
+        self.assertEqual(1, release_path.count('.conclusion == "failure"'))
+        self.assertIn(
+            'or ($evidence_ready\n'
+            '                    and (\n'
+            '                      (.status == "in_progress"'
+            ' and .conclusion == null)\n'
+            '                      or (.status == "completed"\n'
+            '                        and .conclusion == "failure")',
+            release_path,
+        )
         self.assertNotIn(
             'if [ "${producer_conclusion}" != success ]; then',
             release_path,
@@ -859,12 +870,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        late = workflow.split(
-            "# A late Copilot review may authorize exactly one verifier-only",
-            1,
-        )[1]
+        late_authorization_marker = (
+            '              test "${producer_kind}" = copilot\n'
+            '              authorization_pages="$(gh api --paginate --slurp \\\n'
+        )
+        self.assertEqual(1, workflow.count(late_authorization_marker))
+        late = workflow.split(late_authorization_marker, 1)[1]
 
-        self.assertIn('test "${producer_kind}" = copilot', late)
         self.assertIn(
             "check_name=Late%20review%20rerun%20authorization",
             late,
@@ -1018,7 +1030,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             '<!-- lit-shared-assets-sync-provenance:v2 -->', recovery
         )
-        self.assertIn("The marker token is reserved anywhere", recovery)
         self.assertIn("(.body | contains($legacy_marker))", recovery)
         self.assertIn("(.body | contains($attempt_marker))", recovery)
         self.assertIn(
@@ -1995,7 +2006,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(immutable_predicate, identity_binding)
         self.assertIn('-f "output[summary]=${bootstrap_summary}"', bootstrap)
-        self.assertIn("details_url is service-owned navigation metadata", bootstrap)
         self.assertNotIn('-f details_url="${producer_run_url}"', bootstrap)
         self.assertNotIn('-f "details_url=${producer_run_url}"', bootstrap)
         self.assertNotIn(
@@ -2120,20 +2130,31 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn('.name == "Publish bound neutral result"', permanent)
-        self.assertIn("disallowed_terminal_jobs", permanent)
+        self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion != "success"', permanent)
-        self.assertIn("allowed_skipped_request_jobs", permanent)
+        self.assertIn('allowed_skipped_terminal_jobs="$(jq -c', permanent)
         self.assertIn(
             '.name == "Request Copilot review for current revision"', permanent
         )
+        self.assertIn(
+            "Request protected verifier re-evaluation / "
+            "Diagnose Release-App reusable context and fail closed",
+            permanent,
+        )
+        self.assertIn('has("runner_id") and .runner_id == null', permanent)
+        self.assertIn('(.steps | type) == "array"', permanent)
+        self.assertIn('(.steps | length) == 0', permanent)
         self.assertIn('and .conclusion == "skipped"', permanent)
+        self.assertIn("select((\n", permanent)
+        self.assertIn(") | not)]", permanent)
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("jq -e 'length <= 1 or error(tojson)'", permanent)
+        self.assertIn("(length<=2", permanent)
+        self.assertIn("(map(.name) | unique | length) == length", permanent)
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
-            producer_loop.index("disallowed_terminal_jobs"),
+            producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
@@ -2151,12 +2172,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
 
-    def test_release_app_producer_breaks_only_the_verified_rerun_deadlock(
+    def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         validator = workflow.split(
-            "      - name: Validate an in-progress Exact-Revision producer\n",
+            "      - name: Validate an Exact-Revision producer handoff\n",
             1,
         )[1].split(
             "      - name: Verify one protected result for the exact live revision\n",
@@ -2168,6 +2189,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         for binding in (
             "producer_status",
+            "producer_conclusion",
+            'select(has("conclusion"))',
+            'if .conclusion == null then ""',
+            '.conclusion | select(type == "string")',
+            "terminal_helper_handoff=false",
+            'test "${producer_conclusion}" = failure',
+            "terminal_helper_handoff=true",
             ".run_id == $run_id",
             ".run_attempt == 1",
             ".head_sha == $base",
@@ -2179,10 +2207,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.name == "Current revision review")',
             'select(.head_sha == $base and .run_attempt == 1)',
             'select(.status == "completed" and .conclusion == "success")',
+            '[$jobs[0].steps[]?',
+            '"Run protected history-free Exact-Revision Codex review"',
+            '"Re-prove exact revision and enforce the Codex verdict"',
+            'select(.conclusion == "success" or .conclusion == "skipped")',
+            '--argjson terminal_helper_handoff',
+            '"${terminal_helper_handoff}"',
             '.event == "workflow_dispatch"',
             '.run_attempt == 1',
             '.status == "in_progress"',
             '.conclusion == null',
+            '$terminal_helper_handoff',
+            '.status == "completed"',
+            '.conclusion == "failure"',
             '.path == ".github/workflows/release-bot-exact-head-review.yml"',
             '.actor.login == $actor',
             '.triggering_actor.login == $actor',
@@ -2193,6 +2230,112 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "ready=true",
         ):
             self.assertIn(binding, validator)
+
+        conclusion_filter = validator.split(
+            'producer_conclusion="$(jq -er \'\n', 1
+        )[1].split(
+            '\n              \' <<<"${producer}")"', 1
+        )[0]
+        jq = self._test_tool("jq")
+        for payload, expected in (
+            ({"conclusion": None}, ""),
+            ({"conclusion": "success"}, "success"),
+            ({"conclusion": "failure"}, "failure"),
+        ):
+            result = subprocess.run(
+                [jq, "-er", conclusion_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.rstrip("\n"), expected)
+        for payload in (
+            {},
+            {"conclusion": 1},
+            {"conclusion": True},
+            {"conclusion": {}},
+            {"conclusion": []},
+        ):
+            result = subprocess.run(
+                [jq, "-er", conclusion_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+
+        terminal_filter = validator.split(
+            'if [ "${terminal_helper_handoff}" = true ]; then\n'
+            "              jq -e '\n",
+            1,
+        )[1].split(
+            '\n              \' <<<"${jobs_pages}" >/dev/null',
+            1,
+        )[0]
+        valid_job = {
+            "name": "Current revision review",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                {
+                    "name": (
+                        "Run protected history-free Exact-Revision Codex "
+                        "review"
+                    ),
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "name": (
+                        "Re-prove exact revision and enforce the Codex verdict"
+                    ),
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ],
+        }
+        def validates(jobs: list[dict[str, object]]) -> bool:
+            result = subprocess.run(
+                [jq, "-e", terminal_filter],
+                input=json.dumps([{"jobs": jobs}]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(validates([valid_job]))
+        reused_job = json.loads(json.dumps(valid_job))
+        reused_job["steps"][0]["conclusion"] = "skipped"
+        self.assertTrue(validates([reused_job]))
+        for mutation in (
+            "extra-job",
+            "failed-review-job",
+            "failed-codex-step",
+            "missing-enforcement-step",
+        ):
+            candidate = json.loads(json.dumps(valid_job))
+            jobs = [candidate]
+            if mutation == "extra-job":
+                jobs.append(
+                    {
+                        "name": "unexpected",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "steps": [],
+                    }
+                )
+            elif mutation == "failed-review-job":
+                candidate["conclusion"] = "failure"
+            elif mutation == "failed-codex-step":
+                candidate["steps"][0]["conclusion"] = "failure"
+            else:
+                candidate["steps"] = candidate["steps"][:1]
+            with self.subTest(mutation=mutation):
+                self.assertFalse(validates(jobs))
 
         final_verifier = workflow.split(
             "      - name: Verify one protected result for the exact live revision\n",
@@ -2208,8 +2351,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '($evidence_ready\n'
-            '                    and .status == "in_progress"'
-            ' and .conclusion == null)',
+            '                    and (\n'
+            '                      (.status == "in_progress"'
+            ' and .conclusion == null)\n'
+            '                      or (.status == "completed"\n'
+            '                        and .conclusion == "failure")\n'
+            '                    ))',
             final_verifier,
         )
 
@@ -2436,8 +2583,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
         def assignment_filter(name: str) -> str:
-            marker = f'{name}="$(jq -c \'\n'
+            marker = f'{name}="$(jq -c'
             start = permanent.index(marker) + len(marker)
+            start = permanent.index("'\n", start) + 2
             end = permanent.index(
                 '\n                  \' <<<"${producer_jobs_pages}")"', start
             )
@@ -2453,6 +2601,25 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "name": "Request Copilot review for current revision",
                 "status": "completed",
                 "conclusion": "skipped",
+            },
+            {
+                "name": (
+                    "Request protected verifier re-evaluation / "
+                    "Diagnose Release-App reusable context and fail closed"
+                ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
+                "name": (
+                    "Request protected verifier re-evaluation / "
+                    "Diagnose Release-App reusable context and fail closed"
+                ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
             },
             {
                 "name": "cancelled job",
@@ -2480,7 +2647,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         def evaluate(name: str) -> list[dict[str, object]]:
             result = subprocess.run(
-                [jq, "-c", assignment_filter(name)],
+                [
+                    jq,
+                    "-c",
+                    "--arg",
+                    "d",
+                    (
+                        "Request protected verifier re-evaluation / "
+                        "Diagnose Release-App reusable context and fail closed"
+                    ),
+                    assignment_filter(name),
+                ],
                 input=source,
                 text=True,
                 capture_output=True,
@@ -2490,19 +2667,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         self.assertEqual(
             [job["name"] for job in evaluate("disallowed_terminal_jobs")],
-            ["cancelled job", "timed out job", "unexpected skipped job"],
+            [
+                "Request protected verifier re-evaluation / "
+                "Diagnose Release-App reusable context and fail closed",
+                "cancelled job",
+                "timed out job",
+                "unexpected skipped job",
+            ],
         )
         self.assertEqual(
-            [job["name"] for job in evaluate("allowed_skipped_request_jobs")],
-            ["Request Copilot review for current revision"],
+            [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
+            [
+                "Request Copilot review for current revision",
+                "Request protected verifier re-evaluation / "
+                "Diagnose Release-App reusable context and fail closed",
+            ],
         )
 
         for predicate, passing, failing in (
-            ("length == 0 or error(tojson)", [], evaluate("disallowed_terminal_jobs")),
             (
-                "length <= 1 or error(tojson)",
-                evaluate("allowed_skipped_request_jobs"),
-                [{"name": "first"}, {"name": "second"}],
+                "length == 0 or error(tojson)",
+                [],
+                evaluate("disallowed_terminal_jobs"),
+            ),
+            (
+                "(length <= 2 and "
+                "(map(.name) | unique | length) == length) "
+                "or error(tojson)",
+                evaluate("allowed_skipped_terminal_jobs"),
+                [{"name": "duplicate"}, {"name": "duplicate"}],
             ),
         ):
             success = subprocess.run(
