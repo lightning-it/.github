@@ -2143,6 +2143,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('(.steps | type) == "array"', permanent)
         self.assertIn('(.steps | length) == 0', permanent)
         self.assertIn('and .conclusion == "skipped"', permanent)
+        self.assertIn("select((\n", permanent)
+        self.assertIn(") | not)]", permanent)
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
         self.assertIn("(length <= 2", permanent)
         self.assertIn("(map(.name) | unique | length) == length", permanent)
