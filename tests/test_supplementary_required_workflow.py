@@ -2202,6 +2202,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'or (.name | startswith(',
             '"Request protected verifier re-evaluation"',
             '(.status == "completed" and .conclusion == "success")',
+            '.status == "requested"',
+            '.status == "waiting"',
+            '.status == "pending"',
             'and .conclusion == null)',
             'select(.name == "Current revision review")] | length) == 1',
             'select(.name == "Current revision review")',
@@ -2266,6 +2269,76 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
+
+        inventory_filter = validator.split(
+            '            jq -e \\\n'
+            '              --arg base "${EVENT_BASE}" \\\n'
+            '              --argjson run_id "${PRODUCER_RUN_ID}" \'\n',
+            1,
+        )[1].split(
+            '\n              \' <<<"${jobs_pages}" >/dev/null',
+            1,
+        )[0]
+        base = "a" * 40
+        run_id = 123
+        review_job = {
+            "run_id": run_id,
+            "run_attempt": 1,
+            "head_sha": base,
+            "name": "Current revision review",
+            "status": "completed",
+            "conclusion": "success",
+        }
+
+        def validates_inventory(
+            helper_status: str,
+            helper_conclusion: object = None,
+            *,
+            helper_name: str = "Request protected verifier re-evaluation",
+        ) -> bool:
+            helper_job = {
+                "run_id": run_id,
+                "run_attempt": 1,
+                "head_sha": base,
+                "name": helper_name,
+                "status": helper_status,
+                "conclusion": helper_conclusion,
+            }
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "base",
+                    base,
+                    "--argjson",
+                    "run_id",
+                    str(run_id),
+                    inventory_filter,
+                ],
+                input=json.dumps([{"jobs": [review_job, helper_job]}]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for helper_status in (
+            "requested",
+            "waiting",
+            "pending",
+            "queued",
+            "in_progress",
+        ):
+            with self.subTest(helper_status=helper_status):
+                self.assertTrue(validates_inventory(helper_status))
+        self.assertTrue(validates_inventory("completed", "success"))
+        self.assertFalse(validates_inventory("completed", "failure"))
+        self.assertFalse(validates_inventory("waiting", "success"))
+        self.assertFalse(validates_inventory("unknown"))
+        self.assertFalse(
+            validates_inventory("queued", helper_name="unexpected")
+        )
 
         terminal_filter = validator.split(
             'if [ "${terminal_helper_handoff}" = true ]; then\n'
