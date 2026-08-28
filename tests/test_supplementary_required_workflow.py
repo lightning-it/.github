@@ -520,8 +520,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertIn(exact_binding, transition)
 
         self.assertIn(
-            'and .conclusion == "success"',
-            release_path,
+            "python3 protected-release-producer/verify.py", release_path
         )
         self.assertNotIn('.conclusion == "failure"', release_path)
         self.assertNotIn(
@@ -2195,19 +2194,37 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Verify one protected result for the exact live revision\n",
             1,
         )[1]
+        release_binding = final_verifier.split(
+            "failure_stage='permanent-producer-binding'", 1
+        )[1].split("          else", 1)[0]
         self.assertIn(
-            "RELEASE_APP_PRODUCER_EVIDENCE_READY", final_verifier
+            "RELEASE_APP_PRODUCER_EVIDENCE_READY", release_binding
         )
         self.assertIn(
-            '--argjson evidence_ready \\\n'
-            '                "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}"',
-            final_verifier,
+            "python3 protected-release-producer/verify.py", release_binding
         )
         self.assertIn(
-            '($evidence_ready\n'
-            '                    and .status == "in_progress"'
-            ' and .conclusion == null)',
-            final_verifier,
+            '"${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}"',
+            release_binding,
+        )
+        self.assertNotIn("$evidence_ready", release_binding)
+
+        installer = workflow.split(
+            "      - name: Install protected Exact-Revision producer validator\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        self.assertIn(
+            "scripts/verify-release-app-producer-state.py", installer
+        )
+        self.assertIn("?ref=${WORKFLOW_SHA}", installer)
+        self.assertIn(
+            "git hash-object protected-release-producer/verify.py", installer
+        )
+        self.assertIn(
+            "chmod 0500 protected-release-producer/verify.py", installer
         )
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:

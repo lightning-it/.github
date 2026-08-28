@@ -1022,6 +1022,36 @@ jobs:
             sleep 1
           done
 
+      - name: Install protected Exact-Revision producer validator
+        if: >-
+          steps.terminal-producer.outputs.producer_run_id != ''
+          && steps.terminal-producer.outputs.producer_kind == 'release-app'
+          && github.event.pull_request.user.login
+            == 'lightning-it-release-automation[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 protected-release-producer
+          validator_payload="$(gh api \
+            "repos/lightning-it/.github/contents/scripts/verify-release-app-producer-state.py?ref=${WORKFLOW_SHA}")"
+          jq -e \
+            --arg path scripts/verify-release-app-producer-state.py \
+            --arg url "${GITHUB_API_URL}/repos/lightning-it/.github/contents/scripts/verify-release-app-producer-state.py?ref=${WORKFLOW_SHA}" '
+              .type == "file"
+              and .path == $path
+              and .url == $url
+              and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and .encoding == "base64"
+              and ((.size | type) == "number" and .size > 0 and .size < 100000)
+              and (.content | type == "string" and length > 0)
+            ' <<<"${validator_payload}" >/dev/null
+          jq -er .content <<<"${validator_payload}" \
+            | base64 --decode >protected-release-producer/verify.py
+          test "$(git hash-object protected-release-producer/verify.py)" = \
+            "$(jq -r .sha <<<"${validator_payload}")"
+          chmod 0500 protected-release-producer/verify.py
+
       - name: Verify one protected result for the exact live revision
         if: >-
           !(
@@ -2165,21 +2195,18 @@ jobs:
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EVENT_BASE}..${EVENT_HEAD}"
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            python3 protected-release-producer/verify.py \
+              --evidence-ready \
+              "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}" \
+              <<<"${producer}"
             jq -e \
               --arg actor "${author}" \
               --arg base_ref "${base_ref}" \
               --arg base_sha "${EVENT_BASE}" \
               --arg run_url "${producer_run_url}" \
-              --argjson evidence_ready \
-                "${RELEASE_APP_PRODUCER_EVIDENCE_READY:-false}" \
               --arg title "${expected_title}" '
                 .event == "workflow_dispatch"
                 and .run_attempt == 1
-                and (
-                  (.status == "completed" and .conclusion == "success")
-                  or ($evidence_ready
-                    and .status == "in_progress" and .conclusion == null)
-                )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
                 and .path == ".github/workflows/release-bot-exact-head-review.yml"
