@@ -2743,6 +2743,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             readiness_header,
         )
         self.assertIn("steps.live-pr.outputs.ready == 'true'", terminal_header)
+        for binding in (
+            "github.repository == 'lightning-it/.github'",
+            "== 'lightning-it-shared-assets-sync[bot]'",
+            "github.event.pull_request.base.ref == 'develop'",
+            "github.event.pull_request.head.repo.full_name",
+            "== github.repository",
+            "'chore/sync-repository-quality-.github-'",
+            "'chore/sync-shared-assets-lit-.github-'",
+        ):
+            with self.subTest(managed_sync_terminal_skip=binding):
+                self.assertIn(binding, terminal_header)
         self.assertNotIn(
             "github.event.pull_request.draft == false", terminal_header
         )
