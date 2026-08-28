@@ -2222,9 +2222,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             1,
         )[1]
         script = verifier.split("        run: |\n", 1)[1]
+        script_lines = script.splitlines()
+        first_script_line = next(
+            line for line in script_lines if line.strip()
+        )
+        indentation_width = len(first_script_line) - len(
+            first_script_line.lstrip(" ")
+        )
+        self.assertGreater(indentation_width, 0)
+        indentation = " " * indentation_width
+        self.assertTrue(
+            all(
+                not line.strip() or line.startswith(indentation)
+                for line in script_lines
+            )
+        )
         normalized = "\n".join(
-            line[10:] if line.startswith("          ") else line
-            for line in script.splitlines()
+            line[len(indentation) :] if line.startswith(indentation) else ""
+            for line in script_lines
         ) + "\n"
         self.assertLessEqual(
             len(normalized.encode("utf-8")),
