@@ -526,7 +526,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'and .conclusion == "success"',
             release_path,
         )
-        self.assertNotIn('.conclusion == "failure"', release_path)
+        self.assertEqual(1, release_path.count('.conclusion == "failure"'))
+        self.assertIn(
+            'or ($evidence_ready\n'
+            '                    and (\n'
+            '                      (.status == "in_progress"'
+            ' and .conclusion == null)\n'
+            '                      or (.status == "completed"\n'
+            '                        and .conclusion == "failure")',
+            release_path,
+        )
         self.assertNotIn(
             'if [ "${producer_conclusion}" != success ]; then',
             release_path,
@@ -2151,12 +2160,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
 
-    def test_release_app_producer_breaks_only_the_verified_rerun_deadlock(
+    def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         validator = workflow.split(
-            "      - name: Validate an in-progress Exact-Revision producer\n",
+            "      - name: Validate an Exact-Revision producer handoff\n",
             1,
         )[1].split(
             "      - name: Verify one protected result for the exact live revision\n",
@@ -2168,6 +2177,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         for binding in (
             "producer_status",
+            "producer_conclusion",
+            "terminal_helper_handoff=false",
+            'test "${producer_conclusion}" = failure',
+            "terminal_helper_handoff=true",
             ".run_id == $run_id",
             ".run_attempt == 1",
             ".head_sha == $base",
@@ -2179,10 +2192,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.name == "Current revision review")',
             'select(.head_sha == $base and .run_attempt == 1)',
             'select(.status == "completed" and .conclusion == "success")',
+            '[$jobs[0].steps[]?',
+            '"Run protected history-free Exact-Revision Codex review"',
+            '"Re-prove exact revision and enforce the Codex verdict"',
+            'select(.conclusion == "success" or .conclusion == "skipped")',
+            '--argjson terminal_helper_handoff',
+            '"${terminal_helper_handoff}"',
             '.event == "workflow_dispatch"',
             '.run_attempt == 1',
             '.status == "in_progress"',
             '.conclusion == null',
+            '$terminal_helper_handoff',
+            '.status == "completed"',
+            '.conclusion == "failure"',
             '.path == ".github/workflows/release-bot-exact-head-review.yml"',
             '.actor.login == $actor',
             '.triggering_actor.login == $actor',
@@ -2193,6 +2215,78 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "ready=true",
         ):
             self.assertIn(binding, validator)
+
+        terminal_filter = validator.split(
+            'if [ "${terminal_helper_handoff}" = true ]; then\n'
+            "              jq -e '\n",
+            1,
+        )[1].split(
+            '\n              \' <<<"${jobs_pages}" >/dev/null',
+            1,
+        )[0]
+        valid_job = {
+            "name": "Current revision review",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                {
+                    "name": (
+                        "Run protected history-free Exact-Revision Codex "
+                        "review"
+                    ),
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "name": (
+                        "Re-prove exact revision and enforce the Codex verdict"
+                    ),
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ],
+        }
+        jq = self._test_tool("jq")
+
+        def validates(jobs: list[dict[str, object]]) -> bool:
+            result = subprocess.run(
+                [jq, "-e", terminal_filter],
+                input=json.dumps([{"jobs": jobs}]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(validates([valid_job]))
+        reused_job = json.loads(json.dumps(valid_job))
+        reused_job["steps"][0]["conclusion"] = "skipped"
+        self.assertTrue(validates([reused_job]))
+        for mutation in (
+            "extra-job",
+            "failed-review-job",
+            "failed-codex-step",
+            "missing-enforcement-step",
+        ):
+            candidate = json.loads(json.dumps(valid_job))
+            jobs = [candidate]
+            if mutation == "extra-job":
+                jobs.append(
+                    {
+                        "name": "unexpected",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "steps": [],
+                    }
+                )
+            elif mutation == "failed-review-job":
+                candidate["conclusion"] = "failure"
+            elif mutation == "failed-codex-step":
+                candidate["steps"][0]["conclusion"] = "failure"
+            else:
+                candidate["steps"] = candidate["steps"][:1]
+            with self.subTest(mutation=mutation):
+                self.assertFalse(validates(jobs))
 
         final_verifier = workflow.split(
             "      - name: Verify one protected result for the exact live revision\n",
@@ -2208,8 +2302,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '($evidence_ready\n'
-            '                    and .status == "in_progress"'
-            ' and .conclusion == null)',
+            '                    and (\n'
+            '                      (.status == "in_progress"'
+            ' and .conclusion == null)\n'
+            '                      or (.status == "completed"\n'
+            '                        and .conclusion == "failure")\n'
+            '                    ))',
             final_verifier,
         )
 
