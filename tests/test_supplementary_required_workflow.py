@@ -530,12 +530,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(1, release_path.count('.conclusion == "failure"'))
         self.assertIn(
-            'or ($evidence_ready\n'
-            '                    and (\n'
-            '                      (.status == "in_progress"'
-            ' and .conclusion == null)\n'
-            '                      or (.status == "completed"\n'
-            '                        and .conclusion == "failure")',
+            'or ($evidence_ready and (\n'
+            '                    ((.status | IN("queued", "in_progress"))\n'
+            '                      and .conclusion == null)\n'
+            '                    or (.status == "completed"'
+            ' and .conclusion == "failure")))',
             release_path,
         )
         self.assertNotIn(
@@ -2194,6 +2193,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if .conclusion == null then ""',
             '.conclusion | select(type == "string")',
             "terminal_helper_handoff=false",
+            "terminal_success_handoff=false",
+            'if [ "${producer_conclusion}" = success ]; then',
+            "terminal_success_handoff=true",
             'test "${producer_conclusion}" = failure',
             "terminal_helper_handoff=true",
             ".run_id == $run_id",
@@ -2206,20 +2208,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.status == "waiting"',
             '.status == "pending"',
             'and .conclusion == null)',
-            'select(.name == "Current revision review")] | length) == 1',
+            'review_job_count="$(jq',
+            'test "${review_job_count}" -le 1',
+            'test "${helper_job_count}" -le 1',
             'select(.name == "Current revision review")',
             'select(.head_sha == $base and .run_attempt == 1)',
             'select(.status == "completed" and .conclusion == "success")',
-            '[$jobs[0].steps[]?',
+            '[$review.steps[]?',
             '"Run protected history-free Exact-Revision Codex review"',
             '"Re-prove exact revision and enforce the Codex verdict"',
-            'select(.conclusion == "success" or .conclusion == "skipped")',
+            'select(.conclusion == "success"',
+            'or .conclusion == "skipped")',
             '--argjson terminal_helper_handoff',
             '"${terminal_helper_handoff}"',
+            '--argjson terminal_success_handoff',
+            '"${terminal_success_handoff}"',
             '.event == "workflow_dispatch"',
             '.run_attempt == 1',
+            '.status == "queued"',
             '.status == "in_progress"',
             '.conclusion == null',
+            '$terminal_success_handoff',
+            '.conclusion == "success"',
             '$terminal_helper_handoff',
             '.status == "completed"',
             '.conclusion == "failure"',
@@ -2233,6 +2243,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "ready=true",
         ):
             self.assertIn(binding, validator)
+        self.assertNotIn(
+            'if [ "${producer_status}" = completed ] \\\n'
+            '              && [ "${producer_conclusion}" = success ]; then\n'
+            "              exit 0",
+            validator,
+        )
 
         conclusion_filter = validator.split(
             'producer_conclusion="$(jq -er \'\n', 1
@@ -2270,6 +2286,95 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
 
+        producer_filter = validator.rsplit(
+            '--argjson run_id "${PRODUCER_RUN_ID}" \'\n',
+            1,
+        )[1].split(
+            '\n                \' <<<"${producer}" >/dev/null',
+            1,
+        )[0]
+        base = "a" * 40
+        run_id = 123
+        title = f"Exact-Revision Codex PR #7 {base}..{'b' * 40}"
+        producer_payload = {
+            "id": run_id,
+            "event": "workflow_dispatch",
+            "run_attempt": 1,
+            "status": "queued",
+            "conclusion": None,
+            "head_branch": "develop",
+            "head_sha": base,
+            "path": ".github/workflows/release-bot-exact-head-review.yml",
+            "display_title": title,
+            "actor": {"login": "lightning-it-release-automation[bot]"},
+            "triggering_actor": {
+                "login": "lightning-it-release-automation[bot]"
+            },
+        }
+
+        def validates_producer(
+            status: str,
+            conclusion: object,
+            *,
+            terminal_failure: bool = False,
+            terminal_success: bool = False,
+        ) -> bool:
+            payload = dict(producer_payload)
+            payload.update(status=status, conclusion=conclusion)
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    "lightning-it-release-automation[bot]",
+                    "--arg",
+                    "base_ref",
+                    "develop",
+                    "--arg",
+                    "base_sha",
+                    base,
+                    "--arg",
+                    "head",
+                    "b" * 40,
+                    "--arg",
+                    "title",
+                    title,
+                    "--argjson",
+                    "terminal_helper_handoff",
+                    str(terminal_failure).lower(),
+                    "--argjson",
+                    "terminal_success_handoff",
+                    str(terminal_success).lower(),
+                    "--argjson",
+                    "run_id",
+                    str(run_id),
+                    producer_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(validates_producer("queued", None))
+        self.assertTrue(validates_producer("in_progress", None))
+        self.assertTrue(
+            validates_producer(
+                "completed", "success", terminal_success=True
+            )
+        )
+        self.assertTrue(
+            validates_producer(
+                "completed", "failure", terminal_failure=True
+            )
+        )
+        self.assertFalse(validates_producer("queued", "success"))
+        self.assertFalse(validates_producer("completed", "success"))
+        self.assertFalse(validates_producer("completed", "failure"))
+        self.assertFalse(validates_producer("waiting", None))
+
         inventory_filter = validator.split(
             '            jq -e \\\n'
             '              --arg base "${EVENT_BASE}" \\\n'
@@ -2279,8 +2384,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n              \' <<<"${jobs_pages}" >/dev/null',
             1,
         )[0]
-        base = "a" * 40
-        run_id = 123
         review_job = {
             "run_id": run_id,
             "run_attempt": 1,
@@ -2341,13 +2444,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         terminal_filter = validator.split(
-            'if [ "${terminal_helper_handoff}" = true ]; then\n'
-            "              jq -e '\n",
+            '                  "${terminal_success_handoff}" \'\n'
+            '                  [.[].jobs[]?] as $jobs\n',
             1,
         )[1].split(
-            '\n              \' <<<"${jobs_pages}" >/dev/null',
+            '\n                \' <<<"${jobs_pages}" >/dev/null',
             1,
         )[0]
+        terminal_filter = "[.[].jobs[]?] as $jobs\n" + terminal_filter
         valid_job = {
             "name": "Current revision review",
             "status": "completed",
@@ -2370,9 +2474,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 },
             ],
         }
-        def validates(jobs: list[dict[str, object]]) -> bool:
+        def validates(
+            jobs: list[dict[str, object]],
+            *,
+            terminal_failure: bool = True,
+            terminal_success: bool = False,
+        ) -> bool:
             result = subprocess.run(
-                [jq, "-e", terminal_filter],
+                [
+                    jq,
+                    "-e",
+                    "--argjson",
+                    "terminal_helper_handoff",
+                    str(terminal_failure).lower(),
+                    "--argjson",
+                    "terminal_success_handoff",
+                    str(terminal_success).lower(),
+                    terminal_filter,
+                ],
                 input=json.dumps([{"jobs": jobs}]),
                 text=True,
                 capture_output=True,
@@ -2381,6 +2500,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return result.returncode == 0
 
         self.assertTrue(validates([valid_job]))
+        successful_helper = {
+            "name": "Request protected verifier re-evaluation",
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [],
+        }
+        self.assertTrue(
+            validates(
+                [valid_job, successful_helper],
+                terminal_failure=False,
+                terminal_success=True,
+            )
+        )
+        self.assertTrue(
+            validates(
+                [valid_job],
+                terminal_failure=False,
+                terminal_success=True,
+            )
+        )
+        pending_helper = dict(successful_helper)
+        pending_helper.update(status="queued", conclusion=None)
+        self.assertTrue(
+            validates(
+                [valid_job, pending_helper],
+                terminal_failure=False,
+            )
+        )
+        self.assertFalse(
+            validates(
+                [valid_job, pending_helper],
+                terminal_failure=False,
+                terminal_success=True,
+            )
+        )
         reused_job = json.loads(json.dumps(valid_job))
         reused_job["steps"][0]["conclusion"] = "skipped"
         self.assertTrue(validates([reused_job]))
@@ -2423,13 +2577,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             final_verifier,
         )
         self.assertIn(
-            '($evidence_ready\n'
-            '                    and (\n'
-            '                      (.status == "in_progress"'
-            ' and .conclusion == null)\n'
-            '                      or (.status == "completed"\n'
-            '                        and .conclusion == "failure")\n'
-            '                    ))',
+            '($evidence_ready and (\n'
+            '                    ((.status | IN("queued", "in_progress"))\n'
+            '                      and .conclusion == null)\n'
+            '                    or (.status == "completed"'
+            ' and .conclusion == "failure")))',
             final_verifier,
         )
 

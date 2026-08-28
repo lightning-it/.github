@@ -950,19 +950,24 @@ jobs:
                 else .conclusion | select(type == "string")
                 end
               ' <<<"${producer}")"
-            if [ "${producer_status}" = completed ] \
-              && [ "${producer_conclusion}" = success ]; then
-              exit 0
-            fi
             terminal_helper_handoff=false
+            terminal_success_handoff=false
             if [ "${producer_status}" = completed ]; then
-              test "${producer_conclusion}" = failure
-              # Controllers deployed before the protected deadlock fix can
-              # finish red after publishing a fully successful exact-review
-              # job because their optional verifier helper cannot start. The
-              # exact-one job and critical-step proof below isolates only that
-              # terminal handoff; every other failed shape remains invalid.
-              terminal_helper_handoff=true
+              if [ "${producer_conclusion}" = success ]; then
+                # The producer can complete while this Required Workflow is
+                # observing its job ledger. Prove the same exact review below
+                # instead of returning without reserving the protected result.
+                terminal_success_handoff=true
+              else
+                test "${producer_conclusion}" = failure
+                # Controllers deployed before the protected deadlock fix can
+                # finish red after publishing a fully successful exact-review
+                # job because their optional verifier helper cannot start. The
+                # exact-one job and critical-step proof below isolates only
+                # that terminal handoff; every other failed shape remains
+                # invalid.
+                terminal_helper_handoff=true
+              fi
             else
               [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
               test -z "${producer_conclusion}"
@@ -996,30 +1001,16 @@ jobs:
                         or .status == "in_progress")
                       and .conclusion == null)
                   ))
-                and ([.[].jobs[]? |
-                  select(.name == "Current revision review")] | length) == 1
               ' <<<"${jobs_pages}" >/dev/null
-            if [ "${terminal_helper_handoff}" = true ]; then
-              jq -e '
-                [.[].jobs[]?] as $jobs
-                | ($jobs | length) == 1
-                and $jobs[0].name == "Current revision review"
-                and $jobs[0].status == "completed"
-                and $jobs[0].conclusion == "success"
-                and ($jobs[0].steps | type) == "array"
-                and ([$jobs[0].steps[]? |
-                  select(.name ==
-                    "Run protected history-free Exact-Revision Codex review") |
-                  select(.status == "completed") |
-                  select(.conclusion == "success" or .conclusion == "skipped")]
-                  | length) == 1
-                and ([$jobs[0].steps[]? |
-                  select(.name ==
-                    "Re-prove exact revision and enforce the Codex verdict") |
-                  select(.status == "completed" and .conclusion == "success")]
-                  | length) == 1
-              ' <<<"${jobs_pages}" >/dev/null
-            fi
+            review_job_count="$(jq \
+              '[.[].jobs[]? | select(.name == "Current revision review")] | length' \
+              <<<"${jobs_pages}")"
+            helper_job_count="$(jq '
+              [.[].jobs[]? | select(.name | startswith(
+                "Request protected verifier re-evaluation"))] | length
+              ' <<<"${jobs_pages}")"
+            test "${review_job_count}" -le 1
+            test "${helper_job_count}" -le 1
             exact_jobs="$(jq -c \
               --arg base "${EVENT_BASE}" '
                 [.[].jobs[]? |
@@ -1028,6 +1019,47 @@ jobs:
                   select(.status == "completed" and .conclusion == "success")]
               ' <<<"${jobs_pages}")"
             if [ "$(jq 'length' <<<"${exact_jobs}")" -eq 1 ]; then
+              jq -e \
+                --argjson terminal_helper_handoff \
+                  "${terminal_helper_handoff}" \
+                --argjson terminal_success_handoff \
+                  "${terminal_success_handoff}" '
+                  [.[].jobs[]?] as $jobs
+                  | ([$jobs[] |
+                      select(.name == "Current revision review")]
+                      | length) == 1
+                  and ([$jobs[] |
+                      select(.name | startswith(
+                        "Request protected verifier re-evaluation"))]
+                      | length) <= 1
+                  and (if $terminal_helper_handoff
+                    then ($jobs | length) == 1
+                    else true end)
+                  and (if $terminal_success_handoff
+                    then all($jobs[];
+                      .status == "completed" and .conclusion == "success")
+                    else true end)
+                  and ([$jobs[] |
+                    select(.name == "Current revision review")][0]
+                    | .status == "completed"
+                    and .conclusion == "success"
+                    and (.steps | type) == "array")
+                  and ([$jobs[] |
+                    select(.name == "Current revision review")][0] as $review
+                    | ([$review.steps[]? |
+                      select(.name ==
+                        "Run protected history-free Exact-Revision Codex review") |
+                      select(.status == "completed") |
+                      select(.conclusion == "success"
+                        or .conclusion == "skipped")]
+                      | length) == 1
+                    and ([$review.steps[]? |
+                      select(.name ==
+                        "Re-prove exact revision and enforce the Codex verdict") |
+                      select(.status == "completed"
+                        and .conclusion == "success")]
+                      | length) == 1)
+                ' <<<"${jobs_pages}" >/dev/null
               current_pr="$(gh api \
                 "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
               base_ref="$(jq -er \
@@ -1041,12 +1073,18 @@ jobs:
                 --arg title "${expected_title}" \
                 --argjson terminal_helper_handoff \
                   "${terminal_helper_handoff}" \
+                --argjson terminal_success_handoff \
+                  "${terminal_success_handoff}" \
                 --argjson run_id "${PRODUCER_RUN_ID}" '
                   .id == $run_id
                   and .event == "workflow_dispatch"
                   and .run_attempt == 1
                   and (
-                    (.status == "in_progress" and .conclusion == null)
+                    ((.status == "queued" or .status == "in_progress")
+                      and .conclusion == null)
+                    or ($terminal_success_handoff
+                      and .status == "completed"
+                      and .conclusion == "success")
                     or ($terminal_helper_handoff
                       and .status == "completed"
                       and .conclusion == "failure")
@@ -2216,12 +2254,10 @@ jobs:
                 and .run_attempt == 1
                 and (
                   (.status == "completed" and .conclusion == "success")
-                  or ($evidence_ready
-                    and (
-                      (.status == "in_progress" and .conclusion == null)
-                      or (.status == "completed"
-                        and .conclusion == "failure")
-                    ))
+                  or ($evidence_ready and (
+                    ((.status | IN("queued", "in_progress"))
+                      and .conclusion == null)
+                    or (.status == "completed" and .conclusion == "failure")))
                 )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
