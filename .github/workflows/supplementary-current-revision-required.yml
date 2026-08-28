@@ -969,6 +969,10 @@ jobs:
             fi
             jobs_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
+            # The optional helper can be visible before GitHub assigns a
+            # runner. Treat every documented non-terminal service state as a
+            # pending helper, while still requiring a null conclusion and the
+            # exact successful review job below.
             jq -e \
               --arg base "${EVENT_BASE}" \
               --argjson run_id "${PRODUCER_RUN_ID}" '
@@ -985,7 +989,11 @@ jobs:
                   )
                   and (
                     (.status == "completed" and .conclusion == "success")
-                    or ((.status == "queued" or .status == "in_progress")
+                    or ((.status == "requested"
+                        or .status == "waiting"
+                        or .status == "pending"
+                        or .status == "queued"
+                        or .status == "in_progress")
                       and .conclusion == null)
                   ))
                 and ([.[].jobs[]? |
