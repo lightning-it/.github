@@ -2152,7 +2152,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
         self.assertIn("length<=2", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
-        self.assertIn("|length)<=1", permanent)
+        self.assertIn(
+            "([.[].name|select(test($d))]|length)<=1",
+            permanent,
+        )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
