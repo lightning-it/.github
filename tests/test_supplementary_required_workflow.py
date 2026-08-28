@@ -871,7 +871,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         late = workflow.split(
-            '              test "${producer_kind}" = copilot\n',
+            '              authorization_pages="$(gh api --paginate --slurp \\\n',
             1,
         )[1]
 
