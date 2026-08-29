@@ -2130,25 +2130,76 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('.name == "Publish bound neutral result"', permanent)
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
-        self.assertIn('and .conclusion != "success"', permanent)
+        self.assertIn('and .conclusion!="success"', permanent)
         self.assertIn('allowed_skipped_terminal_jobs="$(jq -c', permanent)
         self.assertIn(
-            '.name == "Request Copilot review for current revision"', permanent
+            '.name=="Request Copilot review for current revision"', permanent
         )
         self.assertIn(
-            "Request protected verifier re-evaluation / "
             "Diagnose Release-App reusable context and fail closed",
             permanent,
         )
-        self.assertIn('has("runner_id") and .runner_id == null', permanent)
-        self.assertIn('(.steps | type) == "array"', permanent)
-        self.assertIn('(.steps | length) == 0', permanent)
-        self.assertIn('and .conclusion == "skipped"', permanent)
-        self.assertIn("select((\n", permanent)
+        self.assertIn(
+            "Re-run the one protected verifier attempt",
+            permanent,
+        )
+        self.assertIn('has("runner_id") and .runner_id==null', permanent)
+        self.assertIn('(.steps|type)=="array"', permanent)
+        self.assertIn('(.steps|length)==0', permanent)
+        self.assertIn('and .conclusion=="skipped"', permanent)
+        self.assertIn("select(((", permanent)
         self.assertIn(") | not)]", permanent)
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("(length<=2", permanent)
-        self.assertIn("(map(.name) | unique | length) == length", permanent)
+        self.assertIn("length<=2", permanent)
+        self.assertIn("(map(.name)|unique|length)==length", permanent)
+        self.assertIn(
+            "([.[].name|select(test($d))]|length)<=1",
+            permanent,
+        )
+        helper_guard_match = re.search(
+            r'''jq -e --arg d "\$\{d\}" '([^']+)' '''
+            r'''<<<"\$\{allowed_skipped_terminal_jobs\}" >/dev/null''',
+            permanent,
+        )
+        self.assertIsNotNone(helper_guard_match)
+        helper_guard = helper_guard_match.group(1)
+        jq = self._test_tool("jq")
+        helper_pattern_match = re.search(
+            r"\n\s+d='([^']+)'\n"
+            r'\s+disallowed_terminal_jobs="\$\(jq -c --arg d',
+            permanent,
+        )
+        self.assertIsNotNone(helper_pattern_match)
+        helper_pattern = helper_pattern_match.group(1)
+
+        def evaluate_helper_guard(names: list[str]) -> int:
+            result = subprocess.run(
+                [jq, "-e", "--arg", "d", helper_pattern, helper_guard],
+                input=json.dumps([{"name": name} for name in names]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        review_request = "Request Copilot review for current revision"
+        legacy_helper = (
+            "Request protected verifier re-evaluation / "
+            "Diagnose Release-App reusable context and fail closed"
+        )
+        current_helper = (
+            "Request protected verifier re-evaluation / "
+            "Re-run the one protected verifier attempt"
+        )
+        self.assertEqual(
+            0, evaluate_helper_guard([review_request, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([current_helper, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([legacy_helper, current_helper])
+        )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
@@ -2845,7 +2896,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {
                 "name": (
                     "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt"
+                ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
+                "name": (
+                    "Request protected verifier re-evaluation / "
                     "Diagnose Release-App reusable context and fail closed"
+                ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": (
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt"
                 ),
                 "status": "completed",
                 "conclusion": "skipped",
@@ -2874,6 +2944,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         source = json.dumps([{"jobs": jobs}])
         jq = self._test_tool("jq")
+        helper_pattern = (
+            "^Request protected verifier re-evaluation / "
+            "(Diagnose Release-App reusable context and fail closed|"
+            "Re-run the one protected verifier attempt)$"
+        )
 
         def evaluate(name: str) -> list[dict[str, object]]:
             result = subprocess.run(
@@ -2882,10 +2957,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "-c",
                     "--arg",
                     "d",
-                    (
-                        "Request protected verifier re-evaluation / "
-                        "Diagnose Release-App reusable context and fail closed"
-                    ),
+                    helper_pattern,
                     assignment_filter(name),
                 ],
                 input=source,
@@ -2900,6 +2972,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt",
                 "cancelled job",
                 "timed out job",
                 "unexpected skipped job",
@@ -2911,42 +2985,72 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Request Copilot review for current revision",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt",
             ],
         )
 
-        for predicate, passing, failing in (
+        allowed = evaluate("allowed_skipped_terminal_jobs")
+        request = allowed[0]
+        release_helper = allowed[1]
+        current_helper = allowed[2]
+        for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
-                [],
-                evaluate("disallowed_terminal_jobs"),
+                [[]],
+                [evaluate("disallowed_terminal_jobs")],
             ),
             (
-                "(length <= 2 and "
-                "(map(.name) | unique | length) == length) "
+                "(length <= 2 "
+                "and (map(.name) | unique | length) == length "
+                "and ([.[].name | select(test($d))] "
+                "| length) <= 1) "
                 "or error(tojson)",
-                evaluate("allowed_skipped_terminal_jobs"),
-                [{"name": "duplicate"}, {"name": "duplicate"}],
+                [[request, release_helper], [request, current_helper]],
+                [
+                    allowed,
+                    [{"name": "duplicate"}, {"name": "duplicate"}],
+                ],
             ),
         ):
-            success = subprocess.run(
-                [jq, "-e", predicate],
-                input=json.dumps(passing),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertEqual(success.returncode, 0)
-            self.assertEqual(success.stderr, "")
+            for passing in passing_cases:
+                success = subprocess.run(
+                    [
+                        jq,
+                        "-e",
+                        "--arg",
+                        "d",
+                        helper_pattern,
+                        predicate,
+                    ],
+                    input=json.dumps(passing),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(success.returncode, 0)
+                self.assertEqual(success.stderr, "")
 
-            failure = subprocess.run(
-                [jq, "-e", predicate],
-                input=json.dumps(failing),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-            self.assertNotEqual(failure.returncode, 0)
-            self.assertIn(json.dumps(failing, separators=(",", ":")), failure.stderr)
+            for failing in failing_cases:
+                failure = subprocess.run(
+                    [
+                        jq,
+                        "-e",
+                        "--arg",
+                        "d",
+                        helper_pattern,
+                        predicate,
+                    ],
+                    input=json.dumps(failing),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(failure.returncode, 0)
+                self.assertIn(
+                    json.dumps(failing, separators=(",", ":")),
+                    failure.stderr,
+                )
 
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
