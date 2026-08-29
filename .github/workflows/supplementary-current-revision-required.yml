@@ -2620,16 +2620,12 @@ jobs:
               test "$(date -u -d "${review_submitted_at}" +%s)" -gt \
                 "$(date -u -d "${first_verifier_completed_at}" +%s)"
 
-              timeline="$(gh api --paginate --slurp \
-                -H 'Accept: application/vnd.github+json' \
-                "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
-              jq -e --arg actor "${author}" '
-                [add[]? |
-                  select(.event == "review_requested") |
-                  select(.actor.login == $actor) |
-                  select(.requested_reviewer.login == "Copilot")]
-                | length == 1
-              ' <<<"${timeline}" >/dev/null
+              tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
+              jq -e --arg actor "${author}" \
+                --arg start "$(jq -er '.created_at | strings' <<<"${producer}")" \
+                --arg end "${review_submitted_at}" \
+                '[add[]? | select(.event=="review_requested" and .actor.login == $actor and .requested_reviewer.login=="Copilot" and .created_at>=$start and .created_at<=$end)] | length == 1' \
+                <<<"${tl}" >/dev/null
               jq -e \
                 --arg actor "${author}" \
                 --arg head_ref "${head_ref}" \

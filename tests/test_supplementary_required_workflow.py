@@ -934,7 +934,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn(
-            '.requested_reviewer.login == "Copilot"',
+            '.requested_reviewer.login=="Copilot"',
+            late,
+        )
+        self.assertIn(
+            '--arg start "$(jq -er \'.created_at | strings\'',
+            late,
+        )
+        self.assertIn(
+            '.created_at>=$start',
+            late,
+        )
+        self.assertIn(
+            '.created_at<=$end',
             late,
         )
         self.assertIn('| length == 1', late)
