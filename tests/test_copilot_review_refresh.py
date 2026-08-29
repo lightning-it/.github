@@ -531,25 +531,35 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 123,
             ),
         ):
-            with self.subTest(managed_distribution=external_id):
-                result = self._run_refresh_filter(
-                    author=sync_app,
-                    external_id=external_id,
-                    pull_request_number=pull_request_number,
-                    repository="lightning-it/website",
-                    review_path=(
-                        "deterministic provenance-bound managed distribution exemption"
-                    ),
-                )
-                self.assertEqual(0, result.returncode, result.stderr)
+            for repository in (
+                "lightning-it/website",
+                "lightning-it/.github",
+            ):
+                with self.subTest(
+                    managed_distribution=external_id,
+                    repository=repository,
+                ):
+                    result = self._run_refresh_filter(
+                        author=sync_app,
+                        external_id=external_id,
+                        pull_request_number=pull_request_number,
+                        repository=repository,
+                        review_path=(
+                            "deterministic provenance-bound managed distribution exemption"
+                        ),
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
 
                 for invalid_review_path in (None, "", "wrong review path"):
-                    with self.subTest(invalid_review_path=invalid_review_path):
+                    with self.subTest(
+                        invalid_review_path=invalid_review_path,
+                        repository=repository,
+                    ):
                         rejected = self._run_refresh_filter(
                             author=sync_app,
                             external_id=external_id,
                             pull_request_number=pull_request_number,
-                            repository="lightning-it/website",
+                            repository=repository,
                             review_path=invalid_review_path,
                         )
                         self.assertNotEqual(0, rejected.returncode)
@@ -661,11 +671,19 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 repository="lightning-it/website",
             ),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             0,
             run(
                 author=sync_app,
                 base_ref="develop",
+                repository="lightning-it/.github",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="main",
                 repository="lightning-it/.github",
             ),
         )
