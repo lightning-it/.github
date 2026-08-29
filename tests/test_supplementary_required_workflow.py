@@ -223,6 +223,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 trusted_kind="shared-assets",
             ),
         )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author=sync_app,
+                base_ref="main",
+                repository="lightning-it/.github",
+                trusted_kind="shared-assets",
+            ),
+        )
 
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

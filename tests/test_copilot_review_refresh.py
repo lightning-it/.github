@@ -551,12 +551,15 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     self.assertEqual(0, result.returncode, result.stderr)
 
                 for invalid_review_path in (None, "", "wrong review path"):
-                    with self.subTest(invalid_review_path=invalid_review_path):
+                    with self.subTest(
+                        invalid_review_path=invalid_review_path,
+                        repository=repository,
+                    ):
                         rejected = self._run_refresh_filter(
                             author=sync_app,
                             external_id=external_id,
                             pull_request_number=pull_request_number,
-                            repository="lightning-it/website",
+                            repository=repository,
                             review_path=invalid_review_path,
                         )
                         self.assertNotEqual(0, rejected.returncode)
@@ -673,6 +676,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             run(
                 author=sync_app,
                 base_ref="develop",
+                repository="lightning-it/.github",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            run(
+                author=sync_app,
+                base_ref="main",
                 repository="lightning-it/.github",
             ),
         )
