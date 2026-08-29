@@ -531,10 +531,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 123,
             ),
         ):
-            with self.subTest(managed_distribution=external_id):
-                for repository in (
-                    "lightning-it/website",
-                    "lightning-it/.github",
+            for repository in (
+                "lightning-it/website",
+                "lightning-it/.github",
+            ):
+                with self.subTest(
+                    managed_distribution=external_id,
+                    repository=repository,
                 ):
                     result = self._run_refresh_filter(
                         author=sync_app,
