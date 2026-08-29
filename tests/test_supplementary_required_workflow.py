@@ -157,7 +157,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         required_workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", required_workflow)
         self.assertIn(
-            "'chore/sync-repository-quality-.github-'", required_workflow
+            "chore/sync-repository-quality-.github-", required_workflow
         )
         self.assertIn(
             'test "${author}" != \'lightning-it-shared-assets-sync[bot]\'',
