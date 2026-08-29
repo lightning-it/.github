@@ -157,8 +157,9 @@ jobs:
             check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${neutral}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
             # Managed distribution has its own evidence kind. The sync App may
-            # never satisfy the Copilot branch, and inside lightning-it/.github
-            # it is accepted only as ancestry-backmerge.
+            # never satisfy the Copilot branch. Inside lightning-it/.github it
+            # is accepted as managed-sync only on develop; the separate
+            # ancestry-backmerge path remains independently bound.
             if ! jq -e \
               --arg author "${PR_AUTHOR}" \
               --arg base "${BASE_SHA}" \
