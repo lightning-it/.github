@@ -841,9 +841,29 @@ jobs:
               == 'lightning-it/shared-assets-lit'
           )
         env:
+          ALLOW_IN_PROGRESS_MANAGED_SYNC: >-
+            ${{
+              github.repository == 'lightning-it/.github'
+              && github.event.pull_request.user.login
+                == 'lightning-it-shared-assets-sync[bot]'
+              && github.event.pull_request.base.ref == 'develop'
+              && github.event.pull_request.head.repo.full_name
+                == github.repository
+              && (
+                startsWith(
+                  github.event.pull_request.head.ref,
+                  'chore/sync-repository-quality-.github-'
+                )
+                || startsWith(
+                  github.event.pull_request.head.ref,
+                  'chore/sync-shared-assets-lit-.github-'
+                )
+              )
+            }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          [[ "${ALLOW_IN_PROGRESS_MANAGED_SYNC}" =~ ^(true|false)$ ]]
           producer_kind=''
           producer_run_id=''
           for observation in $(seq 1 450); do
@@ -889,20 +909,22 @@ jobs:
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
           if [ "${producer_kind}" = copilot ] \
-            || [ "${producer_kind}" = release-app ]; then
+            || [ "${producer_kind}" = release-app ] \
+            || [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" = managed-sync:true ]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
               '.id == $run_id' <<<"${producer}" >/dev/null
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            # The Copilot and Exact-Revision producers publish the exact
-            # successful neutral result before their optional verifier-rerun
-            # helper completes.
+            # Copilot, Exact-Revision, and the narrowly bound same-repository
+            # .github managed-sync producers publish the exact successful
+            # neutral result before their verifier helper completes.
             # Waiting for the whole producer here creates a circular wait:
             # that helper is itself waiting for this Required Workflow. The
-            # permanent verifier below already binds the one evidence job and
-            # both critical steps before accepting an in-progress producer.
+            # permanent verifier below independently binds the producer, its
+            # exact evidence job, and all critical steps before accepting an
+            # in-progress run.
             [[ "${producer_status}" =~ ^(queued|in_progress|completed)$ ]]
           else
             for observation in $(seq 1 120); do
@@ -2302,7 +2324,6 @@ jobs:
                 "chore(governance): record main ancestry before "* ]]
               expected_review_path="deterministic evidence-bound ancestry exemption"
             elif [ "${author}" = 'lightning-it-shared-assets-sync[bot]' ]; then
-              test "${REPOSITORY}" != 'lightning-it/.github'
               test "${producer_kind}" = managed-sync
               test "${base_ref}" = develop
               expected_review_path="deterministic provenance-bound managed distribution exemption"
@@ -2599,16 +2620,12 @@ jobs:
               test "$(date -u -d "${review_submitted_at}" +%s)" -gt \
                 "$(date -u -d "${first_verifier_completed_at}" +%s)"
 
-              timeline="$(gh api --paginate --slurp \
-                -H 'Accept: application/vnd.github+json' \
-                "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
-              jq -e --arg actor "${author}" '
-                [add[]? |
-                  select(.event == "review_requested") |
-                  select(.actor.login == $actor) |
-                  select(.requested_reviewer.login == "Copilot")]
-                | length == 1
-              ' <<<"${timeline}" >/dev/null
+              tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
+              jq -e --arg actor "${author}" \
+                --arg start "$(jq -er '.created_at | strings' <<<"${producer}")" \
+                --arg end "${review_submitted_at}" \
+                '[add[]? | select(.event=="review_requested" and .actor.login == $actor and .requested_reviewer.login=="Copilot" and .created_at>=$start and .created_at<=$end)] | length == 1' \
+                <<<"${tl}" >/dev/null
               jq -e \
                 --arg actor "${author}" \
                 --arg head_ref "${head_ref}" \
