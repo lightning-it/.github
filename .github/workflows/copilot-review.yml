@@ -1096,7 +1096,6 @@ jobs:
           external_kind="copilot"
           result_title="Current revision review passed"
           if [[ "${TRUSTED_KIND}" =~ ^(shared-assets|repository-quality)$ ]]; then
-            test "${REPOSITORY}" != 'lightning-it/.github'
             test "${author}" = 'lightning-it-shared-assets-sync[bot]'
             test "${base_ref}" = develop
             review_path="deterministic provenance-bound managed distribution exemption"

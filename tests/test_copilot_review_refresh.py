@@ -532,16 +532,20 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ),
         ):
             with self.subTest(managed_distribution=external_id):
-                result = self._run_refresh_filter(
-                    author=sync_app,
-                    external_id=external_id,
-                    pull_request_number=pull_request_number,
-                    repository="lightning-it/website",
-                    review_path=(
-                        "deterministic provenance-bound managed distribution exemption"
-                    ),
-                )
-                self.assertEqual(0, result.returncode, result.stderr)
+                for repository in (
+                    "lightning-it/website",
+                    "lightning-it/.github",
+                ):
+                    result = self._run_refresh_filter(
+                        author=sync_app,
+                        external_id=external_id,
+                        pull_request_number=pull_request_number,
+                        repository=repository,
+                        review_path=(
+                            "deterministic provenance-bound managed distribution exemption"
+                        ),
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
 
                 for invalid_review_path in (None, "", "wrong review path"):
                     with self.subTest(invalid_review_path=invalid_review_path):
@@ -661,7 +665,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 repository="lightning-it/website",
             ),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             0,
             run(
                 author=sync_app,

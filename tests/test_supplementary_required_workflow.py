@@ -150,6 +150,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "${author}" = \'lightning-it-shared-assets-sync[bot]\'\n',
             managed_sync,
         )
+        self.assertNotIn(
+            'test "${REPOSITORY}" != \'lightning-it/.github\'',
+            managed_sync,
+        )
+        required_workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", required_workflow)
+        self.assertIn(
+            "'chore/sync-repository-quality-.github-'", required_workflow
+        )
         self.assertIn(
             'test "${author}" != \'lightning-it-shared-assets-sync[bot]\'',
             ancestry,
@@ -205,7 +214,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 trusted_kind="shared-assets",
             ),
         )
-        self.assertNotEqual(
+        self.assertEqual(
             0,
             self._run_neutral_publisher_routing(
                 author=sync_app,
