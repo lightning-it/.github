@@ -2156,6 +2156,50 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "([.[].name|select(test($d))]|length)<=1",
             permanent,
         )
+        helper_guard_match = re.search(
+            r'''jq -e --arg d "\$\{d\}" '([^']+)' '''
+            r'''<<<"\$\{allowed_skipped_terminal_jobs\}" >/dev/null''',
+            permanent,
+        )
+        self.assertIsNotNone(helper_guard_match)
+        helper_guard = helper_guard_match.group(1)
+        jq = self._test_tool("jq")
+        helper_pattern_match = re.search(
+            r"\n\s+d='([^']+)'\n"
+            r'\s+disallowed_terminal_jobs="\$\(jq -c --arg d',
+            permanent,
+        )
+        self.assertIsNotNone(helper_pattern_match)
+        helper_pattern = helper_pattern_match.group(1)
+
+        def evaluate_helper_guard(names: list[str]) -> int:
+            result = subprocess.run(
+                [jq, "-e", "--arg", "d", helper_pattern, helper_guard],
+                input=json.dumps([{"name": name} for name in names]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode
+
+        review_request = "Request Copilot review for current revision"
+        legacy_helper = (
+            "Request protected verifier re-evaluation / "
+            "Diagnose Release-App reusable context and fail closed"
+        )
+        current_helper = (
+            "Request protected verifier re-evaluation / "
+            "Re-run the one protected verifier attempt"
+        )
+        self.assertEqual(
+            0, evaluate_helper_guard([review_request, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([current_helper, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([legacy_helper, current_helper])
+        )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
