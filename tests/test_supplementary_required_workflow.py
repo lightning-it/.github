@@ -2074,22 +2074,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             2,
             terminal_wait.count('producer_kind="${BASH_REMATCH[1]}"'),
         )
-        self.assertIn(
+        nonterminal_handoff_guard = (
             'if [ "${producer_kind}" = copilot ] \\\n'
-            '            || [ "${producer_kind}" = release-app ]; then',
-            terminal_wait,
+            '            || [ "${producer_kind}" = release-app ] \\\n'
+            '            || [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" '
+            '= managed-sync:true ]; then'
         )
+        self.assertIn(nonterminal_handoff_guard, terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
         self.assertIn('^(queued|in_progress)$', terminal_wait)
         self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
-        copilot_readiness = terminal_wait.split(
-            'if [ "${producer_kind}" = copilot ] \\\n'
-            '            || [ "${producer_kind}" = release-app ]; then', 1
-        )[1].split("          else\n", 1)[0]
-        self.assertNotIn("for observation in $(seq 1 120)", copilot_readiness)
+        nonterminal_handoff = terminal_wait.split(nonterminal_handoff_guard, 1)[
+            1
+        ].split("          else\n", 1)[0]
+        self.assertNotIn("for observation in $(seq 1 120)", nonterminal_handoff)
         self.assertIn(
-            "The Copilot and Exact-Revision producers publish the exact",
-            copilot_readiness,
+            "Copilot, Exact-Revision, and the narrowly bound same-repository",
+            nonterminal_handoff,
         )
         self.assertIn(
             "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:",
@@ -2771,6 +2772,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Await the exact protected producer run terminal state\n",
             1,
         )[1].split("        env:\n", 1)[0]
+        terminal = workflow.split(
+            "      - name: Await the exact protected producer run terminal state\n",
+            1,
+        )[1].split(
+            "      - name: Validate an Exact-Revision producer handoff\n",
+            1,
+        )[0]
         for binding in (
             "EXPECTED_HEAD_REPOSITORY: >-",
             "github.event.pull_request.head.repo.full_name",
@@ -2794,6 +2802,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             readiness_header,
         )
         self.assertIn("steps.live-pr.outputs.ready == 'true'", terminal_header)
+        for binding in (
+            "ALLOW_IN_PROGRESS_MANAGED_SYNC: >-",
+            "github.repository == 'lightning-it/.github'",
+            "== 'lightning-it-shared-assets-sync[bot]'",
+            "github.event.pull_request.base.ref == 'develop'",
+            "github.event.pull_request.head.repo.full_name",
+            "== github.repository",
+            "'chore/sync-repository-quality-.github-'",
+            "'chore/sync-shared-assets-lit-.github-'",
+            '[[ "${ALLOW_IN_PROGRESS_MANAGED_SYNC}" =~ ^(true|false)$ ]]',
+            '|| [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" '
+            '= managed-sync:true ]; then',
+        ):
+            with self.subTest(managed_sync_in_progress_handoff=binding):
+                self.assertIn(binding, terminal)
+        self.assertNotIn(
+            "lightning-it-shared-assets-sync[bot]", terminal_header
+        )
         self.assertNotIn(
             "github.event.pull_request.draft == false", terminal_header
         )
