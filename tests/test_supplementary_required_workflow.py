@@ -2084,13 +2084,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(".id == $run_id", terminal_wait)
         self.assertIn('^(queued|in_progress)$', terminal_wait)
         self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
-        copilot_readiness = terminal_wait.split(nonterminal_handoff_guard, 1)[
+        nonterminal_handoff = terminal_wait.split(nonterminal_handoff_guard, 1)[
             1
         ].split("          else\n", 1)[0]
-        self.assertNotIn("for observation in $(seq 1 120)", copilot_readiness)
+        self.assertNotIn("for observation in $(seq 1 120)", nonterminal_handoff)
         self.assertIn(
             "Copilot, Exact-Revision, and the narrowly bound same-repository",
-            copilot_readiness,
+            nonterminal_handoff,
         )
         self.assertIn(
             "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:",

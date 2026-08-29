@@ -918,7 +918,7 @@ jobs:
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
             # Copilot, Exact-Revision, and the narrowly bound same-repository
-            # .github managed-sync producer publish the exact successful
+            # .github managed-sync producers publish the exact successful
             # neutral result before their verifier helper completes.
             # Waiting for the whole producer here creates a circular wait:
             # that helper is itself waiting for this Required Workflow. The
