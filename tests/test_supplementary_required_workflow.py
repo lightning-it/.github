@@ -2166,7 +2166,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.name == "Publish bound neutral result"', permanent)
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion!="success"', permanent)
-        self.assertIn('allowed_skipped_terminal_jobs="$(jq -c', permanent)
+        self.assertIn('terminal_job_inventory="$(jq -c', permanent)
+        self.assertIn(
+            'def runnerless: has("runner_id") and .runner_id==null and .steps==[];',
+            permanent,
+        )
         self.assertIn(
             '.name=="Request Copilot review for current revision"', permanent
         )
@@ -2178,14 +2182,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Re-run the one protected verifier attempt",
             permanent,
         )
-        self.assertIn('has("runner_id") and .runner_id==null', permanent)
-        self.assertIn('(.steps|type)=="array"', permanent)
-        self.assertIn('(.steps|length)==0', permanent)
-        self.assertIn('and .conclusion=="skipped"', permanent)
-        self.assertIn("select(((", permanent)
-        self.assertIn(") | not)]", permanent)
+        self.assertIn('def allowed: .conclusion=="skipped"', permanent)
+        self.assertIn(
+            "{disallowed:[$terminal[]|select(allowed|not)]", permanent
+        )
+        self.assertIn("allowed:[$terminal[]|select(allowed)]}", permanent)
+        self.assertIn(
+            'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
+        )
+        self.assertIn(
+            'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
+        )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=2", permanent)
+        self.assertIn("length<=3", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
@@ -2201,7 +2210,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         jq = self._test_tool("jq")
         helper_pattern_match = re.search(
             r"\n\s+d='([^']+)'\n"
-            r'\s+disallowed_terminal_jobs="\$\(jq -c --arg d',
+            r'\s+terminal_job_inventory="\$\(jq -c --arg d',
             permanent,
         )
         self.assertIsNotNone(helper_pattern_match)
@@ -2226,6 +2235,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Request protected verifier re-evaluation / "
             "Re-run the one protected verifier attempt"
         )
+        parent_helper = "Request protected verifier re-evaluation"
+        ancestry_classifier = (
+            "Classify protected Release-App ancestry backmerge"
+        )
+        self.assertEqual(
+            0,
+            evaluate_helper_guard(
+                [review_request, ancestry_classifier, parent_helper]
+            ),
+        )
         self.assertEqual(
             0, evaluate_helper_guard([review_request, current_helper])
         )
@@ -2234,6 +2253,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotEqual(
             0, evaluate_helper_guard([legacy_helper, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([parent_helper, current_helper])
         )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
@@ -2923,8 +2945,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "failure_stage='permanent-producer-inventory'", 1
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
-        def assignment_filter(name: str) -> str:
-            marker = f'{name}="$(jq -c'
+        def inventory_filter() -> str:
+            marker = 'terminal_job_inventory="$(jq -c'
             start = permanent.index(marker) + len(marker)
             start = permanent.index("'\n", start) + 2
             end = permanent.index(
@@ -2944,6 +2966,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "conclusion": "skipped",
             },
             {
+                "name": "Classify protected Release-App ancestry backmerge",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
+                "name": "Request protected verifier re-evaluation",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": (
                     "Request protected verifier re-evaluation / "
                     "Diagnose Release-App reusable context and fail closed"
@@ -2977,6 +3013,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "Request protected verifier re-evaluation / "
                     "Re-run the one protected verifier attempt"
                 ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": "Classify protected Release-App ancestry backmerge",
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": "Request protected verifier re-evaluation",
                 "status": "completed",
                 "conclusion": "skipped",
                 "steps": [],
@@ -3005,9 +3053,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source = json.dumps([{"jobs": jobs}])
         jq = self._test_tool("jq")
         helper_pattern = (
-            "^Request protected verifier re-evaluation / "
+            "^Request protected verifier re-evaluation( / "
             "(Diagnose Release-App reusable context and fail closed|"
-            "Re-run the one protected verifier attempt)$"
+            "Re-run the one protected verifier attempt))?$"
         )
 
         def evaluate(name: str) -> list[dict[str, object]]:
@@ -3018,14 +3066,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--arg",
                     "d",
                     helper_pattern,
-                    assignment_filter(name),
+                    inventory_filter(),
                 ],
                 input=source,
                 text=True,
                 capture_output=True,
                 check=True,
             )
-            return json.loads(result.stdout)
+            inventory = json.loads(result.stdout)
+            key = "disallowed" if name == "disallowed_terminal_jobs" else "allowed"
+            return inventory[key]
 
         self.assertEqual(
             [job["name"] for job in evaluate("disallowed_terminal_jobs")],
@@ -3034,6 +3084,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt",
+                "Classify protected Release-App ancestry backmerge",
+                "Request protected verifier re-evaluation",
                 "cancelled job",
                 "timed out job",
                 "unexpected skipped job",
@@ -3043,6 +3095,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
             [
                 "Request Copilot review for current revision",
+                "Classify protected Release-App ancestry backmerge",
+                "Request protected verifier re-evaluation",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
@@ -3052,8 +3106,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
-        release_helper = allowed[1]
-        current_helper = allowed[2]
+        ancestry_classifier = allowed[1]
+        parent_helper = allowed[2]
+        release_helper = allowed[3]
+        current_helper = allowed[4]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -3061,14 +3117,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 [evaluate("disallowed_terminal_jobs")],
             ),
             (
-                "(length <= 2 "
+                "(length <= 3 "
                 "and (map(.name) | unique | length) == length "
                 "and ([.[].name | select(test($d))] "
                 "| length) <= 1) "
                 "or error(tojson)",
-                [[request, release_helper], [request, current_helper]],
+                [
+                    [request, ancestry_classifier, parent_helper],
+                    [request, ancestry_classifier, release_helper],
+                    [request, ancestry_classifier, current_helper],
+                ],
                 [
                     allowed,
+                    [ancestry_classifier, parent_helper, current_helper],
+                    [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
                 ],
             ),

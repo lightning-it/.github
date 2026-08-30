@@ -280,6 +280,8 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
             fail(f"Protected {name} must be one regular non-symlink file.")
         if details.st_uid != os.geteuid():
             fail(f"Protected {name} must be owned by the current user.")
+        if details.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            fail(f"Protected {name} must not be group- or world-writable.")
         if details.st_size <= 0 or details.st_size > MAX_PROTECTED_ASSET_BYTES:
             fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
         with os.fdopen(descriptor, "rb", closefd=False) as protected_asset:
@@ -342,6 +344,8 @@ def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
                     fail(f"Protected {name} must be one regular non-symlink file.")
                 if existing.st_uid != os.geteuid():
                     fail(f"Protected {name} must be owned by the current user.")
+                if existing.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                    fail(f"Protected {name} must not be group- or world-writable.")
         finally:
             if existing_descriptor >= 0:
                 descriptor_to_close = existing_descriptor
@@ -584,8 +588,12 @@ def git_output(
                     fail(f"Command timed out after {COMMAND_TIMEOUT_SECONDS} seconds: {' '.join(command)}")
                 for key, _events in selector.select(remaining):
                     if key.data == "stdout":
-                        remaining_bytes = max_bytes - len(stdout)
-                        read_size = min(65_536, remaining_bytes + 1)
+                        # MLX-90 rejects inputs greater than or equal to the
+                        # protected boundary, so max_bytes is deliberately an
+                        # exclusive limit. Read one sentinel byte beyond the
+                        # remaining allowed payload to detect that boundary.
+                        remaining_allowed = max_bytes - 1 - len(stdout)
+                        read_size = min(65_536, remaining_allowed + 1)
                     else:
                         read_size = 65_536
                     try:
@@ -596,10 +604,10 @@ def git_output(
                         selector.unregister(key.fileobj)
                         continue
                     if key.data == "stdout":
-                        remaining_bytes = max_bytes - len(stdout)
-                        if remaining_bytes > 0:
-                            stdout.extend(chunk[:remaining_bytes])
-                        if len(chunk) >= remaining_bytes:
+                        remaining_allowed = max_bytes - 1 - len(stdout)
+                        if remaining_allowed > 0:
+                            stdout.extend(chunk[:remaining_allowed])
+                        if len(chunk) > remaining_allowed:
                             limit_exceeded = True
                             if process.poll() is None:
                                 process.kill()
