@@ -75,6 +75,10 @@ SECRET_PATH_MARKER = "secrets"
 SAFE_TERRAFORM_SECRET_MODULE_PATTERN = re.compile(
     r"[a-z0-9][a-z0-9_]*_secrets\.tf"
 )
+SAFE_PUBLIC_SECRET_ROUTE_PATTERN = re.compile(
+    r"(?:en/)?[a-z0-9]+(?:-[a-z0-9]+)*-secrets-"
+    r"[a-z0-9]+(?:-[a-z0-9]+)*\.html"
+)
 SECRET_CONTENT_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(
@@ -114,7 +118,7 @@ AUTHORITATIVE_BASE_REFS = {
     "refs/remotes/origin/main": "main",
 }
 INTEGRATION_DIRECTORY_PREFIX = ".lit-integration-"
-COPILOT_DEVTOOL_IMAGE = "quay.io/l-it/ee-wunder-devtools-ubi9:v1.14.0@sha256:fca70c475088edd75d1635b11adb4aad9de65995eec455f6fb4e409b969afc60"
+COPILOT_DEVTOOL_IMAGE = "quay.io/l-it/ee-wunder-devtools-ubi9:v1.15.1@sha256:42b8d871f4b1bb1ecf305fc692906b7b7f5ae466e2c8787fdef9d62a32ce774c"
 CHECK_PROFILE = {
     "name": "repository-quality-profile",
     "command": ["scripts/lit-ci-profile.sh", "repository-quality"],
@@ -200,7 +204,7 @@ class PlannedChange(NamedTuple):
 
 
 def is_secret_like_path(path: str) -> bool:
-    """Reject secret markers except in Terraform source-module filenames."""
+    """Reject secret markers except narrow reviewed source-file patterns."""
     lowered = path.lower()
     if any(fragment in lowered for fragment in SECRET_PATH_FRAGMENTS):
         return True
@@ -211,6 +215,11 @@ def is_secret_like_path(path: str) -> bool:
         if (
             index == len(components) - 1
             and SAFE_TERRAFORM_SECRET_MODULE_PATTERN.fullmatch(component)
+        ):
+            continue
+        if (
+            index == len(components) - 1
+            and SAFE_PUBLIC_SECRET_ROUTE_PATTERN.fullmatch(lowered)
         ):
             continue
         return True
