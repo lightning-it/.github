@@ -2166,7 +2166,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.name == "Publish bound neutral result"', permanent)
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion!="success"', permanent)
-        self.assertIn('allowed_skipped_terminal_jobs="$(jq -c', permanent)
+        self.assertIn('terminal_job_inventory="$(jq -c', permanent)
+        self.assertIn(
+            'def runnerless: has("runner_id") and .runner_id==null and .steps==[];',
+            permanent,
+        )
         self.assertIn(
             '.name=="Request Copilot review for current revision"', permanent
         )
@@ -2178,14 +2182,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Re-run the one protected verifier attempt",
             permanent,
         )
-        self.assertIn('has("runner_id") and .runner_id==null', permanent)
-        self.assertIn('(.steps|type)=="array"', permanent)
-        self.assertIn('(.steps|length)==0', permanent)
-        self.assertIn('and .conclusion=="skipped"', permanent)
-        self.assertIn("select(((", permanent)
-        self.assertIn(") | not)]", permanent)
+        self.assertIn('def allowed: .conclusion=="skipped"', permanent)
+        self.assertIn(
+            "{disallowed:[$terminal[]|select(allowed|not)]", permanent
+        )
+        self.assertIn("allowed:[$terminal[]|select(allowed)]}", permanent)
+        self.assertIn(
+            'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
+        )
+        self.assertIn(
+            'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
+        )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=2", permanent)
+        self.assertIn("length<=3", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
@@ -2923,8 +2932,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "failure_stage='permanent-producer-inventory'", 1
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
-        def assignment_filter(name: str) -> str:
-            marker = f'{name}="$(jq -c'
+        def inventory_filter() -> str:
+            marker = 'terminal_job_inventory="$(jq -c'
             start = permanent.index(marker) + len(marker)
             start = permanent.index("'\n", start) + 2
             end = permanent.index(
@@ -3031,14 +3040,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--arg",
                     "d",
                     helper_pattern,
-                    assignment_filter(name),
+                    inventory_filter(),
                 ],
                 input=source,
                 text=True,
                 capture_output=True,
                 check=True,
             )
-            return json.loads(result.stdout)
+            inventory = json.loads(result.stdout)
+            key = "disallowed" if name == "disallowed_terminal_jobs" else "allowed"
+            return inventory[key]
 
         self.assertEqual(
             [job["name"] for job in evaluate("disallowed_terminal_jobs")],
