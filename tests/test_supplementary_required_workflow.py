@@ -2158,10 +2158,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn('.name == "Verify current revision policy"', permanent)
+        self.assertIn("INLINE_POLICY_STEP: >-", workflow)
         self.assertIn(
-            '.name == "Verify current Copilot review and resolved findings"',
-            permanent,
+            "&& 'Verify evidence-bound ancestry backmerge'", workflow
         )
+        self.assertIn("&& 'Accept trusted automation exemption'", workflow)
+        self.assertIn(
+            "|| 'Verify current Copilot review and resolved findings'", workflow
+        )
+        self.assertIn('--arg policy_step "${INLINE_POLICY_STEP}"', permanent)
+        self.assertIn('.name == $policy_step', permanent)
         self.assertIn('.name == "Publish bound neutral result"', permanent)
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion!="success"', permanent)
@@ -2260,6 +2266,64 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotEqual(
             0, evaluate_helper_guard([parent_helper, current_helper])
         )
+        critical_filter = permanent.split(
+            'critical_steps="$(jq -c \\\n'
+            '                    --arg policy_step "${INLINE_POLICY_STEP}" \'',
+            1,
+        )[1].split(
+            '\n                    \' <<<"${evidence_jobs}")"', 1
+        )[0]
+
+        def selected_critical_steps(
+            policy_step: str, steps: list[dict[str, str]]
+        ) -> list[dict[str, str]]:
+            result = subprocess.run(
+                [jq, "-c", "--arg", "policy_step", policy_step, critical_filter],
+                input=json.dumps([{"steps": steps}]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return json.loads(result.stdout)
+
+        publish = {
+            "name": "Publish bound neutral result",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        for policy_step in (
+            "Verify current Copilot review and resolved findings",
+            "Verify evidence-bound ancestry backmerge",
+            "Accept trusted automation exemption",
+        ):
+            with self.subTest(inline_policy_step=policy_step):
+                selected = selected_critical_steps(
+                    policy_step,
+                    [
+                        {
+                            "name": policy_step,
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                        publish,
+                    ],
+                )
+                self.assertEqual([policy_step, publish["name"]], [
+                    step["name"] for step in selected
+                ])
+        mismatched = selected_critical_steps(
+            "Verify evidence-bound ancestry backmerge",
+            [
+                {
+                    "name": "Verify current Copilot review and resolved findings",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                publish,
+            ],
+        )
+        self.assertEqual([publish["name"]], [step["name"] for step in mismatched])
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]

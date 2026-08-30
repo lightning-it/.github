@@ -1132,6 +1132,26 @@ jobs:
         env:
           CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
           GH_TOKEN: ${{ github.token }}
+          INLINE_POLICY_STEP: >-
+            ${{
+              (
+                github.event.pull_request.user.login
+                  == 'lightning-it-release-automation[bot]'
+                || (
+                  github.event.pull_request.user.login
+                    == 'lightning-it-shared-assets-sync[bot]'
+                  && startsWith(
+                    github.event.pull_request.head.ref,
+                    'backmerge/'
+                  )
+                )
+              )
+              && 'Verify evidence-bound ancestry backmerge'
+              || github.event.pull_request.user.login
+                == 'lightning-it-shared-assets-sync[bot]'
+                && 'Accept trusted automation exemption'
+              || 'Verify current Copilot review and resolved findings'
+            }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
@@ -2398,10 +2418,11 @@ jobs:
                   break
                 fi
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
-                  critical_steps="$(jq -c '
+                  critical_steps="$(jq -c \
+                    --arg policy_step "${INLINE_POLICY_STEP}" '
                     [.[0].steps[] |
                       select(
-                        .name == "Verify current Copilot review and resolved findings"
+                        .name == $policy_step
                         or .name == "Publish bound neutral result") |
                       select(.status == "completed"
                         and .conclusion == "success")]
