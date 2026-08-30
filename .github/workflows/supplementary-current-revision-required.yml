@@ -1132,6 +1132,17 @@ jobs:
         env:
           CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
           GH_TOKEN: ${{ github.token }}
+          INLINE_POLICY_STEP: >-
+            ${{
+              steps.terminal-producer.outputs.producer_kind == 'copilot'
+              && 'Verify current Copilot review and resolved findings'
+              || steps.terminal-producer.outputs.producer_kind == 'managed-sync'
+              && 'Accept trusted automation exemption'
+              || steps.terminal-producer.outputs.producer_kind
+                == 'ancestry-backmerge'
+              && 'Verify evidence-bound ancestry backmerge'
+              || ''
+            }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
@@ -2334,6 +2345,7 @@ jobs:
               <<<"${producer}")"
             producer_evidence_ready=false
             if [ "${producer_run_attempt}" -eq 1 ]; then
+              test "$INLINE_POLICY_STEP" || { echo >&2 'No inline policy step'; exit 1; }
               for producer_observation in $(seq 1 60); do
                 producer="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
@@ -2383,8 +2395,7 @@ jobs:
                   def runnerless: has("runner_id") and .runner_id==null and .steps==[];
                   def allowed: .conclusion=="skipped" and
                     (.name=="Request Copilot review for current revision"
-                    or (.name=="Classify protected Release-App ancestry backmerge" and runnerless)
-                    or (.name=="Classify protected main trust-root handoff" and runnerless)
+                    or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
                     or ((.name|test($d)) and runnerless));
                   [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
                   {disallowed:[$terminal[]|select(allowed|not)],
@@ -2398,10 +2409,11 @@ jobs:
                   break
                 fi
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
-                  critical_steps="$(jq -c '
+                  critical_steps="$(jq -c \
+                    --arg policy_step "${INLINE_POLICY_STEP}" '
                     [.[0].steps[] |
                       select(
-                        .name == "Verify current Copilot review and resolved findings"
+                        .name == $policy_step
                         or .name == "Publish bound neutral result") |
                       select(.status == "completed"
                         and .conclusion == "success")]
