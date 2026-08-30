@@ -2210,7 +2210,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         jq = self._test_tool("jq")
         helper_pattern_match = re.search(
             r"\n\s+d='([^']+)'\n"
-            r'\s+disallowed_terminal_jobs="\$\(jq -c --arg d',
+            r'\s+terminal_job_inventory="\$\(jq -c --arg d',
             permanent,
         )
         self.assertIsNotNone(helper_pattern_match)
