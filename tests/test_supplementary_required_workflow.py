@@ -2160,11 +2160,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.name == "Verify current revision policy"', permanent)
         self.assertIn("INLINE_POLICY_STEP: >-", workflow)
         self.assertIn(
-            "&& 'Verify evidence-bound ancestry backmerge'", workflow
+            "steps.terminal-producer.outputs.producer_kind == 'copilot'",
+            workflow,
         )
-        self.assertIn("&& 'Accept trusted automation exemption'", workflow)
         self.assertIn(
-            "|| 'Verify current Copilot review and resolved findings'", workflow
+            "steps.terminal-producer.outputs.producer_kind == 'managed-sync'",
+            workflow,
+        )
+        self.assertIn(
+            "== 'ancestry-backmerge'", workflow
         )
         self.assertIn('--arg policy_step "${INLINE_POLICY_STEP}"', permanent)
         self.assertIn('.name == $policy_step', permanent)
@@ -2180,7 +2184,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name=="Request Copilot review for current revision"', permanent
         )
         self.assertIn(
-            '.name=="Classify protected main trust-root handoff"', permanent
+            "Release-App ancestry backmerge|main trust-root handoff", permanent
         )
         self.assertIn(
             "Diagnose Release-App reusable context and fail closed",

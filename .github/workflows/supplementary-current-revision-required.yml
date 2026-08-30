@@ -1134,23 +1134,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INLINE_POLICY_STEP: >-
             ${{
-              (
-                github.event.pull_request.user.login
-                  == 'lightning-it-release-automation[bot]'
-                || (
-                  github.event.pull_request.user.login
-                    == 'lightning-it-shared-assets-sync[bot]'
-                  && startsWith(
-                    github.event.pull_request.head.ref,
-                    'backmerge/'
-                  )
-                )
-              )
+              steps.terminal-producer.outputs.producer_kind == 'copilot'
+              && 'Verify current Copilot review and resolved findings'
+              || steps.terminal-producer.outputs.producer_kind == 'managed-sync'
+              && 'Accept trusted automation exemption'
+              || steps.terminal-producer.outputs.producer_kind
+                == 'ancestry-backmerge'
               && 'Verify evidence-bound ancestry backmerge'
-              || github.event.pull_request.user.login
-                == 'lightning-it-shared-assets-sync[bot]'
-                && 'Accept trusted automation exemption'
-              || 'Verify current Copilot review and resolved findings'
+              || ''
             }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
@@ -2403,8 +2394,7 @@ jobs:
                   def runnerless: has("runner_id") and .runner_id==null and .steps==[];
                   def allowed: .conclusion=="skipped" and
                     (.name=="Request Copilot review for current revision"
-                    or (.name=="Classify protected Release-App ancestry backmerge" and runnerless)
-                    or (.name=="Classify protected main trust-root handoff" and runnerless)
+                    or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
                     or ((.name|test($d)) and runnerless));
                   [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
                   {disallowed:[$terminal[]|select(allowed|not)],
