@@ -2170,9 +2170,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "== 'ancestry-backmerge'", workflow
         )
+        inline_policy_guard = 'test "$INLINE_POLICY_STEP" || {'
+        self.assertIn(inline_policy_guard, permanent)
+        self.assertIn(
+            "No inline policy step",
+            permanent,
+        )
         self.assertIn('--arg policy_step "${INLINE_POLICY_STEP}"', permanent)
         self.assertIn('.name == $policy_step', permanent)
         self.assertIn('.name == "Publish bound neutral result"', permanent)
+        self.assertLess(
+            permanent.index(inline_policy_guard),
+            permanent.index('critical_steps="$(jq -c'),
+        )
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
         self.assertIn('and .conclusion!="success"', permanent)
         self.assertIn('terminal_job_inventory="$(jq -c', permanent)
@@ -2336,10 +2346,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
-        self.assertIn(
-            'if [ "${producer_run_attempt}" -eq 1 ]; then\n'
-            '              for producer_observation',
-            permanent,
+        producer_attempt_guard = (
+            'if [ "${producer_run_attempt}" -eq 1 ]; then'
+        )
+        self.assertIn(producer_attempt_guard, permanent)
+        self.assertLess(
+            permanent.index(producer_attempt_guard),
+            permanent.index("for producer_observation in $(seq 1 60)"),
         )
         self.assertNotIn(
             '&& [ "${producer_kind}" = copilot ]; then', permanent

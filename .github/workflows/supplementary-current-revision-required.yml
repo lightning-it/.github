@@ -2345,6 +2345,7 @@ jobs:
               <<<"${producer}")"
             producer_evidence_ready=false
             if [ "${producer_run_attempt}" -eq 1 ]; then
+              test "$INLINE_POLICY_STEP" || { echo >&2 'No inline policy step'; exit 1; }
               for producer_observation in $(seq 1 60); do
                 producer="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
