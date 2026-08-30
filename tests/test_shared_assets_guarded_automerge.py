@@ -2,11 +2,49 @@ from pathlib import Path
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / ".github/workflows/shared-assets-guarded-automerge.yml"
+def guarded_automerge_workflow() -> Path:
+    """Resolve the one workflow in source and distributed test layouts."""
+    test_root = Path(__file__).resolve().parents[1]
+    relative = Path(".github/workflows/shared-assets-guarded-automerge.yml")
+    candidates = (test_root / relative, test_root.parent / relative)
+    workflows = [
+        candidate
+        for candidate in candidates
+        if candidate.is_file() and not candidate.is_symlink()
+    ]
+    if len(workflows) != 1:
+        raise RuntimeError(
+            "expected exactly one regular shared-assets guarded-automerge workflow"
+        )
+    return workflows[0]
+
+
+WORKFLOW = guarded_automerge_workflow()
 
 
 class SharedAssetsGuardedAutomergeTests(unittest.TestCase):
+    def test_trust_decision_uses_rebound_live_draft_state(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        guard = workflow.index("- name: Verify automated sync PR identity")
+        revoke = workflow.index(
+            "- name: Revoke auto-merge for an untrusted state or event"
+        )
+        identity_guard = workflow[guard:revoke]
+
+        self.assertNotIn(
+            "PR_DRAFT: ${{ github.event.pull_request.draft }}", identity_guard
+        )
+        self.assertNotIn('[ "$PR_DRAFT" != "false" ]', identity_guard)
+        live_read = identity_guard.index(
+            'live_pr="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")"'
+        )
+        live_ready = identity_guard.index(
+            '(.state == "open") and (.draft == false)'
+        )
+        publish = identity_guard.index('echo "trusted=$trusted"')
+        self.assertLess(live_read, live_ready)
+        self.assertLess(live_ready, publish)
+
     def test_policy_token_is_minted_only_after_exact_identity_validation(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         guard = workflow.index("- name: Verify automated sync PR identity")
