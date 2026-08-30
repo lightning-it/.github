@@ -2402,7 +2402,7 @@ jobs:
                         and .conclusion == "success") |
                       select((.steps | type) == "array")]
                   ' <<<"${producer_jobs_pages}")"
-                d='^Request protected verifier re-evaluation / (Diagnose Release-App reusable context and fail closed|Re-run the one protected verifier attempt)$'
+                d='^Request protected verifier re-evaluation( / (Diagnose Release-App reusable context and fail closed|Re-run the one protected verifier attempt))?$'
                 terminal_job_inventory="$(jq -c --arg d "${d}" '
                   def runnerless: has("runner_id") and .runner_id==null and .steps==[];
                   def allowed: .conclusion=="skipped" and

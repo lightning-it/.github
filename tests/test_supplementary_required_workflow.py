@@ -2235,6 +2235,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Request protected verifier re-evaluation / "
             "Re-run the one protected verifier attempt"
         )
+        parent_helper = "Request protected verifier re-evaluation"
+        ancestry_classifier = (
+            "Classify protected Release-App ancestry backmerge"
+        )
+        self.assertEqual(
+            0,
+            evaluate_helper_guard(
+                [review_request, ancestry_classifier, parent_helper]
+            ),
+        )
         self.assertEqual(
             0, evaluate_helper_guard([review_request, current_helper])
         )
@@ -2243,6 +2253,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotEqual(
             0, evaluate_helper_guard([legacy_helper, current_helper])
+        )
+        self.assertNotEqual(
+            0, evaluate_helper_guard([parent_helper, current_helper])
         )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
@@ -2960,6 +2973,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "steps": [],
             },
             {
+                "name": "Request protected verifier re-evaluation",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": (
                     "Request protected verifier re-evaluation / "
                     "Diagnose Release-App reusable context and fail closed"
@@ -3004,6 +3024,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "steps": [],
             },
             {
+                "name": "Request protected verifier re-evaluation",
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
                 "name": "cancelled job",
                 "status": "completed",
                 "conclusion": "cancelled",
@@ -3027,9 +3053,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source = json.dumps([{"jobs": jobs}])
         jq = self._test_tool("jq")
         helper_pattern = (
-            "^Request protected verifier re-evaluation / "
+            "^Request protected verifier re-evaluation( / "
             "(Diagnose Release-App reusable context and fail closed|"
-            "Re-run the one protected verifier attempt)$"
+            "Re-run the one protected verifier attempt))?$"
         )
 
         def evaluate(name: str) -> list[dict[str, object]]:
@@ -3059,6 +3085,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt",
                 "Classify protected Release-App ancestry backmerge",
+                "Request protected verifier re-evaluation",
                 "cancelled job",
                 "timed out job",
                 "unexpected skipped job",
@@ -3069,6 +3096,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [
                 "Request Copilot review for current revision",
                 "Classify protected Release-App ancestry backmerge",
+                "Request protected verifier re-evaluation",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
@@ -3079,8 +3107,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
         ancestry_classifier = allowed[1]
-        release_helper = allowed[2]
-        current_helper = allowed[3]
+        parent_helper = allowed[2]
+        release_helper = allowed[3]
+        current_helper = allowed[4]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -3094,11 +3123,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "| length) <= 1) "
                 "or error(tojson)",
                 [
+                    [request, ancestry_classifier, parent_helper],
                     [request, ancestry_classifier, release_helper],
                     [request, ancestry_classifier, current_helper],
                 ],
                 [
                     allowed,
+                    [ancestry_classifier, parent_helper, current_helper],
                     [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
                 ],
