@@ -841,29 +841,9 @@ jobs:
               == 'lightning-it/shared-assets-lit'
           )
         env:
-          ALLOW_IN_PROGRESS_MANAGED_SYNC: >-
-            ${{
-              github.repository == 'lightning-it/.github'
-              && github.event.pull_request.user.login
-                == 'lightning-it-shared-assets-sync[bot]'
-              && github.event.pull_request.base.ref == 'develop'
-              && github.event.pull_request.head.repo.full_name
-                == github.repository
-              && (
-                startsWith(
-                  github.event.pull_request.head.ref,
-                  'chore/sync-repository-quality-.github-'
-                )
-                || startsWith(
-                  github.event.pull_request.head.ref,
-                  'chore/sync-shared-assets-lit-.github-'
-                )
-              )
-            }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          [[ "${ALLOW_IN_PROGRESS_MANAGED_SYNC}" =~ ^(true|false)$ ]]
           producer_kind=''
           producer_run_id=''
           for observation in $(seq 1 450); do
@@ -908,18 +888,15 @@ jobs:
             sleep 2
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          if [ "${producer_kind}" = copilot ] \
-            || [ "${producer_kind}" = release-app ] \
-            || [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" = managed-sync:true ]; then
+          if [[ "${producer_kind}" =~ ^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
               '.id == $run_id' <<<"${producer}" >/dev/null
             producer_status="$(jq -er \
               '.status | select(type == "string")' <<<"${producer}")"
-            # Copilot, Exact-Revision, and the narrowly bound same-repository
-            # .github managed-sync producers publish the exact successful
-            # neutral result before their verifier helper completes.
+            # Every recognized protected producer publishes the exact
+            # successful neutral result before its verifier helper completes.
             # Waiting for the whole producer here creates a circular wait:
             # that helper is itself waiting for this Required Workflow. The
             # permanent verifier below independently binds the producer, its
@@ -2356,8 +2333,7 @@ jobs:
               '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
               <<<"${producer}")"
             producer_evidence_ready=false
-            if [ "${producer_run_attempt}" -eq 1 ] \
-              && [ "${producer_kind}" = copilot ]; then
+            if [ "${producer_run_attempt}" -eq 1 ]; then
               for producer_observation in $(seq 1 60); do
                 producer="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
@@ -2408,6 +2384,7 @@ jobs:
                   def allowed: .conclusion=="skipped" and
                     (.name=="Request Copilot review for current revision"
                     or (.name=="Classify protected Release-App ancestry backmerge" and runnerless)
+                    or (.name=="Classify protected main trust-root handoff" and runnerless)
                     or ((.name|test($d)) and runnerless));
                   [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
                   {disallowed:[$terminal[]|select(allowed|not)],

@@ -155,13 +155,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             managed_sync,
         )
         required_workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", required_workflow)
+        self.assertNotIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", required_workflow)
         self.assertNotIn(
             'test "${REPOSITORY}" != \'lightning-it/.github\'',
             required_workflow,
         )
         self.assertIn(
-            "chore/sync-repository-quality-.github-", required_workflow
+            "^(copilot|release-app|managed-sync|ancestry-backmerge)$",
+            required_workflow,
         )
         self.assertIn(
             'test "${author}" != \'lightning-it-shared-assets-sync[bot]\'',
@@ -2109,10 +2110,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             terminal_wait.count('producer_kind="${BASH_REMATCH[1]}"'),
         )
         nonterminal_handoff_guard = (
-            'if [ "${producer_kind}" = copilot ] \\\n'
-            '            || [ "${producer_kind}" = release-app ] \\\n'
-            '            || [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" '
-            '= managed-sync:true ]; then'
+            'if [[ "${producer_kind}" =~ '
+            '^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then'
         )
         self.assertIn(nonterminal_handoff_guard, terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
@@ -2123,7 +2122,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ].split("          else\n", 1)[0]
         self.assertNotIn("for observation in $(seq 1 120)", nonterminal_handoff)
         self.assertIn(
-            "Copilot, Exact-Revision, and the narrowly bound same-repository",
+            "Every recognized protected producer publishes the exact",
             nonterminal_handoff,
         )
         self.assertIn(
@@ -2173,6 +2172,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '.name=="Request Copilot review for current revision"', permanent
+        )
+        self.assertIn(
+            '.name=="Classify protected main trust-root handoff"', permanent
         )
         self.assertIn(
             "Diagnose Release-App reusable context and fail closed",
@@ -2239,10 +2241,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ancestry_classifier = (
             "Classify protected Release-App ancestry backmerge"
         )
+        main_classifier = "Classify protected main trust-root handoff"
         self.assertEqual(
             0,
             evaluate_helper_guard(
-                [review_request, ancestry_classifier, parent_helper]
+                [ancestry_classifier, main_classifier, parent_helper]
             ),
         )
         self.assertEqual(
@@ -2265,6 +2268,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
+        self.assertIn(
+            'if [ "${producer_run_attempt}" -eq 1 ]; then\n'
+            '              for producer_observation',
+            permanent,
+        )
+        self.assertNotIn(
+            '&& [ "${producer_kind}" = copilot ]; then', permanent
+        )
         self.assertIn(
             '--argjson evidence_ready "${producer_evidence_ready}"', permanent
         )
@@ -2858,21 +2869,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             readiness_header,
         )
         self.assertIn("steps.live-pr.outputs.ready == 'true'", terminal_header)
-        for binding in (
-            "ALLOW_IN_PROGRESS_MANAGED_SYNC: >-",
-            "github.repository == 'lightning-it/.github'",
-            "== 'lightning-it-shared-assets-sync[bot]'",
-            "github.event.pull_request.base.ref == 'develop'",
-            "github.event.pull_request.head.repo.full_name",
-            "== github.repository",
-            "'chore/sync-repository-quality-.github-'",
-            "'chore/sync-shared-assets-lit-.github-'",
-            '[[ "${ALLOW_IN_PROGRESS_MANAGED_SYNC}" =~ ^(true|false)$ ]]',
-            '|| [ "${producer_kind}:${ALLOW_IN_PROGRESS_MANAGED_SYNC}" '
-            '= managed-sync:true ]; then',
-        ):
-            with self.subTest(managed_sync_in_progress_handoff=binding):
-                self.assertIn(binding, terminal)
+        self.assertNotIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", terminal)
+        self.assertIn(
+            'if [[ "${producer_kind}" =~ '
+            '^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then',
+            terminal,
+        )
+        self.assertIn(
+            "Every recognized protected producer publishes the exact",
+            terminal,
+        )
         self.assertNotIn(
             "lightning-it-shared-assets-sync[bot]", terminal_header
         )
@@ -2973,6 +2979,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "steps": [],
             },
             {
+                "name": "Classify protected main trust-root handoff",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": "Request protected verifier re-evaluation",
                 "status": "completed",
                 "conclusion": "skipped",
@@ -3019,6 +3032,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             },
             {
                 "name": "Classify protected Release-App ancestry backmerge",
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": "Classify protected main trust-root handoff",
                 "status": "completed",
                 "conclusion": "skipped",
                 "steps": [],
@@ -3085,6 +3104,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt",
                 "Classify protected Release-App ancestry backmerge",
+                "Classify protected main trust-root handoff",
                 "Request protected verifier re-evaluation",
                 "cancelled job",
                 "timed out job",
@@ -3096,6 +3116,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [
                 "Request Copilot review for current revision",
                 "Classify protected Release-App ancestry backmerge",
+                "Classify protected main trust-root handoff",
                 "Request protected verifier re-evaluation",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
@@ -3107,9 +3128,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
         ancestry_classifier = allowed[1]
-        parent_helper = allowed[2]
-        release_helper = allowed[3]
-        current_helper = allowed[4]
+        main_classifier = allowed[2]
+        parent_helper = allowed[3]
+        release_helper = allowed[4]
+        current_helper = allowed[5]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -3124,12 +3146,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "or error(tojson)",
                 [
                     [request, ancestry_classifier, parent_helper],
-                    [request, ancestry_classifier, release_helper],
-                    [request, ancestry_classifier, current_helper],
+                    [request, main_classifier, release_helper],
+                    [ancestry_classifier, main_classifier, current_helper],
                 ],
                 [
                     allowed,
-                    [ancestry_classifier, parent_helper, current_helper],
+                    [main_classifier, parent_helper, current_helper],
                     [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
                 ],
