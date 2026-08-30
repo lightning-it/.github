@@ -2944,6 +2944,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "conclusion": "skipped",
             },
             {
+                "name": "Classify protected Release-App ancestry backmerge",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": (
                     "Request protected verifier re-evaluation / "
                     "Diagnose Release-App reusable context and fail closed"
@@ -2977,6 +2984,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "Request protected verifier re-evaluation / "
                     "Re-run the one protected verifier attempt"
                 ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": "Classify protected Release-App ancestry backmerge",
                 "status": "completed",
                 "conclusion": "skipped",
                 "steps": [],
@@ -3034,6 +3047,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt",
+                "Classify protected Release-App ancestry backmerge",
                 "cancelled job",
                 "timed out job",
                 "unexpected skipped job",
@@ -3043,6 +3057,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
             [
                 "Request Copilot review for current revision",
+                "Classify protected Release-App ancestry backmerge",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
@@ -3052,8 +3067,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
-        release_helper = allowed[1]
-        current_helper = allowed[2]
+        ancestry_classifier = allowed[1]
+        release_helper = allowed[2]
+        current_helper = allowed[3]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -3061,14 +3077,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 [evaluate("disallowed_terminal_jobs")],
             ),
             (
-                "(length <= 2 "
+                "(length <= 3 "
                 "and (map(.name) | unique | length) == length "
                 "and ([.[].name | select(test($d))] "
                 "| length) <= 1) "
                 "or error(tojson)",
-                [[request, release_helper], [request, current_helper]],
+                [
+                    [request, ancestry_classifier, release_helper],
+                    [request, ancestry_classifier, current_helper],
+                ],
                 [
                     allowed,
+                    [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
                 ],
             ),
