@@ -44,6 +44,11 @@
 - A proven ancestry-only main-to-develop backmerge uses the deterministic
   evidence-bound exemption and performs zero AI calls. Unknown automation
   identities fail closed.
+- Current-revision v5/v6 producers publish their exact neutral evidence before
+  their reusable re-evaluator finishes. The permanent verifier accepts an
+  in-progress producer only after binding its exact run ID, successful evidence
+  job, and both critical evidence steps. Only the historical v4 Exact-Revision
+  producer uses the detached terminal handoff.
 - The only neutral merge-gate result is `Current revision review`. Missing,
   stale, ambiguous, or unresolved review evidence blocks the merge.
 
