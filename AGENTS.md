@@ -44,15 +44,28 @@
 - A proven ancestry-only main-to-develop backmerge uses the deterministic
   evidence-bound exemption and performs zero AI calls. Unknown automation
   identities fail closed.
-- Current-revision v5/v6 producers publish their exact neutral evidence before
-  their reusable re-evaluator finishes. The permanent verifier accepts an
-  in-progress producer only after binding its exact run ID, successful evidence
-  job, and both critical evidence steps. Only the historical v4 Exact-Revision
-  producer uses the detached terminal handoff.
 - The only neutral merge-gate result is `Current revision review`. Missing,
   stale, ambiguous, or unresolved review evidence blocks the merge.
 
 <!-- LIT REP-60 review governance: end -->
+
+<!-- LIT REP-60 evidence lifecycle: start -->
+### REP-60 evidence lifecycle (mandatory)
+
+- Every pull request into `develop` retains its exact-final-head native GitHub
+  CI, required-check, and review history as the authoritative evidence for
+  acceptance into `develop`.
+- A pull request into `develop` MUST NOT create or retain an additional durable
+  release-evidence package, duplicate WORM artifact, or second AI-review
+  evidence outside that native GitHub history.
+- Only the protected `develop` to `main` promotion creates exactly one durable,
+  complete release-evidence package. It binds the full integrated promotion
+  diff, base, head, merge base, integration tree, policy, reviewer result, and
+  all release and audit checks.
+- Agents, workflows, and repository-local rules MUST NOT duplicate that durable
+  evidence per `develop` pull request or invoke local AI to create evidence.
+  Repository-local rules may only make this lifecycle stricter.
+<!-- LIT REP-60 evidence lifecycle: end -->
 
 <!-- LIT Devtools container governance: start -->
 

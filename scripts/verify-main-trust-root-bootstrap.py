@@ -32,9 +32,15 @@ CONTROLLER_SEED_FILE = ".github/workflows/copilot-review.yml"
 CONTROLLER_SEED_BLOB = "43db448f711cf870657fd449bf8d6ab18859e4cf"
 CONTROLLER_SEED_SOURCE = "88d43d3484c4105048a8295c9ae3b6823cf1ce21"
 CONTROLLER_SEED_REVIEW_ID = 5038006732
+CONTROLLER_SEED_REVIEW_NODE_ID = "PRR_kwDOTjdSQc8AAAABLEnhzA"
 CONTROLLER_SEED_REVIEW_SUBMITTED_AT = "2026-08-27T06:51:54Z"
 CONTROLLER_SEED_REQUEST_EVENT_ID = 30087018334
 CONTROLLER_SEED_REQUESTED_AT = "2026-08-27T06:47:49Z"
+CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID = 99832444495
+CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID = 33500514644
+CONTROLLER_SEED_EMPTY_LABELS_SHA256 = (
+    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+)
 EXPECTED_TITLE = "fix(rep60): bootstrap protected main review trust root"
 EXPECTED_HEAD_REF = re.compile(
     r"^fix/rep60-main-trust-root-(?:successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$"
@@ -452,6 +458,11 @@ def verify_controller_seed(
     )
     require(develop_branch.get("name") == "develop", "develop branch name changed")
     require(develop_branch.get("protected") is True, "develop branch is not protected")
+    develop_head_sha = require_string(
+        require_dict(develop_branch.get("commit"), "develop commit").get("sha"),
+        "develop head SHA",
+    )
+    require(SHA_RE.fullmatch(develop_head_sha) is not None, "develop head SHA is invalid")
 
     head_commit = require_dict(api.target(f"repos/{repository}/commits/{head}"), "head commit")
     require(head_commit.get("sha") == head, "head commit changed")
@@ -645,6 +656,11 @@ def verify_controller_seed(
     require(len(copilot_reviews) == 1, "controller seed must contain one Copilot review")
     review = require_dict(copilot_reviews[0], "Copilot review")
     require(review.get("id") == CONTROLLER_SEED_REVIEW_ID, "Copilot review ID changed")
+    review_node_id = require_string(review.get("node_id"), "Copilot review node ID")
+    require(
+        review_node_id == CONTROLLER_SEED_REVIEW_NODE_ID,
+        "Copilot review node ID changed",
+    )
     review_user = require_dict(review.get("user"), "Copilot review user")
     require(review_user.get("login") == "copilot-pull-request-reviewer[bot]", "Copilot review login is invalid")
     require(review_user.get("type") == "Bot", "Copilot review user type is invalid")
@@ -714,6 +730,329 @@ def verify_controller_seed(
             "review thread comment pagination is incomplete",
         )
 
+    current_revision_checks = flatten_object_pages(
+        api.target_pages(
+            f"repos/{repository}/commits/{head}/check-runs?"
+            "check_name=Current%20revision%20review&filter=all&per_page=100"
+        ),
+        "check_runs",
+        "current-revision checks",
+    )
+    require(
+        len(current_revision_checks) == 1,
+        "controller seed must contain one current-revision check",
+    )
+    current_revision_check = require_dict(
+        current_revision_checks[0],
+        "current-revision check",
+    )
+    current_revision_check_id = require_positive_int(
+        current_revision_check.get("id"),
+        "current-revision check id",
+    )
+    require(
+        current_revision_check_id == CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID,
+        "current-revision check ID changed",
+    )
+    require(
+        current_revision_check.get("name") == "Current revision review",
+        "current-revision check name changed",
+    )
+    require(
+        current_revision_check.get("head_sha") == head,
+        "current-revision check head changed",
+    )
+    require(
+        current_revision_check.get("status") == "completed"
+        and current_revision_check.get("conclusion") == "success",
+        "current-revision check is not successful",
+    )
+    current_revision_app = require_dict(
+        current_revision_check.get("app"),
+        "current-revision check app",
+    )
+    require(
+        current_revision_app.get("id") == 15368
+        and current_revision_app.get("slug") == "github-actions",
+        "current-revision check app is invalid",
+    )
+    current_revision_external_id = require_string(
+        current_revision_check.get("external_id"),
+        "current-revision external ID",
+    )
+    external_match = re.fullmatch(
+        rf"mlx90-current-revision:copilot:v6:{number}:"
+        rf"([1-9][0-9]*):{re.escape(base)}:{re.escape(head)}",
+        current_revision_external_id,
+    )
+    require(external_match is not None, "current-revision external ID is invalid")
+    producer_run_id = require_positive_int(
+        int(external_match.group(1)) if external_match else None,
+        "current-revision producer run id",
+    )
+    require(
+        producer_run_id == CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID,
+        "current-revision producer run ID changed",
+    )
+    require(
+        current_revision_check.get("details_url")
+        == f"https://github.com/{repository}/runs/{current_revision_check_id}",
+        "current-revision check URL changed",
+    )
+    current_revision_output = require_dict(
+        current_revision_check.get("output"),
+        "current-revision check output",
+    )
+    require(
+        current_revision_output.get("title") == "Current revision review passed",
+        "current-revision check title changed",
+    )
+    current_revision_summary_text = require_string(
+        current_revision_output.get("summary"),
+        "current-revision check summary",
+    )
+    try:
+        current_revision_summary = require_dict(
+            json.loads(current_revision_summary_text),
+            "current-revision summary",
+        )
+    except json.JSONDecodeError as error:
+        raise VerificationError("current-revision summary is not valid JSON") from error
+    require(
+        set(current_revision_summary)
+        == {
+            "schema",
+            "base_sha",
+            "head_sha",
+            "head_repository",
+            "controller_sha",
+            "controller_ref",
+            "pull_request_number",
+            "producer_run_id",
+            "pull_request_last_edited_at",
+            "pull_request_labels_sha256",
+            "review_id",
+            "review_path",
+            "run_url",
+        },
+        "current-revision summary keys changed",
+    )
+    require(
+        current_revision_summary.get("schema") == 4,
+        "current-revision summary schema changed",
+    )
+    require(
+        current_revision_summary.get("base_sha") == base
+        and current_revision_summary.get("head_sha") == head
+        and current_revision_summary.get("head_repository") == repository,
+        "current-revision summary revision binding changed",
+    )
+    require(
+        current_revision_summary.get("pull_request_number") == number
+        and current_revision_summary.get("producer_run_id") == producer_run_id,
+        "current-revision summary producer binding changed",
+    )
+    require(
+        current_revision_summary.get("pull_request_last_edited_at") is None
+        and current_revision_summary.get("pull_request_labels_sha256")
+        == CONTROLLER_SEED_EMPTY_LABELS_SHA256,
+        "current-revision summary metadata binding changed",
+    )
+    require(
+        current_revision_summary.get("review_id") == review_node_id
+        and current_revision_summary.get("review_path")
+        == "applicable Copilot or governed automation exemption",
+        "current-revision summary review binding changed",
+    )
+    producer_run_url = f"https://github.com/{repository}/actions/runs/{producer_run_id}"
+    require(
+        current_revision_summary.get("run_url") == producer_run_url,
+        "current-revision summary run URL changed",
+    )
+    controller_sha = require_string(
+        current_revision_summary.get("controller_sha"),
+        "current-revision controller SHA",
+    )
+    require(
+        SHA_RE.fullmatch(controller_sha) is not None
+        and current_revision_summary.get("controller_ref") == "develop",
+        "current-revision controller binding is invalid",
+    )
+    controller_ancestry = require_dict(
+        api.target(f"repos/{repository}/compare/{controller_sha}...{develop_head_sha}"),
+        "controller ancestry comparison",
+    )
+    controller_status = require_string(
+        controller_ancestry.get("status"),
+        "controller ancestry status",
+    )
+    controller_ahead_by = require_nonnegative_int(
+        controller_ancestry.get("ahead_by"),
+        "controller ancestry ahead_by",
+    )
+    controller_behind_by = require_nonnegative_int(
+        controller_ancestry.get("behind_by"),
+        "controller ancestry behind_by",
+    )
+    require(
+        require_dict(
+            controller_ancestry.get("merge_base_commit"),
+            "controller ancestry merge base",
+        ).get("sha")
+        == controller_sha
+        and controller_behind_by == 0
+        and (
+            (
+                controller_status == "identical"
+                and controller_sha == develop_head_sha
+                and controller_ahead_by == 0
+            )
+            or (
+                controller_status == "ahead"
+                and controller_sha != develop_head_sha
+                and controller_ahead_by > 0
+            )
+        ),
+        "current-revision controller is not protected develop ancestry",
+    )
+
+    producer = require_dict(
+        api.target(f"repos/{repository}/actions/runs/{producer_run_id}"),
+        "current-revision producer",
+    )
+    require(
+        producer.get("id") == producer_run_id
+        and producer.get("event") == "pull_request_target"
+        and producer.get("path") == ".github/workflows/copilot-review.yml"
+        and producer.get("name") == "Current revision review gate"
+        and producer.get("head_branch") == CONTROLLER_SEED_HEAD_REF
+        and producer.get("head_sha") == head
+        and producer.get("run_attempt") == 1
+        and producer.get("status") == "completed"
+        and producer.get("conclusion") == "success"
+        and producer.get("display_title") == CONTROLLER_SEED_TITLE
+        and require_dict(producer.get("actor"), "producer actor").get("login")
+        == "litroc"
+        and require_dict(
+            producer.get("triggering_actor"),
+            "producer triggering actor",
+        ).get("login")
+        == "litroc"
+        and require_dict(producer.get("repository"), "producer repository").get(
+            "full_name"
+        )
+        == repository
+        and require_dict(
+            producer.get("head_repository"),
+            "producer head repository",
+        ).get("full_name")
+        == repository
+        and exact_run_pull_binding(
+            producer,
+            repository,
+            number,
+            base,
+            head,
+            CONTROLLER_SEED_HEAD_REF,
+        ),
+        "current-revision producer binding changed",
+    )
+    workflow_id = require_positive_int(
+        producer.get("workflow_id"),
+        "current-revision producer workflow id",
+    )
+    require(
+        producer.get("workflow_url")
+        == f"https://api.github.com/repos/{repository}/actions/workflows/{workflow_id}"
+        and producer.get("html_url") == producer_run_url,
+        "current-revision producer URL binding changed",
+    )
+    producer_started = parse_timestamp(
+        producer.get("created_at"),
+        "current-revision producer created timestamp",
+    )
+    producer_finished = parse_timestamp(
+        producer.get("updated_at"),
+        "current-revision producer updated timestamp",
+    )
+    require(
+        producer_started <= producer_finished,
+        "current-revision producer timestamps are reversed",
+    )
+    producer_jobs = flatten_object_pages(
+        api.target_pages(
+            f"repos/{repository}/actions/runs/{producer_run_id}/jobs?filter=all&per_page=100"
+        ),
+        "jobs",
+        "current-revision producer jobs",
+    )
+    expected_job_conclusions = {
+        "Classify protected main trust-root handoff": "success",
+        "Verify current revision policy": "success",
+        "Request Copilot review for current revision": "skipped",
+        "Request protected verifier re-evaluation / Re-run the one protected verifier attempt": "skipped",
+    }
+    require(
+        len(producer_jobs) == len(expected_job_conclusions),
+        "current-revision producer job count changed",
+    )
+    jobs_by_name: dict[str, dict[str, Any]] = {}
+    for raw_job in producer_jobs:
+        job = require_dict(raw_job, "current-revision producer job")
+        job_name = require_string(job.get("name"), "producer job name")
+        require(job_name not in jobs_by_name, "duplicate current-revision producer job")
+        require(
+            job_name in expected_job_conclusions
+            and job.get("run_id") == producer_run_id
+            and job.get("run_attempt") == 1
+            and job.get("head_sha") == head
+            and job.get("status") == "completed"
+            and job.get("conclusion") == expected_job_conclusions[job_name],
+            "current-revision producer job binding changed",
+        )
+        jobs_by_name[job_name] = job
+    classifier_steps = require_list(
+        jobs_by_name["Classify protected main trust-root handoff"].get("steps"),
+        "controller classification steps",
+    )
+    require(
+        len(
+            [
+                step
+                for step in classifier_steps
+                if isinstance(step, dict)
+                and step.get("name")
+                == "Verify protected Required-Workflow handoff provenance"
+                and step.get("status") == "completed"
+                and step.get("conclusion") == "success"
+            ]
+        )
+        == 1,
+        "controller classification evidence is missing",
+    )
+    verifier_steps = require_list(
+        jobs_by_name["Verify current revision policy"].get("steps"),
+        "current-revision verifier steps",
+    )
+    for expected_step in (
+        "Verify current Copilot review and resolved findings",
+        "Publish bound neutral result",
+    ):
+        require(
+            len(
+                [
+                    step
+                    for step in verifier_steps
+                    if isinstance(step, dict)
+                    and step.get("name") == expected_step
+                    and step.get("status") == "completed"
+                    and step.get("conclusion") == "success"
+                ]
+            )
+            == 1,
+            f"current-revision producer step is missing: {expected_step}",
+        )
+
     final_pull = require_dict(api.target(f"repos/{repository}/pulls/{number}"), "final pull request")
     exact_controller_seed_pull_binding(
         final_pull,
@@ -740,14 +1079,18 @@ def verify_controller_seed(
         "base_sha": base,
         "candidate_tree_sha": head_tree_sha,
         "controller_blob_sha": CONTROLLER_SEED_BLOB,
+        "current_revision_check_id": current_revision_check_id,
+        "current_revision_producer_run_id": producer_run_id,
         "head_sha": head,
         "pull_request_number": number,
         "repository": repository,
         "review_id": CONTROLLER_SEED_REVIEW_ID,
-        "review_path": "immutable protected-source controller seed with exact Copilot review",
+        "review_path": (
+            "protected controller seed with exact Copilot and current-revision evidence"
+        ),
         "review_request_event_id": CONTROLLER_SEED_REQUEST_EVENT_ID,
         "review_submitted_at": CONTROLLER_SEED_REVIEW_SUBMITTED_AT,
-        "schema": "rep60-main-controller-seed/v1",
+        "schema": "rep60-main-controller-seed/v2",
         "source_repository": SOURCE_REPOSITORY,
         "source_sha": source_sha,
         "source_tree_sha": source_tree_sha,

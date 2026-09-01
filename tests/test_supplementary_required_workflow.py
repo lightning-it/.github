@@ -1929,10 +1929,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("verify-main-trust-root-bootstrap.py", seed)
         self.assertEqual(2, seed.count("--controller-seed"))
-        self.assertIn("rep60-main-controller-seed:v1:", seed)
-        self.assertIn('"rep60-main-controller-seed/v1"', seed)
+        self.assertIn('"rep60-main-controller-seed/v2"', seed)
         self.assertIn(
-            "immutable protected-source controller seed with exact Copilot review",
+            "protected controller seed with exact Copilot and current-revision evidence",
             seed,
         )
         self.assertIn("main-controller-seed-final-rebind", seed)
@@ -1944,9 +1943,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("GH_TOKEN=\"${CONTROLLER_GH_TOKEN}\" gh api", seed)
         self.assertIn('test -n "${SOURCE_GH_TOKEN}"', seed)
         self.assertIn("git hash-object protected-controller-seed/verify.py", seed)
-        self.assertIn("-f name='Current revision review'", seed)
-        self.assertIn(".app.id == 15368", seed)
-        self.assertIn('.app.slug == "github-actions"', seed)
+        self.assertIn(".current_revision_check_id", seed)
+        self.assertIn(".current_revision_producer_run_id", seed)
+        self.assertNotIn("-f name='Current revision review'", seed)
+        self.assertNotIn('"repos/${REPOSITORY}/check-runs"', seed)
+        self.assertNotIn("controller_seed_checks", seed)
         self.assertNotIn("temporary", seed)
         self.assertNotIn("openai/codex-action@", seed)
         self.assertNotRegex(seed, r'\[ "\$\{PR_NUMBER\}" = [0-9]+ \]')
