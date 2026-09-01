@@ -1408,7 +1408,7 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
             job
             for job in jobs
             if isinstance(job, dict)
-            and job.get("name") == "Successful Copilot review"
+            and job.get("name") == "Verify current revision policy"
             and job.get("run_attempt") == 1
             and job.get("status") == "completed"
             and job.get("conclusion") == "success"
