@@ -3535,6 +3535,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("for _observation in $(seq 1 300)", wait)
         self.assertIn("sleep 5", wait)
+        self.assertIn("expected_head_ref=''", wait)
+        self.assertIn('if [ -z "${expected_head_ref}" ]', wait)
+        for bounded_read in (
+            'if ! expected_head_ref="$(gh api',
+            'if ! pr="$(gh api',
+            'if ! review_pages="$(gh api --paginate --slurp',
+            'if ! run_pages="$(gh api --paginate --slurp',
+            'if ! jobs_pages="$(gh api --paginate --slurp',
+        ):
+            self.assertIn(bounded_read, wait)
+        self.assertIn("read_failed=false", wait)
+        self.assertIn("read_failed=true", wait)
+        self.assertIn('if [ "${read_failed}" = true ]', wait)
+        self.assertIn("retrying within the bounded window", wait)
         self.assertIn(".draft | type", wait)
         self.assertIn('producer_event="pull_request_target"', wait)
         self.assertIn('producer_name="Current revision review gate"', wait)

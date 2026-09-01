@@ -202,11 +202,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          expected_head_ref="$(gh api \
-            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.ref)"
-          [[ "${expected_head_ref}" =~ ^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$ ]]
+          expected_head_ref=''
           for _observation in $(seq 1 300); do
-            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+            if [ -z "${expected_head_ref}" ]; then
+              if ! expected_head_ref="$(gh api \
+                  "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.ref)"; then
+                echo 'Transient bootstrap PR-ref read failure; retrying within the bounded window.' >&2
+                sleep 5
+                continue
+              fi
+              [[ "${expected_head_ref}" =~ ^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$ ]]
+            fi
+            if ! pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"; then
+              echo 'Transient bootstrap PR read failure; retrying within the bounded window.' >&2
+              sleep 5
+              continue
+            fi
             jq -e \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
@@ -241,8 +252,12 @@ jobs:
             producer_event="pull_request_target"
             producer_name="Current revision review gate"
 
-            review_pages="$(gh api --paginate --slurp \
-              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+            if ! review_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"; then
+              echo 'Transient bootstrap review read failure; retrying within the bounded window.' >&2
+              sleep 5
+              continue
+            fi
             reviews="$(jq -c \
               --arg head "${EVENT_HEAD}" '
                 [add[]? |
@@ -255,8 +270,12 @@ jobs:
               exit 1
             fi
 
-            run_pages="$(gh api --paginate --slurp \
-              "repos/${REPOSITORY}/actions/runs?event=${producer_event}&head_sha=${EVENT_HEAD}&per_page=100")"
+            if ! run_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs?event=${producer_event}&head_sha=${EVENT_HEAD}&per_page=100")"; then
+              echo 'Transient bootstrap run read failure; retrying within the bounded window.' >&2
+              sleep 5
+              continue
+            fi
             matching_runs="$(jq -c \
               --arg base "${EVENT_BASE}" \
               --arg event "${producer_event}" \
@@ -284,11 +303,15 @@ jobs:
                   select(.pull_requests[0].head.sha == $head)]
               ' <<<"${run_pages}")"
             eligible_producers=0
+            read_failed=false
             for producer_id in $(jq -r '.[].id' <<<"${matching_runs}"); do
               producer="$(jq -ce --argjson id "${producer_id}" \
                 '.[] | select(.id == $id)' <<<"${matching_runs}")"
-              jobs_pages="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/actions/runs/${producer_id}/jobs?filter=all&per_page=100")"
+              if ! jobs_pages="$(gh api --paginate --slurp \
+                  "repos/${REPOSITORY}/actions/runs/${producer_id}/jobs?filter=all&per_page=100")"; then
+                read_failed=true
+                break
+              fi
               request_count="$(jq \
                 --arg head "${EVENT_HEAD}" \
                 --argjson run_id "${producer_id}" '
@@ -336,6 +359,11 @@ jobs:
                 exit 1
               fi
             done
+            if [ "${read_failed}" = true ]; then
+              echo 'Transient bootstrap job read failure; retrying within the bounded window.' >&2
+              sleep 5
+              continue
+            fi
             if [ "${eligible_producers}" -gt 1 ]; then
               echo 'Multiple successful local Copilot producer ledgers exist for the bootstrap head.' >&2
               exit 1
