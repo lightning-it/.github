@@ -986,9 +986,8 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             any("recursive=1" in endpoint for endpoint in api.source_endpoints)
         )
 
-    def test_pre_seed_pull_request_producer_is_rejected(self) -> None:
+    def test_pre_seed_producer_name_is_rejected(self) -> None:
         api = FakeAPI()
-        api.run["event"] = "pull_request"
         api.run["name"] = "Copilot review gate"
         with self.assertRaisesRegex(
             MODULE.VerificationError,
