@@ -202,23 +202,58 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          bootstrap_api_read() {
+            local error_file error_text response status
+            error_file="$(mktemp "${RUNNER_TEMP}/bootstrap-gh-api-read.XXXXXX")"
+            chmod 0600 "${error_file}"
+            if response="$(gh api "$@" 2>"${error_file}")"; then
+              rm -f "${error_file}"
+              printf '%s' "${response}"
+              return 0
+            else
+              status="$?"
+            fi
+            error_text="$(<"${error_file}")"
+            rm -f "${error_file}"
+            printf '%s\n' "${error_text}" >&2
+            if grep -Eqi \
+                '\(HTTP (408|429|5[0-9][0-9])\)|timed? out|timeout|connection (reset|refused|closed)|TLS handshake timeout|context deadline exceeded|temporary failure|unexpected EOF|broken pipe' \
+                <<<"${error_text}"; then
+              return 75
+            fi
+            echo 'Terminal bootstrap API read failure.' >&2
+            return "${status}"
+          }
           expected_head_ref=''
           for _observation in $(seq 1 300); do
             if [ -z "${expected_head_ref}" ]; then
               candidate_head_ref=''
-              if ! candidate_head_ref="$(gh api \
+              if candidate_head_ref="$(bootstrap_api_read \
                   "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.ref)"; then
-                echo 'Transient bootstrap PR-ref read failure; retrying within the bounded window.' >&2
-                sleep 5
-                continue
+                :
+              else
+                read_status="$?"
+                if [ "${read_status}" -eq 75 ]; then
+                  echo 'Transient bootstrap PR-ref read failure; retrying within the bounded window.' >&2
+                  sleep 5
+                  continue
+                fi
+                exit "${read_status}"
               fi
               expected_head_ref="${candidate_head_ref}"
               [[ "${expected_head_ref}" =~ ^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$ ]]
             fi
-            if ! pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"; then
-              echo 'Transient bootstrap PR read failure; retrying within the bounded window.' >&2
-              sleep 5
-              continue
+            if pr="$(bootstrap_api_read \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"; then
+              :
+            else
+              read_status="$?"
+              if [ "${read_status}" -eq 75 ]; then
+                echo 'Transient bootstrap PR read failure; retrying within the bounded window.' >&2
+                sleep 5
+                continue
+              fi
+              exit "${read_status}"
             fi
             jq -e \
               --arg base "${EVENT_BASE}" \
@@ -254,11 +289,17 @@ jobs:
             producer_event="pull_request_target"
             producer_name="Current revision review gate"
 
-            if ! review_pages="$(gh api --paginate --slurp \
+            if review_pages="$(bootstrap_api_read --paginate --slurp \
                 "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"; then
-              echo 'Transient bootstrap review read failure; retrying within the bounded window.' >&2
-              sleep 5
-              continue
+              :
+            else
+              read_status="$?"
+              if [ "${read_status}" -eq 75 ]; then
+                echo 'Transient bootstrap review read failure; retrying within the bounded window.' >&2
+                sleep 5
+                continue
+              fi
+              exit "${read_status}"
             fi
             reviews="$(jq -c \
               --arg head "${EVENT_HEAD}" '
@@ -272,11 +313,17 @@ jobs:
               exit 1
             fi
 
-            if ! run_pages="$(gh api --paginate --slurp \
+            if run_pages="$(bootstrap_api_read --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs?event=${producer_event}&head_sha=${EVENT_HEAD}&per_page=100")"; then
-              echo 'Transient bootstrap run read failure; retrying within the bounded window.' >&2
-              sleep 5
-              continue
+              :
+            else
+              read_status="$?"
+              if [ "${read_status}" -eq 75 ]; then
+                echo 'Transient bootstrap run read failure; retrying within the bounded window.' >&2
+                sleep 5
+                continue
+              fi
+              exit "${read_status}"
             fi
             matching_runs="$(jq -c \
               --arg base "${EVENT_BASE}" \
@@ -309,10 +356,16 @@ jobs:
             for producer_id in $(jq -r '.[].id' <<<"${matching_runs}"); do
               producer="$(jq -ce --argjson id "${producer_id}" \
                 '.[] | select(.id == $id)' <<<"${matching_runs}")"
-              if ! jobs_pages="$(gh api --paginate --slurp \
+              if jobs_pages="$(bootstrap_api_read --paginate --slurp \
                   "repos/${REPOSITORY}/actions/runs/${producer_id}/jobs?filter=all&per_page=100")"; then
-                read_failed=true
-                break
+                :
+              else
+                read_status="$?"
+                if [ "${read_status}" -eq 75 ]; then
+                  read_failed=true
+                  break
+                fi
+                exit "${read_status}"
               fi
               request_count="$(jq \
                 --arg head "${EVENT_HEAD}" \
