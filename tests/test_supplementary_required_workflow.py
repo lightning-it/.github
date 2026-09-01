@@ -3617,7 +3617,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     [
                         bash,
                         "-c",
-                        helper
+                        "set -euo pipefail\n"
+                        + helper
                         + "\ngh() {\n"
                         + "  printf '%s' \"${FAKE_STDOUT}\"\n"
                         + "  printf '%s' \"${FAKE_STDERR}\" >&2\n"
