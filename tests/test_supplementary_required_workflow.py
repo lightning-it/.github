@@ -2006,19 +2006,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             bootstrap.index('bootstrap_blob_sha="$(base64 --decode'),
             bootstrap.index('test "${bootstrap_blob_sha}" ='),
         )
-        self.assertIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
-        self.assertIn("Protected main trust-root bootstrap reviewed", bootstrap)
+        self.assertNotIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
+        self.assertNotIn("Protected main trust-root bootstrap reviewed", bootstrap)
+        self.assertIn("mlx90-current-revision:copilot:v6:", bootstrap)
         self.assertIn('".github/workflows/current-revision-rerun.yml"', bootstrap)
         self.assertIn("main-trust-root-bootstrap-final-rebind", bootstrap)
         self.assertIn("final_bootstrap_summary", bootstrap)
         self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)
-        self.assertIn("-f name='Current revision review'", bootstrap)
+        self.assertNotIn("-f name='Current revision review'", bootstrap)
+        self.assertIn(
+            'test "$(jq \'length\' <<<"${bootstrap_checks}")" -eq 1',
+            bootstrap,
+        )
         check_id = bootstrap.index('bootstrap_check_id="$(jq -er')
         identity_verify = bootstrap.index(
-            '--arg evidence "${bootstrap_summary}"', check_id
+            '--arg external_id "${bootstrap_external_id}"', check_id
         )
         identity_verified = bootstrap.index(
-            '<<<"${bootstrap_check}" >/dev/null', identity_verify
+            '<<<"${bootstrap_check_summary}" >/dev/null', identity_verify
         )
         final_rebind = bootstrap.index(
             "failure_stage='main-trust-root-bootstrap-final-rebind'"
@@ -2032,15 +2037,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Current revision review"',
             ".head_sha == $head",
             ".external_id == $external_id",
+            ".details_url == $url",
             '.status == "completed"',
             '.conclusion == "success"',
             '.app.id == 15368',
             '.app.slug == "github-actions"',
-            ".output.title == $title",
-            ".output.summary == $evidence",
+            '.output.title == "Current revision review passed"',
+            '.schema == 4',
+            ".controller_sha == $controller",
+            '.controller_ref == "develop"',
+            ".producer_run_id == $producer_run_id",
+            ".review_id == $review_node_id",
+            ".run_url == $run_url",
         ):
             self.assertIn(immutable_predicate, identity_binding)
-        self.assertIn('-f "output[summary]=${bootstrap_summary}"', bootstrap)
+        self.assertNotIn('-f "output[summary]=${bootstrap_summary}"', bootstrap)
         self.assertNotIn('-f details_url="${producer_run_url}"', bootstrap)
         self.assertNotIn('-f "details_url=${producer_run_url}"', bootstrap)
         self.assertNotIn(
