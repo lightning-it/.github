@@ -234,13 +234,12 @@ jobs:
               continue
             fi
 
-            if [ "${REPOSITORY}" = "lightning-it/.github" ]; then
-              producer_event="pull_request_target"
-              producer_name="Current revision review gate"
-            else
-              producer_event="pull_request"
-              producer_name="Copilot review gate"
-            fi
+            # Every repository that has completed the protected controller
+            # seed now runs the immutable base-branch controller. The one-time
+            # bootstrap bridge must therefore bind that pull_request_target
+            # producer instead of the pre-seed pull_request predecessor.
+            producer_event="pull_request_target"
+            producer_name="Current revision review gate"
 
             review_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
