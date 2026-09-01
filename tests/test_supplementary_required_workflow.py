@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -3535,6 +3536,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn("for _observation in $(seq 1 300)", wait)
         self.assertIn("sleep 5", wait)
+        self.assertIn("bootstrap_api_read()", wait)
+        self.assertIn('response="$(gh api "$@"', wait)
+        self.assertIn('status="$?"', wait)
+        self.assertIn("return 75", wait)
+        self.assertIn("HTTP (408|429|5[0-9][0-9])", wait)
+        self.assertIn("Terminal bootstrap API read failure.", wait)
+        self.assertIn('if [ "${read_status}" -eq 75 ]', wait)
+        self.assertIn('exit "${read_status}"', wait)
+        self.assertIn("expected_head_ref=''", wait)
+        self.assertIn('if [ -z "${expected_head_ref}" ]', wait)
+        self.assertIn("candidate_head_ref=''", wait)
+        self.assertIn(
+            'if candidate_head_ref="$(bootstrap_api_read', wait
+        )
+        self.assertIn(
+            'expected_head_ref="${candidate_head_ref}"', wait
+        )
+        self.assertNotIn('if ! expected_head_ref="$(gh api', wait)
+        for bounded_read in (
+            'if pr="$(bootstrap_api_read',
+            'if review_pages="$(bootstrap_api_read --paginate --slurp',
+            'if run_pages="$(bootstrap_api_read --paginate --slurp',
+            'if jobs_pages="$(bootstrap_api_read --paginate --slurp',
+        ):
+            self.assertIn(bounded_read, wait)
+        self.assertIn("read_failed=false", wait)
+        self.assertIn("read_failed=true", wait)
+        self.assertIn('if [ "${read_failed}" = true ]', wait)
+        self.assertIn("retrying within the bounded window", wait)
         self.assertIn(".draft | type", wait)
         self.assertIn('producer_event="pull_request_target"', wait)
         self.assertIn('producer_name="Current revision review gate"', wait)
@@ -3571,6 +3601,65 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("gh pr edit", wait)
         self.assertNotIn("requested_reviewers", wait)
         self.assertNotIn("openai/", wait.lower())
+
+    def test_bootstrap_api_read_retries_only_transient_failures(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index("          bootstrap_api_read() {\n")
+        end = workflow.index("          expected_head_ref=''\n", start)
+        helper = textwrap.dedent(workflow[start:end])
+        bash = self._test_tool("bash")
+
+        def run_read(
+            *, status: int, stdout: str, stderr: str
+        ) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory() as runner_temp:
+                return subprocess.run(
+                    [
+                        bash,
+                        "-c",
+                        "set -euo pipefail\n"
+                        + helper
+                        + "\ngh() {\n"
+                        + "  printf '%s' \"${FAKE_STDOUT}\"\n"
+                        + "  printf '%s' \"${FAKE_STDERR}\" >&2\n"
+                        + "  return \"${FAKE_STATUS}\"\n"
+                        + "}\n"
+                        + "bootstrap_api_read endpoint\n",
+                    ],
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "RUNNER_TEMP": runner_temp,
+                        "FAKE_STATUS": str(status),
+                        "FAKE_STDOUT": stdout,
+                        "FAKE_STDERR": stderr,
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+
+        success = run_read(status=0, stdout='{"ok":true}', stderr="")
+        self.assertEqual(0, success.returncode)
+        self.assertEqual('{"ok":true}', success.stdout)
+
+        transient = run_read(
+            status=1,
+            stdout="stale failure output",
+            stderr="gh: Gateway Timeout (HTTP 504)",
+        )
+        self.assertEqual(75, transient.returncode)
+        self.assertEqual("", transient.stdout)
+
+        terminal = run_read(
+            status=1,
+            stdout="terminal failure output",
+            stderr="gh: Resource not accessible (HTTP 403)",
+        )
+        self.assertEqual(1, terminal.returncode)
+        self.assertEqual("", terminal.stdout)
+        self.assertIn(
+            "Terminal bootstrap API read failure.", terminal.stderr
+        )
 
     def test_copilot_controller_trusts_only_required_workflow_job_ledger(
         self,
