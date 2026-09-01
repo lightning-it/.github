@@ -1369,16 +1369,18 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     require(require_dict(ready_event.get("actor"), "Ready actor").get("login") == "litroc", "Ready actor is not litroc")
     ready_at = parse_timestamp(ready_event.get("created_at"), "Ready timestamp")
 
-    run_pages = api.target_pages(f"repos/{repository}/actions/runs?event=pull_request&head_sha={head}&per_page=100")
+    run_pages = api.target_pages(
+        f"repos/{repository}/actions/runs?event=pull_request_target&head_sha={head}&per_page=100"
+    )
     runs = flatten_object_pages(run_pages, "workflow_runs", "workflow runs")
     producer_candidates: list[tuple[dict[str, Any], list[Any]]] = []
     successful_requests = 0
     for raw_run in runs:
         run = require_dict(raw_run, "workflow run")
         if not (
-            run.get("event") == "pull_request"
+            run.get("event") == "pull_request_target"
             and run.get("path") == ".github/workflows/copilot-review.yml"
-            and run.get("name") == "Copilot review gate"
+            and run.get("name") == "Current revision review gate"
             and run.get("head_branch") == head_ref
             and run.get("head_sha") == head
             and require_dict(run.get("actor"), "workflow actor").get("login") == "litroc"

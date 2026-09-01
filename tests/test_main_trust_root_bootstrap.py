@@ -133,9 +133,9 @@ class FakeAPI:
         api_repository = f"https://api.github.com/repos/{self.repository}"
         self.run = {
             "id": 32942973929,
-            "event": "pull_request",
+            "event": "pull_request_target",
             "path": ".github/workflows/copilot-review.yml",
-            "name": "Copilot review gate",
+            "name": "Current revision review gate",
             "head_branch": self.pull["head"]["ref"],
             "head_sha": self.head,
             "actor": {"login": "litroc"},
@@ -413,7 +413,7 @@ class FakeAPI:
             f"repos/{self.repository}/issues/{self.number}/timeline?per_page=100": [
                 self.timeline
             ],
-            f"repos/{self.repository}/actions/runs?event=pull_request&head_sha={self.head}&per_page=100": [
+            f"repos/{self.repository}/actions/runs?event=pull_request_target&head_sha={self.head}&per_page=100": [
                 {"workflow_runs": [self.run]}
             ],
             f"repos/{self.repository}/actions/runs/{self.run['id']}/jobs?filter=all&per_page=100": [
@@ -985,6 +985,15 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         self.assertFalse(
             any("recursive=1" in endpoint for endpoint in api.source_endpoints)
         )
+
+    def test_pre_seed_producer_name_is_rejected(self) -> None:
+        api = FakeAPI()
+        api.run["name"] = "Copilot review gate"
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "exactly one successful Copilot request",
+        ):
+            MODULE.verify(self.args(api), api)
 
     def test_draft_classifier_emits_only_static_protected_handoff(self) -> None:
         api = FakeAPI()
