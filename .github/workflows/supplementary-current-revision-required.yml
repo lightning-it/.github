@@ -1763,55 +1763,80 @@ jobs:
                 ] | sort)
                 and all(.source_blobs[]; test("^[0-9a-f]{40}$"))
               ' <<<"${bootstrap_summary}" >/dev/null
-            source_sha="$(jq -r .source_sha <<<"${bootstrap_summary}")"
             producer_run_id="$(jq -r .producer_run_id <<<"${bootstrap_summary}")"
             producer_run_url="$(jq -r .producer_run_url <<<"${bootstrap_summary}")"
             review_id="$(jq -r .review_id <<<"${bootstrap_summary}")"
-            bootstrap_external_id="rep60-main-trust-root-bootstrap:v1:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${source_sha}:${producer_run_id}:${review_id}"
-            bootstrap_title='Protected main trust-root bootstrap reviewed'
+            review_node_id="$(gh api \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews/${review_id}" \
+              --jq '.node_id | select(type == "string" and startswith("PRR_"))')"
+            develop_sha="$(gh api "repos/${REPOSITORY}/branches/develop" \
+              --jq '.commit.sha | select(type == "string" and test("^[0-9a-f]{40}$"))')"
+            bootstrap_external_id="mlx90-current-revision:copilot:v6:${PR_NUMBER}:${producer_run_id}:${EVENT_BASE}:${EVENT_HEAD}"
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
             bootstrap_checks="$(jq -c '
               [.[].check_runs[]? | select(.name == "Current revision review")]
             ' <<<"${neutral_pages}")"
-            bootstrap_count="$(jq 'length' <<<"${bootstrap_checks}")"
-            if [ "${bootstrap_count}" -gt 1 ]; then
-              echo "Multiple neutral checks exist on the bootstrap head." >&2
-              exit 1
-            fi
-            if [ "${bootstrap_count}" -eq 0 ]; then
-              bootstrap_check="$(gh api --method POST \
-                "repos/${REPOSITORY}/check-runs" \
-                -f name='Current revision review' \
-                -f head_sha="${EVENT_HEAD}" \
-                -f status=completed \
-                -f conclusion=success \
-                -f external_id="${bootstrap_external_id}" \
-                -f "output[title]=${bootstrap_title}" \
-                -f "output[summary]=${bootstrap_summary}")"
-            else
-              bootstrap_check="$(jq -c '.[0]' <<<"${bootstrap_checks}")"
-            fi
+            test "$(jq 'length' <<<"${bootstrap_checks}")" -eq 1
+            bootstrap_check="$(jq -c '.[0]' <<<"${bootstrap_checks}")"
             bootstrap_check_id="$(jq -er \
               '.id | select(type == "number" and . > 0)' \
               <<<"${bootstrap_check}")"
+            bootstrap_check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${bootstrap_check_id}"
             jq -e \
-              --arg evidence "${bootstrap_summary}" \
               --arg external_id "${bootstrap_external_id}" \
               --arg head "${EVENT_HEAD}" \
-              --arg title "${bootstrap_title}" \
+              --arg url "${bootstrap_check_url}" \
               --argjson check_id "${bootstrap_check_id}" '
                 .id == $check_id
                 and .name == "Current revision review"
                 and .head_sha == $head
                 and .external_id == $external_id
+                and .details_url == $url
                 and .status == "completed"
                 and .conclusion == "success"
                 and .app.id == 15368
                 and .app.slug == "github-actions"
-                and .output.title == $title
-                and .output.summary == $evidence
+                and .output.title == "Current revision review passed"
+                and (.output.summary | type) == "string"
               ' <<<"${bootstrap_check}" >/dev/null
+            bootstrap_check_summary="$(jq -er \
+              '.output.summary | fromjson | select(type == "object")' \
+              <<<"${bootstrap_check}")"
+            test "$(jq '.labels | length' <<<"${pr}")" -eq 0
+            test "$(jq -r '.last_edited_at // "null"' <<<"${pr}")" = null
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg controller "${develop_sha}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg repository "${REPOSITORY}" \
+              --arg review_node_id "${review_node_id}" \
+              --arg run_url "${producer_run_url}" \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson producer_run_id "${producer_run_id}" '
+                (keys | sort) == ([
+                  "base_sha", "controller_ref", "controller_sha",
+                  "head_repository", "head_sha", "producer_run_id",
+                  "pull_request_labels_sha256",
+                  "pull_request_last_edited_at", "pull_request_number",
+                  "review_id", "review_path", "run_url", "schema"
+                ] | sort)
+                and .schema == 4
+                and .base_sha == $base
+                and .head_sha == $head
+                and .head_repository == $repository
+                and .controller_sha == $controller
+                and .controller_ref == "develop"
+                and .pull_request_number == $pr_number
+                and .producer_run_id == $producer_run_id
+                and .pull_request_last_edited_at == null
+                and .pull_request_labels_sha256
+                  == "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+                and .review_id == $review_node_id
+                and .review_path
+                  == "applicable Copilot or governed automation exemption"
+                and .run_url == $run_url
+              ' <<<"${bootstrap_check_summary}" >/dev/null
             failure_stage='main-trust-root-bootstrap-final-rebind'
             final_bootstrap_summary="$(base64 --decode <<<"${bootstrap_content}" \
               | python3 - \
