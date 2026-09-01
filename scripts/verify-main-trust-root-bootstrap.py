@@ -36,6 +36,8 @@ CONTROLLER_SEED_REVIEW_NODE_ID = "PRR_kwDOTjdSQc8AAAABLEnhzA"
 CONTROLLER_SEED_REVIEW_SUBMITTED_AT = "2026-08-27T06:51:54Z"
 CONTROLLER_SEED_REQUEST_EVENT_ID = 30087018334
 CONTROLLER_SEED_REQUESTED_AT = "2026-08-27T06:47:49Z"
+CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID = 99832444495
+CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID = 33500514644
 CONTROLLER_SEED_EMPTY_LABELS_SHA256 = (
     "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
 )
@@ -749,6 +751,10 @@ def verify_controller_seed(
         "current-revision check id",
     )
     require(
+        current_revision_check_id == CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID,
+        "current-revision check ID changed",
+    )
+    require(
         current_revision_check.get("name") == "Current revision review",
         "current-revision check name changed",
     )
@@ -783,6 +789,10 @@ def verify_controller_seed(
     producer_run_id = require_positive_int(
         int(external_match.group(1)) if external_match else None,
         "current-revision producer run id",
+    )
+    require(
+        producer_run_id == CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID,
+        "current-revision producer run ID changed",
     )
     require(
         current_revision_check.get("details_url")

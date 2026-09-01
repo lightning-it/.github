@@ -517,7 +517,7 @@ def make_controller_seed_api() -> FakeAPI:
     api.controller_sha = "8" * 40
     api.develop_sha = api.controller_sha
     api.run = {
-        "id": 33500514644,
+        "id": MODULE.CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID,
         "event": "pull_request_target",
         "path": ".github/workflows/copilot-review.yml",
         "name": "Current revision review gate",
@@ -637,7 +637,7 @@ def make_controller_seed_api() -> FakeAPI:
         "review_path": "applicable Copilot or governed automation exemption",
         "run_url": api.run["html_url"],
     }
-    check_id = 99832444495
+    check_id = MODULE.CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID
     api.current_revision_checks = [
         {
             "id": check_id,
@@ -728,11 +728,11 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         )
         self.assertEqual(MODULE.CONTROLLER_SEED_REVIEW_ID, evidence["review_id"])
         self.assertEqual(
-            99832444495,
+            MODULE.CONTROLLER_SEED_CURRENT_REVISION_CHECK_ID,
             evidence["current_revision_check_id"],
         )
         self.assertEqual(
-            api.run["id"],
+            MODULE.CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID,
             evidence["current_revision_producer_run_id"],
         )
         self.assertEqual(0, evidence["threads_resolved"])
@@ -746,8 +746,10 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             "review_node",
             "thread",
             "check",
+            "check_id",
             "missing_check",
             "summary",
+            "producer_id",
             "producer",
             "producer_job",
         )
@@ -783,10 +785,19 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 ]
             elif mutation == "check":
                 api.current_revision_checks[0]["external_id"] = "forged"
+            elif mutation == "check_id":
+                api.current_revision_checks[0]["id"] += 1
             elif mutation == "missing_check":
                 api.current_revision_checks = []
             elif mutation == "summary":
                 api.current_revision_checks[0]["output"]["summary"] = "{}"
+            elif mutation == "producer_id":
+                api.current_revision_checks[0]["external_id"] = (
+                    "mlx90-current-revision:copilot:v6:"
+                    f"{api.number}:"
+                    f"{MODULE.CONTROLLER_SEED_CURRENT_REVISION_PRODUCER_RUN_ID + 1}:"
+                    f"{api.base}:{api.head}"
+                )
             elif mutation == "producer":
                 api.run["conclusion"] = "failure"
             else:
