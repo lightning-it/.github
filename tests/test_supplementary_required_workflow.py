@@ -3551,7 +3551,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.name == "Request Copilot review for current revision")',
             wait,
         )
-        self.assertIn('select(.name == "Successful Copilot review")', wait)
+        self.assertIn(
+            'select(.name == "Verify current revision policy")', wait
+        )
+        self.assertNotIn('select(.name == "Successful Copilot review")', wait)
         self.assertIn('if [ "${review_count}" -gt 1 ]', wait)
         self.assertIn('if [ "${request_count}" -gt 1 ]', wait)
         self.assertNotIn("gh pr edit", wait)

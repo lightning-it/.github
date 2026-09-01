@@ -171,7 +171,7 @@ class FakeAPI:
                 "conclusion": "success",
             },
             {
-                "name": "Successful Copilot review",
+                "name": "Verify current revision policy",
                 "run_attempt": 1,
                 "status": "completed",
                 "conclusion": "success",
