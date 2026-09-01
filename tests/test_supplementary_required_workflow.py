@@ -3537,8 +3537,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("sleep 5", wait)
         self.assertIn("expected_head_ref=''", wait)
         self.assertIn('if [ -z "${expected_head_ref}" ]', wait)
+        self.assertIn("candidate_head_ref=''", wait)
+        self.assertIn('if ! candidate_head_ref="$(gh api', wait)
+        self.assertIn(
+            'expected_head_ref="${candidate_head_ref}"', wait
+        )
+        self.assertNotIn('if ! expected_head_ref="$(gh api', wait)
         for bounded_read in (
-            'if ! expected_head_ref="$(gh api',
             'if ! pr="$(gh api',
             'if ! review_pages="$(gh api --paginate --slurp',
             'if ! run_pages="$(gh api --paginate --slurp',

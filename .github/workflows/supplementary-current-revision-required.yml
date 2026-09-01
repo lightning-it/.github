@@ -205,12 +205,14 @@ jobs:
           expected_head_ref=''
           for _observation in $(seq 1 300); do
             if [ -z "${expected_head_ref}" ]; then
-              if ! expected_head_ref="$(gh api \
+              candidate_head_ref=''
+              if ! candidate_head_ref="$(gh api \
                   "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.ref)"; then
                 echo 'Transient bootstrap PR-ref read failure; retrying within the bounded window.' >&2
                 sleep 5
                 continue
               fi
+              expected_head_ref="${candidate_head_ref}"
               [[ "${expected_head_ref}" =~ ^fix/rep60-main-trust-root-(successor|bootstrap)-v[1-9][0-9]*-[0-9]{8}$ ]]
             fi
             if ! pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"; then
