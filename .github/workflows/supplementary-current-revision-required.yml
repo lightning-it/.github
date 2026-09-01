@@ -306,7 +306,7 @@ jobs:
                 [.[].jobs[]? |
                   select(.run_id == $run_id) |
                   select(.head_sha == $head) |
-                  select(.name == "Successful Copilot review") |
+                  select(.name == "Verify current revision policy") |
                   select(.run_attempt == 1) |
                   select(.status == "completed" and .conclusion == "success")]
                 | length
