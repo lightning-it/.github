@@ -5,6 +5,7 @@ import copy
 import hashlib
 import importlib.util
 import io
+import json
 import pathlib
 import subprocess
 import sys
@@ -36,6 +37,9 @@ class FakeAPI:
         self.head_tree_sha = "2" * 40
         self.source_tree_sha = "3" * 40
         self.copilot_blob = "4" * 40
+        self.controller_sha = "f" * 40
+        self.develop_sha = self.controller_sha
+        self.current_revision_checks: list[dict[str, Any]] = []
         self.target_endpoints: list[str] = []
         self.source_endpoints: list[str] = []
         self.paths = {
@@ -311,7 +315,7 @@ class FakeAPI:
             f"repos/{self.repository}/branches/develop": {
                 "name": "develop",
                 "protected": True,
-                "commit": {"sha": "f" * 40},
+                "commit": {"sha": self.develop_sha},
             },
             f"repos/{self.repository}/commits/{self.head}": {
                 "sha": self.head,
@@ -324,6 +328,7 @@ class FakeAPI:
                 "sha": self.base,
                 "commit": {"tree": {"sha": self.base_tree_sha}},
             },
+            f"repos/{self.repository}/actions/runs/{self.run['id']}": self.run,
         }
         if endpoint in mapping:
             return copy.deepcopy(mapping[endpoint])
@@ -337,6 +342,20 @@ class FakeAPI:
                 page = self._tree_page(flat_tree, root_sha, requested_sha)
                 if page is not None:
                     return page
+        if endpoint == (
+            f"repos/{self.repository}/compare/"
+            f"{self.controller_sha}...{self.develop_sha}"
+        ):
+            return {
+                "status": (
+                    "identical"
+                    if self.controller_sha == self.develop_sha
+                    else "ahead"
+                ),
+                "ahead_by": 0 if self.controller_sha == self.develop_sha else 1,
+                "behind_by": 0,
+                "merge_base_commit": {"sha": self.controller_sha},
+            }
         raise AssertionError(f"unexpected target endpoint: {endpoint}")
 
     def source(self, endpoint: str) -> Any:
@@ -387,6 +406,9 @@ class FakeAPI:
         mapping = {
             f"repos/{self.repository}/commits/{self.head}/check-runs?check_name=Protected%20Exact-Revision%20Codex%20result&filter=all&per_page=100": [
                 {"check_runs": []}
+            ],
+            f"repos/{self.repository}/commits/{self.head}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100": [
+                {"check_runs": self.current_revision_checks}
             ],
             f"repos/{self.repository}/issues/{self.number}/timeline?per_page=100": [
                 self.timeline
@@ -481,6 +503,7 @@ def make_controller_seed_api() -> FakeAPI:
     ]
     api.review = {
         "id": MODULE.CONTROLLER_SEED_REVIEW_ID,
+        "node_id": MODULE.CONTROLLER_SEED_REVIEW_NODE_ID,
         "user": {
             "login": "copilot-pull-request-reviewer[bot]",
             "type": "Bot",
@@ -491,6 +514,151 @@ def make_controller_seed_api() -> FakeAPI:
         "body": "Copilot reviewed the exact protected controller seed.",
     }
     api.review_comments = []
+    api.controller_sha = "8" * 40
+    api.develop_sha = api.controller_sha
+    api.run = {
+        "id": 33500514644,
+        "event": "pull_request_target",
+        "path": ".github/workflows/copilot-review.yml",
+        "name": "Current revision review gate",
+        "head_branch": MODULE.CONTROLLER_SEED_HEAD_REF,
+        "head_sha": api.head,
+        "actor": {"login": "litroc"},
+        "triggering_actor": {"login": "litroc"},
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "display_title": MODULE.CONTROLLER_SEED_TITLE,
+        "created_at": "2026-09-01T11:03:21Z",
+        "updated_at": "2026-09-01T11:03:44Z",
+        "html_url": (
+            "https://github.com/lightning-it/identity-access-lit/"
+            "actions/runs/33500514644"
+        ),
+        "workflow_id": 323691360,
+        "workflow_url": (
+            "https://api.github.com/repos/lightning-it/identity-access-lit/"
+            "actions/workflows/323691360"
+        ),
+        "repository": {"full_name": api.repository},
+        "head_repository": {"full_name": api.repository},
+        "pull_requests": [
+            {
+                "number": api.number,
+                "url": (
+                    "https://api.github.com/repos/"
+                    f"{api.repository}/pulls/{api.number}"
+                ),
+                "base": {
+                    "ref": "main",
+                    "sha": api.base,
+                    "repo": {
+                        "url": f"https://api.github.com/repos/{api.repository}"
+                    },
+                },
+                "head": {
+                    "ref": MODULE.CONTROLLER_SEED_HEAD_REF,
+                    "sha": api.head,
+                    "repo": {
+                        "url": f"https://api.github.com/repos/{api.repository}"
+                    },
+                },
+            }
+        ],
+    }
+    def successful_step(name: str) -> dict[str, str]:
+        return {
+            "name": name,
+            "status": "completed",
+            "conclusion": "success",
+        }
+    api.jobs = [
+        {
+            "name": "Classify protected main trust-root handoff",
+            "run_id": api.run["id"],
+            "run_attempt": 1,
+            "head_sha": api.head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                successful_step(
+                    "Verify protected Required-Workflow handoff provenance"
+                )
+            ],
+        },
+        {
+            "name": "Verify current revision policy",
+            "run_id": api.run["id"],
+            "run_attempt": 1,
+            "head_sha": api.head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                successful_step(
+                    "Verify current Copilot review and resolved findings"
+                ),
+                successful_step("Publish bound neutral result"),
+            ],
+        },
+        {
+            "name": "Request Copilot review for current revision",
+            "run_id": api.run["id"],
+            "run_attempt": 1,
+            "head_sha": api.head,
+            "status": "completed",
+            "conclusion": "skipped",
+            "steps": [],
+        },
+        {
+            "name": (
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt"
+            ),
+            "run_id": api.run["id"],
+            "run_attempt": 1,
+            "head_sha": api.head,
+            "status": "completed",
+            "conclusion": "skipped",
+            "steps": [],
+        },
+    ]
+    summary = {
+        "schema": 4,
+        "base_sha": api.base,
+        "head_sha": api.head,
+        "head_repository": api.repository,
+        "controller_sha": api.controller_sha,
+        "controller_ref": "develop",
+        "pull_request_number": api.number,
+        "producer_run_id": api.run["id"],
+        "pull_request_last_edited_at": None,
+        "pull_request_labels_sha256": MODULE.CONTROLLER_SEED_EMPTY_LABELS_SHA256,
+        "review_id": MODULE.CONTROLLER_SEED_REVIEW_NODE_ID,
+        "review_path": "applicable Copilot or governed automation exemption",
+        "run_url": api.run["html_url"],
+    }
+    check_id = 99832444495
+    api.current_revision_checks = [
+        {
+            "id": check_id,
+            "name": "Current revision review",
+            "head_sha": api.head,
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": (
+                "mlx90-current-revision:copilot:v6:"
+                f"{api.number}:{api.run['id']}:{api.base}:{api.head}"
+            ),
+            "details_url": (
+                f"https://github.com/{api.repository}/runs/{check_id}"
+            ),
+            "app": {"id": 15368, "slug": "github-actions"},
+            "output": {
+                "title": "Current revision review passed",
+                "summary": json.dumps(summary, separators=(",", ":")),
+            },
+        }
+    ]
     api.graphql_payload = {
         "data": {
             "repository": {
@@ -550,7 +718,7 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             self.controller_seed_args(api), api
         )
 
-        self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
+        self.assertEqual("rep60-main-controller-seed/v2", evidence["schema"])
         self.assertEqual(MODULE.CONTROLLER_SEED_REPOSITORY, evidence["repository"])
         self.assertEqual(MODULE.CONTROLLER_SEED_BASE, evidence["base_sha"])
         self.assertEqual(MODULE.CONTROLLER_SEED_HEAD, evidence["head_sha"])
@@ -559,10 +727,30 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             evidence["controller_blob_sha"],
         )
         self.assertEqual(MODULE.CONTROLLER_SEED_REVIEW_ID, evidence["review_id"])
+        self.assertEqual(
+            99832444495,
+            evidence["current_revision_check_id"],
+        )
+        self.assertEqual(
+            api.run["id"],
+            evidence["current_revision_producer_run_id"],
+        )
         self.assertEqual(0, evidence["threads_resolved"])
 
     def test_controller_seed_immutable_bindings_fail_closed(self) -> None:
-        mutations = ("repository", "path", "blob", "review", "thread")
+        mutations = (
+            "repository",
+            "path",
+            "blob",
+            "review",
+            "review_node",
+            "thread",
+            "check",
+            "missing_check",
+            "summary",
+            "producer",
+            "producer_job",
+        )
         for mutation in mutations:
             api = make_controller_seed_api()
             if mutation == "repository":
@@ -579,7 +767,9 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 api.head_tree["tree"][0]["sha"] = "f" * 40
             elif mutation == "review":
                 api.review["id"] += 1
-            else:
+            elif mutation == "review_node":
+                api.review["node_id"] = "forged"
+            elif mutation == "thread":
                 api.graphql_payload["data"]["repository"]["pullRequest"][
                     "reviewThreads"
                 ]["nodes"] = [
@@ -591,6 +781,16 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                         },
                     }
                 ]
+            elif mutation == "check":
+                api.current_revision_checks[0]["external_id"] = "forged"
+            elif mutation == "missing_check":
+                api.current_revision_checks = []
+            elif mutation == "summary":
+                api.current_revision_checks[0]["output"]["summary"] = "{}"
+            elif mutation == "producer":
+                api.run["conclusion"] = "failure"
+            else:
+                api.jobs[1]["conclusion"] = "failure"
             with self.subTest(mutation=mutation), self.assertRaises(
                 MODULE.VerificationError
             ):
@@ -619,7 +819,7 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             self.controller_seed_args(api), api
         )
 
-        self.assertEqual("rep60-main-controller-seed/v1", evidence["schema"])
+        self.assertEqual("rep60-main-controller-seed/v2", evidence["schema"])
         self.assertEqual(2, pull_reads)
 
     def test_controller_seed_draft_state_must_be_boolean(self) -> None:
