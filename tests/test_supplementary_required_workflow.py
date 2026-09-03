@@ -2207,6 +2207,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name=="Request Copilot review for current revision"', permanent
         )
         self.assertIn(
+            '.name=="Dispatch protected managed-sync finalizer re-evaluation" '
+            "and runnerless",
+            permanent,
+        )
+        self.assertIn(
             "Release-App ancestry backmerge|main trust-root handoff", permanent
         )
         self.assertIn(
@@ -2229,7 +2234,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
         )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=3", permanent)
+        self.assertIn("length<=4", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
@@ -2275,10 +2280,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Classify protected Release-App ancestry backmerge"
         )
         main_classifier = "Classify protected main trust-root handoff"
+        managed_sync_dispatch = (
+            "Dispatch protected managed-sync finalizer re-evaluation"
+        )
         self.assertEqual(
             0,
             evaluate_helper_guard(
-                [ancestry_classifier, main_classifier, parent_helper]
+                [
+                    ancestry_classifier,
+                    main_classifier,
+                    parent_helper,
+                    managed_sync_dispatch,
+                ]
             ),
         )
         self.assertEqual(
@@ -3066,6 +3079,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "conclusion": "skipped",
             },
             {
+                "name": (
+                    "Dispatch protected managed-sync finalizer re-evaluation"
+                ),
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": "Classify protected Release-App ancestry backmerge",
                 "status": "completed",
                 "conclusion": "skipped",
@@ -3138,6 +3160,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             },
             {
                 "name": "Request protected verifier re-evaluation",
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": (
+                    "Dispatch protected managed-sync finalizer re-evaluation"
+                ),
                 "status": "completed",
                 "conclusion": "skipped",
                 "steps": [],
@@ -3200,6 +3230,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Classify protected Release-App ancestry backmerge",
                 "Classify protected main trust-root handoff",
                 "Request protected verifier re-evaluation",
+                "Dispatch protected managed-sync finalizer re-evaluation",
                 "cancelled job",
                 "timed out job",
                 "unexpected skipped job",
@@ -3209,6 +3240,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
             [
                 "Request Copilot review for current revision",
+                "Dispatch protected managed-sync finalizer re-evaluation",
                 "Classify protected Release-App ancestry backmerge",
                 "Classify protected main trust-root handoff",
                 "Request protected verifier re-evaluation",
@@ -3221,11 +3253,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
-        ancestry_classifier = allowed[1]
-        main_classifier = allowed[2]
-        parent_helper = allowed[3]
-        release_helper = allowed[4]
-        current_helper = allowed[5]
+        managed_sync_dispatch = allowed[1]
+        ancestry_classifier = allowed[2]
+        main_classifier = allowed[3]
+        parent_helper = allowed[4]
+        release_helper = allowed[5]
+        current_helper = allowed[6]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -3233,19 +3266,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 [evaluate("disallowed_terminal_jobs")],
             ),
             (
-                "(length <= 3 "
+                "(length <= 4 "
                 "and (map(.name) | unique | length) == length "
                 "and ([.[].name | select(test($d))] "
                 "| length) <= 1) "
                 "or error(tojson)",
                 [
-                    [request, ancestry_classifier, parent_helper],
+                    [
+                        request,
+                        ancestry_classifier,
+                        parent_helper,
+                        managed_sync_dispatch,
+                    ],
                     [request, main_classifier, release_helper],
-                    [ancestry_classifier, main_classifier, current_helper],
+                    [
+                        ancestry_classifier,
+                        main_classifier,
+                        current_helper,
+                        managed_sync_dispatch,
+                    ],
                 ],
                 [
                     allowed,
-                    [main_classifier, parent_helper, current_helper],
+                    [
+                        request,
+                        ancestry_classifier,
+                        main_classifier,
+                        parent_helper,
+                        managed_sync_dispatch,
+                    ],
                     [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
                 ],
