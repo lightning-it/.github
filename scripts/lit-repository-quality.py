@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -36,6 +37,11 @@ QUAY_STATUS_URL = re.compile(
     re.IGNORECASE,
 )
 LINKED_GIT_ENVIRONMENT = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
+EXTERNAL_COMMAND_TIMEOUT_SECONDS = 300
+PYTHON_DEPENDENCY_LOCK = ROOT / ".github" / "requirements" / "repository-quality.lock"
+PYPI_REQUIREMENT = re.compile(
+    r"(?m)^pyyaml==(?P<version>[0-9]+(?:\.[0-9]+)*)[ \\]+$"
+)
 
 
 def metadata() -> dict[str, str]:
@@ -56,7 +62,30 @@ def run(command: list[str], *, required: bool = True) -> None:
         print(f"Skipping {' '.join(command)}: {command[0]} is not installed")
         return
     print("+ " + " ".join(command))
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=EXTERNAL_COMMAND_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        if not required:
+            print(f"Skipping {' '.join(command)}: {command[0]} is not installed")
+            return
+        raise AssertionError(f"Required command not found: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        if error.stdout:
+            print(error.stdout)
+        if error.stderr:
+            print(error.stderr, file=sys.stderr)
+        raise AssertionError(
+            f"{' '.join(command)} timed out after "
+            f"{EXTERNAL_COMMAND_TIMEOUT_SECONDS} seconds"
+        ) from error
     if result.returncode != 0:
         if result.stdout:
             print(result.stdout)
@@ -100,6 +129,34 @@ def assert_file(path: Path) -> str:
     if not path.exists():
         raise AssertionError(f"{path.relative_to(ROOT)} is missing")
     return path.read_text(encoding="utf-8")
+
+
+def check_python_dependency_lock() -> None:
+    """Bind the distributed lockfile to the Devtools runtime that consumes it."""
+    if not PYTHON_DEPENDENCY_LOCK.exists():
+        return
+    if PYTHON_DEPENDENCY_LOCK.is_symlink() or not PYTHON_DEPENDENCY_LOCK.is_file():
+        raise AssertionError(
+            ".github/requirements/repository-quality.lock must be a regular file"
+        )
+    lock_text = PYTHON_DEPENDENCY_LOCK.read_text(encoding="utf-8")
+    matches = list(PYPI_REQUIREMENT.finditer(lock_text))
+    if len(matches) != 1:
+        raise AssertionError(
+            ".github/requirements/repository-quality.lock must pin PyYAML exactly once"
+        )
+    expected = matches[0].group("version")
+    try:
+        actual = importlib.metadata.version("PyYAML")
+    except importlib.metadata.PackageNotFoundError as error:
+        raise AssertionError(
+            "PyYAML from repository-quality.lock is missing in the Devtools runtime"
+        ) from error
+    if actual != expected:
+        raise AssertionError(
+            "Devtools PyYAML version does not match repository-quality.lock: "
+            f"expected {expected}, found {actual}"
+        )
 
 
 def managed_readme_block(readme: str) -> str:
@@ -351,7 +408,9 @@ def check_terraform(repo_type: str) -> None:
                 else:
                     os.environ["TF_DATA_DIR"] = previous_data_dir
     else:
-        print("Terraform CLI not installed; checked Terraform file presence only")
+        raise AssertionError(
+            "Terraform CLI is required for Terraform repository validation"
+        )
 
 
 def check_helm(repo_type: str) -> None:
@@ -561,6 +620,7 @@ def check_managed_assets() -> None:
 def main() -> int:
     try:
         meta = metadata()
+        check_python_dependency_lock()
         check_generated_docs(meta)
         check_secret_safe_generated_docs()
         check_markdown()
