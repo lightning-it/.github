@@ -3770,6 +3770,25 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "bootstrap protected main review trust root", job
             )
 
+    def test_protected_reevaluation_runs_after_a_skipped_classifier(self) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        request = workflow.split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[1]
+        condition = request.split("    if: >-", 1)[1].split(
+            "    permissions:", 1
+        )[0]
+
+        self.assertIn("always()", condition)
+        self.assertIn(
+            "needs['verify-current-revision-policy'].result == 'success'",
+            condition,
+        )
+        self.assertNotIn(
+            "needs.verify-current-revision-policy.result",
+            condition,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
