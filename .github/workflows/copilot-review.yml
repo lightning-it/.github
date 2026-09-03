@@ -1297,7 +1297,9 @@ jobs:
   request-protected-verifier-reevaluation:
     name: Request protected verifier re-evaluation
     needs: verify-current-revision-policy
-    if: needs.verify-current-revision-policy.result == 'success'
+    if: >-
+      always() &&
+      needs['verify-current-revision-policy'].result == 'success'
     permissions:
       actions: write
       contents: read
