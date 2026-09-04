@@ -2222,6 +2222,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "producer_kind=%s\\nproducer_run_id=%s\\n", terminal_wait
         )
         self.assertNotIn("wait_for_terminal_producer()", permanent)
+        protected_verifier = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1].split(
+            "      - name: Rebind and finalize the protected result\n", 1
+        )[0]
+        self.assertIn(
+            "TERMINAL_PRODUCER_KIND: >-\n"
+            "            ${{ steps.terminal-producer.outputs.producer_kind }}",
+            protected_verifier,
+        )
+        self.assertIn(
+            'producer_kind="${TERMINAL_PRODUCER_KIND}"', protected_verifier
+        )
+        permanent_kind_guard = (
+            '[[ "${producer_kind}" =~ '
+            '^(copilot|release-app|managed-sync|ancestry-backmerge|renovate)$ ]]'
+        )
+        self.assertIn(permanent_kind_guard, permanent)
+        self.assertLess(
+            protected_verifier.index(
+                'producer_kind="${TERMINAL_PRODUCER_KIND}"'
+            ),
+            protected_verifier.index(permanent_kind_guard),
+        )
+        self.assertLess(
+            permanent.index(permanent_kind_guard),
+            permanent.index('echo "producer_kind=${producer_kind}"'),
+        )
         self.assertEqual(
             2,
             permanent.count(
