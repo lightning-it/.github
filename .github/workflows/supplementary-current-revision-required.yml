@@ -1093,8 +1093,13 @@ jobs:
           controller_ref="$(jq -er \
             '.default_branch | select(type == "string" and length > 0)' \
             <<<"${repository}")"
+          controller_ref_uri="$(jq -rn \
+            --arg value "${controller_ref}" '$value | @uri')"
+          test -n "${controller_ref_uri}"
           controller_head="$(gh api \
-            "repos/${REPOSITORY}/branches/${controller_ref}" --jq .commit.sha)"
+            "repos/${REPOSITORY}/branches/${controller_ref_uri}" \
+            --jq .commit.sha)"
+          [[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]
           controller_sha="$(jq -er \
             '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
             <<<"${summary}")"
