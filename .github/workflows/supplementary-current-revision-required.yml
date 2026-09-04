@@ -86,7 +86,7 @@ jobs:
           expected_anchor_head='cdf6673eb2ade10fafd06c09aba2d02268833155'
           expected_patch_bytes=199991
           expected_patch_sha='f3144c8266e245357aafd340a60485025708aea52657133b06be7657822cb7e4'
-          expected_source_workflow_blob='f2e898c5fc466e99c58346c1df604ae37ab4b5b7'
+          expected_source_workflow_blob='aee7f71950743ce5037546e399b2ed376cee4d8e'
           expected_title='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5-successor'
           expected_subject='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5-successor'
 
