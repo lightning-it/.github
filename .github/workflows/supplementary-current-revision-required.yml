@@ -944,7 +944,7 @@ jobs:
                     ($external_id |
                       test("^mlx90-current-revision:v4:[1-9][0-9]*:[0-9a-f]{64}$"))
                     or ($external_id |
-                      test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:"
+                      test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:"
                         + $pr + ":[1-9][0-9]*:" + $base + ":" + $head + "$"))
                     or ($external_id |
                       test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:"
@@ -956,7 +956,7 @@ jobs:
               if [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*): ]]; then
                 producer_kind=release-app
                 producer_run_id="${BASH_REMATCH[1]}"
-              elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
                 producer_kind="${BASH_REMATCH[1]}"
                 producer_run_id="${BASH_REMATCH[2]}"
               else
@@ -970,7 +970,7 @@ jobs:
             sleep 2
           done
           [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
-          if [[ "${producer_kind}" =~ ^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then
+          if [[ "${producer_kind}" =~ ^(copilot|release-app|managed-sync|ancestry-backmerge|renovate)$ ]]; then
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             jq -e --argjson run_id "${producer_run_id}" \
@@ -1003,6 +1003,213 @@ jobs:
           fi
           printf 'producer_kind=%s\nproducer_run_id=%s\n' \
             "${producer_kind}" "${producer_run_id}" >>"${GITHUB_OUTPUT}"
+
+      - name: Validate one deterministic Renovate producer handoff
+        id: renovate-producer
+        if: >-
+          steps.terminal-producer.outputs.producer_kind == 'renovate'
+          && steps.terminal-producer.outputs.producer_run_id != ''
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+
+          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" '
+              .state == "open"
+              and .draft == false
+              and .user.login == "renovate[bot]"
+              and .user.type == "Bot"
+              and .base.ref == "develop"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and (.head.ref | startswith("renovate/"))
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+              and (.labels | type) == "array"
+              and all(.labels[];
+                type == "object" and (.name | type) == "string")
+              and ([.labels[].name] | index("renovate") != null)
+              and ([.labels[].name] | index("dependencies") != null)
+              and ([.labels[].name] | index("safe-automerge") != null)
+              and ([.labels[].name] | index("breaking-update") == null)
+            ' <<<"${pr}" >/dev/null
+          labels_json="$(jq -c '[.labels[].name] | sort' <<<"${pr}")"
+          labels_sha256="$(printf '%s' "${labels_json}" \
+            | sha256sum | cut -d ' ' -f 1)"
+          [[ "${labels_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          last_edited_at="$(jq -r '.last_edited_at // "null"' <<<"${pr}")"
+
+          reviews="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+          jq -e --arg head "${EVENT_HEAD}" '
+            [.[].[]? |
+              select(.user.login == "copilot-pull-request-reviewer[bot]") |
+              select(.commit_id == $head)] | length == 0
+            ' <<<"${reviews}" >/dev/null
+
+          checks="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+          neutral="$(jq -c --arg head "${EVENT_HEAD}" '
+            [.[].check_runs[]? |
+              select(.name == "Current revision review") |
+              select(.app.id == 15368 and .app.slug == "github-actions") |
+              select(.head_sha == $head)]
+            ' <<<"${checks}")"
+          test "$(jq 'length' <<<"${neutral}")" -eq 1
+          check="$(jq -c '.[0]' <<<"${neutral}")"
+          check_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+            <<<"${check}")"
+          run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}"
+          check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
+          expected_external_id="mlx90-current-revision:renovate:v6:${PR_NUMBER}:${PRODUCER_RUN_ID}:${EVENT_BASE}:${EVENT_HEAD}"
+          jq -e \
+            --arg external_id "${expected_external_id}" \
+            --arg url "${check_url}" '
+              .status == "completed"
+              and .conclusion == "success"
+              and .external_id == $external_id
+              and .details_url == $url
+              and .output.title
+                == "Current revision Renovate exemption passed"
+              and (.output.summary | type) == "string"
+            ' <<<"${check}" >/dev/null
+          summary="$(jq -er '.output.summary | fromjson' <<<"${check}")"
+
+          repository="$(gh api "repos/${REPOSITORY}")"
+          controller_ref="$(jq -er \
+            '.default_branch | select(type == "string" and length > 0)' \
+            <<<"${repository}")"
+          controller_head="$(gh api \
+            "repos/${REPOSITORY}/branches/${controller_ref}" --jq .commit.sha)"
+          controller_sha="$(jq -er \
+            '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            <<<"${summary}")"
+          controller_compare="$(gh api \
+            "repos/${REPOSITORY}/compare/${controller_sha}...${controller_head}")"
+          jq -e --arg controller "${controller_sha}" '
+            .status == "identical"
+            or (.status == "ahead" and .behind_by == 0
+              and .merge_base_commit.sha == $controller)
+            ' <<<"${controller_compare}" >/dev/null
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg controller "${controller_sha}" \
+            --arg controller_ref "${controller_ref}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg labels_sha256 "${labels_sha256}" \
+            --arg last_edited_at "${last_edited_at}" \
+            --arg repository "${REPOSITORY}" \
+            --arg run_url "${run_url}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --argjson run_id "${PRODUCER_RUN_ID}" '
+              (keys | sort) == ([
+                "base_sha", "controller_ref", "controller_sha",
+                "head_repository", "head_sha", "producer_run_id",
+                "pull_request_labels_sha256",
+                "pull_request_last_edited_at", "pull_request_number",
+                "review_id", "review_path", "run_url", "schema"
+              ] | sort)
+              and .schema == 4
+              and .base_sha == $base
+              and .head_sha == $head
+              and .head_repository == $repository
+              and .controller_sha == $controller
+              and .controller_ref == $controller_ref
+              and .pull_request_number == $pr_number
+              and .producer_run_id == $run_id
+              and .pull_request_last_edited_at == (
+                if $last_edited_at == "null"
+                then null else $last_edited_at end)
+              and .pull_request_labels_sha256 == $labels_sha256
+              and .review_id == null
+              and .review_path
+                == "deterministic policy-bound Renovate exemption"
+              and .run_url == $run_url
+            ' <<<"${summary}" >/dev/null
+
+          producer=''
+          for observation in $(seq 1 60); do
+            producer="$(gh api \
+              "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
+            producer_status="$(jq -er .status <<<"${producer}")"
+            if [ "${producer_status}" = completed ]; then
+              break
+            fi
+            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+            test "${observation}" -lt 60
+            sleep 1
+          done
+          jq -e \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "$(jq -r .head.ref <<<"${pr}")" \
+            --arg repository "${REPOSITORY}" \
+            --arg run_url "${run_url}" \
+            --argjson run_id "${PRODUCER_RUN_ID}" '
+              .id == $run_id
+              and .event == "pull_request_target"
+              and .run_attempt == 1
+              and .status == "completed"
+              and .conclusion == "success"
+              and .path == ".github/workflows/copilot-review.yml"
+              and .name == "Current revision review gate"
+              and .head_branch == $head_ref
+              and .head_sha == $head
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+              and .actor.login == "renovate[bot]"
+              and .triggering_actor.login == "renovate[bot]"
+              and .html_url == $run_url
+            ' <<<"${producer}" >/dev/null
+          jobs="$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
+          jq -e \
+            --arg head "${EVENT_HEAD}" \
+            --argjson run_id "${PRODUCER_RUN_ID}" '
+              ([.[].jobs[]? |
+                select(.run_id == $run_id and .head_sha == $head) |
+                select(.run_attempt == 1) |
+                select(.name == "Verify current revision policy") |
+                select(.status == "completed" and .conclusion == "success") |
+                select(([.steps[]? |
+                  select(.status == "completed" and .conclusion == "success") |
+                  .name] | sort) as $steps |
+                  ($steps | index("Accept trusted automation exemption")) != null
+                  and ($steps | index("Publish bound neutral result")) != null)]
+                | length) == 1
+              and ([.[].jobs[]? |
+                select(.run_id == $run_id and .head_sha == $head) |
+                select(.run_attempt == 1) |
+                select(.name
+                  == "Request Copilot review for current revision") |
+                select(.status == "completed" and .conclusion == "skipped")]
+                | length) == 1
+              and ([.[].jobs[]? |
+                select(.run_id == $run_id and .head_sha == $head) |
+                select(.run_attempt == 1) |
+                select(.name | startswith(
+                  "Request protected verifier re-evaluation")) |
+                select(.status == "completed" and .conclusion == "skipped")]
+                | length) == 1
+            ' <<<"${jobs}" >/dev/null
+          {
+            echo 'verified=true'
+            echo "labels_sha256=${labels_sha256}"
+            echo "last_edited_at=${last_edited_at}"
+          } >>"${GITHUB_OUTPUT}"
 
       - name: Validate an Exact-Revision producer handoff
         id: release-app-producer
@@ -1197,6 +1404,7 @@ jobs:
           done
 
       - name: Verify one protected result for the exact live revision
+        id: protected-verifier
         if: >-
           !(
             github.repository == 'lightning-it/shared-assets-lit'
@@ -1218,6 +1426,8 @@ jobs:
             ${{
               steps.terminal-producer.outputs.producer_kind == 'copilot'
               && 'Verify current Copilot review and resolved findings'
+              || steps.terminal-producer.outputs.producer_kind == 'renovate'
+              && 'Accept trusted automation exemption'
               || steps.terminal-producer.outputs.producer_kind == 'managed-sync'
               && 'Accept trusted automation exemption'
               || steps.terminal-producer.outputs.producer_kind
@@ -1227,6 +1437,8 @@ jobs:
             }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
+          RENOVATE_PRODUCER_VERIFIED: >-
+            ${{ steps.renovate-producer.outputs.verified }}
           SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
           TERMINAL_PRODUCER_RUN_ID: >-
             ${{ steps.terminal-producer.outputs.producer_run_id }}
@@ -2261,6 +2473,7 @@ jobs:
                   or (.external_id | startswith("mlx90-current-revision:copilot:v6:"))
                   or (.external_id | startswith("mlx90-current-revision:managed-sync:v6:"))
                   or (.external_id | startswith("mlx90-current-revision:ancestry-backmerge:v6:"))
+                  or (.external_id | startswith("mlx90-current-revision:renovate:v6:"))
                 )]
             ' <<<"${neutral_pages}")"
             neutral_count="$(jq 'length' <<<"${neutral}")"
@@ -2360,7 +2573,7 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
@@ -2381,6 +2594,10 @@ jobs:
               test "${producer_kind}" = managed-sync
               test "${base_ref}" = develop
               expected_review_path="deterministic provenance-bound managed distribution exemption"
+            elif [ "${author}" = 'renovate[bot]' ]; then
+              test "${producer_kind}" = renovate
+              test "${RENOVATE_PRODUCER_VERIFIED}" = true
+              expected_review_path="deterministic policy-bound Renovate exemption"
             else
               test "${producer_kind}" = copilot
               expected_review_path="applicable Copilot or governed automation exemption"
@@ -2719,10 +2936,108 @@ jobs:
 
           fi
 
+          {
+            echo 'finalize=true'
+            echo "producer_kind=${producer_kind}"
+            echo "producer_run_url=${producer_run_url}"
+            echo "reservation_id=${reservation_id}"
+          } >>"${GITHUB_OUTPUT}"
+          trap - ERR
+
+      - name: Rebind and finalize the protected result
+        if: steps.protected-verifier.outputs.finalize == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_KIND: ${{ steps.protected-verifier.outputs.producer_kind }}
+          PRODUCER_RUN_URL: >-
+            ${{ steps.protected-verifier.outputs.producer_run_url }}
+          RENOVATE_LABELS_SHA256: >-
+            ${{ steps.renovate-producer.outputs.labels_sha256 }}
+          RENOVATE_LAST_EDITED_AT: >-
+            ${{ steps.renovate-producer.outputs.last_edited_at }}
+          RESERVATION_ID: ${{ steps.protected-verifier.outputs.reservation_id }}
+        run: |
+          set -euo pipefail
           failure_stage='permanent-finalization'
-          gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+          [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
+          finalize_failure() {
+            local exit_code="$?"
+            trap - ERR
+            set +e
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
+              -f status=completed \
+              -f conclusion=failure \
+              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
+              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." \
+              >/dev/null
+            exit "${exit_code}"
+          }
+          trap finalize_failure ERR
+
+          final_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" '
+              .state == "open"
+              and .draft == false
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and (.head.repo.full_name | type == "string" and length > 0)
+            ' <<<"${final_pr}" >/dev/null
+
+          if [ "${PRODUCER_KIND}" = renovate ]; then
+            failure_stage='renovate-final-rebind'
+            jq -e \
+              --arg repository "${REPOSITORY}" '
+                .user.login == "renovate[bot]"
+                and .user.type == "Bot"
+                and .base.ref == "develop"
+                and .base.repo.full_name == $repository
+                and (.head.ref | startswith("renovate/"))
+                and .head.repo.full_name == $repository
+                and (.labels | type) == "array"
+                and all(.labels[];
+                  type == "object" and (.name | type) == "string")
+                and ([.labels[].name] | index("renovate") != null)
+                and ([.labels[].name] | index("dependencies") != null)
+                and ([.labels[].name] | index("safe-automerge") != null)
+                and ([.labels[].name] | index("breaking-update") == null)
+              ' <<<"${final_pr}" >/dev/null
+            test "$(jq -r '.last_edited_at // "null"' \
+              <<<"${final_pr}")" = "${RENOVATE_LAST_EDITED_AT}"
+            final_labels="$(jq -cer \
+              'if (.labels | type) == "array"
+               and all(.labels[];
+                 type == "object" and (.name | type) == "string")
+               then [.labels[].name] | sort
+               else error("malformed pull-request labels") end' \
+              <<<"${final_pr}")"
+            test "$(printf '%s' "${final_labels}" \
+              | sha256sum | cut -d ' ' -f 1)" = \
+              "${RENOVATE_LABELS_SHA256}"
+          fi
+
+          failure_stage='permanent-finalization'
+          finalized="$(gh api --method PATCH \
+            "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
             -f status=completed \
             -f conclusion=success \
             -f 'output[title]=Protected current-revision evidence verified' \
-            -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${producer_run_url}." >/dev/null
+            -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; producer ${PRODUCER_RUN_URL}.")"
+          jq -e \
+            --arg external_id \
+              "rep60-required-workflow:v3:${GITHUB_RUN_ID}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .head_sha == $head
+              and .status == "completed"
+              and .conclusion == "success"
+              and .external_id == $external_id
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+            ' <<<"${finalized}" >/dev/null
           trap - ERR
