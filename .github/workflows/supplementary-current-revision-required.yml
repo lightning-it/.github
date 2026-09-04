@@ -26,8 +26,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  authorize-supplementary-catchup-v5:
-    name: Authorize exact Supplementary catch-up v5
+  authorize-supplementary-catchup-v5-successor:
+    name: Authorize exact Supplementary catch-up v5 successor
     if: >-
       github.repository == 'lightning-it/ansible-collection-supplementary'
       && github.event.action == 'opened'
@@ -41,9 +41,9 @@ jobs:
         == '626f249d5e05a9bdca93f183029f031f6979061b'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.head.sha
-        == 'eaa23d6e4adc6f15659a102ae652883a813e34f6'
+        == '5dcbc1ee4d08797c84ffe47282ff7502428553d9'
       && github.event.pull_request.title
-        == 'chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
+        == 'chore(rep60): promote protected Supplementary protected-checkpoint-1-v5-successor'
     permissions:
       actions: read
       contents: read
@@ -76,18 +76,19 @@ jobs:
         run: |
           set -euo pipefail
           expected_base='626f249d5e05a9bdca93f183029f031f6979061b'
-          expected_head='eaa23d6e4adc6f15659a102ae652883a813e34f6'
-          expected_source='34503f45f037d8e06edd662ddacd70e95639f813'
-          expected_source_parent='b26f10e069ad64b34aab4a7385ebc6f48023f5d4'
-          expected_source_tree='0177f60e6ca2672a8e3eb33776229a611d81a8e8'
-          expected_develop='cf3f5f2dea99fbfbade7cd609fea046bd0cc881a'
-          expected_anchor_base='7bd8f538be4295e173bcf7305f398d9e71610e53'
-          expected_anchor_head='e69de5d6b479122d10e53286adcfbd07a7262ee6'
-          expected_patch_bytes=199073
-          expected_patch_sha='57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc'
-          expected_source_workflow_blob='710b9cf0a8dcabaff6946d4d061fa2cc93586ba1'
-          expected_title='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
-          expected_subject='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
+          expected_head='5dcbc1ee4d08797c84ffe47282ff7502428553d9'
+          expected_source='43578ba3a09f1da6b6654ba9ba564a56f9ab5996'
+          expected_source_parent='34503f45f037d8e06edd662ddacd70e95639f813'
+          expected_source_tree='e9f6adc1d4114b2102e743809e7409819160c564'
+          expected_historical_test_blob='33e063b24ea6e15642b1ea0b1182d11e40bd41f3'
+          expected_develop='6ed1845f1a5f1eab5a49c0efebb02a5c7bb6b100'
+          expected_anchor_base='cf4fab537760231b897f67074b87053b0bc8442a'
+          expected_anchor_head='cdf6673eb2ade10fafd06c09aba2d02268833155'
+          expected_patch_bytes=199991
+          expected_patch_sha='f3144c8266e245357aafd340a60485025708aea52657133b06be7657822cb7e4'
+          expected_source_workflow_blob='f2e898c5fc466e99c58346c1df604ae37ab4b5b7'
+          expected_title='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5-successor'
+          expected_subject='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5-successor'
 
           test "${GITHUB_RUN_ATTEMPT}" = 1
           test "${EVENT_BASE}" = "${expected_base}"
@@ -106,10 +107,10 @@ jobs:
 
           pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           head_ref="$(jq -er '.head.ref | select(type == "string")' <<<"${pull}")"
-          branch_prefix='release/rep60-supplementary-protected-checkpoint-1-v5-34503f45f037-'
+          branch_prefix='release/rep60-supplementary-protected-checkpoint-1-v5-successor-43578ba3a09f-'
           [[ "${head_ref}" =~ ^${branch_prefix}([1-9][0-9]*)$ ]]
           source_run_id="${BASH_REMATCH[1]}"
-          marker="<!-- rep60-bounded-supplementary-main-catchup/v1 target=${REPOSITORY} stage=protected-checkpoint-1-v5 base=${expected_base} source=${expected_source} develop=${expected_develop} -->"
+          marker="<!-- rep60-bounded-supplementary-main-catchup/v1 target=${REPOSITORY} stage=protected-checkpoint-1-v5-successor base=${expected_base} source=${expected_source} develop=${expected_develop} -->"
           dispatch_marker="<!-- rep60-bounded-supplementary-catchup-dispatch-bound:${expected_base}:${expected_head}:${source_run_id} -->"
           expected_body="${marker}"$'\n'"${dispatch_marker}"$'\n\n'
           expected_body+="Protected-history checkpoint ${expected_source} from live develop ${expected_develop}. "
@@ -190,6 +191,14 @@ jobs:
             "${expected_source_tree}"
           test "$(git -C target rev-parse "${expected_source}^{tree}")" = \
             "${expected_source_tree}"
+          test "$(git -C target ls-tree "${expected_source}" \
+            tests/unit/test_bounded_promotion_transition.py | awk '{print $3}')" = \
+            "${expected_historical_test_blob}"
+          test "$(git -C target ls-tree "${expected_head}" \
+            tests/unit/test_bounded_promotion_transition.py | awk '{print $3}')" = \
+            "${expected_historical_test_blob}"
+          test -z "$(git -C target ls-tree "${expected_develop}" \
+            tests/unit/test_bounded_promotion_transition.py)"
           test "$(git -C target show -s --format='%an <%ae>' "${expected_head}")" = \
             'lightning-it-shared-assets-sync[bot] <307342877+lightning-it-shared-assets-sync[bot]@users.noreply.github.com>'
           test "$(git -C target show -s --format='%cn <%ce>' "${expected_head}")" = \
@@ -233,7 +242,7 @@ jobs:
               and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
               and .path == ".github/workflows/bounded-supplementary-main-catchup.yml"
               and .display_title
-                == "REP-60 bounded Supplementary catch-up protected-checkpoint-1-v5"
+                == "REP-60 bounded Supplementary catch-up protected-checkpoint-1-v5-successor"
               and .status == "completed"
               and .conclusion == "success"
               and .html_url == $run_url
