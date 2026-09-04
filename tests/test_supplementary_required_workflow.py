@@ -402,7 +402,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_pr_comment_read_permissions_are_explicit_and_read_only(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        permissions = workflow.split("    runs-on:", 1)[0]
+        permissions = workflow.split(
+            "  verify-protected-current-revision-evidence:\n", 1
+        )[1].split("    runs-on:", 1)[0]
         self.assertIn("      pull-requests: read", permissions)
         self.assertIn("      issues: read", permissions)
         self.assertIn(
@@ -3906,6 +3908,65 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             condition,
         )
 
+
+    def test_supplementary_catchup_v5_authorization_is_one_exact_tuple(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        authorization = workflow.split(
+            "  authorize-supplementary-catchup-v5:\n", 1
+        )[1].split("  verify-protected-current-revision-evidence:\n", 1)[0]
+        for fragment in (
+            "name: Authorize exact Supplementary catch-up v5",
+            "github.event.action == 'opened'",
+            "github.repository == 'lightning-it/ansible-collection-supplementary'",
+            "== 'lightning-it-release-automation[bot]'",
+            "github.event.pull_request.user.id == 307565056",
+            "github.event.pull_request.user.type == 'Bot'",
+            "github.event.pull_request.base.ref == 'main'",
+            "626f249d5e05a9bdca93f183029f031f6979061b",
+            "eaa23d6e4adc6f15659a102ae652883a813e34f6",
+            "34503f45f037d8e06edd662ddacd70e95639f813",
+            "b26f10e069ad64b34aab4a7385ebc6f48023f5d4",
+            "0177f60e6ca2672a8e3eb33776229a611d81a8e8",
+            "cf3f5f2dea99fbfbade7cd609fea046bd0cc881a",
+            "7bd8f538be4295e173bcf7305f398d9e71610e53",
+            "e69de5d6b479122d10e53286adcfbd07a7262ee6",
+            "expected_patch_bytes=199073",
+            "57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc",
+            "2f89fd1140ed38a8e77d973e90cfb74ca91a6edf",
+            "environment:\n      name: normal-release-promotion-approval",
+            "permission-actions: read",
+            "permission-contents: read",
+            'test "${GITHUB_RUN_ATTEMPT}" = 1',
+            ".commit.verification.verified == true",
+            "git -C target merge-base --is-ancestor",
+            "git -C target diff --binary --full-index",
+            'test "${patch_bytes}" = "${expected_patch_bytes}"',
+            'test "${patch_sha}" = "${expected_patch_sha}"',
+            ".last_edited_at == null",
+            "and (.labels | length) == 0",
+            'and .actor.login == "litroc"',
+            'and .triggering_actor.login == "litroc"',
+            'and .run_attempt == 1',
+            'and .conclusion == "success"',
+            "Create exact Release-App catch-up PR",
+            "Dispatch the one protected Exact-Revision review",
+            "Finalize exact dispatch binding",
+        ):
+            self.assertIn(fragment, authorization)
+        self.assertGreaterEqual(
+            authorization.count("protected-checkpoint-1-v5"), 5
+        )
+        self.assertNotIn("protected-checkpoint-2", authorization)
+        self.assertNotIn("permission-actions: write", authorization)
+        self.assertNotIn("permission-contents: write", authorization)
+        self.assertNotIn("permission-pull-requests: write", authorization)
+        self.assertNotIn("openai/codex-action", authorization)
+        self.assertNotIn("copilot", authorization.lower())
+        self.assertNotIn("gh run rerun", authorization)
+        self.assertNotIn("gh pr merge", authorization)
+        self.assertNotIn("--force", authorization)
 
 if __name__ == "__main__":
     unittest.main()
