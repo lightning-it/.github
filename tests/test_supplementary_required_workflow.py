@@ -3942,7 +3942,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "cdf6673eb2ade10fafd06c09aba2d02268833155",
             "expected_patch_bytes=199991",
             "f3144c8266e245357aafd340a60485025708aea52657133b06be7657822cb7e4",
-            "f2e898c5fc466e99c58346c1df604ae37ab4b5b7",
+            "aee7f71950743ce5037546e399b2ed376cee4d8e",
             "rep60-bounded-supplementary-catchup-dispatch-bound:${expected_base}:${expected_head}:${source_run_id}",
             "environment:\n      name: normal-release-promotion-approval",
             "permission-actions: read",
@@ -3969,6 +3969,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             authorization.count("protected-checkpoint-1-v5-successor"), 5
         )
         self.assertNotIn("protected-checkpoint-2", authorization)
+        self.assertNotIn(
+            "f2e898c5fc466e99c58346c1df604ae37ab4b5b7",
+            authorization,
+        )
         self.assertNotIn(
             "rep60-bounded-supplementary-catchup-dispatch-succeeded:",
             authorization,
