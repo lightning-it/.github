@@ -3909,15 +3909,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
 
-    def test_supplementary_catchup_v5_authorization_is_one_exact_tuple(
+    def test_supplementary_catchup_v5_successor_authorization_is_one_exact_tuple(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         authorization = workflow.split(
-            "  authorize-supplementary-catchup-v5:\n", 1
+            "  authorize-supplementary-catchup-v5-successor:\n", 1
         )[1].split("  verify-protected-current-revision-evidence:\n", 1)[0]
         for fragment in (
-            "name: Authorize exact Supplementary catch-up v5",
+            "name: Authorize exact Supplementary catch-up v5 successor",
             "github.event.action == 'opened'",
             "github.repository == 'lightning-it/ansible-collection-supplementary'",
             "== 'lightning-it-release-automation[bot]'",
@@ -3925,16 +3925,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "github.event.pull_request.user.type == 'Bot'",
             "github.event.pull_request.base.ref == 'main'",
             "626f249d5e05a9bdca93f183029f031f6979061b",
-            "eaa23d6e4adc6f15659a102ae652883a813e34f6",
+            "5dcbc1ee4d08797c84ffe47282ff7502428553d9",
+            "43578ba3a09f1da6b6654ba9ba564a56f9ab5996",
             "34503f45f037d8e06edd662ddacd70e95639f813",
-            "b26f10e069ad64b34aab4a7385ebc6f48023f5d4",
-            "0177f60e6ca2672a8e3eb33776229a611d81a8e8",
-            "cf3f5f2dea99fbfbade7cd609fea046bd0cc881a",
-            "7bd8f538be4295e173bcf7305f398d9e71610e53",
-            "e69de5d6b479122d10e53286adcfbd07a7262ee6",
-            "expected_patch_bytes=199073",
-            "57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc",
-            "710b9cf0a8dcabaff6946d4d061fa2cc93586ba1",
+            "e9f6adc1d4114b2102e743809e7409819160c564",
+            "33e063b24ea6e15642b1ea0b1182d11e40bd41f3",
+            "6ed1845f1a5f1eab5a49c0efebb02a5c7bb6b100",
+            "cf4fab537760231b897f67074b87053b0bc8442a",
+            "cdf6673eb2ade10fafd06c09aba2d02268833155",
+            "expected_patch_bytes=199991",
+            "f3144c8266e245357aafd340a60485025708aea52657133b06be7657822cb7e4",
+            "f2e898c5fc466e99c58346c1df604ae37ab4b5b7",
             "rep60-bounded-supplementary-catchup-dispatch-bound:${expected_base}:${expected_head}:${source_run_id}",
             "environment:\n      name: normal-release-promotion-approval",
             "permission-actions: read",
@@ -3943,6 +3944,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ".commit.verification.verified == true",
             "git -C target merge-base --is-ancestor",
             "git -C target diff --binary --full-index",
+            "tests/unit/test_bounded_promotion_transition.py",
             'test "${patch_bytes}" = "${expected_patch_bytes}"',
             'test "${patch_sha}" = "${expected_patch_sha}"',
             ".last_edited_at == null",
@@ -3957,7 +3959,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(fragment, authorization)
         self.assertGreaterEqual(
-            authorization.count("protected-checkpoint-1-v5"), 5
+            authorization.count("protected-checkpoint-1-v5-successor"), 5
         )
         self.assertNotIn("protected-checkpoint-2", authorization)
         self.assertNotIn(
