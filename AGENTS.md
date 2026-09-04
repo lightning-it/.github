@@ -41,14 +41,6 @@
   `lightning-it-release-automation[bot]` uses only the protected MLX-90 §7.2
   Exact-Revision Codex check. It must never request Copilot or synthesize a
   Copilot success.
-- The sole Supplementary `protected-checkpoint-1-v5` transition may replace
-  its older base-local main classifier with this repository's no-bypass
-  Required Workflow only for the hard-coded base/head/source/anchor/diff and
-  protected Shared-Assets source-workflow tuple. The replacement must pass the
-  existing human normal-promotion environment, revalidate untouched PR and App
-  provenance, and remain unusable for every other PR or later checkpoint. The
-  expected legacy classifier failure is never positive evidence. Remove the
-  consumed v5 authorization before introducing any later checkpoint.
 - A proven ancestry-only main-to-develop backmerge uses the deterministic
   evidence-bound exemption and performs zero AI calls. Unknown automation
   identities fail closed.
