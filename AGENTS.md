@@ -51,8 +51,8 @@
   remain unusable for every other PR or later checkpoint. The
   expected legacy classifier failure is never positive evidence. The terminal
   `protected-checkpoint-1-v5` tuple and target PR #960 remain consumed and must
-  never be retried or reused; remove that authorization before introducing the
-  successor.
+  never be retried or reused. Their authorization MUST remain absent while the
+  sole v5-successor authorization is present; no future edit may restore both.
 - A proven ancestry-only main-to-develop backmerge uses the deterministic
   evidence-bound exemption and performs zero AI calls. Unknown automation
   identities fail closed.
