@@ -85,7 +85,7 @@ jobs:
           expected_anchor_head='e69de5d6b479122d10e53286adcfbd07a7262ee6'
           expected_patch_bytes=199073
           expected_patch_sha='57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc'
-          expected_source_workflow_blob='2f89fd1140ed38a8e77d973e90cfb74ca91a6edf'
+          expected_source_workflow_blob='710b9cf0a8dcabaff6946d4d061fa2cc93586ba1'
           expected_title='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
           expected_subject='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
 
@@ -110,7 +110,7 @@ jobs:
           [[ "${head_ref}" =~ ^${branch_prefix}([1-9][0-9]*)$ ]]
           source_run_id="${BASH_REMATCH[1]}"
           marker="<!-- rep60-bounded-supplementary-main-catchup/v1 target=${REPOSITORY} stage=protected-checkpoint-1-v5 base=${expected_base} source=${expected_source} develop=${expected_develop} -->"
-          dispatch_marker="<!-- rep60-bounded-supplementary-catchup-dispatch-succeeded:${expected_base}:${expected_head} -->"
+          dispatch_marker="<!-- rep60-bounded-supplementary-catchup-dispatch-bound:${expected_base}:${expected_head}:${source_run_id} -->"
           expected_body="${marker}"$'\n'"${dispatch_marker}"$'\n\n'
           expected_body+="Protected-history checkpoint ${expected_source} from live develop ${expected_develop}. "
           expected_body+="Patch SHA-256: ${expected_patch_sha}; bytes: ${expected_patch_bytes}. "
