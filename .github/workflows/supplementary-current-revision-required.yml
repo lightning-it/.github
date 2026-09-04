@@ -26,6 +26,296 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  authorize-supplementary-catchup-v5:
+    name: Authorize exact Supplementary catch-up v5
+    if: >-
+      github.repository == 'lightning-it/ansible-collection-supplementary'
+      && github.event.action == 'opened'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.user.login
+        == 'lightning-it-release-automation[bot]'
+      && github.event.pull_request.user.id == 307565056
+      && github.event.pull_request.user.type == 'Bot'
+      && github.event.pull_request.base.ref == 'main'
+      && github.event.pull_request.base.sha
+        == '626f249d5e05a9bdca93f183029f031f6979061b'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.head.sha
+        == 'eaa23d6e4adc6f15659a102ae652883a813e34f6'
+      && github.event.pull_request.title
+        == 'chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: normal-release-promotion-approval
+
+    steps:
+      - name: Mint protected Shared-Assets source-read token
+        id: source-app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: lightning-it
+          repositories: shared-assets-lit
+          permission-actions: read
+          permission-contents: read
+
+      - name: Verify the one protected checkpoint authorization
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
+        run: |
+          set -euo pipefail
+          expected_base='626f249d5e05a9bdca93f183029f031f6979061b'
+          expected_head='eaa23d6e4adc6f15659a102ae652883a813e34f6'
+          expected_source='34503f45f037d8e06edd662ddacd70e95639f813'
+          expected_source_parent='b26f10e069ad64b34aab4a7385ebc6f48023f5d4'
+          expected_source_tree='0177f60e6ca2672a8e3eb33776229a611d81a8e8'
+          expected_develop='cf3f5f2dea99fbfbade7cd609fea046bd0cc881a'
+          expected_anchor_base='7bd8f538be4295e173bcf7305f398d9e71610e53'
+          expected_anchor_head='e69de5d6b479122d10e53286adcfbd07a7262ee6'
+          expected_patch_bytes=199073
+          expected_patch_sha='57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc'
+          expected_source_workflow_blob='2f89fd1140ed38a8e77d973e90cfb74ca91a6edf'
+          expected_title='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
+          expected_subject='chore(rep60): promote protected Supplementary protected-checkpoint-1-v5'
+
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          test "${EVENT_BASE}" = "${expected_base}"
+          test "${EVENT_HEAD}" = "${expected_head}"
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          test -n "${SOURCE_GH_TOKEN}"
+
+          live_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          live_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${expected_base}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${live_main}" >/dev/null
+          jq -e --arg sha "${expected_develop}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${live_develop}" >/dev/null
+
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          head_ref="$(jq -er '.head.ref | select(type == "string")' <<<"${pull}")"
+          branch_prefix='release/rep60-supplementary-protected-checkpoint-1-v5-34503f45f037-'
+          [[ "${head_ref}" =~ ^${branch_prefix}([1-9][0-9]*)$ ]]
+          source_run_id="${BASH_REMATCH[1]}"
+          marker="<!-- rep60-bounded-supplementary-main-catchup/v1 target=${REPOSITORY} stage=protected-checkpoint-1-v5 base=${expected_base} source=${expected_source} develop=${expected_develop} -->"
+          dispatch_marker="<!-- rep60-bounded-supplementary-catchup-dispatch-succeeded:${expected_base}:${expected_head} -->"
+          expected_body="${marker}"$'\n'"${dispatch_marker}"$'\n\n'
+          expected_body+="Protected-history checkpoint ${expected_source} from live develop ${expected_develop}. "
+          expected_body+="Patch SHA-256: ${expected_patch_sha}; bytes: ${expected_patch_bytes}. "
+          expected_body+='This is a normal Release-App PR and grants no review or merge exception.'
+          jq -e \
+            --arg base "${expected_base}" \
+            --arg body "${expected_body}" \
+            --arg branch "${head_ref}" \
+            --arg head "${expected_head}" \
+            --arg repository "${REPOSITORY}" \
+            --arg title "${expected_title}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and .user.login == "lightning-it-release-automation[bot]"
+              and .user.id == 307565056
+              and .user.type == "Bot"
+              and .base.repo.full_name == $repository
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .head.repo.full_name == $repository
+              and .head.ref == $branch
+              and .head.sha == $head
+              and .title == $title
+              and .body == $body
+              and .last_edited_at == null
+              and (.labels | length) == 0
+            ' <<<"${pull}" >/dev/null
+
+          target_commit="$(gh api "repos/${REPOSITORY}/commits/${expected_head}")"
+          jq -e \
+            --arg base "${expected_base}" \
+            --arg head "${expected_head}" \
+            --arg source "${expected_source}" '
+              .sha == $head
+              and [.parents[].sha] == [$base, $source]
+              and .author.login == "lightning-it-shared-assets-sync[bot]"
+              and .author.id == 307342877
+              and .author.type == "Bot"
+              and .committer.login == "lightning-it-shared-assets-sync[bot]"
+              and .committer.id == 307342877
+              and .committer.type == "Bot"
+            ' <<<"${target_commit}" >/dev/null
+          source_commit="$(gh api "repos/${REPOSITORY}/commits/${expected_source}")"
+          jq -e \
+            --arg parent "${expected_source_parent}" \
+            --arg source "${expected_source}" '
+              .sha == $source and [.parents[].sha] == [$parent]
+            ' <<<"${source_commit}" >/dev/null
+          anchor_commit="$(gh api "repos/${REPOSITORY}/commits/${expected_develop}")"
+          jq -e \
+            --arg base "${expected_anchor_base}" \
+            --arg head "${expected_anchor_head}" \
+            --arg sha "${expected_develop}" '
+              .sha == $sha
+              and .commit.verification.verified == true
+              and [.parents[].sha] == [$base, $head]
+            ' <<<"${anchor_commit}" >/dev/null
+
+          auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          git init --quiet target
+          git -C target remote add origin "${GITHUB_SERVER_URL}/${REPOSITORY}.git"
+          git -C target -c \
+            "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --quiet --no-tags origin \
+            "refs/heads/main:refs/remotes/origin/main" \
+            "refs/heads/develop:refs/remotes/origin/develop" \
+            "refs/heads/${head_ref}:refs/remotes/origin/candidate"
+          test "$(git -C target rev-parse refs/remotes/origin/main)" = "${expected_base}"
+          test "$(git -C target rev-parse refs/remotes/origin/develop)" = "${expected_develop}"
+          test "$(git -C target rev-parse refs/remotes/origin/candidate)" = "${expected_head}"
+          test "$(git -C target show -s --format=%P "${expected_head}")" = \
+            "${expected_base} ${expected_source}"
+          test "$(git -C target rev-parse "${expected_head}^{tree}")" = \
+            "${expected_source_tree}"
+          test "$(git -C target rev-parse "${expected_source}^{tree}")" = \
+            "${expected_source_tree}"
+          test "$(git -C target show -s --format='%an <%ae>' "${expected_head}")" = \
+            'lightning-it-shared-assets-sync[bot] <307342877+lightning-it-shared-assets-sync[bot]@users.noreply.github.com>'
+          test "$(git -C target show -s --format='%cn <%ce>' "${expected_head}")" = \
+            'lightning-it-shared-assets-sync[bot] <307342877+lightning-it-shared-assets-sync[bot]@users.noreply.github.com>'
+          test "$(git -C target show -s --format=%B "${expected_head}")" = \
+            "${expected_subject}"
+          git -C target merge-base --is-ancestor "${expected_source}" "${expected_anchor_head}"
+          git -C target merge-base --is-ancestor "${expected_anchor_head}" "${expected_develop}"
+          unexpected_entry="$(
+            git -C target ls-tree -r "${expected_head}" |
+              awk '$1 !~ /^100(644|755)$/ || $2 != "blob" { print; exit }'
+          )"
+          test -z "${unexpected_entry}"
+          patch_bytes="$(git -C target diff --binary --full-index \
+            "${expected_base}" "${expected_head}" | wc -c | tr -d ' ')"
+          patch_sha="$(git -C target diff --binary --full-index \
+            "${expected_base}" "${expected_head}" | sha256sum | awk '{print $1}')"
+          test "${patch_bytes}" = "${expected_patch_bytes}"
+          test "${patch_sha}" = "${expected_patch_sha}"
+
+          source_run_url="${GITHUB_SERVER_URL}/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
+          source_run=''
+          for observation in $(seq 1 60); do
+            source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
+            source_status="$(jq -er '.status | select(type == "string")' <<<"${source_run}")"
+            if [ "${source_status}" = completed ]; then
+              break
+            fi
+            [[ "${source_status}" =~ ^(queued|in_progress|waiting|pending|requested)$ ]]
+            test "${observation}" -lt 60
+            sleep 2
+          done
+          jq -e \
+            --arg run_url "${source_run_url}" \
+            --argjson run_id "${source_run_id}" '
+              .id == $run_id
+              and .event == "workflow_dispatch"
+              and .run_attempt == 1
+              and .head_branch == "main"
+              and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and .path == ".github/workflows/bounded-supplementary-main-catchup.yml"
+              and .display_title
+                == "REP-60 bounded Supplementary catch-up protected-checkpoint-1-v5"
+              and .status == "completed"
+              and .conclusion == "success"
+              and .html_url == $run_url
+              and .actor.login == "litroc"
+              and .triggering_actor.login == "litroc"
+              and .repository.full_name == "lightning-it/shared-assets-lit"
+              and .head_repository.full_name == "lightning-it/shared-assets-lit"
+            ' <<<"${source_run}" >/dev/null
+          source_sha="$(jq -er '.head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            <<<"${source_run}")"
+          source_main="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+            repos/lightning-it/shared-assets-lit/branches/main)"
+          jq -e --arg source "${source_sha}" '
+            .name == "main" and .protected == true
+            and (.commit.sha | type == "string" and test("^[0-9a-f]{40}$"))
+          ' <<<"${source_main}" >/dev/null
+          live_source_main="$(jq -r .commit.sha <<<"${source_main}")"
+          source_compare="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+            "repos/lightning-it/shared-assets-lit/compare/${source_sha}...${live_source_main}")"
+          jq -e --arg source "${source_sha}" --arg current "${live_source_main}" '
+            .base_commit.sha == $source
+            and .merge_base_commit.sha == $source
+            and (
+              (.status == "identical" and $current == $source
+                and .ahead_by == 0 and .behind_by == 0)
+              or
+              (.status == "ahead" and $current != $source
+                and .ahead_by > 0 and .behind_by == 0
+                and .head_commit.sha == $current)
+            )
+          ' <<<"${source_compare}" >/dev/null
+          source_workflow="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+            "repos/lightning-it/shared-assets-lit/contents/.github/workflows/bounded-supplementary-main-catchup.yml?ref=${source_sha}")"
+          jq -e --arg blob "${expected_source_workflow_blob}" '
+            .type == "file"
+            and .path == ".github/workflows/bounded-supplementary-main-catchup.yml"
+            and .encoding == "base64"
+            and .sha == $blob
+            and (.content | type == "string" and length > 0)
+          ' <<<"${source_workflow}" >/dev/null
+          source_jobs="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+            "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/1/jobs?per_page=100")"
+          jq -e --arg source "${source_sha}" '
+            (.total_count | type == "number" and . > 0 and . <= 100)
+            and (.jobs | length) == .total_count
+            and ([.jobs[] |
+              select(.name == "Prepare exact protected-history catch-up") |
+              select(.head_sha == $source and .run_attempt == 1) |
+              select(.status == "completed" and .conclusion == "success") |
+              select(([
+                .steps[] |
+                select(.name == "Verify protected controller identity"
+                  or .name == "Consume the immutable one-time stage ledger"
+                  or .name == "Resolve exact workflow-source App identity"
+                  or .name == "Resolve exact release App identity"
+                  or .name == "Create exact Release-App catch-up PR"
+                  or .name == "Dispatch the one protected Exact-Revision review"
+                  or .name == "Finalize exact dispatch binding") |
+                select(.status == "completed" and .conclusion == "success")
+              ] | length) == 7)] | length) == 1
+          ' <<<"${source_jobs}" >/dev/null
+          jq -e \
+            --arg created "$(jq -r .created_at <<<"${pull}")" \
+            --arg started "$(jq -r .run_started_at <<<"${source_run}")" \
+            --arg updated "$(jq -r .updated_at <<<"${source_run}")" '
+              ($created | fromdateiso8601) >= ($started | fromdateiso8601)
+              and ($created | fromdateiso8601) <= ($updated | fromdateiso8601)
+            ' <<<null >/dev/null
+
+          environment="$(gh api \
+            "repos/${REPOSITORY}/environments/normal-release-promotion-approval")"
+          jq -e '
+            .name == "normal-release-promotion-approval"
+            and .can_admins_bypass == false
+            and ([.protection_rules[]? | select(.type == "wait_timer")] | length == 0)
+            and ([.protection_rules[]? | select(.type == "required_reviewers")] | length == 1)
+            and ([.protection_rules[]? | select(.type == "required_reviewers")][0].prevent_self_review == true)
+            and ([.protection_rules[]? | select(.type == "required_reviewers")][0].reviewers | length == 1)
+            and ([.protection_rules[]? | select(.type == "required_reviewers")][0].reviewers[0].type == "BusinessTeam")
+            and ([.protection_rules[]? | select(.type == "required_reviewers")][0].reviewers[0].reviewer.id == 15545798)
+          ' <<<"${environment}" >/dev/null
+
   verify-protected-current-revision-evidence:
     # Keep the native Required-Workflow job distinct from the API evidence
     # check it verifies. GitHub Actions check runs share one App identity, so
