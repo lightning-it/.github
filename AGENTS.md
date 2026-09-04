@@ -46,7 +46,9 @@
   Required Workflow only for the hard-coded base/head/source/anchor/diff and
   protected Shared-Assets source-workflow tuple. The replacement must pass the
   existing human normal-promotion environment, revalidate untouched PR and App
-  provenance, and remain unusable for every other PR or later checkpoint. The
+  provenance, and require the non-authorizing `dispatch-bound` marker to bind
+  the same first-attempt protected source-run ID encoded by the branch. It must
+  remain unusable for every other PR or later checkpoint. The
   expected legacy classifier failure is never positive evidence. Remove the
   consumed v5 authorization before introducing any later checkpoint.
 - A proven ancestry-only main-to-develop backmerge uses the deterministic
