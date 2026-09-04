@@ -3935,8 +3935,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "expected_patch_bytes=199073",
             "57ca196f9eb58c443b3c50dd0e4c18e962ce63e940ad1555d1cee9ea3dd19fcc",
             "710b9cf0a8dcabaff6946d4d061fa2cc93586ba1",
-            "rep60-bounded-supplementary-catchup-dispatch-bound:",
-            '${expected_head}:${source_run_id}',
+            "rep60-bounded-supplementary-catchup-dispatch-bound:"
+            '${expected_base}:${expected_head}:${source_run_id}',
             "environment:\n      name: normal-release-promotion-approval",
             "permission-actions: read",
             "permission-contents: read",
