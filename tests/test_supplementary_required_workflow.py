@@ -162,7 +162,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             required_workflow,
         )
         self.assertIn(
-            "^(copilot|release-app|managed-sync|ancestry-backmerge)$",
+            "^(copilot|release-app|managed-sync|ancestry-backmerge|renovate)$",
             required_workflow,
         )
         self.assertIn(
@@ -466,7 +466,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn(
@@ -888,6 +888,76 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 producer_kind="copilot",
             ),
         )
+
+    def test_required_verifier_renovate_exception_is_exact_and_ai_free(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        renovate = workflow.split(
+            "      - name: Validate one deterministic Renovate producer handoff\n",
+            1,
+        )[1].split(
+            "      - name: Validate an Exact-Revision producer handoff\n",
+            1,
+        )[0]
+        for binding in (
+            "steps.terminal-producer.outputs.producer_kind == 'renovate'",
+            '.user.login == "renovate[bot]"',
+            '.user.type == "Bot"',
+            '.base.ref == "develop"',
+            '.base.repo.full_name == $repository',
+            '.head.ref | startswith("renovate/")',
+            '.head.repo.full_name == $repository',
+            'index("renovate") != null',
+            'index("dependencies") != null',
+            'index("safe-automerge") != null',
+            'index("breaking-update") == null',
+            'labels_sha256="$(printf',
+            'copilot-pull-request-reviewer[bot]',
+            'select(.commit_id == $head)] | length == 0',
+            'deterministic policy-bound Renovate exemption',
+            '.review_id == null',
+            '.controller_ref == $controller_ref',
+            'controller_ref_uri="$(jq -rn',
+            "'$value | @uri'",
+            'branches/${controller_ref_uri}',
+            '[[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]',
+            'Current revision Renovate exemption passed',
+            '.actor.login == "renovate[bot]"',
+            '.triggering_actor.login == "renovate[bot]"',
+            '== "Request Copilot review for current revision"',
+            '"Request protected verifier re-evaluation"',
+            'echo \'verified=true\'',
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, renovate)
+        self.assertEqual(2, renovate.count('.conclusion == "skipped"'))
+
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        self.assertIn('test "${RENOVATE_PRODUCER_VERIFIED}" = true', permanent)
+        finalizer = permanent.split(
+            "      - name: Rebind and finalize the protected result\n", 1
+        )[1]
+        self.assertIn("failure_stage='renovate-final-rebind'", permanent)
+        self.assertIn('"${RENOVATE_LABELS_SHA256}"', permanent)
+        self.assertIn('"${RENOVATE_LAST_EDITED_AT}"', permanent)
+        for binding in (
+            '.user.login == "renovate[bot]"',
+            '.user.type == "Bot"',
+            '.base.ref == "develop"',
+            '.base.repo.full_name == $repository',
+            '.head.ref | startswith("renovate/")',
+            '.head.repo.full_name == $repository',
+            'index("renovate") != null',
+            'index("dependencies") != null',
+            'index("safe-automerge") != null',
+            'index("breaking-update") == null',
+        ):
+            with self.subTest(final_binding=binding):
+                self.assertIn(binding, finalizer)
 
     def test_late_review_rerun_requires_protected_single_request_evidence(
         self,
@@ -1432,6 +1502,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "managed-sync-provenance",
             "permanent-producer-inventory",
             "permanent-producer-binding",
+            "renovate-final-rebind",
             "permanent-finalization",
         }
         observed_stages = {
@@ -2124,7 +2195,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         nonterminal_handoff_guard = (
             'if [[ "${producer_kind}" =~ '
-            '^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then'
+            '^(copilot|release-app|managed-sync|ancestry-backmerge|renovate)$ ]]; then'
         )
         self.assertIn(nonterminal_handoff_guard, terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
@@ -2139,7 +2210,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             nonterminal_handoff,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:",
+            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:",
             terminal_wait,
         )
         self.assertIn(
@@ -2178,6 +2249,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "steps.terminal-producer.outputs.producer_kind == 'managed-sync'",
+            workflow,
+        )
+        self.assertIn(
+            "steps.terminal-producer.outputs.producer_kind == 'renovate'",
             workflow,
         )
         self.assertIn(
@@ -2820,6 +2895,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             1,
         )[1]
         script = verifier.split("        run: |\n", 1)[1]
+        script = script.split("\n      - name:", 1)[0]
         script_lines = script.splitlines()
         first_script_line = next(
             line for line in script_lines if line.strip()
@@ -2913,6 +2989,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "mlx90-current-revision:managed-sync:v6:"
                 f"{pr_number}:789:{base}:{head}"
             ): "789",
+            (
+                "mlx90-current-revision:renovate:v6:"
+                f"{pr_number}:901:{base}:{head}"
+            ): "901",
         }
         for external_id, run_id in accepted.items():
             with self.subTest(external_id=external_id):
@@ -2923,6 +3003,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         rejected = (
             [f"mlx90-current-revision:copilot:v6:99:789:{base}:{head}"],
             [f"mlx90-current-revision:copilot:v5:789:{head}:{base}"],
+            [
+                "mlx90-current-revision:renovate:v6:99:789:"
+                f"{base}:{head}"
+            ],
+            [
+                "mlx90-current-revision:renovate:v6:"
+                f"{pr_number}:789:{head}:{base}"
+            ],
             [
                 f"mlx90-current-revision:v4:123:{'c' * 64}",
                 f"mlx90-current-revision:v4:456:{'d' * 64}",
@@ -2979,7 +3067,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("ALLOW_IN_PROGRESS_MANAGED_SYNC", terminal)
         self.assertIn(
             'if [[ "${producer_kind}" =~ '
-            '^(copilot|release-app|managed-sync|ancestry-backmerge)$ ]]; then',
+            '^(copilot|release-app|managed-sync|ancestry-backmerge|renovate)$ ]]; then',
             terminal,
         )
         self.assertIn(
