@@ -54,6 +54,23 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         return workflow[start:end]
 
     @staticmethod
+    def _rerun_list_summary_parsing() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index('          neutral_summary_raw="$(jq -er \\\n')
+        end = workflow.index('          producer_id="$(jq -er', start)
+        return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
+    def _rerun_detail_summary_parsing() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        function = workflow.index("          validate_neutral_snapshot() {")
+        start = workflow.index(
+            '            snapshot_summary="$(jq -cer \\\n', function
+        )
+        end = workflow.index('            jq -e \\\n', start)
+        return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
     def _rerun_workflow_identity_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
         function = workflow.index(
@@ -799,6 +816,64 @@ gh() {
             '[ "${v3_count}" -eq 0 ] && [ "${v2_count}" -eq 1 ]',
             workflow,
         )
+
+    def test_rerun_parses_live_check_list_and_detail_summaries(self) -> None:
+        summary = {"schema": 4, "producer_run_id": 77}
+        summary_raw = json.dumps(summary, separators=(",", ":"))
+
+        def run(
+            representation: str, summary_value: object
+        ) -> subprocess.CompletedProcess[str]:
+            check_run = {"output": {"summary": summary_value}}
+            if representation == "list":
+                payload = [check_run]
+                input_name = "neutral"
+                output_name = "neutral_summary"
+                parser = self._rerun_list_summary_parsing()
+            else:
+                payload = check_run
+                input_name = "snapshot"
+                output_name = "snapshot_summary"
+                parser = self._rerun_detail_summary_parsing()
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    f'{input_name}="${{SUMMARY_PAYLOAD}}"',
+                    parser,
+                    f'printf "%s\\n" "${{{output_name}}}"',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "SUMMARY_PAYLOAD": json.dumps(
+                        payload, separators=(",", ":")
+                    ),
+                },
+            )
+
+        for representation in ("list", "detail"):
+            with self.subTest(representation=representation, case="valid"):
+                accepted = run(representation, summary_raw)
+                self.assertEqual(0, accepted.returncode, accepted.stderr)
+                self.assertEqual(summary, json.loads(accepted.stdout))
+
+        invalid_summaries = (
+            ("api-object", summary),
+            ("empty", ""),
+            ("invalid-json", "not-json"),
+            ("array", "[]"),
+            ("scalar", "42"),
+        )
+        for representation in ("list", "detail"):
+            for case, invalid_summary in invalid_summaries:
+                with self.subTest(representation=representation, case=case):
+                    rejected = run(representation, invalid_summary)
+                    self.assertNotEqual(0, rejected.returncode)
 
     def test_rerun_helper_binds_central_and_distributed_workflow_urls(self) -> None:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
