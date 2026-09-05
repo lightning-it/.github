@@ -1569,7 +1569,10 @@ jobs:
             # The optional helper can be visible before GitHub assigns a
             # runner. Treat every documented non-terminal service state as a
             # pending helper, while still requiring a null conclusion and the
-            # exact successful review job below.
+            # exact successful review job below. The controller's explicit
+            # unauthorized-dispatch rejection is a job-level skipped sentinel:
+            # it is never review evidence, but its exact inert ledger entry is
+            # part of the protected fail-closed controller shape.
             jq -e \
               --arg base "${EVENT_BASE}" \
               --argjson run_id "${PRODUCER_RUN_ID}" '
@@ -1580,19 +1583,26 @@ jobs:
                   and .run_attempt == 1
                   and .head_sha == $base
                   and (
-                    .name == "Current revision review"
-                    or (.name | startswith(
-                      "Request protected verifier re-evaluation"))
-                  )
-                  and (
-                    (.status == "completed" and .conclusion == "success")
-                    or ((.status == "requested"
-                        or .status == "waiting"
-                        or .status == "pending"
-                        or .status == "queued"
-                        or .status == "in_progress")
-                      and .conclusion == null)
-                  ))
+                    if .name == "Reject unauthorized Exact-Revision dispatch"
+                    then .status == "completed"
+                      and .conclusion == "skipped"
+                      and .runner_id == null
+                      and (.steps | type) == "array"
+                      and (.steps | length) == 0
+                    else (
+                      (.name == "Current revision review"
+                        or (.name | startswith(
+                          "Request protected verifier re-evaluation")))
+                      and (
+                        (.status == "completed" and .conclusion == "success")
+                        or ((.status == "requested"
+                            or .status == "waiting"
+                            or .status == "pending"
+                            or .status == "queued"
+                            or .status == "in_progress")
+                          and .conclusion == null)
+                      )
+                    ) end))
               ' <<<"${jobs_pages}" >/dev/null
             review_job_count="$(jq \
               '[.[].jobs[]? | select(.name == "Current revision review")] | length' \
@@ -1601,8 +1611,13 @@ jobs:
               [.[].jobs[]? | select(.name | startswith(
                 "Request protected verifier re-evaluation"))] | length
               ' <<<"${jobs_pages}")"
+            rejection_job_count="$(jq '
+              [.[].jobs[]? | select(.name
+                == "Reject unauthorized Exact-Revision dispatch")] | length
+              ' <<<"${jobs_pages}")"
             test "${review_job_count}" -le 1
             test "${helper_job_count}" -le 1
+            test "${rejection_job_count}" -le 1
             exact_jobs="$(jq -c \
               --arg base "${EVENT_BASE}" '
                 [.[].jobs[]? |
@@ -1624,12 +1639,26 @@ jobs:
                       select(.name | startswith(
                         "Request protected verifier re-evaluation"))]
                       | length) <= 1
+                  and ([$jobs[] |
+                      select(.name
+                        == "Reject unauthorized Exact-Revision dispatch")]
+                      | length) <= 1
                   and (if $terminal_helper_handoff
-                    then ($jobs | length) == 1
+                    then ($jobs | length) == (
+                      1 + ([$jobs[] | select(.name
+                        == "Reject unauthorized Exact-Revision dispatch")]
+                        | length))
                     else true end)
                   and (if $terminal_success_handoff
                     then all($jobs[];
-                      .status == "completed" and .conclusion == "success")
+                      .status == "completed"
+                      and (if .name
+                          == "Reject unauthorized Exact-Revision dispatch"
+                        then .conclusion == "skipped"
+                          and .runner_id == null
+                          and (.steps | type) == "array"
+                          and (.steps | length) == 0
+                        else .conclusion == "success" end))
                     else true end)
                   and ([$jobs[] |
                     select(.name == "Current revision review")][0]

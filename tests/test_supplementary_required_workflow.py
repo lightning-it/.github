@@ -2544,6 +2544,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'review_job_count="$(jq',
             'test "${review_job_count}" -le 1',
             'test "${helper_job_count}" -le 1',
+            'rejection_job_count="$(jq',
+            '"Reject unauthorized Exact-Revision dispatch"',
+            'test "${rejection_job_count}" -le 1',
+            '.runner_id == null',
+            '(.steps | length) == 0',
             'select(.name == "Current revision review")',
             'select(.head_sha == $base and .run_attempt == 1)',
             'select(.status == "completed" and .conclusion == "success")',
@@ -2725,12 +2730,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "status": "completed",
             "conclusion": "success",
         }
+        rejection_job = {
+            "run_id": run_id,
+            "run_attempt": 1,
+            "head_sha": base,
+            "name": "Reject unauthorized Exact-Revision dispatch",
+            "status": "completed",
+            "conclusion": "skipped",
+            "runner_id": None,
+            "steps": [],
+        }
 
         def validates_inventory(
             helper_status: str,
             helper_conclusion: object = None,
             *,
             helper_name: str = "Request protected verifier re-evaluation",
+            include_rejection: bool = True,
+            rejection: dict[str, object] | None = None,
         ) -> bool:
             helper_job = {
                 "run_id": run_id,
@@ -2740,6 +2757,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "status": helper_status,
                 "conclusion": helper_conclusion,
             }
+            jobs = [review_job, helper_job]
+            if include_rejection:
+                jobs.append(rejection if rejection is not None else rejection_job)
             result = subprocess.run(
                 [
                     jq,
@@ -2752,7 +2772,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     str(run_id),
                     inventory_filter,
                 ],
-                input=json.dumps([{"jobs": [review_job, helper_job]}]),
+                input=json.dumps([{"jobs": jobs}]),
                 text=True,
                 capture_output=True,
                 check=False,
@@ -2768,13 +2788,34 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(helper_status=helper_status):
                 self.assertTrue(validates_inventory(helper_status))
+                self.assertTrue(
+                    validates_inventory(
+                        helper_status,
+                        include_rejection=False,
+                    )
+                )
         self.assertTrue(validates_inventory("completed", "success"))
+        self.assertTrue(
+            validates_inventory(
+                "completed", "success", include_rejection=False
+            )
+        )
         self.assertFalse(validates_inventory("completed", "failure"))
         self.assertFalse(validates_inventory("waiting", "success"))
         self.assertFalse(validates_inventory("unknown"))
         self.assertFalse(
             validates_inventory("queued", helper_name="unexpected")
         )
+        for mutation in (
+            {**rejection_job, "conclusion": "success"},
+            {**rejection_job, "runner_id": 1},
+            {**rejection_job, "steps": [{"name": "unexpected"}]},
+        ):
+            self.assertFalse(
+                validates_inventory(
+                    "completed", "success", rejection=mutation
+                )
+            )
 
         terminal_filter = validator.split(
             '                  "${terminal_success_handoff}" \'\n'
@@ -2839,9 +2880,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "conclusion": "success",
             "steps": [],
         }
+        rejection_job = {
+            "name": "Reject unauthorized Exact-Revision dispatch",
+            "status": "completed",
+            "conclusion": "skipped",
+            "runner_id": None,
+            "steps": [],
+        }
         self.assertTrue(
             validates(
                 [valid_job, successful_helper],
+                terminal_failure=False,
+                terminal_success=True,
+            )
+        )
+        self.assertTrue(
+            validates(
+                [valid_job, successful_helper, rejection_job],
                 terminal_failure=False,
                 terminal_success=True,
             )
@@ -2857,6 +2912,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         pending_helper.update(status="queued", conclusion=None)
         self.assertTrue(
             validates(
+                [valid_job, pending_helper, rejection_job],
+                terminal_failure=False,
+            )
+        )
+        self.assertTrue(
+            validates(
                 [valid_job, pending_helper],
                 terminal_failure=False,
             )
@@ -2870,7 +2931,33 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         reused_job = json.loads(json.dumps(valid_job))
         reused_job["steps"][0]["conclusion"] = "skipped"
-        self.assertTrue(validates([reused_job]))
+        self.assertTrue(validates([reused_job, rejection_job]))
+        self.assertFalse(
+            validates(
+                [valid_job, successful_helper, rejection_job],
+                terminal_failure=True,
+                terminal_success=False,
+            )
+        )
+        for mutation in (
+            {**rejection_job, "conclusion": "success"},
+            {**rejection_job, "runner_id": 1},
+            {**rejection_job, "steps": [{"name": "unexpected"}]},
+        ):
+            self.assertFalse(
+                validates(
+                    [valid_job, successful_helper, mutation],
+                    terminal_failure=False,
+                    terminal_success=True,
+                )
+            )
+        self.assertFalse(
+            validates(
+                [valid_job, rejection_job, rejection_job],
+                terminal_failure=False,
+                terminal_success=True,
+            )
+        )
         for mutation in (
             "extra-job",
             "failed-review-job",
