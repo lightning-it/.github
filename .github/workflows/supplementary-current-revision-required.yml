@@ -2686,6 +2686,10 @@ jobs:
                 "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
             done
             test "$(jq -r .status <<<"${source_run}")" = completed
+            current_source_run_attempt="$(jq -er \
+              '.run_attempt | select(type == "number" and . >= 1)' \
+              <<<"${source_run}")"
+            test "${current_source_run_attempt}" -ge "${source_run_attempt}"
             source_path="$(jq -er '.path | select(type == "string" and length > 0)' \
               <<<"${source_run}")"
             case "${source_path}" in
@@ -2743,7 +2747,7 @@ jobs:
               --arg path "${source_path}" \
               --arg repository 'lightning-it/shared-assets-lit' \
               --arg run_url "${source_run_url}" \
-              --argjson run_attempt "${source_run_attempt}" \
+              --argjson current_attempt "${current_source_run_attempt}" \
               --argjson run_id "${source_run_id}" '
                 .id == $run_id
                 and (.event == "push" or .event == "workflow_dispatch")
@@ -2755,8 +2759,7 @@ jobs:
                 and .html_url == $run_url
                 and .repository.full_name == $repository
                 and .head_repository.full_name == $repository
-                and ((.run_attempt | type) == "number")
-                and .run_attempt == $run_attempt
+                and .run_attempt == $current_attempt
               ' <<<"${source_run}" >/dev/null
             source_commit="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/commits/${source_sha}")"

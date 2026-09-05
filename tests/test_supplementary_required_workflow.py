@@ -1128,6 +1128,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "$(jq -r .status <<<"${source_run}")" = completed',
             recovery,
         )
+        self.assertIn(
+            'test "${current_source_run_attempt}" -ge "${source_run_attempt}"',
+            recovery,
+        )
         self.assertIn('and .head_branch == "main"', recovery)
         self.assertIn('and .head_sha == $head', recovery)
         self.assertIn('and .path == $path', recovery)
@@ -1135,7 +1139,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
         self.assertIn('and .head_repository.full_name == $repository', recovery)
-        self.assertIn('and .run_attempt == $run_attempt', recovery)
+        self.assertIn('and .run_attempt == $current_attempt', recovery)
         self.assertIn(
             'attempts/${source_run_attempt}/jobs?per_page=100',
             recovery,
@@ -1227,7 +1231,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source_run_url = "https://github.example/actions/runs/42"
         jq = self._test_tool("jq")
 
-        def accepts(event: str) -> bool:
+        def accepts(event: str, current_attempt: int = 1) -> bool:
             payload = {
                 "id": 42,
                 "event": event,
@@ -1241,7 +1245,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "head_repository": {
                     "full_name": "lightning-it/shared-assets-lit"
                 },
-                "run_attempt": 1,
+                "run_attempt": current_attempt,
             }
             result = subprocess.run(
                 [
@@ -1260,8 +1264,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "run_url",
                     source_run_url,
                     "--argjson",
-                    "run_attempt",
-                    "1",
+                    "current_attempt",
+                    str(current_attempt),
                     "--argjson",
                     "run_id",
                     "42",
@@ -1277,6 +1281,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for accepted_event in ("push", "workflow_dispatch"):
             with self.subTest(accepted_event=accepted_event):
                 self.assertTrue(accepts(accepted_event))
+        for accepted_attempt in (1, 2, 17):
+            with self.subTest(accepted_attempt=accepted_attempt):
+                self.assertTrue(accepts("workflow_dispatch", accepted_attempt))
         for rejected_event in (
             "",
             "schedule",
