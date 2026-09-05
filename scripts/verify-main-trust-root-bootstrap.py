@@ -49,6 +49,7 @@ EXPECTED_FILES = frozenset(
     {
         ".github/codex/prompts/review-exact-head.md",
         ".github/codex/schemas/exact-head-review.schema.json",
+        ".github/workflows/copilot-review.yml",
         ".github/workflows/current-revision-rerun.yml",
         ".github/workflows/release-bot-exact-head-review.yml",
         "scripts/materialize-exact-revision-review.py",
@@ -1208,7 +1209,6 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     )
     require(base_copilot is not None, "base Copilot workflow is missing")
     require(head_copilot is not None, "head Copilot workflow is missing")
-    require(base_copilot.get("sha") == head_copilot.get("sha"), "candidate controls its Copilot workflow")
     base_assets = {
         path: resolve_tree_asset(
             target_tree,

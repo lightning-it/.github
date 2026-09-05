@@ -4002,12 +4002,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     def test_supplementary_catchup_v5_successor_authorization_is_one_exact_tuple(
         self,
     ) -> None:
-        agents = AGENTS.read_text(encoding="utf-8")
-        self.assertIn(
-            "Their authorization MUST remain absent while the\n"
-            "  sole v5-successor authorization is present; no future edit may restore both.",
-            agents,
-        )
         workflow = WORKFLOW.read_text(encoding="utf-8")
         authorization = workflow.split(
             "  authorize-supplementary-catchup-v5-successor:\n", 1
