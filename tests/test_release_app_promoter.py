@@ -54,6 +54,8 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         self.assertIn('.target_type == "Organization"', workflow)
         self.assertIn('.account.login == "lightning-it"', workflow)
         self.assertIn("repositories: ${{ github.event.repository.name }}", workflow)
+        self.assertNotIn("Resolve release automation App bot identity", workflow)
+        self.assertNotIn("steps.release-bot.outputs", workflow)
 
     def test_controller_creates_only_same_repo_develop_to_main_pr(self) -> None:
         workflow = self.workflow
