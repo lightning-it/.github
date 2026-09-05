@@ -2809,6 +2809,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for mutation in (
             {**rejection_job, "conclusion": "success"},
             {**rejection_job, "runner_id": 1},
+            {**rejection_job, "steps": None},
             {**rejection_job, "steps": [{"name": "unexpected"}]},
         ):
             self.assertFalse(
@@ -2942,6 +2943,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for mutation in (
             {**rejection_job, "conclusion": "success"},
             {**rejection_job, "runner_id": 1},
+            {**rejection_job, "steps": None},
             {**rejection_job, "steps": [{"name": "unexpected"}]},
         ):
             self.assertFalse(
