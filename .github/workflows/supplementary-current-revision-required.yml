@@ -2687,7 +2687,7 @@ jobs:
             done
             test "$(jq -r .status <<<"${source_run}")" = completed
             current_source_run_attempt="$(jq -er \
-              '.run_attempt | select(type == "number" and . >= 1)' \
+              '.run_attempt | select(type == "number" and . >= 1 and floor == .) | floor' \
               <<<"${source_run}")"
             test "${current_source_run_attempt}" -ge "${source_run_attempt}"
             source_path="$(jq -er '.path | select(type == "string" and length > 0)' \

@@ -1294,6 +1294,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(rejected_event=rejected_event):
                 self.assertFalse(accepts(rejected_event))
 
+    def test_managed_sync_current_attempt_is_integer_before_shell_use(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        selector = (
+            '.run_attempt | select(type == "number" and . >= 1 '
+            "and floor == .) | floor"
+        )
+        self.assertIn(selector, workflow)
+        jq = self._test_tool("jq")
+
+        def select_attempt(value: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [jq, "-er", selector],
+                input=json.dumps({"run_attempt": value}),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        for accepted in (1, 2, 17, 1.0):
+            with self.subTest(accepted=accepted):
+                result = select_attempt(accepted)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertRegex(result.stdout.strip(), r"^[1-9][0-9]*$")
+        for rejected in (1.5, 0, -1, "1", None, True):
+            with self.subTest(rejected=rejected):
+                self.assertNotEqual(select_attempt(rejected).returncode, 0)
+
     def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         source_token = workflow.split(
