@@ -43,17 +43,45 @@ jobs:
 
       - name: Validate release bot token
         env:
+          APP_INSTALLATION_ID: ${{ steps.release-app.outputs.installation-id }}
+          APP_SLUG: ${{ steps.release-app.outputs.app-slug }}
+          EXPECTED_APP_SLUG: lightning-it-release-automation
+          EXPECTED_INSTALLATION_ID: "148019054"
+          EXPECTED_REPOSITORY: lightning-it/.github
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          installation="$(gh api installation)"
-          jq -e '
-            .app_slug == "lightning-it-release-automation"
-            and .target_type == "Organization"
-            and .account.login == "lightning-it"
-            and (.id | type == "number")
-          ' <<<"${installation}" >/dev/null || {
+          if [ "${APP_SLUG}" != "${EXPECTED_APP_SLUG}" ] \
+            || [ "${APP_INSTALLATION_ID}" != "${EXPECTED_INSTALLATION_ID}" ] \
+            || [ "${REPOSITORY}" != "${EXPECTED_REPOSITORY}" ]; then
             echo "::error::Release App installation identity mismatch."
+            exit 1
+          fi
+          repository_pages="$(
+            gh api --paginate --slurp \
+              "installation/repositories?per_page=100"
+          )"
+          # The downscoped token must expose exactly this repository. With a
+          # page size of 100, that is exactly one well-formed API page.
+          # shellcheck disable=SC2016  # jq variables must not expand in the shell.
+          repository_filter='
+            length == 1
+            and (.[0] | type == "array")
+            and (.[0] | length) == 1
+            and (.[0][0] | type == "object")
+            and (.[0][0].total_count | type == "number")
+            and .[0][0].total_count == 1
+            and (.[0][0].repositories | type == "array")
+            and (.[0][0].repositories | length) == 1
+            and (.[0][0].repositories[0] | type == "object")
+            and (.[0][0].repositories[0].full_name | type == "string")
+            and .[0][0].repositories[0].full_name == $repository
+          '
+          jq -se --arg repository "${EXPECTED_REPOSITORY}" \
+            "${repository_filter}" \
+            <<<"${repository_pages}" >/dev/null || {
+            echo "::error::Release App token repository scope mismatch."
             exit 1
           }
 
