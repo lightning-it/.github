@@ -1543,17 +1543,61 @@ jobs:
             ' <<<"${summary}" >/dev/null
 
           producer=''
+          jobs=''
+          producer_ledger_ready=false
           for observation in $(seq 1 60); do
             producer="$(gh api \
               "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}")"
-            producer_status="$(jq -er .status <<<"${producer}")"
+            producer_status="$(jq -er \
+              '.status | select(type == "string")' <<<"${producer}")"
             if [ "${producer_status}" = completed ]; then
-              break
+              producer_conclusion="$(jq -er \
+                '.conclusion | select(type == "string")' <<<"${producer}")"
+              test "${producer_conclusion}" = success
+              jobs="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
+              if jq -e \
+                  --arg head "${EVENT_HEAD}" \
+                  --argjson run_id "${PRODUCER_RUN_ID}" '
+                    ([.[].jobs[]? |
+                      select(.run_id == $run_id and .head_sha == $head) |
+                      select(.run_attempt == 1) |
+                      select(.name == "Verify current revision policy") |
+                      select(.status == "completed" and .conclusion == "success") |
+                      select(([.steps[]? |
+                        select(.status == "completed" and .conclusion == "success") |
+                        .name] | sort) as $steps |
+                        ($steps | index("Accept trusted automation exemption")) != null
+                        and ($steps | index("Publish bound neutral result")) != null)]
+                      | length) == 1
+                    and ([.[].jobs[]? |
+                      select(.run_id == $run_id and .head_sha == $head) |
+                      select(.run_attempt == 1) |
+                      select(.name
+                        == "Request Copilot review for current revision") |
+                      select(.status == "completed" and .conclusion == "skipped")]
+                      | length) == 1
+                    and ([.[].jobs[]? |
+                      select(.run_id == $run_id and .head_sha == $head) |
+                      select(.run_attempt == 1) |
+                      select(.name | startswith(
+                        "Request protected verifier re-evaluation")) |
+                      select(.status == "completed" and .conclusion == "skipped")]
+                      | length) == 1
+                  ' <<<"${jobs}" >/dev/null; then
+                producer_ledger_ready=true
+                break
+              fi
+            else
+              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
             fi
-            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
-            test "${observation}" -lt 60
+            if [ "${observation}" -eq 60 ]; then
+              echo 'The terminal Renovate producer ledger did not converge.' >&2
+              exit 1
+            fi
             sleep 1
           done
+          test "${producer_ledger_ready}" = true
           jq -e \
             --arg head "${EVENT_HEAD}" \
             --arg head_ref "$(jq -r .head.ref <<<"${pr}")" \
@@ -1575,37 +1619,6 @@ jobs:
               and .triggering_actor.login == "renovate[bot]"
               and .html_url == $run_url
             ' <<<"${producer}" >/dev/null
-          jobs="$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/actions/runs/${PRODUCER_RUN_ID}/jobs?filter=all&per_page=100")"
-          jq -e \
-            --arg head "${EVENT_HEAD}" \
-            --argjson run_id "${PRODUCER_RUN_ID}" '
-              ([.[].jobs[]? |
-                select(.run_id == $run_id and .head_sha == $head) |
-                select(.run_attempt == 1) |
-                select(.name == "Verify current revision policy") |
-                select(.status == "completed" and .conclusion == "success") |
-                select(([.steps[]? |
-                  select(.status == "completed" and .conclusion == "success") |
-                  .name] | sort) as $steps |
-                  ($steps | index("Accept trusted automation exemption")) != null
-                  and ($steps | index("Publish bound neutral result")) != null)]
-                | length) == 1
-              and ([.[].jobs[]? |
-                select(.run_id == $run_id and .head_sha == $head) |
-                select(.run_attempt == 1) |
-                select(.name
-                  == "Request Copilot review for current revision") |
-                select(.status == "completed" and .conclusion == "skipped")]
-                | length) == 1
-              and ([.[].jobs[]? |
-                select(.run_id == $run_id and .head_sha == $head) |
-                select(.run_attempt == 1) |
-                select(.name | startswith(
-                  "Request protected verifier re-evaluation")) |
-                select(.status == "completed" and .conclusion == "skipped")]
-                | length) == 1
-            ' <<<"${jobs}" >/dev/null
           {
             echo 'verified=true'
             echo "labels_sha256=${labels_sha256}"
