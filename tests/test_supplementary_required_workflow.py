@@ -3860,6 +3860,31 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("requested_reviewers", wait)
         self.assertNotIn("openai/", wait.lower())
 
+    def test_bootstrap_source_blob_schema_covers_the_exact_six_assets(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        contracts = re.findall(
+            r"\(\.source_blobs \| keys \| sort\) == \(\[(.*?)\] \| sort\)",
+            workflow,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(2, len(contracts))
+        expected = {
+            ".github/codex/prompts/review-exact-head.md",
+            ".github/codex/schemas/exact-head-review.schema.json",
+            ".github/workflows/copilot-review.yml",
+            ".github/workflows/current-revision-rerun.yml",
+            ".github/workflows/release-bot-exact-head-review.yml",
+            "scripts/materialize-exact-revision-review.py",
+        }
+        for contract in contracts:
+            with self.subTest(contract=contract):
+                self.assertEqual(
+                    expected,
+                    set(re.findall(r'"([^"]+)"', contract)),
+                )
+
     def test_bootstrap_api_read_retries_only_transient_failures(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         start = workflow.index("          bootstrap_api_read() {\n")
