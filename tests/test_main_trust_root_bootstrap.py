@@ -45,6 +45,7 @@ class FakeAPI:
         self.paths = {
             ".github/codex/prompts/review-exact-head.md": "5" * 40,
             ".github/codex/schemas/exact-head-review.schema.json": "6" * 40,
+            ".github/workflows/copilot-review.yml": "b" * 40,
             ".github/workflows/release-bot-exact-head-review.yml": "7" * 40,
             "scripts/materialize-exact-revision-review.py": "8" * 40,
             ".github/workflows/current-revision-rerun.yml": "a" * 40,
@@ -114,9 +115,6 @@ class FakeAPI:
         self.head_tree = {
             "truncated": False,
             "tree": [
-                self._tree_entry(
-                    ".github/workflows/copilot-review.yml", self.copilot_blob
-                ),
                 *[
                     self._tree_entry(path, blob)
                     for path, blob in self.paths.items()
@@ -978,6 +976,11 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         self.assertEqual(api.run["id"], evidence["producer_run_id"])
         self.assertEqual(api.review["id"], evidence["review_id"])
         self.assertEqual(api.paths, evidence["source_blobs"])
+        self.assertEqual(api.copilot_blob, evidence["controller_blob_sha"])
+        self.assertNotEqual(
+            evidence["controller_blob_sha"],
+            evidence["source_blobs"][".github/workflows/copilot-review.yml"],
+        )
         self.assertEqual(1, evidence["threads_resolved"])
         self.assertFalse(
             any("recursive=1" in endpoint for endpoint in api.target_endpoints)
@@ -1035,9 +1038,15 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             entry
             for entry in api.base_tree["tree"]
             if entry["path"] not in MODULE.EXPECTED_FILES
+            or entry["path"] == ".github/workflows/copilot-review.yml"
         ]
         for file_object in api.comparison["files"]:
-            file_object["status"] = "added"
+            file_object["status"] = (
+                "modified"
+                if file_object["filename"]
+                == ".github/workflows/copilot-review.yml"
+                else "added"
+            )
         evidence = MODULE.verify(self.args(api), api)
         self.assertEqual(api.head, evidence["head_sha"])
         self.assertEqual(api.paths, evidence["source_blobs"])
@@ -1121,15 +1130,31 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             ):
                 MODULE.verify(self.args(api), api)
 
-    def test_candidate_cannot_control_review_workflow(self) -> None:
+    def test_candidate_copilot_workflow_must_match_protected_source(self) -> None:
         api = FakeAPI()
         next(
             entry
             for entry in api.head_tree["tree"]
             if entry["path"] == ".github/workflows/copilot-review.yml"
         )["sha"] = "f" * 40
-        with self.assertRaisesRegex(MODULE.VerificationError, "controls"):
+        with self.assertRaisesRegex(
+            MODULE.VerificationError,
+            "candidate .github/workflows/copilot-review.yml differs from protected source",
+        ):
             MODULE.verify(self.args(api), api)
+
+    def test_bootstrap_requires_the_exact_six_file_dependency_closure(self) -> None:
+        self.assertEqual(
+            {
+                ".github/codex/prompts/review-exact-head.md",
+                ".github/codex/schemas/exact-head-review.schema.json",
+                ".github/workflows/copilot-review.yml",
+                ".github/workflows/current-revision-rerun.yml",
+                ".github/workflows/release-bot-exact-head-review.yml",
+                "scripts/materialize-exact-revision-review.py",
+            },
+            set(MODULE.EXPECTED_FILES),
+        )
 
     def test_source_blob_or_mode_drift_fails_closed(self) -> None:
         for mutation in ("blob", "mode"):
