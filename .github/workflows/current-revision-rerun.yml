@@ -55,7 +55,45 @@ jobs:
           [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
-          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          OPERATION_DEADLINE=$((SECONDS + 900))
+          require_deadline() {
+            local remaining=$((OPERATION_DEADLINE - SECONDS))
+            if [ "${remaining}" -le 0 ]; then
+              echo 'The shared re-evaluation deadline was exhausted.' >&2
+              return 1
+            fi
+          }
+          bounded_gh_api() {
+            local request_seconds remaining shutdown_seconds=2
+            bounded_gh_api_invoked=false
+            require_deadline || return 1
+            remaining=$((OPERATION_DEADLINE - SECONDS))
+            if [ "${remaining}" -le "${shutdown_seconds}" ]; then
+              echo 'Insufficient deadline remains for a bounded API request.' >&2
+              return 1
+            fi
+            request_seconds=30
+            if [ "${request_seconds}" -gt \
+                "$((remaining - shutdown_seconds))" ]; then
+              request_seconds=$((remaining - shutdown_seconds))
+            fi
+            bounded_gh_api_invoked=true
+            timeout --foreground --signal=TERM \
+              --kill-after="${shutdown_seconds}s" "${request_seconds}s" \
+              gh api "$@"
+          }
+          bounded_sleep() {
+            local requested="${1}" remaining
+            [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
+            require_deadline || return 1
+            remaining=$((OPERATION_DEADLINE - SECONDS))
+            if [ "${remaining}" -le "${requested}" ]; then
+              echo 'The shared re-evaluation deadline was exhausted.' >&2
+              return 1
+            fi
+            sleep "${requested}"
+          }
+          pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
             --arg head "${EXPECTED_HEAD}" \
@@ -69,7 +107,7 @@ jobs:
               and (.base.ref == "develop" or .base.ref == "main")
             ' <<<"${pr}" >/dev/null
 
-          neutral_pages="$(gh api --paginate --slurp \
+          neutral_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
           neutral="$(jq -c '
             [.[].check_runs[]? |
@@ -79,10 +117,18 @@ jobs:
           ' <<<"${neutral_pages}")"
           test "$(jq 'length' <<<"${neutral}")" -eq 1
           neutral_check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${neutral}")"
+          neutral_head_sha="$(jq -er \
+            '.[0].head_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+            <<<"${neutral}")"
+          test "${neutral_head_sha}" = "${EXPECTED_HEAD}"
           neutral_details_url="$(jq -r '.[0].details_url // empty' <<<"${neutral}")"
           test "${neutral_details_url}" = "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${neutral_check_id}"
           neutral_external_id="$(jq -er '.[0].external_id | select(type == "string" and length > 0)' <<<"${neutral}")"
-          neutral_summary="$(jq -er '.[0].output.summary | fromjson | select(type == "object")' <<<"${neutral}")"
+          neutral_summary_raw="$(jq -er \
+            '.[0].output.summary | select(type == "string" and length > 0)' \
+            <<<"${neutral}")"
+          neutral_summary="$(jq -cer 'fromjson | select(type == "object")' \
+            <<<"${neutral_summary_raw}")"
           producer_id="$(jq -er '.producer_run_id | select(type == "number" and . > 0)' <<<"${neutral_summary}")"
           producer_url="$(jq -er '.run_url | select(type == "string" and length > 0)' <<<"${neutral_summary}")"
           producer_prefix="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/"
@@ -92,8 +138,15 @@ jobs:
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
           evidence_version=''
           external_kind=''
-          if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:[0-9a-f]{64}$ ]]; then
+          expected_review_path=''
+          controller_sha=''
+          producer_job_head_sha=''
+          producer_job_name=''
+          v4_input_sha256=''
+          v4_workflow_sha=''
+          if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:([0-9a-f]{64})$ ]]; then
             evidence_version=v4
+            v4_input_sha256="${BASH_REMATCH[1]}"
           elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
             evidence_version=v6
             external_kind="${BASH_REMATCH[1]}"
@@ -125,18 +178,36 @@ jobs:
                 end
               )
             ' <<<"${neutral_summary}" >/dev/null
+          if [ "${evidence_version}" = v4 ]; then
+            v4_workflow_sha="$(jq -er \
+              '.workflow_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+              <<<"${neutral_summary}")"
+            jq -e \
+              --arg input_sha256 "${v4_input_sha256}" \
+              --arg workflow_sha "${v4_workflow_sha}" '
+                .input_sha256 == $input_sha256
+                and .workflow_sha == $workflow_sha
+              ' <<<"${neutral_summary}" >/dev/null
+          fi
           for attempt in $(seq 1 40); do
-            producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_id}")"
+            producer="$(bounded_gh_api \
+              "repos/${REPOSITORY}/actions/runs/${producer_id}")"
             if [ "$(jq -r .status <<<"${producer}")" = completed ]; then
               test "$(jq -r .conclusion <<<"${producer}")" = success
               break
             fi
             test "${attempt}" -lt 40
-            sleep 5
+            bounded_sleep 5
           done
+          producer_attempt="$(jq -er \
+            '.run_attempt | select(type == "number" and . == 1)' \
+            <<<"${producer}")"
           if [ "${evidence_version}" = v4 ]; then
             test "${author}" = 'lightning-it-release-automation[bot]'
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EXPECTED_BASE}..${EXPECTED_HEAD}"
+            expected_review_path='MLX-90 §7.2 Exact-Revision Codex exception'
+            producer_job_head_sha="${EXPECTED_BASE}"
+            producer_job_name='Current revision review'
             jq -e \
               --arg actor "${author}" \
               --arg base_ref "${base_ref}" \
@@ -157,25 +228,29 @@ jobs:
               test "${author}" = 'lightning-it-release-automation[bot]' \
                 || { test "${REPOSITORY}" = 'lightning-it/.github' \
                   && test "${author}" = 'lightning-it-shared-assets-sync[bot]'; }
-              test "$(jq -r .review_path <<<"${neutral_summary}")" = \
-                'deterministic evidence-bound ancestry exemption'
+              expected_review_path='deterministic evidence-bound ancestry exemption'
             elif [ "${external_kind}" = managed-sync ]; then
               test "${author}" = 'lightning-it-shared-assets-sync[bot]'
               test "${base_ref}" = develop
-              test "$(jq -r .review_path <<<"${neutral_summary}")" = \
-                'deterministic provenance-bound managed distribution exemption'
+              expected_review_path='deterministic provenance-bound managed distribution exemption'
             else
               test "${author}" != 'lightning-it-release-automation[bot]'
               test "${author}" != 'lightning-it-shared-assets-sync[bot]'
-              test "$(jq -r .review_path <<<"${neutral_summary}")" = \
-                'applicable Copilot or governed automation exemption'
+              expected_review_path='applicable Copilot or governed automation exemption'
             fi
+            test "$(jq -r .review_path <<<"${neutral_summary}")" = \
+              "${expected_review_path}"
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${neutral_summary}")"
-            default_branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
+            producer_job_head_sha="${EXPECTED_HEAD}"
+            producer_job_name='Verify current revision policy'
+            default_branch="$(bounded_gh_api \
+              "repos/${REPOSITORY}" --jq .default_branch)"
             test "${default_branch}" = develop
-            default_head="$(gh api "repos/${REPOSITORY}/branches/${default_branch}" --jq .commit.sha)"
-            controller_ancestry="$(gh api \
+            default_head="$(bounded_gh_api \
+              "repos/${REPOSITORY}/branches/${default_branch}" \
+              --jq .commit.sha)"
+            controller_ancestry="$(bounded_gh_api \
               "repos/${REPOSITORY}/compare/${controller_sha}...${default_head}")"
             jq -e \
               --arg controller "${controller_sha}" '
@@ -199,7 +274,60 @@ jobs:
               ' <<<"${producer}" >/dev/null
           fi
 
-          reservations_pages="$(gh api --paginate --slurp \
+          producer_jobs="$(bounded_gh_api \
+            "repos/${REPOSITORY}/actions/runs/${producer_id}/attempts/${producer_attempt}/jobs?filter=all&per_page=100")"
+          jq -e '
+            type == "object"
+            and (.total_count | type) == "number"
+            and (.jobs | type) == "array"
+            and .total_count == (.jobs | length)
+            and .total_count <= 100
+            and ([.jobs[].id] | unique | length) == (.jobs | length)
+            and all(.jobs[];
+              type == "object"
+              and (.id | type) == "number" and .id > 0
+              and (.name | type) == "string"
+              and (.run_id | type) == "number"
+              and (.run_attempt | type) == "number"
+              and (.head_sha | type) == "string"
+              and (.status | type) == "string"
+              and has("conclusion"))
+          ' <<<"${producer_jobs}" >/dev/null
+          bound_producer_jobs="$(jq -c \
+            --arg head "${producer_job_head_sha}" \
+            --arg name "${producer_job_name}" \
+            --argjson attempt "${producer_attempt}" \
+            --argjson run_id "${producer_id}" '
+              [.jobs[] |
+                select(.name == $name) |
+                select(.run_id == $run_id) |
+                select(.run_attempt == $attempt) |
+                select(.head_sha == $head)]
+            ' <<<"${producer_jobs}")"
+          test "$(jq 'length' <<<"${bound_producer_jobs}")" -eq 1
+          producer_job="$(jq -ce '.[0]' <<<"${bound_producer_jobs}")"
+          jq -e '
+            .status == "completed"
+            and .conclusion == "success"
+          ' <<<"${producer_job}" >/dev/null
+          producer_job_id="$(jq -er \
+            '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
+          producer_binding="$(jq -c '
+            {id,event,path,name,display_title,head_branch,head_sha,html_url,
+             workflow_id,workflow_url,run_attempt,status,conclusion,
+             actor:.actor.login,triggering_actor:.triggering_actor.login,
+             pull_requests}
+          ' <<<"${producer}")"
+          producer_job_binding="$(jq -c '
+            {id,name,run_id,run_attempt,head_sha,status,conclusion}
+          ' <<<"${producer_job}")"
+          producer_jobs_binding="$(jq -c '
+            [.jobs[] |
+              {id,name,run_id,run_attempt,head_sha,status,conclusion}]
+            | sort_by(.id)
+          ' <<<"${producer_jobs}")"
+
+          reservations_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")"
           all_reservations="$(jq -c \
             --arg head "${EXPECTED_HEAD}" '
@@ -244,157 +372,709 @@ jobs:
             run_id="${BASH_REMATCH[1]}"
           fi
           verifier_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${run_id}"
-          run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
-          jq -e \
-            --arg api_url "${GITHUB_API_URL}" \
-            --arg base_ref "${base_ref}" \
-            --arg base_sha "${EXPECTED_BASE}" \
-            --arg head_ref "${head_ref}" \
-            --arg head_sha "${EXPECTED_HEAD}" \
-            --arg repository "${REPOSITORY}" \
-            --arg run_url "${verifier_run_url}" \
-            --argjson pr_number "${PR_NUMBER}" '
-              .event == "pull_request_target"
-              and .path == ".github/workflows/supplementary-current-revision-required.yml"
-              and (.workflow_id | type == "number" and . > 0)
-              and .workflow_url == (
-                if $repository == "lightning-it/.github" then
-                  # The controller executes its own protected base workflow;
-                  # targets receive the same file as a Required Workflow.
-                  $api_url + "/repos/" + $repository + "/actions/workflows/"
-                    + (.workflow_id | tostring)
-                else
-                  $api_url + "/repos/" + $repository
-                    + "/actions/required_workflows/"
-                    + (.workflow_id | tostring)
-                end
-              )
-              and .head_branch == $head_ref
-              and .head_sha == $head_sha
-              and .html_url == $run_url
-              and (.actor.login | type == "string" and length > 0)
-              and (.triggering_actor.login | type == "string" and length > 0)
-              and (.pull_requests | length) == 1
-              and .pull_requests[0].number == $pr_number
-              and .pull_requests[0].url == ($api_url + "/repos/" + $repository
-                + "/pulls/" + ($pr_number | tostring))
-              and .pull_requests[0].base.ref == $base_ref
-              and .pull_requests[0].base.sha == $base_sha
-              and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
-              and .pull_requests[0].head.ref == $head_ref
-              and .pull_requests[0].head.sha == $head_sha
-              and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
-              and .status == "completed"
-            ' <<<"${run}" >/dev/null
-          if [ "$(jq -r .conclusion <<<"${run}")" = success ]; then
-            echo "Protected verifier already passed; no rerun is needed."
-          else
-            test "$(jq -r .conclusion <<<"${run}")" = failure
-            run_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-            if [ "${run_attempt}" -ne 1 ]; then
-              echo "Protected verifier failed after consuming its single rerun." >&2
-              exit 1
-            fi
-            if ! gh api --method POST \
-                "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null; then
-              # GitHub can accept the rerun and still close the client request
-              # with a non-success response when another service-side request
-              # wins the same transition. Accept that outcome only after the
-              # live run proves that attempt two was actually materialized.
-              run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
-              observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-              if [ "${observed_attempt}" -ne 2 ]; then
-                echo "Rerun request failed without exactly one materialized second attempt." >&2
-                exit 1
+
+          load_cross_inventory() {
+            local cross_pages cross_runs
+            cross_pages="$(bounded_gh_api --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EXPECTED_HEAD}&per_page=100")" \
+              || return 10
+            jq -e '
+              type == "array"
+              and length > 0
+              and all(.[];
+                type == "object"
+                and (.total_count | type) == "number"
+                and .total_count >= 0
+                and (.workflow_runs | type) == "array")
+              and ([.[].total_count] | unique | length) == 1
+              and ([.[].workflow_runs[]] | length) == .[0].total_count
+              and ([.[].workflow_runs[].id] | unique | length)
+                == .[0].total_count
+              and all(.[].workflow_runs[];
+                type == "object"
+                and (.id | type) == "number" and .id > 0
+                and (.created_at | type) == "string"
+                and (.run_attempt | type) == "number"
+                and (.status | type) == "string"
+                and has("conclusion")
+                and ((.conclusion | type) == "string" or .conclusion == null)
+                and (.event | type) == "string"
+                and (.path | type) == "string"
+                and (.display_title | type) == "string"
+                and (.head_branch | type) == "string"
+                and (.head_sha | type) == "string"
+                and (.workflow_id | type) == "number" and .workflow_id > 0
+                and (.workflow_url | type) == "string"
+                and (.html_url | type) == "string"
+                and (.actor.login | type) == "string"
+                and (.triggering_actor.login | type) == "string"
+                and (.pull_requests | type) == "array")
+            ' <<<"${cross_pages}" >/dev/null || return 20
+            cross_runs="$(jq -ce \
+              --arg api_url "${GITHUB_API_URL}" \
+              --arg author "${author}" \
+              --arg base_ref "${base_ref}" \
+              --arg base_sha "${EXPECTED_BASE}" \
+              --arg head_ref "${head_ref}" \
+              --arg head_sha "${EXPECTED_HEAD}" \
+              --arg repository "${REPOSITORY}" \
+              --arg server_url "${GITHUB_SERVER_URL}" \
+              --argjson pr_number "${PR_NUMBER}" '
+                [.[].workflow_runs[] |
+                  select(.event == "pull_request_target") |
+                  select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
+                  select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                  select((.pull_requests | length) == 1) |
+                  select(.pull_requests[0].number == $pr_number) |
+                  select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
+                    + "/pulls/" + ($pr_number | tostring))) |
+                  select(.pull_requests[0].base.ref == $base_ref) |
+                  select(.pull_requests[0].base.sha == $base_sha) |
+                  select(.pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)) |
+                  select(.pull_requests[0].head.ref == $head_ref) |
+                  select(.pull_requests[0].head.sha == $head_sha) |
+                  select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
+                  select(.workflow_url == ($api_url + "/repos/" + $repository
+                    + "/actions/required_workflows/" + (.workflow_id | tostring))) |
+                  select(.html_url == ($server_url + "/" + $repository
+                    + "/actions/runs/" + (.id | tostring))) |
+                  select(
+                    .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                      + " opened " + $head_sha)
+                    or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                      + " synchronize " + $head_sha)
+                    or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                      + " reopened " + $head_sha)
+                    or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                      + " ready_for_review " + $head_sha)
+                    or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
+                      + " edited " + $head_sha))] as $runs
+                | ($runs | sort_by([.created_at, .id])) as $sorted
+                | if (
+                    ($runs | length) > 0
+                    and ($runs | [.[].id] | unique | length) == ($runs | length)
+                    and ($runs | all(.[];
+                      (.created_at | test(
+                        "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])"
+                        + "T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"))
+                      and (
+                        .created_at as $created_at
+                        | try (
+                            ($created_at
+                              | fromdateiso8601
+                              | strftime("%Y-%m-%dT%H:%M:%SZ"))
+                            == $created_at
+                          ) catch false)
+                      and (.run_attempt == 1 or .run_attempt == 2)
+                      and .actor.login == $author
+                      and (
+                        if .run_attempt == 1 then
+                          .triggering_actor.login == $author
+                        else
+                          .triggering_actor.login == "github-actions[bot]"
+                        end)
+                      and (
+                        if .status == "completed" then
+                          (.conclusion == "success"
+                            or .conclusion == "failure"
+                            or .conclusion == "cancelled")
+                        else
+                          (.status == "queued"
+                            or .status == "in_progress"
+                            or .status == "requested"
+                            or .status == "waiting"
+                            or .status == "pending")
+                          and .conclusion == null
+                        end)))
+                    and ($sorted | all(.[0:-1][];
+                      .status == "completed"
+                      and (.conclusion == "success"
+                        or .conclusion == "failure"
+                        or .conclusion == "cancelled")))
+                  ) then
+                    $sorted
+                  else
+                    error("invalid or non-converged dot-github cross-run inventory")
+                  end
+              ' <<<"${cross_pages}")" || return 20
+            printf '%s\n' "${cross_runs}"
+          }
+
+          load_cross_inventory_with_retry() {
+            local inventory inventory_status
+            for inventory_attempt in $(seq 1 5); do
+              if inventory="$(load_cross_inventory)"; then
+                printf '%s\n' "${inventory}"
+                return 0
+              else
+                inventory_status=$?
               fi
-              echo "A concurrent service-side request already materialized the protected rerun."
-            fi
-            protected_complete=false
-            for completion_attempt in $(seq 1 60); do
-              run="$(gh api "repos/${REPOSITORY}/actions/runs/${run_id}")"
-              observed_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${run}")"
-              status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${run}")"
-              if [ "${observed_attempt}" -gt 2 ]; then
-                echo "Protected verifier exceeded its single allowed rerun." >&2
-                exit 1
+              if [ "${inventory_status}" -ne 10 ]; then
+                echo 'The dot-github cross-run inventory contradicted its contract.' >&2
+                return 1
               fi
-              if [ "${observed_attempt}" -eq 2 ] && [ "${status}" = completed ]; then
-                test "$(jq -r .conclusion <<<"${run}")" = success
-                protected_complete=true
-                echo "Protected verifier rerun completed successfully."
-                break
+              if [ "${inventory_attempt}" -eq 5 ]; then
+                echo 'The dot-github cross-run inventory API failed after five attempts.' >&2
+                return 1
               fi
-              if [ "${completion_attempt}" -eq 60 ]; then
-                echo "Protected verifier rerun did not complete successfully in time." >&2
-                exit 1
-              fi
-              sleep 5
+              bounded_sleep 2 || return 1
             done
-            test "${protected_complete}" = true
-          fi
+            return 1
+          }
 
-          if [ "${REPOSITORY}" != 'lightning-it/.github' ]; then
-            echo "No independent dot-github cross-verifier applies to this repository."
-            exit 0
-          fi
+          validate_protected_cross_inventory() {
+            [ "${REPOSITORY}" != 'lightning-it/.github' ] && return 0
+            test "${1}" = "${protected_cross_inventory}" || return 1
+            jq -e '.[-1] | .status == "completed" and
+              (.conclusion == "success" or .conclusion == "failure")' \
+              <<<"${1}" >/dev/null
+          }
 
-          cross_pages="$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EXPECTED_HEAD}&per_page=100")"
-          jq -e '
-            type == "array"
-            and length > 0
-            and all(.[];
+          read_run_with_retry() {
+            local api_status payload run_id="${1}"
+            [[ "${run_id}" =~ ^[1-9][0-9]*$ ]] || return 1
+            for read_attempt in $(seq 1 5); do
+              if payload="$(bounded_gh_api \
+                  "repos/${REPOSITORY}/actions/runs/${run_id}" 2>&1)"; then
+                printf '%s\n' "${payload}"
+                return 0
+              else
+                api_status=$?
+              fi
+              if [ "${read_attempt}" -eq 5 ]; then
+                echo "Run-detail API failed after five attempts (exit ${api_status}): ${payload}" >&2
+                return 1
+              fi
+              bounded_sleep 2 || return 1
+            done
+            return 1
+          }
+
+          load_cross_attempt_one_failed_job_with_retry() {
+            local api_status failed failed_count jobs
+            for job_observation in $(seq 1 30); do
+              if jobs="$(bounded_gh_api \
+                  "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/1/jobs?filter=all&per_page=100" \
+                  2>&1)"; then
+                :
+              else
+                api_status=$?
+                if [ "${job_observation}" -eq 30 ]; then
+                  echo "Attempt-one job API failed after 30 attempts (exit ${api_status}): ${jobs}" >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              if ! jq -e \
+                  --arg head "${EXPECTED_HEAD}" \
+                  --argjson run_id "${cross_run_id}" '
+                  type == "object"
+                  and (.total_count | type) == "number"
+                  and (.jobs | type) == "array"
+                  and .total_count == (.jobs | length)
+                  and .total_count <= 100
+                  and ([.jobs[].id] | unique | length) == (.jobs | length)
+                  and all(.jobs[];
+                    type == "object"
+                    and (.id | type) == "number" and .id > 0
+                    and (.name | type) == "string"
+                    and (.run_id | type) == "number" and .run_id == $run_id
+                    and (.head_sha | type) == "string" and .head_sha == $head
+                    and (.run_attempt | type) == "number"
+                    and .run_attempt == 1
+                    and .status == "completed"
+                    and (.conclusion | type) == "string")
+                ' <<<"${jobs}" >/dev/null; then
+                if [ "${job_observation}" -eq 30 ]; then
+                  echo 'The dot-github attempt-one job ledger did not converge.' >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              failed="$(jq -c \
+                --arg head "${EXPECTED_HEAD}" \
+                --argjson run_id "${cross_run_id}" '
+                [.jobs[] |
+                  select(.run_id == $run_id and .head_sha == $head) |
+                  select(.run_attempt == 1) |
+                  select(.status == "completed" and .conclusion == "failure")]
+                ' <<<"${jobs}")" || return 1
+              failed_count="$(jq 'length' <<<"${failed}")" || return 1
+              if [ "${failed_count}" -gt 1 ]; then
+                echo 'Multiple failed dot-github verifier jobs claim attempt one.' >&2
+                return 1
+              fi
+              if [ "${failed_count}" -eq 1 ]; then
+                if [ "$(jq -r '.[0].name' <<<"${failed}")" \
+                    != 'Required dot-github current-revision workflow' ]; then
+                  echo 'The failed attempt-one job had an unexpected name.' >&2
+                  return 1
+                fi
+                jq -ce '.[0]' <<<"${failed}"
+                return
+              fi
+              if [ "${job_observation}" -eq 30 ]; then
+                echo 'The failed dot-github verifier job did not become visible.' >&2
+                return 1
+              fi
+              bounded_sleep 2 || return 1
+            done
+            return 1
+          }
+
+          validate_live_pr_snapshot() {
+            jq -e \
+              --arg author "${author}" \
+              --arg base "${EXPECTED_BASE}" \
+              --arg base_ref "${base_ref}" \
+              --arg head "${EXPECTED_HEAD}" \
+              --arg head_ref "${head_ref}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson number "${PR_NUMBER}" '
+                .number == $number
+                and .state == "open"
+                and .draft == false
+                and .user.login == $author
+                and .base.ref == $base_ref
+                and .base.sha == $base
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .base.repo.full_name == $repository
+                and .head.repo.full_name == $repository
+              ' <<<"${1}" >/dev/null
+          }
+
+          validate_reservation_snapshot() {
+            jq -e \
+              --arg details_url "${reservation_url}" \
+              --arg external_id "${reservation_external_id}" \
+              --arg head "${EXPECTED_HEAD}" \
+              --argjson id "${reservation_id}" '
+                .id == $id
+                and .name == "Protected current-revision verifier"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .details_url == $details_url
+                and .external_id == $external_id
+                and .head_sha == $head
+                and .status == "completed"
+                and .conclusion == "success"
+              ' <<<"${1}" >/dev/null
+          }
+
+          load_reservation_inventory_snapshot() {
+            local all current pages v2 v3
+            pages="$(bounded_gh_api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")" \
+              || return 10
+            jq -e '
+              type == "array"
+              and length > 0
+              and all(.[];
+                type == "object"
+                and (.total_count | type) == "number"
+                and (.check_runs | type) == "array")
+              and ([.[].total_count] | unique | length) == 1
+              and ([.[].check_runs[]] | length) == .[0].total_count
+              and ([.[].check_runs[].id] | unique | length)
+                == .[0].total_count
+              and all(.[].check_runs[];
+                type == "object"
+                and (.id | type) == "number" and .id > 0)
+            ' <<<"${pages}" >/dev/null || return 20
+            all="$(jq -c --arg head "${EXPECTED_HEAD}" '
+              [.[].check_runs[] |
+                select(.name == "Protected current-revision verifier") |
+                select(.app.id == 15368 and .app.slug == "github-actions") |
+                select(.head_sha == $head) |
+                select((.external_id | type) == "string")]
+            ' <<<"${pages}")" || return 20
+            v3="$(jq -c \
+              --arg prefix "rep60-required-workflow:v3:" \
+              --arg suffix ":${PR_NUMBER}:${EXPECTED_BASE}:${EXPECTED_HEAD}" '
+                [.[] | select(.external_id |
+                  startswith($prefix) and endswith($suffix))]
+              ' <<<"${all}")" || return 20
+            v2="$(jq -c \
+              --arg prefix "rep60-required-workflow:v2:" \
+              --arg suffix ":${PR_NUMBER}:${EXPECTED_HEAD}" '
+                [.[] | select(.external_id |
+                  startswith($prefix) and endswith($suffix))]
+              ' <<<"${all}")" || return 20
+            if [ "$(jq 'length' <<<"${v3}")" -eq 1 ] \
+              && [ "$(jq 'length' <<<"${v2}")" -eq 0 ]; then
+              current="$(jq -ce '.[0]' <<<"${v3}")" || return 20
+            elif [ "$(jq 'length' <<<"${v3}")" -eq 0 ] \
+              && [ "$(jq 'length' <<<"${v2}")" -eq 1 ]; then
+              current="$(jq -ce '.[0]' <<<"${v2}")" || return 20
+            else
+              return 20
+            fi
+            validate_reservation_snapshot "${current}" || return 20
+            printf '%s\n' "${current}"
+          }
+
+          validate_protected_run_binding() {
+            jq -e \
+              --arg api_url "${GITHUB_API_URL}" \
+              --arg author "${author}" \
+              --arg base_ref "${base_ref}" \
+              --arg base_sha "${EXPECTED_BASE}" \
+              --arg head_ref "${head_ref}" \
+              --arg head_sha "${EXPECTED_HEAD}" \
+              --arg repository "${REPOSITORY}" \
+              --arg run_url "${verifier_run_url}" \
+              --argjson id "${run_id}" \
+              --argjson pr_number "${PR_NUMBER}" '
+                .id == $id
+                and .event == "pull_request_target"
+                and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                and (.run_attempt == 1 or .run_attempt == 2)
+                and (.workflow_id | type) == "number" and .workflow_id > 0
+                and .workflow_url == (
+                  if $repository == "lightning-it/.github" then
+                    $api_url + "/repos/" + $repository + "/actions/workflows/"
+                      + (.workflow_id | tostring)
+                  else
+                    $api_url + "/repos/" + $repository
+                      + "/actions/required_workflows/"
+                      + (.workflow_id | tostring)
+                  end)
+                and .head_branch == $head_ref
+                and .head_sha == $head_sha
+                and .html_url == $run_url
+                and .actor.login == $author
+                and .triggering_actor.login == (
+                  if .run_attempt == 1 then $author
+                  else "github-actions[bot]" end)
+                and (.pull_requests | length) == 1
+                and .pull_requests[0].number == $pr_number
+                and .pull_requests[0].url == ($api_url + "/repos/" + $repository
+                  + "/pulls/" + ($pr_number | tostring))
+                and .pull_requests[0].base.ref == $base_ref
+                and .pull_requests[0].base.sha == $base_sha
+                and .pull_requests[0].base.repo.url
+                  == ($api_url + "/repos/" + $repository)
+                and .pull_requests[0].head.ref == $head_ref
+                and .pull_requests[0].head.sha == $head_sha
+                and .pull_requests[0].head.repo.url
+                  == ($api_url + "/repos/" + $repository)
+                and (
+                  if .status == "completed" then
+                    (.conclusion == "success" or .conclusion == "failure"
+                      or .conclusion == "cancelled")
+                  else
+                    (.status == "queued" or .status == "in_progress"
+                      or .status == "requested" or .status == "waiting"
+                      or .status == "pending")
+                    and .conclusion == null
+                  end)
+              ' <<<"${1}" >/dev/null
+          }
+
+          validate_neutral_snapshot() {
+            local snapshot="${1}" snapshot_summary
+            jq -e \
+              --arg details_url "${neutral_details_url}" \
+              --arg external_id "${neutral_external_id}" \
+              --arg head "${neutral_head_sha}" \
+              --arg summary "${neutral_summary_raw}" \
+              --argjson id "${neutral_check_id}" '
+                .id == $id
+                and .name == "Current revision review"
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .details_url == $details_url
+                and .external_id == $external_id
+                and .head_sha == $head
+                and .status == "completed"
+                and .conclusion == "success"
+                and .output.summary == $summary
+              ' <<<"${snapshot}" >/dev/null || return 1
+            snapshot_summary="$(jq -cer \
+              '.output.summary | fromjson | select(type == "object")' \
+              <<<"${snapshot}")" || return 1
+            jq -e \
+              --arg base "${EXPECTED_BASE}" \
+              --arg evidence_version "${evidence_version}" \
+              --arg head "${EXPECTED_HEAD}" \
+              --arg run_url "${producer_url}" \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_id "${producer_id}" '
+                .schema == 4
+                and .base_sha == $base
+                and .head_sha == $head
+                and .producer_run_id == $run_id
+                and .run_url == $run_url
+                and (
+                  if $evidence_version == "v6" then
+                    .pull_request_number == $pr_number
+                  else
+                    ((has("pull_request_number") | not)
+                      or .pull_request_number == $pr_number)
+                  end)
+              ' <<<"${snapshot_summary}" >/dev/null || return 1
+            if [ "${evidence_version}" = v4 ]; then
+              jq -e \
+                --arg input_sha256 "${v4_input_sha256}" \
+                --arg workflow_sha "${v4_workflow_sha}" '
+                  .input_sha256 == $input_sha256
+                  and .workflow_sha == $workflow_sha
+                ' <<<"${snapshot_summary}" >/dev/null
+            else
+              jq -e \
+                --arg controller "${controller_sha}" \
+                --arg review_path "${expected_review_path}" '
+                  .controller_sha == $controller
+                  and .review_path == $review_path
+                ' <<<"${snapshot_summary}" >/dev/null
+            fi
+          }
+
+          neutral_snapshot_projection() {
+            jq -c '
+              {id,name,app_id:.app.id,app_slug:.app.slug,head_sha,details_url,
+               external_id,status,conclusion,started_at,completed_at,updated_at,
+               output:{title:.output.title,summary:.output.summary}}
+            ' <<<"${1}"
+          }
+
+          load_neutral_inventory_snapshot() {
+            local current pages positives
+            pages="$(bounded_gh_api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")" \
+              || return 10
+            jq -e '
+              type == "array"
+              and length > 0
+              and all(.[];
+                type == "object"
+                and (.total_count | type) == "number"
+                and (.check_runs | type) == "array")
+              and ([.[].total_count] | unique | length) == 1
+              and ([.[].check_runs[]] | length) == .[0].total_count
+              and ([.[].check_runs[].id] | unique | length)
+                == .[0].total_count
+              and all(.[].check_runs[];
+                type == "object"
+                and (.id | type) == "number" and .id > 0)
+            ' <<<"${pages}" >/dev/null || return 20
+            positives="$(jq -c --arg head "${EXPECTED_HEAD}" '
+              [.[].check_runs[] |
+                select(.name == "Current revision review") |
+                select(.app.id == 15368 and .app.slug == "github-actions") |
+                select(.head_sha == $head) |
+                select(.status == "completed" and .conclusion == "success")]
+            ' <<<"${pages}")" || return 20
+            test "$(jq 'length' <<<"${positives}")" -eq 1 || return 20
+            current="$(jq -ce '.[0]' <<<"${positives}")" || return 20
+            validate_neutral_snapshot "${current}" || return 20
+            printf '%s\n' "${current}"
+          }
+
+          validate_producer_snapshot() {
+            local jobs="${2}" payload="${1}"
+            local bound_job current_job_binding current_jobs_binding
+            test "$(jq -c '
+              {id,event,path,name,display_title,head_branch,head_sha,html_url,
+               workflow_id,workflow_url,run_attempt,status,conclusion,
+               actor:.actor.login,triggering_actor:.triggering_actor.login,
+               pull_requests}
+            ' <<<"${payload}")" = "${producer_binding}" || return 1
+            jq -e '
               type == "object"
               and (.total_count | type) == "number"
-              and (.workflow_runs | type) == "array")
-            and all(.[].workflow_runs[];
-              type == "object"
-              and (.id | type) == "number" and .id > 0
-              and (.run_attempt | type) == "number" and .run_attempt >= 1
-              and (.status | type) == "string"
-              and has("conclusion")
-              and ((.conclusion | type) == "string" or .conclusion == null)
-              and (.path | type) == "string"
-              and (.display_title | type) == "string"
-              and (.head_branch | type) == "string"
-              and (.head_sha | type) == "string"
-              and (.workflow_id | type) == "number" and .workflow_id > 0
-              and (.workflow_url | type) == "string"
-              and (.html_url | type) == "string"
-              and (.actor.login | type) == "string"
-              and (.triggering_actor.login | type) == "string"
-              and (.pull_requests | type) == "array")
-          ' <<<"${cross_pages}" >/dev/null
-          cross_runs="$(jq -c \
-            --arg api_url "${GITHUB_API_URL}" \
-            --arg author "${author}" \
-            --arg base_ref "${base_ref}" \
-            --arg base_sha "${EXPECTED_BASE}" \
-            --arg head_ref "${head_ref}" \
-            --arg head_sha "${EXPECTED_HEAD}" \
-            --arg repository "${REPOSITORY}" \
-            --arg server_url "${GITHUB_SERVER_URL}" \
-            --argjson pr_number "${PR_NUMBER}" '
-              [.[].workflow_runs[] |
-                select(.event == "pull_request_target") |
-                select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
-                select(.head_branch == $head_ref and .head_sha == $head_sha) |
-                select(.actor.login == $author) |
-                select((.pull_requests | length) == 1) |
-                select(.pull_requests[0].number == $pr_number) |
-                select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
-                  + "/pulls/" + ($pr_number | tostring))) |
-                select(.pull_requests[0].base.ref == $base_ref) |
-                select(.pull_requests[0].base.sha == $base_sha) |
-                select(.pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)) |
-                select(.pull_requests[0].head.ref == $head_ref) |
-                select(.pull_requests[0].head.sha == $head_sha) |
-                select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
-                select(.workflow_url == ($api_url + "/repos/" + $repository
-                  + "/actions/required_workflows/" + (.workflow_id | tostring))) |
-                select(.html_url == ($server_url + "/" + $repository
-                  + "/actions/runs/" + (.id | tostring))) |
-                select(
+              and (.jobs | type) == "array"
+              and .total_count == (.jobs | length)
+              and .total_count <= 100
+              and ([.jobs[].id] | unique | length) == (.jobs | length)
+              and all(.jobs[];
+                type == "object"
+                and (.id | type) == "number" and .id > 0
+                and (.name | type) == "string"
+                and (.run_id | type) == "number"
+                and (.run_attempt | type) == "number"
+                and (.head_sha | type) == "string"
+                and (.status | type) == "string"
+                and has("conclusion"))
+            ' <<<"${jobs}" >/dev/null || return 1
+            current_jobs_binding="$(jq -c '
+              [.jobs[] |
+                {id,name,run_id,run_attempt,head_sha,status,conclusion}]
+              | sort_by(.id)
+            ' <<<"${jobs}")" || return 1
+            test "${current_jobs_binding}" = "${producer_jobs_binding}" || return 1
+            bound_job="$(jq -ce \
+              --argjson id "${producer_job_id}" '
+                [.jobs[] | select(.id == $id)]
+                | select(length == 1)
+                | .[0]
+              ' <<<"${jobs}")" || return 1
+            current_job_binding="$(jq -c '
+              {id,name,run_id,run_attempt,head_sha,status,conclusion}
+            ' <<<"${bound_job}")" || return 1
+            test "${current_job_binding}" = "${producer_job_binding}"
+          }
+
+          capture_neutral_authorization_observation() {
+            local branch_payload compare_payload current_default_branch
+            local current_default_head inventory inventory_status
+            local jobs payload producer_payload repository_payload
+            if inventory="$(load_neutral_inventory_snapshot)"; then
+              :
+            else
+              inventory_status=$?
+              return "${inventory_status}"
+            fi
+            payload="$(bounded_gh_api \
+              "repos/${REPOSITORY}/check-runs/${neutral_check_id}")" \
+              || return 10
+            validate_neutral_snapshot "${payload}" || return 20
+            producer_payload="$(bounded_gh_api \
+              "repos/${REPOSITORY}/actions/runs/${producer_id}")" \
+              || return 10
+            jobs="$(bounded_gh_api \
+              "repos/${REPOSITORY}/actions/runs/${producer_id}/attempts/${producer_attempt}/jobs?filter=all&per_page=100")" \
+              || return 10
+            validate_producer_snapshot \
+              "${producer_payload}" "${jobs}" || return 20
+            if [ "${evidence_version}" != v4 ]; then
+              repository_payload="$(bounded_gh_api \
+                "repos/${REPOSITORY}")" \
+                || return 10
+              branch_payload="$(bounded_gh_api \
+                "repos/${REPOSITORY}/branches/develop")" || return 10
+              current_default_branch="$(jq -er \
+                '.default_branch | select(type == "string")' \
+                <<<"${repository_payload}")" || return 20
+              current_default_head="$(jq -er \
+                '.commit.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
+                <<<"${branch_payload}")" || return 20
+              test "${current_default_branch}" = develop || return 20
+              compare_payload="$(bounded_gh_api \
+                "repos/${REPOSITORY}/compare/${controller_sha}...${current_default_head}")" \
+                || return 10
+              jq -e \
+                --arg controller "${controller_sha}" \
+                --arg head "${current_default_head}" '
+                  (.status == "identical" and $controller == $head)
+                  or (.status == "ahead"
+                    and .behind_by == 0
+                    and .merge_base_commit.sha == $controller)
+                ' <<<"${compare_payload}" >/dev/null || return 20
+            fi
+            neutral_snapshot_projection "${inventory}" >/dev/null \
+              || return 20
+            printf '%s\n' "${payload}"
+          }
+
+          revalidate_neutral_authorization() {
+            local first_projection first_snapshot observation_status
+            local second_projection second_snapshot
+            for stable_observation in $(seq 1 5); do
+              if first_snapshot="$(capture_neutral_authorization_observation)"; then
+                :
+              else
+                observation_status=$?
+                if [ "${observation_status}" -eq 20 ]; then
+                  echo 'The neutral authorization transaction drifted.' >&2
+                  return 1
+                fi
+                if [ "${stable_observation}" -eq 5 ]; then
+                  echo 'The neutral authorization could not be read stably.' >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              if second_snapshot="$(capture_neutral_authorization_observation)"; then
+                :
+              else
+                observation_status=$?
+                if [ "${observation_status}" -eq 20 ]; then
+                  echo 'The neutral authorization transaction drifted.' >&2
+                  return 1
+                fi
+                if [ "${stable_observation}" -eq 5 ]; then
+                  echo 'The neutral authorization never reached a stable second read.' >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              first_projection="$(neutral_snapshot_projection \
+                "${first_snapshot}")" || return 1
+              second_projection="$(neutral_snapshot_projection \
+                "${second_snapshot}")" || return 1
+              if [ "${first_projection}" = "${second_projection}" ]; then
+                printf '%s\n' "${second_snapshot}"
+                return 0
+              fi
+              if [ "${stable_observation}" -eq 5 ]; then
+                echo 'The neutral check never reached a stable snapshot.' >&2
+                return 1
+              fi
+              bounded_sleep 2 || return 1
+            done
+            return 1
+          }
+
+          validate_cross_run_binding() {
+            local cross_payload="${1}" expected_id="${2}"
+            jq -e \
+              --arg api_url "${GITHUB_API_URL}" \
+              --arg author "${author}" \
+              --arg base_ref "${base_ref}" \
+              --arg base_sha "${EXPECTED_BASE}" \
+              --arg head_ref "${head_ref}" \
+              --arg head_sha "${EXPECTED_HEAD}" \
+              --arg repository "${REPOSITORY}" \
+              --arg server_url "${GITHUB_SERVER_URL}" \
+              --argjson id "${expected_id}" \
+              --argjson pr_number "${PR_NUMBER}" '
+                .id == $id
+                and .event == "pull_request_target"
+                and .path == ".github/workflows/dot-github-current-revision-required.yml"
+                and (.created_at | type) == "string"
+                and (.created_at | test(
+                  "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])"
+                  + "T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"))
+                and (
+                  .created_at as $created_at
+                  | try (
+                      ($created_at
+                        | fromdateiso8601
+                        | strftime("%Y-%m-%dT%H:%M:%SZ"))
+                      == $created_at
+                    ) catch false)
+                and (.run_attempt == 1 or .run_attempt == 2)
+                and .head_branch == $head_ref
+                and .head_sha == $head_sha
+                and (.workflow_id | type) == "number" and .workflow_id > 0
+                and .workflow_url == ($api_url + "/repos/" + $repository
+                  + "/actions/required_workflows/" + (.workflow_id | tostring))
+                and .html_url == ($server_url + "/" + $repository
+                  + "/actions/runs/" + ($id | tostring))
+                and .actor.login == $author
+                and (
+                  if .run_attempt == 1 then
+                    .triggering_actor.login == $author
+                  else
+                    .triggering_actor.login == "github-actions[bot]"
+                  end)
+                and (.pull_requests | length) == 1
+                and .pull_requests[0].number == $pr_number
+                and .pull_requests[0].url == ($api_url + "/repos/" + $repository
+                  + "/pulls/" + ($pr_number | tostring))
+                and .pull_requests[0].base.ref == $base_ref
+                and .pull_requests[0].base.sha == $base_sha
+                and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
+                and .pull_requests[0].head.ref == $head_ref
+                and .pull_requests[0].head.sha == $head_sha
+                and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
+                and (
                   .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
                     + " opened " + $head_sha)
                   or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
@@ -404,14 +1084,516 @@ jobs:
                   or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
                     + " ready_for_review " + $head_sha)
                   or .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
-                    + " edited " + $head_sha))]
-            ' <<<"${cross_pages}")"
-          test "$(jq 'length' <<<"${cross_runs}")" -eq 1
-          cross_run="$(jq -c '.[0]' <<<"${cross_runs}")"
+                    + " edited " + $head_sha))
+                and (.status | type) == "string"
+                and (
+                  if .status == "completed" then
+                    (.conclusion == "success"
+                      or .conclusion == "failure"
+                      or .conclusion == "cancelled")
+                  else
+                    (.status == "queued"
+                      or .status == "in_progress"
+                      or .status == "requested"
+                      or .status == "waiting"
+                      or .status == "pending")
+                    and .conclusion == null
+                  end)
+              ' <<<"${cross_payload}" >/dev/null
+          }
+
+          validate_cross_rerun_authorization() {
+            local cross_payload="${3}" inventory="${4}" live_pr="${1}"
+            local neutral_snapshot="${5}" reservation_snapshot="${2}"
+            local selected selected_id
+            validate_live_pr_snapshot "${live_pr}" || return 1
+            validate_reservation_snapshot "${reservation_snapshot}" \
+              || return 1
+            validate_cross_run_binding \
+              "${cross_payload}" "${cross_run_id}" || return 1
+            jq -e \
+              --arg actor "${author}" \
+              --argjson id "${cross_run_id}" '
+                .id == $id
+                and .run_attempt == 1
+                and .status == "completed"
+                and .conclusion == "failure"
+                and .actor.login == $actor
+                and .triggering_actor.login == $actor
+              ' <<<"${cross_payload}" >/dev/null || return 1
+            selected="$(jq -ce '.[-1]' <<<"${inventory}")" || return 1
+            selected_id="$(jq -er \
+              '.id | select(type == "number" and . > 0)' \
+              <<<"${selected}")" || return 1
+            test "${selected_id}" = "${cross_run_id}" || return 1
+            jq -e \
+              --arg created_at "${cross_created_at}" \
+              --argjson id "${cross_run_id}" '
+                .id == $id
+                and .created_at == $created_at
+                and .run_attempt == 1
+                and .status == "completed"
+                and .conclusion == "failure"
+              ' <<<"${selected}" >/dev/null || return 1
+            validate_neutral_snapshot "${neutral_snapshot}"
+          }
+
+          authorize_protected_rerun_transaction() {
+            local cross_inventory live_pr neutral_snapshot reservation_inventory
+            local reservation_snapshot run_snapshot
+            neutral_snapshot="$(revalidate_neutral_authorization)" || return 1
+            live_pr="$(bounded_gh_api \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" \
+              || return 1
+            validate_live_pr_snapshot "${live_pr}" || return 1
+            reservation_snapshot="$(bounded_gh_api \
+              "repos/${REPOSITORY}/check-runs/${reservation_id}")" || return 1
+            validate_reservation_snapshot "${reservation_snapshot}" \
+              || return 1
+            reservation_inventory="$(load_reservation_inventory_snapshot)" \
+              || return 1
+            validate_reservation_snapshot "${reservation_inventory}" \
+              || return 1
+            run_snapshot="$(read_run_with_retry "${run_id}")" || return 1
+            validate_protected_run_binding "${run_snapshot}" || return 1
+            jq -e \
+              --arg author "${author}" \
+              --argjson id "${run_id}" '
+                .id == $id
+                and .run_attempt == 1
+                and .status == "completed"
+                and .conclusion == "failure"
+                and .actor.login == $author
+                and .triggering_actor.login == $author
+              ' <<<"${run_snapshot}" >/dev/null || return 1
+            if [ "${REPOSITORY}" = 'lightning-it/.github' ]; then
+              cross_inventory="$(load_cross_inventory_with_retry)" || return 1
+              validate_protected_cross_inventory "${cross_inventory}" || return 1
+            fi
+          }
+
+          authorize_cross_rerun_transaction() {
+            local cross_inventory cross_job_snapshot cross_snapshot
+            local live_pr neutral_snapshot
+            local reservation_inventory reservation_snapshot
+            neutral_snapshot="$(revalidate_neutral_authorization)" || return 1
+            live_pr="$(bounded_gh_api \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" \
+              || return 1
+            validate_live_pr_snapshot "${live_pr}" || return 1
+            reservation_snapshot="$(bounded_gh_api \
+              "repos/${REPOSITORY}/check-runs/${reservation_id}")" || return 1
+            validate_reservation_snapshot "${reservation_snapshot}" \
+              || return 1
+            cross_snapshot="$(read_run_with_retry "${cross_run_id}")" \
+              || return 1
+            cross_job_snapshot="$(load_cross_attempt_one_failed_job_with_retry)" \
+              || return 1
+            jq -e \
+              --arg head "${EXPECTED_HEAD}" \
+              --argjson id "${cross_job_id}" \
+              --argjson run_id "${cross_run_id}" '
+              .id == $id
+              and .name == "Required dot-github current-revision workflow"
+              and (.run_id | type) == "number" and .run_id == $run_id
+              and (.head_sha | type) == "string" and .head_sha == $head
+              and .run_attempt == 1
+              and .status == "completed"
+              and .conclusion == "failure"
+            ' <<<"${cross_job_snapshot}" >/dev/null || return 1
+            reservation_inventory="$(load_reservation_inventory_snapshot)" \
+              || return 1
+            validate_reservation_snapshot "${reservation_inventory}" \
+              || return 1
+            cross_inventory="$(load_cross_inventory_with_retry)" || return 1
+            validate_cross_rerun_authorization \
+              "${live_pr}" \
+              "${reservation_snapshot}" \
+              "${cross_snapshot}" \
+              "${cross_inventory}" \
+              "${neutral_snapshot}"
+          }
+
+          rerun_protected_verifier_once() {
+            authorize_protected_rerun_transaction || return 10
+            require_deadline || return 10
+            bounded_gh_api --method POST \
+              "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null \
+              && return 0
+            [ "${bounded_gh_api_invoked}" = true ] && return 20
+            return 10
+          }
+
+          rerun_cross_job_once() {
+            authorize_cross_rerun_transaction || return 10
+            require_deadline || return 10
+            bounded_gh_api --method POST \
+              "repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun" \
+              >/dev/null && return 0
+            [ "${bounded_gh_api_invoked}" = true ] && return 20
+            return 10
+          }
+
+          wait_for_protected_attempt_two_success() {
+            local attempt conclusion payload status
+            for protected_observation in $(seq 1 60); do
+              payload="$(read_run_with_retry "${run_id}")" || return 1
+              validate_protected_run_binding "${payload}" || return 1
+              attempt="$(jq -er \
+                '.run_attempt | select(type == "number")' \
+                <<<"${payload}")" || return 1
+              status="$(jq -er \
+                '.status | select(type == "string" and length > 0)' \
+                <<<"${payload}")" || return 1
+              conclusion="$(jq -r '.conclusion // empty' <<<"${payload}")"
+              if [ "${attempt}" -eq 1 ]; then
+                if [ "${status}" != completed ] \
+                  || [ "${conclusion}" != failure ]; then
+                  echo 'The protected attempt-one state changed after authorization.' >&2
+                  return 1
+                fi
+              elif [ "${attempt}" -eq 2 ]; then
+                if [ "${status}" = completed ]; then
+                  if [ "${conclusion}" != success ]; then
+                    echo 'The protected rerun reached a terminal contradiction.' >&2
+                    return 1
+                  fi
+                  return 0
+                fi
+              else
+                echo 'The protected verifier exceeded its single allowed rerun.' >&2
+                return 1
+              fi
+              if [ "${protected_observation}" -eq 60 ]; then
+                echo 'The protected verifier rerun did not converge.' >&2
+                return 1
+              fi
+              bounded_sleep 5 || return 1
+            done
+            return 1
+          }
+
+          wait_for_cross_attempt_two_success() {
+            local attempt conclusion payload status
+            for cross_completion_attempt in $(seq 1 60); do
+              payload="$(read_run_with_retry "${cross_run_id}")" || return 1
+              validate_cross_run_binding \
+                "${payload}" "${cross_run_id}" || return 1
+              attempt="$(jq -er \
+                '.run_attempt | select(type == "number")' \
+                <<<"${payload}")" || return 1
+              status="$(jq -er \
+                '.status | select(type == "string" and length > 0)' \
+                <<<"${payload}")" || return 1
+              conclusion="$(jq -r '.conclusion // empty' <<<"${payload}")"
+              if [ "${attempt}" -eq 1 ]; then
+                if [ "${status}" != completed ] \
+                  || [ "${conclusion}" != failure ]; then
+                  echo 'The cross-verifier attempt-one state changed after authorization.' >&2
+                  return 1
+                fi
+              elif [ "${attempt}" -eq 2 ] && [ "${status}" = completed ]; then
+                if [ "${conclusion}" != success ]; then
+                  echo 'The cross-verifier rerun reached a terminal contradiction.' >&2
+                  return 1
+                fi
+                validate_authoritative_cross_success 2 "${cross_run_id}" \
+                  || return 1
+                return 0
+              fi
+              if [ "${cross_completion_attempt}" -eq 60 ]; then
+                echo 'The cross-verifier rerun did not converge.' >&2
+                return 1
+              fi
+              bounded_sleep 5 || return 1
+            done
+            return 1
+          }
+
+          validate_authoritative_cross_inventory() {
+            local attempt="${2}" expected_id="${1}" inventory="${3}"
+            local selected selected_id
+            selected="$(jq -ce '.[-1]' <<<"${inventory}")" || return 1
+            selected_id="$(jq -er \
+              '.id | select(type == "number" and . > 0)' \
+              <<<"${selected}")" || return 1
+            test "${selected_id}" = "${expected_id}" || return 1
+            jq -e \
+              --arg author "${author}" \
+              --argjson attempt "${attempt}" \
+              --argjson id "${expected_id}" '
+                .id == $id
+                and .run_attempt == $attempt
+                and .status == "completed"
+                and .conclusion == "success"
+                and .actor.login == $author
+                and .triggering_actor.login == (
+                  if $attempt == 1 then $author else "github-actions[bot]" end)
+              ' <<<"${selected}" >/dev/null
+          }
+
+          validate_authoritative_cross_inventory_with_retry() {
+            local expected_attempt="${2}" expected_id="${1}"
+            local inventory selected selected_attempt selected_id selected_status
+            for inventory_observation in $(seq 1 5); do
+              inventory="$(load_cross_inventory_with_retry)" || return 1
+              selected="$(jq -ce '.[-1]' <<<"${inventory}")" || return 1
+              selected_id="$(jq -er \
+                '.id | select(type == "number" and . > 0)' \
+                <<<"${selected}")" || return 1
+              if [ "${selected_id}" != "${expected_id}" ]; then
+                echo 'A newer authoritative dot-github run superseded the completed run.' >&2
+                return 1
+              fi
+              selected_attempt="$(jq -er \
+                '.run_attempt | select(type == "number")' \
+                <<<"${selected}")" || return 1
+              selected_status="$(jq -er \
+                '.status | select(type == "string" and length > 0)' \
+                <<<"${selected}")" || return 1
+              if [ "${selected_attempt}" -gt "${expected_attempt}" ]; then
+                echo 'The final dot-github inventory exceeded the expected attempt.' >&2
+                return 1
+              fi
+              if [ "${selected_attempt}" -eq "${expected_attempt}" ] \
+                && [ "${selected_status}" = completed ]; then
+                if [ "$(jq -r .conclusion <<<"${selected}")" != success ]; then
+                  echo 'The final dot-github inventory reached a terminal contradiction.' >&2
+                  return 1
+                fi
+                validate_authoritative_cross_inventory \
+                  "${expected_id}" "${expected_attempt}" "${inventory}" \
+                  || return 1
+                return 0
+              fi
+              if [ "${inventory_observation}" -eq 5 ]; then
+                echo 'The final dot-github inventory did not converge.' >&2
+                return 1
+              fi
+              bounded_sleep 2 || return 1
+            done
+            return 1
+          }
+
+          validate_authoritative_cross_success() {
+            local expected_attempt="${1}" expected_id="${2}"
+            local detail_api_status final_cross_attempt final_cross_detail_complete
+            local final_cross_jobs final_cross_jobs_complete
+            local final_cross_payload final_cross_status
+            local jobs_api_status jobs_count jobs_status
+            final_cross_detail_complete=false
+            for detail_observation in $(seq 1 15); do
+              if final_cross_payload="$(bounded_gh_api \
+                  "repos/${REPOSITORY}/actions/runs/${expected_id}" 2>&1)"; then
+                :
+              else
+                detail_api_status=$?
+                if [ "${detail_observation}" -eq 15 ]; then
+                  echo "Dot-github run detail API failed after 15 attempts (exit ${detail_api_status}): ${final_cross_payload}" >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              if ! validate_cross_run_binding \
+                  "${final_cross_payload}" "${expected_id}"; then
+                echo 'The authoritative dot-github run detail contradicted its binding.' >&2
+                return 1
+              fi
+              final_cross_attempt="$(jq -er \
+                '.run_attempt | select(type == "number")' \
+                <<<"${final_cross_payload}")" || return 1
+              if [ "${final_cross_attempt}" -ne "${expected_attempt}" ]; then
+                echo 'The authoritative dot-github run attempt changed unexpectedly.' >&2
+                return 1
+              fi
+              final_cross_status="$(jq -er \
+                '.status | select(type == "string" and length > 0)' \
+                <<<"${final_cross_payload}")" || return 1
+              if [ "${final_cross_status}" = completed ]; then
+                if [ "$(jq -r .conclusion <<<"${final_cross_payload}")" != success ]; then
+                  echo 'The authoritative dot-github run completed without success.' >&2
+                  return 1
+                fi
+                final_cross_detail_complete=true
+                break
+              fi
+              if [ "${detail_observation}" -eq 15 ]; then
+                echo 'The authoritative dot-github run detail did not converge.' >&2
+                return 1
+              fi
+              bounded_sleep 2 || return 1
+            done
+            test "${final_cross_detail_complete}" = true || return 1
+
+            if [ "${expected_attempt}" -eq 2 ]; then
+              final_cross_jobs_complete=false
+              for jobs_observation in $(seq 1 15); do
+                if final_cross_jobs="$(bounded_gh_api \
+                    "repos/${REPOSITORY}/actions/runs/${expected_id}/attempts/2/jobs?filter=all&per_page=100" \
+                    2>&1)"; then
+                  :
+                else
+                  jobs_api_status=$?
+                  if [ "${jobs_observation}" -eq 15 ]; then
+                    echo "Dot-github attempt-two jobs API failed after 15 attempts (exit ${jobs_api_status}): ${final_cross_jobs}" >&2
+                    return 1
+                  fi
+                  bounded_sleep 2 || return 1
+                  continue
+                fi
+                if ! jq -e \
+                    --arg head "${EXPECTED_HEAD}" \
+                    --argjson run_id "${expected_id}" '
+                    type == "object"
+                    and (.total_count | type) == "number"
+                    and .total_count >= 0
+                    and (.jobs | type) == "array"
+                    and .total_count == (.jobs | length)
+                    and .total_count <= 100
+                    and ([.jobs[].id] | unique | length) == (.jobs | length)
+                    and all(.jobs[];
+                      type == "object"
+                      and (.id | type) == "number" and .id > 0
+                      and (.name | type) == "string"
+                      and (.run_id | type) == "number" and .run_id == $run_id
+                      and (.head_sha | type) == "string" and .head_sha == $head
+                      and (.run_attempt | type) == "number"
+                      and (.status | type) == "string"
+                      and has("conclusion")
+                      and (
+                        if .status == "completed" then
+                          (.conclusion | type) == "string"
+                        else
+                          (.status == "queued"
+                            or .status == "in_progress"
+                            or .status == "requested"
+                            or .status == "waiting"
+                            or .status == "pending")
+                          and .conclusion == null
+                        end))
+                  ' <<<"${final_cross_jobs}" >/dev/null; then
+                  echo 'The dot-github attempt-two job ledger was malformed.' >&2
+                  return 1
+                fi
+                jobs_count="$(jq -er \
+                  '.jobs | length' <<<"${final_cross_jobs}")" || return 1
+                if [ "${jobs_count}" -gt 1 ]; then
+                  echo 'The dot-github attempt-two ledger contained an additional job.' >&2
+                  return 1
+                fi
+                if [ "${jobs_count}" -eq 0 ]; then
+                  if [ "${jobs_observation}" -eq 15 ]; then
+                    echo 'The dot-github attempt-two job did not become visible.' >&2
+                    return 1
+                  fi
+                  bounded_sleep 2 || return 1
+                  continue
+                fi
+                if [ "$(jq -r '.jobs[0].name' <<<"${final_cross_jobs}")" \
+                    != 'Required dot-github current-revision workflow' ] \
+                  || [ "$(jq -r '.jobs[0].run_attempt' <<<"${final_cross_jobs}")" \
+                    -ne 2 ]; then
+                  echo 'The dot-github attempt-two job binding was invalid.' >&2
+                  return 1
+                fi
+                jobs_status="$(jq -er \
+                  '.jobs[0].status | select(type == "string" and length > 0)' \
+                  <<<"${final_cross_jobs}")" || return 1
+                if [ "${jobs_status}" = completed ]; then
+                  if [ "$(jq -r '.jobs[0].conclusion' <<<"${final_cross_jobs}")" \
+                      != success ]; then
+                    echo 'The dot-github attempt-two job completed without success.' >&2
+                    return 1
+                  fi
+                  final_cross_jobs_complete=true
+                  break
+                fi
+                if [ "${jobs_observation}" -eq 15 ]; then
+                  echo 'The dot-github attempt-two job ledger did not converge.' >&2
+                  return 1
+                fi
+                bounded_sleep 2 || return 1
+              done
+              test "${final_cross_jobs_complete}" = true || return 1
+              jq -e \
+                --arg head "${EXPECTED_HEAD}" \
+                --argjson run_id "${expected_id}" '
+                type == "object"
+                and .total_count == 1
+                and (.jobs | type) == "array"
+                and (.jobs | length) == 1
+                and (.jobs[0].id | type) == "number"
+                and .jobs[0].id > 0
+                and .jobs[0].name
+                  == "Required dot-github current-revision workflow"
+                and .jobs[0].run_id == $run_id
+                and .jobs[0].head_sha == $head
+                and .jobs[0].run_attempt == 2
+                and .jobs[0].status == "completed"
+                and .jobs[0].conclusion == "success"
+              ' <<<"${final_cross_jobs}" >/dev/null || return 1
+            fi
+
+            validate_authoritative_cross_inventory_with_retry \
+              "${expected_id}" "${expected_attempt}"
+          }
+
+          run="$(read_run_with_retry "${run_id}")"
+          validate_protected_run_binding "${run}"
+          test "$(jq -r .status <<<"${run}")" = completed
+          run_attempt="$(jq -er \
+            '.run_attempt | select(type == "number")' <<<"${run}")"
+          run_conclusion="$(jq -er \
+            '.conclusion | select(type == "string")' <<<"${run}")"
+          if [ "${run_conclusion}" = success ]; then
+            echo 'Protected verifier already passed; no rerun is needed.'
+          elif [ "${run_conclusion}" = cancelled ]; then
+            echo 'The protected verifier run was cancelled.' >&2
+            exit 1
+          else
+            test "${run_conclusion}" = failure
+            if [ "${run_attempt}" -ne 1 ]; then
+              echo 'Protected verifier failed after consuming its single rerun.' >&2
+              exit 1
+            fi
+            protected_cross_inventory='[]'
+            if [ "${REPOSITORY}" = 'lightning-it/.github' ]; then
+              protected_cross_inventory="$(load_cross_inventory_with_retry)"
+              validate_protected_cross_inventory "${protected_cross_inventory}"
+            fi
+            protected_rerun_status=0
+            rerun_protected_verifier_once || protected_rerun_status=$?
+            if [ "${protected_rerun_status}" -eq 10 ]; then
+              echo 'Protected rerun authorization failed before mutation.' >&2
+              exit 1
+            fi
+            if [ "${protected_rerun_status}" -eq 20 ]; then
+              echo 'Protected rerun response was uncertain; checking live state.' >&2
+            elif [ "${protected_rerun_status}" -ne 0 ]; then
+              exit 1
+            fi
+            wait_for_protected_attempt_two_success
+            echo 'Protected verifier rerun completed successfully.'
+          fi
+
+          if [ "${REPOSITORY}" != 'lightning-it/.github' ]; then
+            echo 'No independent dot-github cross-verifier applies to this repository.'
+            exit 0
+          fi
+
+          cross_runs="$(load_cross_inventory_with_retry)"
+          jq -r '
+            .[0:-1][] |
+            "Prior dot-github cross-run id=\(.id) created_at=\(.created_at) is superseded."
+          ' <<<"${cross_runs}" >&2
+          cross_run="$(jq -ce '.[-1]' <<<"${cross_runs}")"
           cross_run_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${cross_run}")"
+          cross_created_at="$(jq -er '.created_at | select(type == "string" and length > 0)' \
+            <<<"${cross_run}")"
           cross_initial_complete=false
           for cross_initial_attempt in $(seq 1 60); do
-            if cross_run="$(gh api \
+            if cross_run="$(bounded_gh_api \
                 "repos/${REPOSITORY}/actions/runs/${cross_run_id}" 2>&1)"; then
               :
             else
@@ -421,20 +1603,10 @@ jobs:
                 exit 1
               fi
               echo "Dot-github cross-verifier API request failed (exit ${cross_api_status}); retrying (${cross_initial_attempt}/60): ${cross_run}" >&2
-              sleep 5
+              bounded_sleep 5
               continue
             fi
-            jq -e \
-              --arg head "${EXPECTED_HEAD}" \
-              --argjson id "${cross_run_id}" \
-              --argjson pr "${PR_NUMBER}" '
-                .id == $id
-                and .event == "pull_request_target"
-                and .path
-                  == ".github/workflows/dot-github-current-revision-required.yml"
-                and .head_sha == $head
-                and any(.pull_requests[]?; .number == $pr)
-              ' <<<"${cross_run}" >/dev/null
+            validate_cross_run_binding "${cross_run}" "${cross_run_id}"
             cross_attempt="$(jq -er \
               '.run_attempt | select(type == "number" and . >= 1)' \
               <<<"${cross_run}")"
@@ -453,20 +1625,17 @@ jobs:
               echo "Dot-github cross-verifier did not complete in time." >&2
               exit 1
             fi
-            sleep 5
+            bounded_sleep 5
           done
           test "${cross_initial_complete}" = true
-          expected_cross_trigger="${author}"
-          if [ "${cross_attempt}" -eq 2 ]; then
-            expected_cross_trigger='github-actions[bot]'
-          elif [ "${cross_attempt}" -ne 1 ]; then
-            echo "Dot-github cross-verifier exceeded its single allowed rerun." >&2
-            exit 1
-          fi
-          test "$(jq -r .triggering_actor.login <<<"${cross_run}")" = "${expected_cross_trigger}"
           if [ "$(jq -r .conclusion <<<"${cross_run}")" = success ]; then
+            validate_authoritative_cross_success "${cross_attempt}" "${cross_run_id}"
             echo "Independent dot-github cross-verifier already passed."
             exit 0
+          fi
+          if [ "$(jq -r .conclusion <<<"${cross_run}")" = cancelled ]; then
+            echo "The authoritative dot-github cross-verifier run was cancelled." >&2
+            exit 1
           fi
           test "$(jq -r .conclusion <<<"${cross_run}")" = failure
           if [ "${cross_attempt}" -ne 1 ]; then
@@ -474,118 +1643,22 @@ jobs:
             exit 1
           fi
 
-          # A Required-Workflow run can become terminal before its complete job
-          # ledger is visible through the separate jobs endpoint. Converge only
-          # the immutable attempt-one read before issuing the one allowed rerun.
-          cross_job_id=''
-          for cross_job_observation in $(seq 1 30); do
-            if cross_attempt_one_jobs="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/1/jobs?filter=all&per_page=100" 2>&1)"; then
-              :
-            else
-              cross_jobs_api_status=$?
-              if [ "${cross_job_observation}" -eq 30 ]; then
-                echo "Dot-github attempt-one job ledger API failed after 30 attempts (exit ${cross_jobs_api_status}): ${cross_attempt_one_jobs}" >&2
-                exit 1
-              fi
-              sleep 2
-              continue
-            fi
-            if ! jq -e '
-                type == "object"
-                and (.total_count | type) == "number"
-                and (.jobs | type) == "array"
-                and .total_count == (.jobs | length)
-                and .total_count <= 100
-                and all(.jobs[];
-                  type == "object"
-                  and (.id | type) == "number" and .id > 0
-                  and (.name | type) == "string"
-                  and (.run_attempt | type) == "number" and .run_attempt == 1
-                  and .status == "completed"
-                  and (.conclusion | type) == "string")
-              ' <<<"${cross_attempt_one_jobs}" >/dev/null; then
-              if [ "${cross_job_observation}" -eq 30 ]; then
-                echo 'The dot-github attempt-one job ledger did not converge.' >&2
-                exit 1
-              fi
-              sleep 2
-              continue
-            fi
-            cross_failed_jobs="$(jq -c '
-              [.jobs[] |
-                select(.name == "Required dot-github current-revision workflow") |
-                select(.run_attempt == 1) |
-                select(.status == "completed" and .conclusion == "failure")]
-            ' <<<"${cross_attempt_one_jobs}")"
-            cross_failed_count="$(jq 'length' <<<"${cross_failed_jobs}")"
-            if [ "${cross_failed_count}" -gt 1 ]; then
-              echo 'Multiple failed dot-github verifier jobs claim attempt one.' >&2
-              exit 1
-            fi
-            if [ "${cross_failed_count}" -eq 1 ]; then
-              cross_job_id="$(jq -er \
-                '.[0].id | select(type == "number" and . > 0)' \
-                <<<"${cross_failed_jobs}")"
-              break
-            fi
-            if [ "${cross_job_observation}" -eq 30 ]; then
-              echo 'The failed dot-github verifier job did not become visible.' >&2
-              exit 1
-            fi
-            sleep 2
-          done
-          [[ "${cross_job_id}" =~ ^[1-9][0-9]*$ ]]
-          pre_rerun_cross="$(gh api \
-            "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
-          jq -e \
-            --arg actor "${author}" \
-            --argjson id "${cross_run_id}" '
-              .id == $id
-              and .run_attempt == 1
-              and .status == "completed"
-              and .conclusion == "failure"
-              and .actor.login == $actor
-              and .triggering_actor.login == $actor
-            ' <<<"${pre_rerun_cross}" >/dev/null
-          if ! gh api --method POST \
-              "repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun" >/dev/null; then
-            cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
-            observed_cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
-            if [ "${observed_cross_attempt}" -ne 2 ]; then
-              echo "Cross-verifier rerun failed without exactly one materialized second attempt." >&2
-              exit 1
-            fi
-            echo "A concurrent service-side request already materialized the cross-verifier rerun."
+          cross_failed_job="$(load_cross_attempt_one_failed_job_with_retry)"
+          cross_job_id="$(jq -er \
+            '.id | select(type == "number" and . > 0)' \
+            <<<"${cross_failed_job}")"
+
+          cross_rerun_status=0
+          rerun_cross_job_once || cross_rerun_status=$?
+          if [ "${cross_rerun_status}" -eq 10 ]; then
+            echo 'Cross-verifier rerun authorization failed before mutation.' >&2
+            exit 1
+          fi
+          if [ "${cross_rerun_status}" -eq 20 ]; then
+            echo 'Cross-verifier rerun response was uncertain; checking live state.' >&2
+          elif [ "${cross_rerun_status}" -ne 0 ]; then
+            exit 1
           fi
 
-          for cross_completion_attempt in $(seq 1 60); do
-            cross_run="$(gh api "repos/${REPOSITORY}/actions/runs/${cross_run_id}")"
-            observed_cross_attempt="$(jq -er '.run_attempt | select(type == "number" and . >= 1)' <<<"${cross_run}")"
-            cross_status="$(jq -er '.status | select(type == "string" and length > 0)' <<<"${cross_run}")"
-            if [ "${observed_cross_attempt}" -gt 2 ]; then
-              echo "Dot-github cross-verifier exceeded its single allowed rerun." >&2
-              exit 1
-            fi
-            if [ "${observed_cross_attempt}" -eq 2 ] && [ "${cross_status}" = completed ]; then
-              test "$(jq -r .conclusion <<<"${cross_run}")" = success
-              test "$(jq -r .actor.login <<<"${cross_run}")" = "${author}"
-              test "$(jq -r .triggering_actor.login <<<"${cross_run}")" = 'github-actions[bot]'
-              cross_attempt_two_jobs="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${cross_run_id}/attempts/2/jobs?filter=all&per_page=100")"
-              cross_success_jobs="$(jq -c '
-                [.jobs[] |
-                  select(.name == "Required dot-github current-revision workflow") |
-                  select(.run_attempt == 2) |
-                  select(.status == "completed" and .conclusion == "success")]
-              ' <<<"${cross_attempt_two_jobs}")"
-              test "$(jq 'length' <<<"${cross_success_jobs}")" -eq 1
-              echo "Independent dot-github cross-verifier rerun completed successfully."
-              exit 0
-            fi
-            if [ "${cross_completion_attempt}" -eq 60 ]; then
-              echo "Dot-github cross-verifier rerun did not complete successfully in time." >&2
-              exit 1
-            fi
-            sleep 5
-          done
+          wait_for_cross_attempt_two_success
+          echo 'Independent dot-github cross-verifier rerun completed successfully.'
