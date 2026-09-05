@@ -669,4 +669,3 @@ jobs:
   # The protected Exact-Revision producer owns the one verifier handoff after
   # it has published a terminal neutral result. A promotion-level helper would
   # race that producer and is therefore intentionally forbidden here.
-
