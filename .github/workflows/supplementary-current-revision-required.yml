@@ -499,7 +499,7 @@ jobs:
             ' <<<"${classification}" >/dev/null
           echo 'active=true' >>"${GITHUB_OUTPUT}"
 
-      - name: Wait for one finalized bootstrap pipeline review
+      - name: Wait for one bound bootstrap pipeline review ledger
         if: steps.bootstrap-handoff.outputs.active == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -670,50 +670,143 @@ jobs:
                 fi
                 exit "${read_status}"
               fi
+              producer_jobs="$(jq -c '[.[].jobs[]?]' <<<"${jobs_pages}")"
+              producer_status="$(jq -er \
+                '.status | select(type == "string")' <<<"${producer}")"
+              producer_conclusion="$(jq -er '
+                select(has("conclusion"))
+                | if .conclusion == null then ""
+                  else .conclusion | select(type == "string")
+                  end
+                ' <<<"${producer}")"
+              case "${producer_status}:${producer_conclusion}" in
+                queued:|in_progress:|completed:success|completed:failure|completed:skipped) ;;
+                *)
+                  echo 'A local Copilot producer has an invalid terminal state.' >&2
+                  exit 1
+                  ;;
+              esac
+              producer_job_count="$(jq 'length' <<<"${producer_jobs}")"
+              if [ "${producer_job_count}" -gt 5 ]; then
+                echo 'The local Copilot producer job ledger contains unexpected jobs.' >&2
+                exit 1
+              fi
+              if [ "${producer_job_count}" -lt 5 ]; then
+                if [ "${producer_status}" = completed ]; then
+                  echo 'A completed local Copilot producer has an incomplete job ledger.' >&2
+                  exit 1
+                fi
+                continue
+              fi
+              jq -e \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_id}" '
+                  length == 5
+                  and all(.[];
+                    .run_id == $run_id
+                    and .head_sha == $head
+                    and .run_attempt == 1
+                    and (.status == "queued"
+                      or .status == "in_progress"
+                      or .status == "completed")
+                    and (.name == "Classify protected main trust-root handoff"
+                      or .name == "Request Copilot review for current revision"
+                      or .name == "Verify current revision policy"
+                      or .name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
+                      or .name == "Dispatch protected managed-sync finalizer re-evaluation"))
+                  and ([.[].name] | unique | length) == 5
+                ' <<<"${producer_jobs}" >/dev/null
+              classification_count="$(jq '
+                [.[] |
+                  select(.name == "Classify protected main trust-root handoff") |
+                  select(.status == "completed" and .conclusion == "success")]
+                | length
+                ' <<<"${producer_jobs}")"
               request_count="$(jq \
-                --arg head "${EVENT_HEAD}" \
-                --argjson run_id "${producer_id}" '
-                [.[].jobs[]? |
-                  select(.run_id == $run_id) |
-                  select(.head_sha == $head) |
+                '
+                [.[] |
                   select(.name == "Request Copilot review for current revision") |
-                  select(.run_attempt == 1) |
                   select(.status == "completed" and .conclusion == "success")]
                 | length
-                ' <<<"${jobs_pages}")"
+                ' <<<"${producer_jobs}")"
               gate_count="$(jq \
-                --arg head "${EVENT_HEAD}" \
-                --argjson run_id "${producer_id}" '
-                [.[].jobs[]? |
-                  select(.run_id == $run_id) |
-                  select(.head_sha == $head) |
+                '
+                [.[] |
                   select(.name == "Verify current revision policy") |
-                  select(.run_attempt == 1) |
                   select(.status == "completed" and .conclusion == "success")]
                 | length
-                ' <<<"${jobs_pages}")"
-              if [ "${request_count}" -gt 1 ] || [ "${gate_count}" -gt 1 ]; then
+                ' <<<"${producer_jobs}")"
+              helper_count="$(jq '
+                [.[] |
+                  select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                  select(
+                    ((.status == "queued" or .status == "in_progress")
+                      and .conclusion == null)
+                    or (.status == "completed"
+                      and (.conclusion == "success" or .conclusion == "failure")))]
+                | length
+                ' <<<"${producer_jobs}")"
+              finalizer_count="$(jq '
+                [.[] |
+                  select(.name == "Dispatch protected managed-sync finalizer re-evaluation") |
+                  select(.status == "completed" and .conclusion == "skipped")]
+                | length
+                ' <<<"${producer_jobs}")"
+              skipped_count="$(jq '
+                [.[] |
+                  select(.status == "completed" and .conclusion == "skipped")]
+                | length
+                ' <<<"${producer_jobs}")"
+              if [ "${classification_count}" -gt 1 ] \
+                || [ "${request_count}" -gt 1 ] \
+                || [ "${gate_count}" -gt 1 ] \
+                || [ "${helper_count}" -gt 1 ] \
+                || [ "${finalizer_count}" -gt 1 ]; then
                 echo 'The local Copilot producer job ledger is ambiguous.' >&2
                 exit 1
               fi
-              producer_status="$(jq -r .status <<<"${producer}")"
-              producer_conclusion="$(jq -r '.conclusion // ""' <<<"${producer}")"
-              if [ "${producer_status}" = completed ]; then
-                if [ "${producer_conclusion}" = success ] \
-                  && [ "${request_count}" -eq 1 ] \
-                  && [ "${gate_count}" -eq 1 ]; then
-                  eligible_producers=$((eligible_producers + 1))
-                elif [ "${producer_conclusion}" = skipped ] \
-                  && [ "${request_count}" -eq 0 ] \
-                  && [ "${gate_count}" -eq 0 ]; then
-                  :
-                else
-                  echo 'A local Copilot producer completed without the exact successful job ledger.' >&2
-                  exit 1
-                fi
-              elif [ "${producer_status}" != queued ] \
-                && [ "${producer_status}" != in_progress ]; then
-                echo 'A local Copilot producer has an invalid status.' >&2
+              if [ "${producer_status}:${producer_conclusion}:${skipped_count}" = \
+                  completed:skipped:5 ]; then
+                continue
+              fi
+              if [ "${classification_count}" -eq 1 ] \
+                && [ "${request_count}" -eq 1 ] \
+                && [ "${gate_count}" -eq 1 ] \
+                && [ "${helper_count}" -eq 1 ] \
+                && [ "${finalizer_count}" -eq 1 ]; then
+                case "${producer_status}:${producer_conclusion}" in
+                  queued:|in_progress:)
+                    eligible_producers=$((eligible_producers + 1))
+                    ;;
+                  completed:success)
+                    test "$(jq '
+                      [.[] |
+                        select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                        select(.status == "completed" and .conclusion == "success")]
+                      | length
+                      ' <<<"${producer_jobs}")" -eq 1
+                    eligible_producers=$((eligible_producers + 1))
+                    ;;
+                  completed:failure)
+                    # Controllers deployed before this deadlock correction can
+                    # finish red solely because the helper waits for the
+                    # Required Workflow that is observing this ledger. The
+                    # exact five-job proof isolates only that helper failure.
+                    test "$(jq '
+                      [.[] |
+                        select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                        select(.status == "completed" and .conclusion == "failure")]
+                      | length
+                      ' <<<"${producer_jobs}")" -eq 1
+                    eligible_producers=$((eligible_producers + 1))
+                    ;;
+                  *)
+                    echo 'A local Copilot producer completed without the exact successful job ledger.' >&2
+                    exit 1
+                    ;;
+                esac
+              elif [ "${producer_status}" = completed ]; then
+                echo 'A local Copilot producer completed without the exact successful job ledger.' >&2
                 exit 1
               fi
             done

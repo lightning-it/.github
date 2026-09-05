@@ -3761,7 +3761,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Classify protected main trust-root bootstrap "
             "handoff\n"
         )
-        wait_name = "      - name: Wait for one finalized bootstrap pipeline review\n"
+        wait_name = (
+            "      - name: Wait for one bound bootstrap pipeline review ledger\n"
+        )
         verifier_name = (
             "      - name: Verify one protected result for the exact live revision\n"
         )
@@ -3840,8 +3842,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "for producer_id in $(jq -r '.[].id'", wait
         )
-        self.assertIn("select(.run_id == $run_id)", wait)
-        self.assertIn("select(.head_sha == $head)", wait)
+        self.assertIn(".run_id == $run_id", wait)
+        self.assertIn(".head_sha == $head", wait)
         self.assertIn('if [ "${eligible_producers}" -gt 1 ]', wait)
         self.assertNotIn('if [ "${run_count}" -gt 1 ]', wait)
         self.assertIn(".pull_requests[0].base.sha == $base", wait)
@@ -3853,9 +3855,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             'select(.name == "Verify current revision policy")', wait
         )
+        for exact_job in (
+            "Classify protected main trust-root handoff",
+            "Request Copilot review for current revision",
+            "Verify current revision policy",
+            "Request protected verifier re-evaluation / Re-run the one "
+            "protected verifier attempt",
+            "Dispatch protected managed-sync finalizer re-evaluation",
+        ):
+            self.assertIn(exact_job, wait)
+        self.assertIn('producer_job_count="$(jq \'length\'', wait)
+        self.assertIn('if [ "${producer_job_count}" -gt 5 ]', wait)
+        self.assertIn('if [ "${producer_job_count}" -lt 5 ]', wait)
+        self.assertIn("([.[].name] | unique | length) == 5", wait)
+        self.assertIn("queued:|in_progress:", wait)
+        self.assertIn("completed:success|completed:failure", wait)
+        self.assertIn(
+            "Controllers deployed before this deadlock correction", wait
+        )
+        self.assertIn(
+            "exact five-job proof isolates only that helper failure", wait
+        )
+        self.assertIn(
+            'if [ "${producer_status}:${producer_conclusion}:${skipped_count}" =',
+            wait,
+        )
+        self.assertIn("completed:skipped:5", wait)
         self.assertNotIn('select(.name == "Successful Copilot review")', wait)
         self.assertIn('if [ "${review_count}" -gt 1 ]', wait)
-        self.assertIn('if [ "${request_count}" -gt 1 ]', wait)
+        self.assertIn('[ "${request_count}" -gt 1 ]', wait)
         self.assertNotIn("gh pr edit", wait)
         self.assertNotIn("requested_reviewers", wait)
         self.assertNotIn("openai/", wait.lower())
