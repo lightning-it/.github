@@ -132,7 +132,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             os.link(target, link)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
-                "one regular non-symlink file",
+                r"link count 1 \(no hardlinks\)",
             ):
                 self.module.protected_asset_bytes(link, "test asset")
 
@@ -207,7 +207,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             os.link(target, link)
             with self.assertRaisesRegex(
                 self.module.MaterializationError,
-                "one regular non-symlink file",
+                r"link count 1 \(no hardlinks\)",
             ):
                 self.module.write_owned_regular_file(link, b"replacement", "test")
             self.assertEqual("unchanged", target.read_text(encoding="utf-8"))
