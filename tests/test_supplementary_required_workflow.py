@@ -2084,7 +2084,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("rep60-main-trust-root-bootstrap:v1:", bootstrap)
         self.assertNotIn("Protected main trust-root bootstrap reviewed", bootstrap)
         self.assertIn("mlx90-current-revision:copilot:v6:", bootstrap)
-        self.assertIn('".github/workflows/current-revision-rerun.yml"', bootstrap)
+        self.assertIn("($expected_source_blob_paths | sort)", bootstrap)
         self.assertIn("main-trust-root-bootstrap-final-rebind", bootstrap)
         self.assertIn("final_bootstrap_summary", bootstrap)
         self.assertIn("test \"${final_bootstrap_summary}\"", bootstrap)
@@ -3864,12 +3864,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        contracts = re.findall(
-            r"\(\.source_blobs \| keys \| sort\) == \(\[(.*?)\] \| sort\)",
-            workflow,
-            flags=re.DOTALL,
-        )
-        self.assertEqual(2, len(contracts))
         expected = {
             ".github/codex/prompts/review-exact-head.md",
             ".github/codex/schemas/exact-head-review.schema.json",
@@ -3878,12 +3872,33 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ".github/workflows/release-bot-exact-head-review.yml",
             "scripts/materialize-exact-revision-review.py",
         }
-        for contract in contracts:
-            with self.subTest(contract=contract):
-                self.assertEqual(
-                    expected,
-                    set(re.findall(r'"([^"]+)"', contract)),
-                )
+        contract = re.search(
+            r"^      BOOTSTRAP_SOURCE_BLOB_PATHS_JSON: >-\n"
+            r"(?P<json>(?:^        .*\n)+?)"
+            r"^      EVENT_ACTION:",
+            workflow,
+            flags=re.MULTILINE,
+        )
+        self.assertIsNotNone(contract)
+        assert contract is not None
+        encoded_contract = " ".join(
+            line.strip() for line in contract.group("json").splitlines()
+        )
+        self.assertEqual(expected, set(json.loads(encoded_contract)))
+        self.assertEqual(
+            2,
+            workflow.count('--argjson expected_source_blob_paths \\\n'),
+        )
+        self.assertEqual(
+            2,
+            workflow.count('"${BOOTSTRAP_SOURCE_BLOB_PATHS_JSON}" \\\n'),
+        )
+        self.assertEqual(
+            2,
+            workflow.count(
+                "== ($expected_source_blob_paths | sort)"
+            ),
+        )
 
     def test_bootstrap_api_read_retries_only_transient_failures(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

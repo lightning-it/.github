@@ -349,6 +349,13 @@ jobs:
     timeout-minutes: 60
 
     env:
+      BOOTSTRAP_SOURCE_BLOB_PATHS_JSON: >-
+        [".github/codex/prompts/review-exact-head.md",
+        ".github/codex/schemas/exact-head-review.schema.json",
+        ".github/workflows/copilot-review.yml",
+        ".github/workflows/current-revision-rerun.yml",
+        ".github/workflows/release-bot-exact-head-review.yml",
+        "scripts/materialize-exact-revision-review.py"]
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_BASE: ${{ github.event.pull_request.base.sha }}
       EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -465,6 +472,8 @@ jobs:
             --arg head "${EVENT_HEAD}" \
             --arg repository "${REPOSITORY}" \
             --arg workflow "${WORKFLOW_SHA}" \
+            --argjson expected_source_blob_paths \
+              "${BOOTSTRAP_SOURCE_BLOB_PATHS_JSON}" \
             --argjson pr_number "${PR_NUMBER}" '
               (keys | sort) == ([
                 "base_sha", "candidate_tree_sha", "controller_blob_sha",
@@ -484,14 +493,8 @@ jobs:
               and (.controller_blob_sha | test("^[0-9a-f]{40}$"))
               and (.source_sha | test("^[0-9a-f]{40}$"))
               and (.source_tree_sha | test("^[0-9a-f]{40}$"))
-              and (.source_blobs | keys | sort) == ([
-                ".github/codex/prompts/review-exact-head.md",
-                ".github/codex/schemas/exact-head-review.schema.json",
-                ".github/workflows/copilot-review.yml",
-                ".github/workflows/current-revision-rerun.yml",
-                ".github/workflows/release-bot-exact-head-review.yml",
-                "scripts/materialize-exact-revision-review.py"
-              ] | sort)
+              and (.source_blobs | keys | sort)
+                == ($expected_source_blob_paths | sort)
               and all(.source_blobs[]; test("^[0-9a-f]{40}$"))
             ' <<<"${classification}" >/dev/null
           echo 'active=true' >>"${GITHUB_OUTPUT}"
@@ -2362,6 +2365,8 @@ jobs:
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
               --arg workflow "${WORKFLOW_SHA}" \
+              --argjson expected_source_blob_paths \
+                "${BOOTSTRAP_SOURCE_BLOB_PATHS_JSON}" \
               --argjson pr_number "${PR_NUMBER}" '
                 (keys | sort) == ([
                   "base_sha", "candidate_tree_sha", "controller_blob_sha",
@@ -2386,7 +2391,8 @@ jobs:
                 and (.producer_run_id | type == "number" and . > 0)
                 and (.review_id | type == "number" and . > 0)
                 and (.threads_resolved | type == "number" and . >= 0)
-                and (.source_blobs | keys | sort) == ([".github/codex/prompts/review-exact-head.md", ".github/codex/schemas/exact-head-review.schema.json", ".github/workflows/copilot-review.yml", ".github/workflows/current-revision-rerun.yml", ".github/workflows/release-bot-exact-head-review.yml", "scripts/materialize-exact-revision-review.py"] | sort)
+                and (.source_blobs | keys | sort)
+                  == ($expected_source_blob_paths | sort)
                 and all(.source_blobs[]; test("^[0-9a-f]{40}$"))
               ' <<<"${bootstrap_summary}" >/dev/null
             producer_run_id="$(jq -r .producer_run_id <<<"${bootstrap_summary}")"
