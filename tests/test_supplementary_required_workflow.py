@@ -3864,14 +3864,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        expected = {
+        expected = [
             ".github/codex/prompts/review-exact-head.md",
             ".github/codex/schemas/exact-head-review.schema.json",
             ".github/workflows/copilot-review.yml",
             ".github/workflows/current-revision-rerun.yml",
             ".github/workflows/release-bot-exact-head-review.yml",
             "scripts/materialize-exact-revision-review.py",
-        }
+        ]
         contract = re.search(
             r"^      BOOTSTRAP_SOURCE_BLOB_PATHS_JSON: >-\n"
             r"(?P<json>(?:^        .*\n)+?)"
@@ -3884,7 +3884,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         encoded_contract = " ".join(
             line.strip() for line in contract.group("json").splitlines()
         )
-        self.assertEqual(expected, set(json.loads(encoded_contract)))
+        observed = json.loads(encoded_contract)
+        self.assertEqual(expected, observed)
+        self.assertEqual(len(observed), len(set(observed)))
         self.assertEqual(
             2,
             workflow.count('--argjson expected_source_blob_paths \\\n'),
