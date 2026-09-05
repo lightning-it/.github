@@ -444,6 +444,7 @@ jobs:
           EXPECTED_HEAD: ${{ steps.exact-review-target.outputs.expected_head }}
         run: |
           set -euo pipefail
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           gh workflow run release-bot-exact-head-review.yml \
@@ -601,26 +602,18 @@ jobs:
               --arg repository "${REPOSITORY}" \
               --arg run_marker "${run_marker}" \
               --arg head_marker "${head_marker}" \
-              --arg base "${EXPECTED_BASE}" \
-              --arg head "${EXPECTED_HEAD}" \
               --argjson captured_number "${captured_number}" '
               .user.login == "lightning-it-release-automation[bot]"
               and .state == "open"
               and .base.repo.full_name == $repository
               and .base.ref == "main"
-              and .base.sha == $base
               and .head.repo.full_name == $repository
               and .head.ref == "develop"
-              and .head.sha == $head
-              and (
-                (.number == $captured_number and $captured_number != 0)
-                or (
-                  [(.body // "") | split("\n")[] |
-                    select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
-                  and [(.body // "") | split("\n")[] |
-                    select(startswith("<!-- lit-promotion-run:"))] == [$run_marker]
-                )
-              )' \
+              and [(.body // "") | split("\n")[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and [(.body // "") | split("\n")[] |
+                select(startswith("<!-- lit-promotion-run:"))] == [$run_marker]
+              and ($captured_number == 0 or .number == $captured_number)' \
             <<<"${promotion}" | grep -qx true
           PR_NUMBER="$(jq -er '.number | select(type == "number")' <<<"${promotion}")"
           failure_marker="<!-- lit-promotion-dispatch-failed:${EXPECTED_BASE}:${EXPECTED_HEAD} -->"

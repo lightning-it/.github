@@ -89,6 +89,10 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         self.assertIn("dispatch_review=true", workflow)
         self.assertIn('-f "expected_base=${EXPECTED_BASE}"', workflow)
         self.assertIn('-f "expected_head=${EXPECTED_HEAD}"', workflow)
+        dispatch_block = workflow.split(
+            "- name: Dispatch protected Exact-Revision review", 1
+        )[1].split("- name: Finalize accepted Exact-Revision review dispatch", 1)[0]
+        self.assertIn('[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]', dispatch_block)
         self.assertIn("automatic review redispatch is forbidden", workflow)
         self.assertNotIn("gh run rerun", workflow)
         self.assertNotIn("gh copilot", workflow.lower())
@@ -106,6 +110,21 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         self.assertIn(
             "the same develop head remains consumed and cannot be retried", workflow
         )
+        cleanup_block = workflow.split(
+            "- name: Close unusable promotion after dispatch failure", 1
+        )[1]
+        self.assertIn(
+            'select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]',
+            cleanup_block,
+        )
+        self.assertIn(
+            'select(startswith("<!-- lit-promotion-run:"))] == [$run_marker]',
+            cleanup_block,
+        )
+        self.assertIn(
+            "($captured_number == 0 or .number == $captured_number)", cleanup_block
+        )
+        self.assertNotIn("and .head.sha == $head", cleanup_block)
 
 
 if __name__ == "__main__":
