@@ -2788,6 +2788,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(helper_status=helper_status):
                 self.assertTrue(validates_inventory(helper_status))
+                self.assertTrue(
+                    validates_inventory(
+                        helper_status,
+                        include_rejection=False,
+                    )
+                )
         self.assertTrue(validates_inventory("completed", "success"))
         self.assertTrue(
             validates_inventory(
@@ -2907,6 +2913,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertTrue(
             validates(
                 [valid_job, pending_helper, rejection_job],
+                terminal_failure=False,
+            )
+        )
+        self.assertTrue(
+            validates(
+                [valid_job, pending_helper],
                 terminal_failure=False,
             )
         )
