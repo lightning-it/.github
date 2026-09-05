@@ -63,11 +63,16 @@ jobs:
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
         run: |
           set -euo pipefail
-          login="$(gh api "users/lightning-it-release-automation%5Bbot%5D" --jq .login)"
-          if [ "${login}" != "lightning-it-release-automation[bot]" ]; then
-            echo "::error::Release App identity mismatch: expected lightning-it-release-automation[bot]."
+          installation="$(gh api installation)"
+          jq -e '
+            .app_slug == "lightning-it-release-automation"
+            and .target_type == "Organization"
+            and .account.login == "lightning-it"
+            and (.id | type == "number")
+          ' <<<"${installation}" >/dev/null || {
+            echo "::error::Release App installation identity mismatch."
             exit 1
-          fi
+          }
 
       - name: Create or update protected promotion
         id: exact-review-target
@@ -78,7 +83,6 @@ jobs:
         run: |
           set -euo pipefail
           title='chore(release): promote develop to main'
-          transition_title='chore(release): promote develop to main (REP-60 protected transition)'
           token_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
           echo "::add-mask::${token_header}"
 
@@ -389,18 +393,6 @@ jobs:
           promotion="$(gh pr view "${pr_number}" \
             --repo "${REPOSITORY}" \
             --json author,baseRefName,baseRefOid,headRefName,headRefOid,headRepositoryOwner,isDraft,title)"
-          promotion_title="$(jq -r .title <<<"${promotion}")"
-          if [ "${REPOSITORY}" = lightning-it/shared-assets-lit ] \
-            && [ "${pr_number}" = 1047 ] \
-            && [ "${promotion_title}" = "${transition_title}" ]; then
-            # Normalize the already-open bootstrap PR. The App may edit its own
-            # title, but it intentionally never changes Draft/Ready state.
-            gh api --method PATCH "repos/${REPOSITORY}/pulls/${pr_number}" \
-              -f "title=${title}" >/dev/null
-            promotion="$(gh pr view "${pr_number}" \
-              --repo "${REPOSITORY}" \
-              --json author,baseRefName,baseRefOid,headRefName,headRefOid,headRepositoryOwner,isDraft,title)"
-          fi
           jq -e \
               --arg expected_base "${expected_base}" \
               --arg expected_head "${expected_head}" \

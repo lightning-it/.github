@@ -47,7 +47,12 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         self.assertNotIn("permission-contents: write", workflow)
         self.assertNotIn("permission-checks: write", workflow)
         self.assertNotRegex(workflow, re.compile(r"(?m)^\s+checks:\s+write\s*$"))
-        self.assertIn('login}" != "lightning-it-release-automation[bot]"', workflow)
+        self.assertIn("installation=\"$(gh api installation)\"", workflow)
+        self.assertIn(
+            '.app_slug == "lightning-it-release-automation"', workflow
+        )
+        self.assertIn('.target_type == "Organization"', workflow)
+        self.assertIn('.account.login == "lightning-it"', workflow)
         self.assertIn("repositories: ${{ github.event.repository.name }}", workflow)
 
     def test_controller_creates_only_same_repo_develop_to_main_pr(self) -> None:
@@ -66,6 +71,8 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         self.assertNotIn("--auto", workflow)
         self.assertNotIn("--admin", workflow)
         self.assertNotIn("--force", workflow)
+        self.assertNotIn("lightning-it/shared-assets-lit", workflow)
+        self.assertNotIn("transition_title", workflow)
 
     def test_exact_revision_review_is_dispatched_once_only_for_new_pr(self) -> None:
         workflow = self.workflow
