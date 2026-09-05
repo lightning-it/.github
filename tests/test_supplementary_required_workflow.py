@@ -935,6 +935,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(binding=binding):
                 self.assertIn(binding, renovate)
         self.assertEqual(2, renovate.count('.conclusion == "skipped"'))
+        self.assertIn("producer_ledger_ready=false", renovate)
+        self.assertIn("for observation in $(seq 1 60); do", renovate)
+        self.assertIn(
+            "The terminal Renovate producer ledger did not converge.",
+            renovate,
+        )
+        self.assertLess(
+            renovate.index("producer_ledger_ready=false"),
+            renovate.index("jobs=\"$(gh api --paginate --slurp"),
+        )
+        self.assertLess(
+            renovate.index("jobs=\"$(gh api --paginate --slurp"),
+            renovate.index("producer_ledger_ready=true"),
+        )
+        self.assertLess(
+            renovate.index("producer_ledger_ready=true"),
+            renovate.index('test "${producer_ledger_ready}" = true'),
+        )
 
         permanent = workflow.split(
             "      - name: Verify one protected result for the exact live revision\n",
