@@ -318,7 +318,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_self_hosted_promotion_controller_requires_exact_live_pr(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        promotion = workflow.split('                pr="$(gh api', 1)[1].split(
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        normal_promotion = source_binding.split(
+            "              else\n"
+            '                test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"',
+            1,
+        )[1]
+        promotion = normal_promotion.split('                pr="$(gh api', 1)[
+            1
+        ].split(
             '                protected_main="$(gh api', 1
         )[0]
         marker = '                  --arg repository "${REPOSITORY}" \'\n'
@@ -326,13 +339,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         end = promotion.index('\n                  \' <<<"${pr}"', start)
         identity_filter = promotion[start:end]
 
-        self.assertIn('          pr=""\n          case "${WORKFLOW_REF}" in', workflow)
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
         self.assertIn(
-            "          if [ -z \"${pr}\" ]; then\n"
-            '            pr="$(gh api '
-            '"repos/${REPOSITORY}/pulls/${PR_NUMBER}")"\n'
-            "          fi",
-            workflow,
+            "          failure_stage='live-pr-binding'\n"
+            '          pr="$(gh api '
+            '"repos/${REPOSITORY}/pulls/${PR_NUMBER}")"',
+            permanent,
         )
 
         valid = {
@@ -400,6 +415,467 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for candidate in rejected:
             with self.subTest(candidate=candidate):
                 self.assertNotEqual(0, validate(candidate))
+
+    def test_main_verifier_rebinds_repository_in_its_own_shell_scope(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1].split(
+            "      - name: Rebind and finalize the protected result\n", 1
+        )[0]
+        assignment = 'target_repository="$(gh api "repos/${REPOSITORY}")"'
+        self.assertEqual(1, permanent.count(assignment))
+        assignment_offset = permanent.index(assignment)
+        uses = [
+            match.start()
+            for match in re.finditer(r"\$\{target_repository\}", permanent)
+        ]
+        self.assertGreaterEqual(len(uses), 1)
+        self.assertTrue(all(assignment_offset < use for use in uses))
+        self.assertLess(
+            assignment_offset,
+            permanent.index("failure_stage='reservation-materialization'"),
+        )
+        self.assertIn(".full_name == $repository", permanent)
+        self.assertIn('.owner.login == "lightning-it"', permanent)
+        self.assertIn("and .archived == false", permanent)
+        self.assertIn("and .disabled == false", permanent)
+
+    def test_issue_564_stage_1_source_tuple_is_exact_and_one_shot(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        marker = "          issue_564_stage_1_source_tuple() {\n"
+        function = marker + source_binding.split(marker, 1)[1].split(
+            "\n          }\n", 1
+        )[0] + "\n          }\n"
+        script = (
+            "set -u\n"
+            + textwrap.dedent(function)
+            + "issue_564_stage_1_source_tuple\n"
+        )
+        valid = {
+            "REPOSITORY": "lightning-it/.github",
+            "PR_NUMBER": "565",
+            "EVENT_ACTION": "edited",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "EVENT_SENDER_LOGIN": "litroc",
+            "EVENT_SENDER_ID": "76040632",
+            "EVENT_SENDER_TYPE": "User",
+            "EVENT_BASE": "185604152817860a6ac53e2ae191ac51aa423e31",
+            "EVENT_HEAD": "85b1372ce0e0bdb9aec2ced452ad01597965d03b",
+        }
+        bash = self._test_tool("bash")
+
+        def authorize(candidate: dict[str, str]) -> int:
+            return subprocess.run(
+                [bash, "-c", script],
+                env=candidate,
+                text=True,
+                capture_output=True,
+                check=False,
+            ).returncode
+
+        self.assertEqual(0, authorize(valid))
+        rejected_values = (
+            ("REPOSITORY", "lightning-it/website"),
+            ("PR_NUMBER", "563"),
+            ("EVENT_ACTION", "opened"),
+            ("EVENT_ACTION", "synchronize"),
+            ("EVENT_ACTION", "reopened"),
+            ("EVENT_ACTION", "ready_for_review"),
+            ("GITHUB_RUN_ATTEMPT", "2"),
+            ("EVENT_SENDER_LOGIN", "github-actions[bot]"),
+            ("EVENT_SENDER_ID", "15368"),
+            ("EVENT_SENDER_TYPE", "Bot"),
+            ("EVENT_BASE", "2bcc17358989f49df2dcc5e138c72e7eaf41decf"),
+            ("EVENT_HEAD", "185604152817860a6ac53e2ae191ac51aa423e31"),
+            ("EVENT_HEAD", "2bcc17358989f49df2dcc5e138c72e7eaf41decf"),
+            ("EVENT_HEAD", "496682c93aab07080b5f5a97c1c90bc3695024cb"),
+            ("EVENT_HEAD", "df478f0c18493e90ba6d445364f2b968d21d30ef"),
+            ("EVENT_HEAD", "85b1372ce0e0bdb9aec2ced452ad01597965d03b0"),
+        )
+        for field, value in rejected_values:
+            with self.subTest(field=field, value=value):
+                candidate = dict(valid)
+                candidate[field] = value
+                self.assertNotEqual(0, authorize(candidate))
+
+    def test_issue_564_stage_1_source_authorization_is_fully_bound(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        finalization = workflow.split(
+            "      - name: Rebind and finalize the protected result\n", 1
+        )[1]
+
+        for exact_binding in (
+            "2bcc17358989f49df2dcc5e138c72e7eaf41decf",
+            "747f551ebe3c88820ca144afd47347f8227ba245",
+            "ac5f5aa7eb77737118cd8a7d2f072f3a8735591d",
+            "c62943967c9a9b2516f5a171390148c6e503a63e0ef70369baf4320f84ee4dfd",
+            "08599172e8138837d6f2a262875bbf48501e3150e3595ca870a1dda8478f146c",
+            "expected_diff_bytes=190746",
+            "expected_pr_body_prefix_bytes=1418",
+            "expected_head_ref='recovery/issue564-stage1-85b1372-20260906'",
+            "expected_source_marker=\"<!-- rep60-issue564-stage1-source:v1 workflow_sha=${WORKFLOW_SHA} -->\"",
+            'and (keys == ["body"])',
+            'and (.body | keys) == ["from"]',
+            'and .updated_at == $updated_at',
+            'and ((.body | split($marker) | length) == 2)',
+            "and .ahead_by == 7",
+            "and .total_commits == 7",
+            'merge-base --all \\\n                  refs/recovery/base refs/recovery/head',
+            "merge-tree --write-tree refs/recovery/base refs/recovery/head",
+            "diff --binary --full-index",
+            "--no-color --no-ext-diff --no-textconv",
+        ):
+            with self.subTest(exact_binding=exact_binding):
+                self.assertIn(exact_binding, source_binding)
+        expected_path_counts = {
+            ".github/workflows/current-revision-rerun.yml": 1,
+            ".github/workflows/supplementary-current-revision-required.yml": 3,
+            ".lit/main-ancestry.json": 1,
+            "tests/test_copilot_review_refresh.py": 1,
+            "tests/test_supplementary_required_workflow.py": 2,
+        }
+        for path, count in expected_path_counts.items():
+            with self.subTest(path=path):
+                self.assertEqual(count, source_binding.count(f'\"{path}\"'))
+
+        self.assertIn("EVENT_ACTION: ${{ github.event.action }}", source_binding)
+        self.assertIn(
+            "EVENT_CHANGES_JSON: ${{ toJson(github.event.changes) }}",
+            source_binding,
+        )
+        self.assertIn("EVENT_SENDER_ID: ${{ github.event.sender.id }}", source_binding)
+        self.assertIn(
+            "EVENT_PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}",
+            source_binding,
+        )
+        self.assertIn("https://github.com/lightning-it/.github/issues/564", source_binding)
+        self.assertNotIn("repos/${REPOSITORY}/issues/comments/", source_binding)
+        self.assertNotIn("repos/${REPOSITORY}/issues/564", source_binding)
+        self.assertNotIn("${{ secrets.", source_binding)
+        self.assertNotIn("${{ vars.", source_binding)
+        self.assertNotIn("create-github-app-token", source_binding)
+        self.assertNotIn("actions/checkout", source_binding)
+        self.assertNotIn("--method", source_binding)
+        self.assertIn(
+            "repos/lightning-it/.github/check-runs/101385290558",
+            source_binding,
+        )
+        self.assertNotIn("/reviews", source_binding)
+        self.assertNotIn("/dispatches", source_binding)
+
+        self.assertIn(
+            "ISSUE_564_STAGE_1_SOURCE: >-\n"
+            "            ${{ steps.protected-source.outputs.issue_564_stage_1 }}",
+            finalization,
+        )
+        self.assertIn(
+            "failure_stage='issue-564-stage-1-final-rebind'", finalization
+        )
+        self.assertIn(
+            'expected_source_marker="<!-- rep60-issue564-stage1-source:v1 '
+            'workflow_sha=${WORKFLOW_SHA} -->"',
+            finalization,
+        )
+        self.assertIn('.updated_at == $updated_at', finalization)
+        self.assertIn('and ((.body | split($marker) | length) == 2)', finalization)
+        self.assertIn("repos/lightning-it/.github/branches/develop", finalization)
+        self.assertIn("repos/lightning-it/.github/branches/main", finalization)
+        self.assertIn('and .commit.sha == $base', finalization)
+
+    def test_issue_564_stage_1_edit_shapes_are_exact(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        changes_block = source_binding.split(
+            "                jq -e '\n"
+            '                  type == "object"\n'
+            '                  and (keys == ["body"])\n',
+            1,
+        )[1]
+        changes_filter = (
+            'type == "object"\n'
+            'and (keys == ["body"])\n'
+            + changes_block.split(
+                '\n                \' <<<"${EVENT_CHANGES_JSON}"', 1
+            )[0]
+        )
+        jq = self._test_tool("jq")
+
+        def jq_accepts(
+            jq_filter: str,
+            payload: dict[str, object],
+            arguments: list[str] | None = None,
+        ) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *(arguments or []), jq_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        original = "immutable reviewed body\n"
+        self.assertTrue(jq_accepts(changes_filter, {"body": {"from": original}}))
+        for rejected in (
+            {},
+            {"body": {}},
+            {"body": {"from": original, "extra": True}},
+            {"body": {"from": 1}},
+            {"body": {"from": original}, "title": {"from": "old"}},
+        ):
+            with self.subTest(changes=rejected):
+                self.assertFalse(jq_accepts(changes_filter, rejected))
+
+        marker_filter = source_binding.split(
+            '                  --arg suffix "${expected_source_suffix}" \'\n', 1
+        )[1].split('\n                  \' <<<"${pr}"', 1)[0]
+        workflow_sha = "c" * 40
+        marker = (
+            "<!-- rep60-issue564-stage1-source:v1 "
+            f"workflow_sha={workflow_sha} -->"
+        )
+        marker_args = ["--arg", "marker", marker, "--arg", "suffix", marker + "\n"]
+        self.assertTrue(
+            jq_accepts(
+                marker_filter,
+                {"body": original + marker + "\n"},
+                marker_args,
+            )
+        )
+        for body in (
+            original + marker,
+            original + marker + "\nextra",
+            original + marker + marker + "\n",
+            original + marker.replace(workflow_sha, "d" * 40) + "\n",
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(
+                    jq_accepts(marker_filter, {"body": body}, marker_args)
+                )
+
+    def test_issue_564_source_controller_has_exact_merge_topology(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        source_compare = source_binding.split(
+            '                source_compare="$(gh api \\\n'
+            '                  "repos/lightning-it/.github/compare/'
+            '${expected_source_anchor}...${WORKFLOW_SHA}")"',
+            1,
+        )[1]
+        source_filter = source_compare.split(
+            '                  --arg workflow "${WORKFLOW_SHA}" \'\n', 1
+        )[1].split('\n                  \' <<<"${source_compare}"', 1)[0]
+        jq = self._test_tool("jq")
+        anchor = "a" * 40
+        candidate = "b" * 40
+        controller = "c" * 40
+        tree = "d" * 40
+        exact_paths = [
+            ".github/workflows/supplementary-current-revision-required.yml",
+            "tests/test_supplementary_required_workflow.py",
+        ]
+        comparison = {
+            "base_commit": {"sha": anchor},
+            "merge_base_commit": {"sha": anchor},
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "total_commits": 2,
+            "commits": [
+                {
+                    "sha": candidate,
+                    "parents": [{"sha": anchor}],
+                    "commit": {
+                        "tree": {"sha": tree},
+                        "verification": {"verified": True},
+                    },
+                },
+                {
+                    "sha": controller,
+                    "parents": [{"sha": anchor}, {"sha": candidate}],
+                    "commit": {
+                        "tree": {"sha": tree},
+                        "verification": {"verified": True},
+                    },
+                },
+            ],
+            "files": [{"filename": path} for path in exact_paths],
+        }
+        args = ["--arg", "anchor", anchor, "--arg", "workflow", controller]
+
+        def accepts(candidate_value: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *args, source_filter],
+                    input=json.dumps(candidate_value),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(comparison))
+        rejected = (
+            {**comparison, "ahead_by": 3},
+            {**comparison, "total_commits": 3},
+            {
+                **comparison,
+                "commits": [
+                    {**comparison["commits"][0], "parents": [{"sha": "e" * 40}]},
+                    comparison["commits"][1],
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "parents": [{"sha": anchor}, {"sha": "e" * 40}],
+                    },
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "commit": {
+                            "tree": {"sha": "e" * 40},
+                            "verification": {"verified": True},
+                        },
+                    },
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "commit": {
+                            "tree": {"sha": tree},
+                            "verification": {"verified": False},
+                        },
+                    },
+                ],
+            },
+            {**comparison, "files": [*comparison["files"], {"filename": "extra"}]},
+        )
+        for candidate_value in rejected:
+            with self.subTest(candidate=candidate_value):
+                self.assertFalse(accepts(candidate_value))
+
+    def test_issue_564_stage_1_skips_all_app_token_mints(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_token = workflow.split(
+            "      - name: Mint source-read Release Automation App token\n", 1
+        )[1].split("        uses: actions/create-github-app-token@", 1)[0]
+        controller_token = workflow.split(
+            "      - name: Mint protected-controller read App token\n", 1
+        )[1].split("        uses: actions/create-github-app-token@", 1)[0]
+        expected_titles = {
+            "fix(rep60): bootstrap protected main review trust root",
+            "fix(rep60): seed protected main review controller",
+        }
+        for name, guard in (
+            ("source", source_token),
+            ("controller", controller_token),
+        ):
+            with self.subTest(name=name):
+                guarded_titles = set(
+                    re.findall(
+                        r"github\.event\.pull_request\.title\s+== '([^']+)'",
+                        guard,
+                    )
+                )
+                self.assertEqual(expected_titles, guarded_titles)
+                self.assertNotIn(
+                    "fix(rep60): recover bounded promotion stage 1", guard
+                )
+                self.assertNotIn(
+                    "startsWith(github.event.pull_request.title", guard
+                )
+
+    def test_issue_564_stage_1_rejects_any_existing_exact_reservation(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        marker = (
+            '          reservation_count="$(jq \'length\' '
+            '<<<"${reservations}")"\n'
+        )
+        one_shot = permanent.split(marker, 1)[1].split(
+            '          if [ "${reservation_count}" -gt 1 ]; then\n', 1
+        )[0]
+        self.assertIn(
+            'if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then\n'
+            '            test "${reservation_count}" -eq 0\n'
+            "          fi\n",
+            one_shot,
+        )
+        self.assertLess(
+            permanent.index('test "${reservation_count}" -eq 0'),
+            permanent.index("failure_stage='reservation-materialization'"),
+        )
+        bash = self._test_tool("bash")
+
+        def accepts(source: str, count: int) -> bool:
+            result = subprocess.run(
+                [
+                    bash,
+                    "-c",
+                    "set -euo pipefail\n"
+                    + f"ISSUE_564_STAGE_1_SOURCE={source}\n"
+                    + f"reservation_count={count}\n"
+                    + textwrap.dedent(one_shot),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(accepts("true", 0))
+        self.assertFalse(accepts("true", 1))
+        self.assertFalse(accepts("true", 2))
+        self.assertTrue(accepts("false", 1))
 
     def test_pr_comment_read_permissions_are_explicit_and_read_only(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -1560,6 +2036,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "permanent-producer-inventory",
             "permanent-producer-binding",
             "renovate-final-rebind",
+            "issue-564-stage-1-final-rebind",
             "permanent-finalization",
         }
         observed_stages = {
@@ -1592,6 +2069,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_failed_ready_run_reserves_a_single_later_rerun(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
         permanent = workflow.split(
             "      - name: Verify one protected result for the exact live revision\n",
             1,
@@ -1601,7 +2084,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertLess(reservation, trap)
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2',
-            permanent,
+            source_binding,
         )
         self.assertIn(
             'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0)\'',
@@ -1696,6 +2179,362 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "${foreign_details_url}" =',
             retirement,
         )
+
+    def test_issue_564_legacy_failure_retirement_is_exact_and_negative(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        retirement = workflow.split('foreign_reservations="$(jq -c', 1)[1].split(
+            '          reservation_count="$(jq', 1
+        )[0]
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        guard_marker = "              issue_564_legacy_retirement=false\n"
+        guard = guard_marker + retirement.split(guard_marker, 1)[1].split(
+            '\n\n              if [ "${issue_564_legacy_retirement}" = true ]; then',
+            1,
+        )[0]
+        guard = textwrap.dedent(guard) + "\n"
+        valid_guard = {
+            "ISSUE_564_STAGE_1_SOURCE": "true",
+            "ISSUE_564_LEGACY_RETIREMENT": "true",
+            "foreign_check_id": "101385290558",
+            "foreign_status": "completed",
+            "foreign_conclusion": "failure",
+            "foreign_external_id": (
+                "rep60-required-workflow:v3:33995517721:553:"
+                "185604152817860a6ac53e2ae191ac51aa423e31:"
+                "85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+            ),
+            "foreign_details_url": (
+                "https://github.com/lightning-it/.github/runs/101385290558"
+            ),
+            "GITHUB_SERVER_URL": "https://github.com",
+            "REPOSITORY": "lightning-it/.github",
+        }
+        bash = self._test_tool("bash")
+
+        def accepts_guard(candidate: dict[str, str], copies: int = 1) -> bool:
+            result = subprocess.run(
+                [
+                    bash,
+                    "-c",
+                    "set -euo pipefail\n"
+                    "issue_564_legacy_retirement_count=0\n"
+                    + guard * copies
+                    + 'test "${issue_564_legacy_retirement}" = true\n',
+                ],
+                env=candidate,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(accepts_guard(valid_guard))
+        self.assertFalse(accepts_guard(valid_guard, copies=2))
+        guard_mutations = (
+            ("ISSUE_564_STAGE_1_SOURCE", "false"),
+            ("ISSUE_564_LEGACY_RETIREMENT", "false"),
+            ("foreign_check_id", "101385290559"),
+            ("foreign_status", "in_progress"),
+            ("foreign_conclusion", "success"),
+            (
+                "foreign_external_id",
+                valid_guard["foreign_external_id"].replace(
+                    "33995517721", "33995517722"
+                ),
+            ),
+            (
+                "foreign_external_id",
+                valid_guard["foreign_external_id"].replace(":553:", ":554:"),
+            ),
+            (
+                "foreign_external_id",
+                valid_guard["foreign_external_id"].replace(
+                    "185604152817860a6ac53e2ae191ac51aa423e31",
+                    "285604152817860a6ac53e2ae191ac51aa423e31",
+                ),
+            ),
+            (
+                "foreign_external_id",
+                valid_guard["foreign_external_id"].replace(
+                    "85b1372ce0e0bdb9aec2ced452ad01597965d03b",
+                    "95b1372ce0e0bdb9aec2ced452ad01597965d03b",
+                ),
+            ),
+            (
+                "foreign_details_url",
+                "https://github.com/lightning-it/.github/runs/101385290559",
+            ),
+        )
+        for field, value in guard_mutations:
+            with self.subTest(field=field, value=value):
+                candidate = dict(valid_guard)
+                candidate[field] = value
+                self.assertFalse(accepts_guard(candidate))
+
+        def exact_source_filter(variable: str, next_variable: str) -> str:
+            block = source_binding.split(
+                f'                {variable}="$(gh api', 1
+            )[1].split(f"                {next_variable}=", 1)[0]
+            return block.split("                jq -e '\n", 1)[1].split(
+                f'\n                \' <<<"${{{variable}}}"', 1
+            )[0]
+
+        def accepts_filter(jq_filter: str, payload: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    [self._test_tool("jq"), "-e", jq_filter],
+                    input=json.dumps(payload),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        legacy_check_filter = exact_source_filter("legacy_check", "legacy_pr")
+        retired_check = {
+            "id": 101385290558,
+            "node_id": "CR_kwDOQlFhuc8AAAAXmwjDPg",
+            "name": "Protected current-revision verifier",
+            "head_sha": "85b1372ce0e0bdb9aec2ced452ad01597965d03b",
+            "status": "completed",
+            "conclusion": "failure",
+            "external_id": valid_guard["foreign_external_id"],
+            "url": (
+                "https://api.github.com/repos/lightning-it/.github/"
+                "check-runs/101385290558"
+            ),
+            "html_url": valid_guard["foreign_details_url"],
+            "details_url": valid_guard["foreign_details_url"],
+            "started_at": "2026-09-05T22:18:18Z",
+            "completed_at": "2026-09-05T22:18:19Z",
+            "app": {"id": 15368, "slug": "github-actions"},
+            "output": {
+                "title": "Protected current-revision evidence is absent or invalid",
+                "summary": (
+                    "PR #553; head 85b1372ce0e0bdb9aec2ced452ad01597965d03b; "
+                    "stage reservation-materialization; fail-closed."
+                ),
+                "annotations_count": 0,
+                "text": None,
+            },
+        }
+        self.assertTrue(accepts_filter(legacy_check_filter, retired_check))
+        rejected_checks = (
+            {**retired_check, "id": 101385290559},
+            {**retired_check, "node_id": "CR_other"},
+            {**retired_check, "name": "different"},
+            {**retired_check, "head_sha": "f" * 40},
+            {**retired_check, "status": "in_progress"},
+            {**retired_check, "conclusion": "success"},
+            {**retired_check, "external_id": "different"},
+            {**retired_check, "url": "https://example.invalid"},
+            {**retired_check, "html_url": "https://example.invalid"},
+            {**retired_check, "details_url": "https://example.invalid"},
+            {**retired_check, "started_at": "2026-09-05T22:18:17Z"},
+            {**retired_check, "completed_at": "2026-09-05T22:18:20Z"},
+            {**retired_check, "app": {"id": 1, "slug": "github-actions"}},
+            {**retired_check, "app": {"id": 15368, "slug": "other"}},
+            {
+                **retired_check,
+                "output": {**retired_check["output"], "title": "different"},
+            },
+            {
+                **retired_check,
+                "output": {**retired_check["output"], "summary": "different"},
+            },
+            {
+                **retired_check,
+                "output": {
+                    **retired_check["output"],
+                    "annotations_count": 1,
+                },
+            },
+            {
+                **retired_check,
+                "output": {**retired_check["output"], "text": "unexpected"},
+            },
+        )
+        for candidate in rejected_checks:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(accepts_filter(legacy_check_filter, candidate))
+
+        legacy_pr_filter = exact_source_filter("legacy_pr", "legacy_run")
+        retired_pr = {
+            "number": 553,
+            "state": "closed",
+            "draft": True,
+            "user": {"login": "litroc", "id": 76040632, "type": "User"},
+            "title": "fix(rep60): promote managed sync matrix isolation",
+            "base": {
+                "ref": "main",
+                "sha": "185604152817860a6ac53e2ae191ac51aa423e31",
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+            "head": {
+                "ref": "develop",
+                "sha": "2bcc17358989f49df2dcc5e138c72e7eaf41decf",
+                "repo": {"full_name": "lightning-it/.github"},
+            },
+        }
+
+        self.assertTrue(accepts_filter(legacy_pr_filter, retired_pr))
+        self.assertTrue(
+            accepts_filter(
+                legacy_pr_filter,
+                {
+                    **retired_pr,
+                    "head": {**retired_pr["head"], "sha": "f" * 40},
+                },
+            ),
+            "the historical develop ref is intentionally not rebound to its live tip",
+        )
+        rejected_prs = (
+            {**retired_pr, "number": 554},
+            {**retired_pr, "state": "open"},
+            {**retired_pr, "draft": False},
+            {**retired_pr, "title": "different"},
+            {
+                **retired_pr,
+                "user": {**retired_pr["user"], "id": 1},
+            },
+            {
+                **retired_pr,
+                "user": {**retired_pr["user"], "login": "attacker"},
+            },
+            {
+                **retired_pr,
+                "user": {**retired_pr["user"], "type": "Bot"},
+            },
+            {
+                **retired_pr,
+                "base": {**retired_pr["base"], "sha": "f" * 40},
+            },
+            {
+                **retired_pr,
+                "base": {**retired_pr["base"], "ref": "develop"},
+            },
+            {
+                **retired_pr,
+                "base": {
+                    **retired_pr["base"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+            {
+                **retired_pr,
+                "head": {**retired_pr["head"], "ref": "feature"},
+            },
+            {
+                **retired_pr,
+                "head": {
+                    **retired_pr["head"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+        )
+        for candidate in rejected_prs:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(
+                    accepts_filter(legacy_pr_filter, candidate)
+                )
+
+        legacy_run_filter = source_binding.split(
+            '                legacy_run="$(gh api', 1
+        )[1].split("                source_sha=", 1)[0].split(
+            "                jq -e '\n", 1
+        )[1].split('\n                \' <<<"${legacy_run}"', 1)[0]
+        title = (
+            "Protected current revision PR #553 synchronize "
+            "85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+        )
+        retired_run = {
+            "id": 33995517721,
+            "workflow_id": 335885126,
+            "workflow_url": (
+                "https://api.github.com/repos/lightning-it/.github/"
+                "actions/workflows/335885126"
+            ),
+            "event": "pull_request_target",
+            "path": ".github/workflows/supplementary-current-revision-required.yml",
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "failure",
+            "head_branch": "develop",
+            "head_sha": "85b1372ce0e0bdb9aec2ced452ad01597965d03b",
+            "name": title,
+            "display_title": title,
+            "html_url": (
+                "https://github.com/lightning-it/.github/actions/runs/33995517721"
+            ),
+            "actor": {"login": "litroc", "id": 76040632, "type": "User"},
+            "triggering_actor": {
+                "login": "litroc",
+                "id": 76040632,
+                "type": "User",
+            },
+            "pull_requests": [],
+        }
+        self.assertTrue(accepts_filter(legacy_run_filter, retired_run))
+        run_mutations = (
+            {**retired_run, "id": 33995517722},
+            {**retired_run, "workflow_id": 335885127},
+            {**retired_run, "workflow_url": "https://example.invalid"},
+            {**retired_run, "event": "pull_request"},
+            {**retired_run, "path": ".github/workflows/other.yml"},
+            {**retired_run, "run_attempt": 2},
+            {**retired_run, "status": "in_progress"},
+            {**retired_run, "conclusion": "success"},
+            {**retired_run, "head_branch": "main"},
+            {**retired_run, "head_sha": "f" * 40},
+            {**retired_run, "name": title.replace("#553", "#554")},
+            {**retired_run, "display_title": title.replace("#553", "#554")},
+            {**retired_run, "html_url": "https://example.invalid"},
+            {
+                **retired_run,
+                "actor": {**retired_run["actor"], "login": "attacker"},
+            },
+            {
+                **retired_run,
+                "actor": {**retired_run["actor"], "id": 1},
+            },
+            {
+                **retired_run,
+                "actor": {**retired_run["actor"], "type": "Bot"},
+            },
+            {
+                **retired_run,
+                "triggering_actor": {
+                    **retired_run["triggering_actor"],
+                    "login": "attacker",
+                },
+            },
+            {
+                **retired_run,
+                "triggering_actor": {
+                    **retired_run["triggering_actor"],
+                    "id": 1,
+                },
+            },
+            {
+                **retired_run,
+                "triggering_actor": {
+                    **retired_run["triggering_actor"],
+                    "type": "Bot",
+                },
+            },
+            {**retired_run, "pull_requests": [{"number": 553}]},
+        )
+        for candidate in run_mutations:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(accepts_filter(legacy_run_filter, candidate))
 
     def test_v2_cutover_reuses_only_exact_protected_reservations(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -1890,21 +2729,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(current=rejected):
                 self.assertFalse(accepts(current_filter, current_args, rejected))
 
-        retired_pr_block = retirement.split('retired_pr="$(gh api', 1)[1].split(
-            '              retired_verifier_run="$(gh api', 1
+        retired_pr_block = retirement.split(
+            '                retired_pr="$(gh api', 1
+        )[1].split(
+            '                retired_verifier_run="$(gh api', 1
         )[0]
         same_pr_block, closed_pr_block = retired_pr_block.split(
-            "              else\n", 1
+            "                else\n", 1
         )
         same_pr_filter = extract(
             same_pr_block,
             '--argjson number "${foreign_pr_number}" \'\n',
-            '\n                  \' <<<"${retired_pr}"',
+            '\n                    \' <<<"${retired_pr}"',
         )
         retired_pr_filter = extract(
             closed_pr_block,
             '--argjson number "${foreign_pr_number}" \'\n',
-            '\n                  \' <<<"${retired_pr}"',
+            '\n                    \' <<<"${retired_pr}"',
         )
         current_pr = {
             "number": 225,
@@ -1990,7 +2831,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         retired_run_filter = extract(
             retirement.split('retired_verifier_run="$(gh api', 1)[1],
             '--argjson workflow_id "${current_workflow_id}" \'\n',
-            '\n                \' <<<"${retired_verifier_run}"',
+            '\n                  \' <<<"${retired_verifier_run}"',
         )
         retired_title = f"Protected current revision PR #221 synchronize {head}"
         retired_run = {
@@ -2239,7 +3080,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Await the exact protected producer run terminal state\n",
             1,
         )[1].split(
-            "      - name: Verify one protected result for the exact live revision\n",
+            "      - name: Bind the protected Required Workflow source\n",
             1,
         )[0]
         self.assertIn("for observation in $(seq 1 450)", terminal_wait)
@@ -3065,36 +3906,47 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        verifier = workflow.split(
-            "      - name: Verify one protected result for the exact live revision\n",
-            1,
-        )[1]
-        script = verifier.split("        run: |\n", 1)[1]
-        script = script.split("\n      - name:", 1)[0]
-        script_lines = script.splitlines()
-        first_script_line = next(
-            line for line in script_lines if line.strip()
-        )
-        indentation_width = len(first_script_line) - len(
-            first_script_line.lstrip(" ")
-        )
-        self.assertGreater(indentation_width, 0)
-        indentation = " " * indentation_width
-        self.assertTrue(
-            all(
-                not line.strip() or line.startswith(indentation)
-                for line in script_lines
+
+        def normalized_payload(step_name: str) -> str:
+            step = workflow.split(f"      - name: {step_name}\n", 1)[1]
+            script = step.split("        run: |\n", 1)[1]
+            script = script.split("\n      - name:", 1)[0]
+            script_lines = script.splitlines()
+            first_script_line = next(
+                line for line in script_lines if line.strip()
             )
-        )
-        normalized = "\n".join(
-            line[len(indentation) :] if line.startswith(indentation) else ""
-            for line in script_lines
-        ) + "\n"
-        self.assertLessEqual(
-            len(normalized.encode("utf-8")),
-            64_500,
-            "actionlint 1.7.12 deadlocks before ShellCheck starts when one "
-            "run block approaches the Linux 65,536-byte pipe capacity",
+            indentation_width = len(first_script_line) - len(
+                first_script_line.lstrip(" ")
+            )
+            self.assertGreater(indentation_width, 0)
+            indentation = " " * indentation_width
+            self.assertTrue(
+                all(
+                    not line.strip() or line.startswith(indentation)
+                    for line in script_lines
+                )
+            )
+            return "\n".join(
+                line[len(indentation) :] if line.startswith(indentation) else ""
+                for line in script_lines
+            ) + "\n"
+
+        for step_name in (
+            "Bind the protected Required Workflow source",
+            "Verify one protected result for the exact live revision",
+        ):
+            with self.subTest(step_name=step_name):
+                payload = normalized_payload(step_name)
+                self.assertLessEqual(
+                    len(payload.encode("utf-8")),
+                    64_500,
+                    "actionlint 1.7.12 deadlocks before ShellCheck starts "
+                    "when one run block approaches the Linux 65,536-byte "
+                    "pipe capacity",
+                )
+        self.assertIn(
+            "issue_564_stage_1_source_tuple",
+            normalized_payload("Bind the protected Required Workflow source"),
         )
 
         quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
@@ -3106,7 +3958,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "      - name: Await the exact protected producer run terminal state\n",
             1,
         )[1].split(
-            "      - name: Verify one protected result for the exact live revision\n",
+            "      - name: Bind the protected Required Workflow source\n",
             1,
         )[0]
         selector = 'neutral="$(jq -c \\\n' + terminal_wait.split(
@@ -3140,7 +3992,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "for observation in 1; do\n"
                 f"{textwrap.indent(selector, '  ')}"
                 "done\n"
-                '[[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]\n'
+                'if ! [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]; then\n'
+                "  exit 1\n"
+                "fi\n"
                 'printf "%s" "${producer_run_id}"\n'
             )
             return subprocess.run(
