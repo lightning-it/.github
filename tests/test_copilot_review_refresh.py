@@ -1893,7 +1893,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             ),
             "head_sha": head,
             "status": "completed",
-            "conclusion": "success",
+            "conclusion": "failure",
         }
         protected = self._protected_run()
         accepted = self._run_protected_rerun_authorization(
