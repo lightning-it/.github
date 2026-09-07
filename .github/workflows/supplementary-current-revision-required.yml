@@ -1903,6 +1903,20 @@ jobs:
                 85b1372ce0e0bdb9aec2ced452ad01597965d03b ]
           }
 
+          issue_564_pr568_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 568 ] \
+              && [ "${EVENT_ACTION}" = ready_for_review ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
+              && [ "${EVENT_HEAD}" = \
+                162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ]
+          }
+
           [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
           target_repository="$(gh api "repos/${REPOSITORY}")"
           jq -e \
@@ -2205,6 +2219,188 @@ jobs:
                 source_sha="${WORKFLOW_SHA}"
                 issue_564_stage_1_authorized=true
                 issue_564_legacy_retirement_authorized=true
+              elif issue_564_pr568_source_tuple; then
+                expected_source_anchor='5c549450321b5c7182ef452977d9587ff1f7f14c'
+                expected_base_tree='ac5f5aa7eb77737118cd8a7d2f072f3a8735591d'
+                expected_head_tree='0f3ff650c0d8da4ec2606bc32afd365dfc88e15c'
+                expected_diff_bytes=85276
+                expected_diff_sha256='5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a'
+                expected_pr_title='fix(rep60): stage bounded controller delta'
+                expected_pr_created_at='2026-09-07T05:43:57Z'
+                expected_pr_body_prefix_bytes=1952
+                expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+                expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+                expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+
+                [[ "${EVENT_PR_UPDATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+                jq -e \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $workflow
+                  ' <<<"${protected_develop}" >/dev/null
+                source_compare="$(gh api \
+                  "repos/lightning-it/.github/compare/${expected_source_anchor}...${WORKFLOW_SHA}")"
+                jq -e \
+                  --arg anchor "${expected_source_anchor}" \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .base_commit.sha == $anchor
+                    and .merge_base_commit.sha == $anchor
+                    and .status == "ahead"
+                    and .behind_by == 0
+                    and .ahead_by == 2
+                    and .total_commits == 2
+                    and (.commits | length) == 2
+                    and [.commits[0].parents[].sha] == [$anchor]
+                    and [.commits[1].parents[].sha] == [
+                      $anchor, .commits[0].sha
+                    ]
+                    and .commits[1].commit.tree.sha ==
+                      .commits[0].commit.tree.sha
+                    and .commits[1].commit.verification.verified == true
+                    and .commits[-1].sha == $workflow
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${source_compare}" >/dev/null
+
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg created_at "${expected_pr_created_at}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_ref "${expected_head_ref}" \
+                  --arg repository "${REPOSITORY}" \
+                  --arg title "${expected_pr_title}" \
+                  --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                  --argjson author_id 76040632 \
+                  --argjson number 568 '
+                    .number == $number
+                    and .state == "open"
+                    and .draft == false
+                    and .user.login == "litroc"
+                    and .user.id == $author_id
+                    and .user.type == "User"
+                    and .title == $title
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == $head_ref
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                    and .created_at == $created_at
+                    and .updated_at == $updated_at
+                    and .commits == 1
+                    and .changed_files == 4
+                  ' <<<"${pr}" >/dev/null
+                expected_source_suffix="${expected_source_marker}"$'\n'
+                jq -e \
+                  --arg marker "${expected_source_marker}" \
+                  --arg suffix "${expected_source_suffix}" '
+                    (.body | type) == "string"
+                    and (.body | endswith($suffix))
+                    and ((.body | split($marker) | length) == 2)
+                  ' <<<"${pr}" >/dev/null
+                pr_body_prefix_bytes="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                pr_body_prefix_sha256="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | sha256sum | awk '{ print $1 }')"
+                pr_body_bytes="$(jq -je '.body' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                expected_pr_body_bytes=$((
+                  expected_pr_body_prefix_bytes
+                  + ${#expected_source_suffix}
+                ))
+                test "${pr_body_prefix_bytes}" = \
+                  "${expected_pr_body_prefix_bytes}"
+                test "${pr_body_prefix_sha256}" = \
+                  "${expected_pr_body_prefix_sha256}"
+                test "${pr_body_bytes}" = "${expected_pr_body_bytes}"
+
+                prestage_compare="$(gh api \
+                  "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg base_tree "${expected_base_tree}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_tree "${expected_head_tree}" '
+                    .status == "ahead"
+                    and .ahead_by == 1
+                    and .behind_by == 0
+                    and .total_commits == 1
+                    and .base_commit.sha == $base
+                    and .base_commit.commit.tree.sha == $base_tree
+                    and .merge_base_commit.sha == $base
+                    and .head_commit.sha == $head
+                    and (.commits | length) == 1
+                    and .commits[0].sha == $head
+                    and [.commits[0].parents[].sha] == [$base]
+                    and .commits[0].commit.tree.sha == $head_tree
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/current-revision-rerun.yml",
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_copilot_review_refresh.py",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${prestage_compare}" >/dev/null
+
+                export GIT_CONFIG_GLOBAL=/dev/null
+                export GIT_CONFIG_NOSYSTEM=1
+                export GIT_TERMINAL_PROMPT=0
+                export LC_ALL=C
+                umask 077
+                prestage_directory="$(mktemp -d \
+                  "${RUNNER_TEMP}/issue-564-pr568.XXXXXX")"
+                prestage_git="${prestage_directory}/objects.git"
+                git init --bare --quiet "${prestage_git}"
+                git --git-dir="${prestage_git}" remote add origin \
+                  https://github.com/lightning-it/.github.git
+                git --git-dir="${prestage_git}" fetch --quiet --no-tags \
+                  --no-recurse-submodules origin \
+                  '+refs/heads/main:refs/prestage/base' \
+                  "+refs/heads/${expected_head_ref}:refs/prestage/head"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{commit}')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{commit}')" = "${EVENT_HEAD}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{tree}')" = \
+                  "${expected_base_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{tree}')" = \
+                  "${expected_head_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" rev-list --count \
+                  refs/prestage/base..refs/prestage/head)" = 1
+                test "$(git --git-dir="${prestage_git}" merge-base --all \
+                  refs/prestage/base refs/prestage/head)" = "${EVENT_BASE}"
+                integration_tree="$(git --git-dir="${prestage_git}" \
+                  merge-tree --write-tree refs/prestage/base refs/prestage/head)"
+                test "${integration_tree}" = "${expected_head_tree}"
+                patch="${prestage_directory}/change.patch"
+                git --git-dir="${prestage_git}" diff --binary --full-index \
+                  --no-color --no-ext-diff --no-textconv \
+                  'refs/prestage/base^{tree}' "${integration_tree}" >"${patch}"
+                diff_bytes="$(wc -c <"${patch}" | tr -d '[:space:]')"
+                diff_sha256="$(sha256sum "${patch}" | awk '{ print $1 }')"
+                test "${diff_bytes}" = "${expected_diff_bytes}"
+                test "${diff_sha256}" = "${expected_diff_sha256}"
+
+                source_sha="${WORKFLOW_SHA}"
+                issue_564_pr568_authorized=true
               else
                 test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
                 pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -2245,10 +2441,11 @@ jobs:
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
-          echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
+          {
+            echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}"
+            echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}"
+            echo "issue_564_pr568=${issue_564_pr568_authorized:-false}"
+          } >>"${GITHUB_OUTPUT}"
 
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
@@ -2286,6 +2483,8 @@ jobs:
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           ISSUE_564_LEGACY_RETIREMENT: >-
             ${{ steps.protected-source.outputs.issue_564_legacy_retirement }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
           RENOVATE_PRODUCER_VERIFIED: >-
@@ -2557,6 +2756,9 @@ jobs:
           fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
             test "${reservation_count}" -eq 0
           fi
           if [ "${reservation_count}" -gt 1 ]; then
@@ -3755,6 +3957,8 @@ jobs:
             ${{ steps.renovate-producer.outputs.last_edited_at }}
           ISSUE_564_STAGE_1_SOURCE: >-
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
           RESERVATION_ID: ${{ steps.protected-verifier.outputs.reservation_id }}
         run: |
           set -euo pipefail
@@ -3799,6 +4003,83 @@ jobs:
               --arg suffix "${expected_source_suffix}" \
               --arg updated_at "${EVENT_PR_UPDATED_AT}" '
                 .updated_at == $updated_at
+                and (.body | type) == "string"
+                and (.body | endswith($suffix))
+                and ((.body | split($marker) | length) == 2)
+              ' <<<"${final_pr}" >/dev/null
+            final_pr_body_prefix_bytes="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            final_pr_body_prefix_sha256="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | sha256sum | awk '{ print $1 }')"
+            final_pr_body_bytes="$(jq -je '.body' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            expected_pr_body_bytes=$((
+              expected_pr_body_prefix_bytes
+              + ${#expected_source_suffix}
+            ))
+            test "${final_pr_body_prefix_bytes}" = \
+              "${expected_pr_body_prefix_bytes}"
+            test "${final_pr_body_prefix_sha256}" = \
+              "${expected_pr_body_prefix_sha256}"
+            test "${final_pr_body_bytes}" = "${expected_pr_body_bytes}"
+            protected_develop="$(gh api \
+              repos/lightning-it/.github/branches/develop)"
+            jq -e \
+              --arg workflow "${WORKFLOW_SHA}" '
+                .name == "develop"
+                and .protected == true
+                and .commit.sha == $workflow
+              ' <<<"${protected_develop}" >/dev/null
+            protected_main="$(gh api \
+              repos/lightning-it/.github/branches/main)"
+            jq -e \
+              --arg base "${EVENT_BASE}" '
+                .name == "main"
+                and .protected == true
+                and .commit.sha == $base
+              ' <<<"${protected_main}" >/dev/null
+          fi
+
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
+            failure_stage='issue-564-pr568-final-rebind'
+            expected_pr_body_prefix_bytes=1952
+            expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+            expected_pr_created_at='2026-09-07T05:43:57Z'
+            expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+            expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+            expected_source_suffix="${expected_source_marker}"$'\n'
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg created_at "${expected_pr_created_at}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${expected_head_ref}" \
+              --arg marker "${expected_source_marker}" \
+              --arg repository "${REPOSITORY}" \
+              --arg suffix "${expected_source_suffix}" \
+              --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+              --argjson author_id 76040632 \
+              --argjson number 568 '
+                .number == $number
+                and .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .user.id == $author_id
+                and .user.type == "User"
+                and .title == "fix(rep60): stage bounded controller delta"
+                and .base.ref == "main"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+                and .created_at == $created_at
+                and .updated_at == $updated_at
+                and .commits == 1
+                and .changed_files == 4
                 and (.body | type) == "string"
                 and (.body | endswith($suffix))
                 and ((.body | split($marker) | length) == 2)
