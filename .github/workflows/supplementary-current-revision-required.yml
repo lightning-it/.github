@@ -359,6 +359,7 @@ jobs:
       EVENT_ACTION: ${{ github.event.action }}
       EVENT_BASE: ${{ github.event.pull_request.base.sha }}
       EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+      EVENT_PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
       REPOSITORY: ${{ github.repository }}
       WORKFLOW_REF: ${{ github.workflow_ref }}
@@ -1846,8 +1847,8 @@ jobs:
             sleep 1
           done
 
-      - name: Verify one protected result for the exact live revision
-        id: protected-verifier
+      - name: Bind the protected Required Workflow source
+        id: protected-source
         if: >-
           !(
             github.repository == 'lightning-it/shared-assets-lit'
@@ -1863,48 +1864,45 @@ jobs:
               == 'lightning-it/shared-assets-lit'
           )
         env:
-          CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_CHANGES_JSON: ${{ toJson(github.event.changes) }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
+          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
+          EVENT_SENDER_TYPE: ${{ github.event.sender.type }}
           GH_TOKEN: ${{ github.token }}
-          INLINE_POLICY_STEP: >-
-            ${{
-              steps.terminal-producer.outputs.producer_kind == 'copilot'
-              && 'Verify current Copilot review and resolved findings'
-              || steps.terminal-producer.outputs.producer_kind == 'renovate'
-              && 'Accept trusted automation exemption'
-              || steps.terminal-producer.outputs.producer_kind == 'managed-sync'
-              && 'Accept trusted automation exemption'
-              || steps.terminal-producer.outputs.producer_kind
-                == 'ancestry-backmerge'
-              && 'Verify evidence-bound ancestry backmerge'
-              || ''
-            }}
-          RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
-            ${{ steps.release-app-producer.outputs.ready }}
-          RENOVATE_PRODUCER_VERIFIED: >-
-            ${{ steps.renovate-producer.outputs.verified }}
-          SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
-          TERMINAL_PRODUCER_RUN_ID: >-
-            ${{ steps.terminal-producer.outputs.producer_run_id }}
-          TERMINAL_PRODUCER_KIND: >-
-            ${{ steps.terminal-producer.outputs.producer_kind }}
-        # actionlint 1.7.12 deadlocks before ShellCheck starts when one run
-        # payload reaches the Linux 65,536-byte pipe capacity (upstream #712).
-        # The deterministic unit test keeps this protected payload bounded.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
-          # shellcheck disable=SC2153
           set -euo pipefail
-          failure_stage='initialization'
-          report_failure_stage() {
+          failure_stage='protected-source-binding'
+          report_source_failure() {
             local exit_code="$?"
             if [ "${exit_code}" -ne 0 ]; then
               printf '::error title=REP-60 verifier failed closed::stage=%s\n' \
                 "${failure_stage}"
             fi
           }
-          trap report_failure_stage EXIT
-          producer_kind="${TERMINAL_PRODUCER_KIND}"
+          trap report_source_failure EXIT
 
-          failure_stage='protected-source-binding'
+          issue_564_stage_1_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 565 ] \
+              && [ "${EVENT_ACTION}" = edited ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                185604152817860a6ac53e2ae191ac51aa423e31 ] \
+              && [ "${EVENT_HEAD}" = \
+                85b1372ce0e0bdb9aec2ced452ad01597965d03b ]
+          }
+
           [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
           target_repository="$(gh api "repos/${REPOSITORY}")"
           jq -e \
@@ -1919,7 +1917,6 @@ jobs:
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
-          pr=""
           case "${WORKFLOW_REF}" in
             lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
               source_sha="$(gh api repos/lightning-it/.github/commits/main --jq .sha)"
@@ -1957,6 +1954,257 @@ jobs:
                     and .commit.sha == $base
                   ' <<<"${protected_develop}" >/dev/null
                 source_sha="${EVENT_BASE}"
+              elif issue_564_stage_1_source_tuple; then
+                expected_source_anchor='2bcc17358989f49df2dcc5e138c72e7eaf41decf'
+                expected_base_tree='747f551ebe3c88820ca144afd47347f8227ba245'
+                expected_head_tree='ac5f5aa7eb77737118cd8a7d2f072f3a8735591d'
+                expected_diff_bytes=190746
+                expected_diff_sha256='c62943967c9a9b2516f5a171390148c6e503a63e0ef70369baf4320f84ee4dfd'
+                expected_pr_title='fix(rep60): recover bounded promotion stage 1'
+                expected_pr_body_prefix_bytes=1418
+                expected_pr_body_prefix_sha256='08599172e8138837d6f2a262875bbf48501e3150e3595ca870a1dda8478f146c'
+                expected_head_ref='recovery/issue564-stage1-85b1372-20260906'
+                expected_source_marker="<!-- rep60-issue564-stage1-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+
+                # Durable human-readable plan evidence (not runtime authority):
+                # https://github.com/lightning-it/.github/issues/564#issuecomment-5564556776
+                [[ "${EVENT_PR_UPDATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+                jq -e '
+                  type == "object"
+                  and (keys == ["body"])
+                  and (.body | type) == "object"
+                  and (.body | keys) == ["from"]
+                  and (.body.from | type) == "string"
+                ' <<<"${EVENT_CHANGES_JSON}" >/dev/null
+                prior_body_bytes="$(jq -je '.body.from' \
+                  <<<"${EVENT_CHANGES_JSON}" | wc -c | tr -d '[:space:]')"
+                prior_body_sha256="$(jq -je '.body.from' \
+                  <<<"${EVENT_CHANGES_JSON}" | sha256sum | awk '{ print $1 }')"
+                test "${prior_body_bytes}" = "${expected_pr_body_prefix_bytes}"
+                test "${prior_body_sha256}" = \
+                  "${expected_pr_body_prefix_sha256}"
+
+                jq -e \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $workflow
+                  ' <<<"${protected_develop}" >/dev/null
+                source_compare="$(gh api \
+                  "repos/lightning-it/.github/compare/${expected_source_anchor}...${WORKFLOW_SHA}")"
+                jq -e \
+                  --arg anchor "${expected_source_anchor}" \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .base_commit.sha == $anchor
+                    and .merge_base_commit.sha == $anchor
+                    and .status == "ahead"
+                    and .behind_by == 0
+                    and .ahead_by == 2
+                    and .total_commits == 2
+                    and (.commits | length) == 2
+                    and [.commits[0].parents[].sha] == [$anchor]
+                    and [.commits[1].parents[].sha] == [
+                      $anchor, .commits[0].sha
+                    ]
+                    and .commits[1].commit.tree.sha ==
+                      .commits[0].commit.tree.sha
+                    and .commits[1].commit.verification.verified == true
+                    and .commits[-1].sha == $workflow
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${source_compare}" >/dev/null
+
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_ref "${expected_head_ref}" \
+                  --arg repository "${REPOSITORY}" \
+                  --arg title "${expected_pr_title}" \
+                  --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                  --argjson author_id 76040632 \
+                  --argjson number 565 '
+                    .number == $number
+                    and .state == "open"
+                    and .draft == false
+                    and .user.login == "litroc"
+                    and .user.id == $author_id
+                    and .user.type == "User"
+                    and .title == $title
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == $head_ref
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                    and .updated_at == $updated_at
+                  ' <<<"${pr}" >/dev/null
+                expected_source_suffix="${expected_source_marker}"$'\n'
+                jq -e \
+                  --arg marker "${expected_source_marker}" \
+                  --arg suffix "${expected_source_suffix}" '
+                    (.body | type) == "string"
+                    and (.body | endswith($suffix))
+                    and ((.body | split($marker) | length) == 2)
+                  ' <<<"${pr}" >/dev/null
+                pr_body_prefix_bytes="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                pr_body_prefix_sha256="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | sha256sum | awk '{ print $1 }')"
+                pr_body_bytes="$(jq -je '.body' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                expected_pr_body_bytes=$((
+                  expected_pr_body_prefix_bytes
+                  + ${#expected_source_suffix}
+                ))
+                test "${pr_body_prefix_bytes}" = \
+                  "${expected_pr_body_prefix_bytes}"
+                test "${pr_body_prefix_sha256}" = \
+                  "${expected_pr_body_prefix_sha256}"
+                test "${pr_body_bytes}" = "${expected_pr_body_bytes}"
+
+                stage_compare="$(gh api \
+                  "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg base_tree "${expected_base_tree}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_tree "${expected_head_tree}" '
+                    .status == "ahead"
+                    and .ahead_by == 7
+                    and .behind_by == 0
+                    and .total_commits == 7
+                    and .base_commit.sha == $base
+                    and .base_commit.commit.tree.sha == $base_tree
+                    and .merge_base_commit.sha == $base
+                    and (.commits | length) == 7
+                    and .commits[-1].sha == $head
+                    and .commits[-1].commit.tree.sha == $head_tree
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/current-revision-rerun.yml",
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      ".lit/main-ancestry.json",
+                      "tests/test_copilot_review_refresh.py",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${stage_compare}" >/dev/null
+
+                export GIT_CONFIG_GLOBAL=/dev/null
+                export GIT_CONFIG_NOSYSTEM=1
+                export GIT_TERMINAL_PROMPT=0
+                export LC_ALL=C
+                umask 077
+                recovery_directory="$(mktemp -d \
+                  "${RUNNER_TEMP}/issue-564-stage-1.XXXXXX")"
+                recovery_git="${recovery_directory}/objects.git"
+                git init --bare --quiet "${recovery_git}"
+                git --git-dir="${recovery_git}" remote add origin \
+                  https://github.com/lightning-it/.github.git
+                git --git-dir="${recovery_git}" fetch --quiet --no-tags \
+                  --no-recurse-submodules origin \
+                  '+refs/heads/main:refs/recovery/base' \
+                  "+refs/heads/${expected_head_ref}:refs/recovery/head"
+                test "$(git --git-dir="${recovery_git}" \
+                  rev-parse 'refs/recovery/base^{commit}')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${recovery_git}" \
+                  rev-parse 'refs/recovery/head^{commit}')" = "${EVENT_HEAD}"
+                test "$(git --git-dir="${recovery_git}" \
+                  rev-parse 'refs/recovery/base^{tree}')" = \
+                  "${expected_base_tree}"
+                test "$(git --git-dir="${recovery_git}" \
+                  rev-parse 'refs/recovery/head^{tree}')" = \
+                  "${expected_head_tree}"
+                test "$(git --git-dir="${recovery_git}" merge-base --all \
+                  refs/recovery/base refs/recovery/head)" = "${EVENT_BASE}"
+                integration_tree="$(git --git-dir="${recovery_git}" \
+                  merge-tree --write-tree refs/recovery/base refs/recovery/head)"
+                test "${integration_tree}" = "${expected_head_tree}"
+                patch="${recovery_directory}/change.patch"
+                git --git-dir="${recovery_git}" diff --binary --full-index \
+                  --no-color --no-ext-diff --no-textconv \
+                  'refs/recovery/base^{tree}' "${integration_tree}" >"${patch}"
+                diff_bytes="$(wc -c <"${patch}" | tr -d '[:space:]')"
+                diff_sha256="$(sha256sum "${patch}" | awk '{ print $1 }')"
+                test "${diff_bytes}" = "${expected_diff_bytes}"
+                test "${diff_sha256}" = "${expected_diff_sha256}"
+
+                legacy_check="$(gh api \
+                  repos/lightning-it/.github/check-runs/101385290558)"
+                jq -e '
+                  .id == 101385290558
+                  and .node_id == "CR_kwDOQlFhuc8AAAAXmwjDPg"
+                  and .name == "Protected current-revision verifier"
+                  and .head_sha == "85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+                  and .status == "completed"
+                  and .conclusion == "failure"
+                  and .external_id == "rep60-required-workflow:v3:33995517721:553:185604152817860a6ac53e2ae191ac51aa423e31:85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+                  and .url == "https://api.github.com/repos/lightning-it/.github/check-runs/101385290558"
+                  and .html_url == "https://github.com/lightning-it/.github/runs/101385290558"
+                  and .details_url == "https://github.com/lightning-it/.github/runs/101385290558"
+                  and .started_at == "2026-09-05T22:18:18Z"
+                  and .completed_at == "2026-09-05T22:18:19Z"
+                  and .app.id == 15368
+                  and .app.slug == "github-actions"
+                  and .output.title == "Protected current-revision evidence is absent or invalid"
+                  and .output.summary == "PR #553; head 85b1372ce0e0bdb9aec2ced452ad01597965d03b; stage reservation-materialization; fail-closed."
+                  and .output.annotations_count == 0
+                  and .output.text == null
+                ' <<<"${legacy_check}" >/dev/null
+                legacy_pr="$(gh api repos/lightning-it/.github/pulls/553)"
+                jq -e '
+                  .number == 553
+                  and .state == "closed"
+                  and .draft == true
+                  and .user.login == "litroc"
+                  and .user.id == 76040632
+                  and .user.type == "User"
+                  and .title == "fix(rep60): promote managed sync matrix isolation"
+                  and .base.ref == "main"
+                  and .base.sha == "185604152817860a6ac53e2ae191ac51aa423e31"
+                  and .base.repo.full_name == "lightning-it/.github"
+                  and .head.ref == "develop"
+                  and .head.repo.full_name == "lightning-it/.github"
+                ' <<<"${legacy_pr}" >/dev/null
+                legacy_run="$(gh api \
+                  repos/lightning-it/.github/actions/runs/33995517721)"
+                jq -e '
+                  .id == 33995517721
+                  and .workflow_id == 335885126
+                  and .workflow_url == "https://api.github.com/repos/lightning-it/.github/actions/workflows/335885126"
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                  and .run_attempt == 1
+                  and .status == "completed"
+                  and .conclusion == "failure"
+                  and .head_branch == "develop"
+                  and .head_sha == "85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+                  and .name == "Protected current revision PR #553 synchronize 85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+                  and .display_title == "Protected current revision PR #553 synchronize 85b1372ce0e0bdb9aec2ced452ad01597965d03b"
+                  and .html_url == "https://github.com/lightning-it/.github/actions/runs/33995517721"
+                  and .actor.login == "litroc"
+                  and .actor.id == 76040632
+                  and .actor.type == "User"
+                  and .triggering_actor.login == "litroc"
+                  and .triggering_actor.id == 76040632
+                  and .triggering_actor.type == "User"
+                  and (.pull_requests | length) == 0
+                ' <<<"${legacy_run}" >/dev/null
+                source_sha="${WORKFLOW_SHA}"
+                issue_564_stage_1_authorized=true
+                issue_564_legacy_retirement_authorized=true
               else
                 test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
                 pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -1997,11 +2245,84 @@ jobs:
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}" \
+            >>"${GITHUB_OUTPUT}"
+          echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}" \
+            >>"${GITHUB_OUTPUT}"
+
+      - name: Verify one protected result for the exact live revision
+        id: protected-verifier
+        if: >-
+          !(
+            github.repository == 'lightning-it/shared-assets-lit'
+            && github.event.pull_request.user.login
+              == 'lightning-it-release-automation[bot]'
+            && github.event.pull_request.draft == false
+            && github.event.pull_request.base.ref == 'main'
+            && github.event.pull_request.base.sha
+              == 'b978d446c336ff2e6d86bef303f2dec5faad612c'
+            && github.event.pull_request.head.sha
+              == '5dc048e43ae2fd933c92af418f7b13e47a05f586'
+            && github.event.pull_request.head.repo.full_name
+              == 'lightning-it/shared-assets-lit'
+          )
+        env:
+          CONTROLLER_GH_TOKEN: ${{ steps.controller-app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          INLINE_POLICY_STEP: >-
+            ${{
+              steps.terminal-producer.outputs.producer_kind == 'copilot'
+              && 'Verify current Copilot review and resolved findings'
+              || steps.terminal-producer.outputs.producer_kind == 'renovate'
+              && 'Accept trusted automation exemption'
+              || steps.terminal-producer.outputs.producer_kind == 'managed-sync'
+              && 'Accept trusted automation exemption'
+              || steps.terminal-producer.outputs.producer_kind
+                == 'ancestry-backmerge'
+              && 'Verify evidence-bound ancestry backmerge'
+              || ''
+            }}
+          ISSUE_564_STAGE_1_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_stage_1 }}
+          ISSUE_564_LEGACY_RETIREMENT: >-
+            ${{ steps.protected-source.outputs.issue_564_legacy_retirement }}
+          RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
+            ${{ steps.release-app-producer.outputs.ready }}
+          RENOVATE_PRODUCER_VERIFIED: >-
+            ${{ steps.renovate-producer.outputs.verified }}
+          SOURCE_GH_TOKEN: ${{ steps.source-app.outputs.token }}
+          TERMINAL_PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
+          TERMINAL_PRODUCER_KIND: >-
+            ${{ steps.terminal-producer.outputs.producer_kind }}
+        # actionlint 1.7.12 deadlocks before ShellCheck starts when one run
+        # payload reaches the Linux 65,536-byte pipe capacity (upstream #712).
+        # The deterministic unit test keeps this protected payload bounded.
+        run: |
+          # shellcheck disable=SC2153
+          set -euo pipefail
+          failure_stage='initialization'
+          report_failure_stage() {
+            local exit_code="$?"
+            if [ "${exit_code}" -ne 0 ]; then
+              printf '::error title=REP-60 verifier failed closed::stage=%s\n' \
+                "${failure_stage}"
+            fi
+          }
+          trap report_failure_stage EXIT
+          producer_kind="${TERMINAL_PRODUCER_KIND}"
+
+          target_repository="$(gh api "repos/${REPOSITORY}")"
+          jq -e \
+            --arg repository "${REPOSITORY}" '
+              .full_name == $repository
+              and .owner.login == "lightning-it"
+              and .archived == false
+              and .disabled == false
+            ' <<<"${target_repository}" >/dev/null
 
           failure_stage='live-pr-binding'
-          if [ -z "${pr}" ]; then
-            pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-          fi
+          pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EVENT_BASE}" \
             --arg head "${EVENT_HEAD}" \
@@ -2110,6 +2431,7 @@ jobs:
               )
               | .workflow_id
             ' <<<"${current_verifier_run}")"
+          issue_564_legacy_retirement_count=0
           if [ "${foreign_count}" -gt 0 ]; then
             jq -e \
               --arg head "${EVENT_HEAD}" \
@@ -2153,61 +2475,90 @@ jobs:
               test "${foreign_details_url}" = \
                 "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${foreign_check_id}"
 
-              retired_pr="$(gh api \
-                "repos/${REPOSITORY}/pulls/${foreign_pr_number}")"
-              if [ "${foreign_pr_number}" = "${PR_NUMBER}" ]; then
-                jq -e \
-                  --arg base "${EVENT_BASE}" \
-                  --arg head "${EVENT_HEAD}" \
-                  --arg repository "${REPOSITORY}" \
-                  --argjson number "${foreign_pr_number}" '
-                    .number == $number
-                    and .state == "open"
-                    and .base.sha == $base
-                    and .base.repo.full_name == $repository
-                    and .head.sha == $head
-                    and (.head.repo.full_name | type == "string" and length > 0)
-                  ' <<<"${retired_pr}" >/dev/null
-              else
-                jq -e \
-                  --arg head "${EVENT_HEAD}" \
-                  --arg repository "${REPOSITORY}" \
-                  --argjson number "${foreign_pr_number}" '
-                    .number == $number
-                    and .state == "closed"
-                    and .base.repo.full_name == $repository
-                    and .head.sha == $head
-                    and (.head.repo.full_name | type == "string" and length > 0)
-                  ' <<<"${retired_pr}" >/dev/null
+              issue_564_legacy_retirement=false
+              if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ] \
+                && [ "${ISSUE_564_LEGACY_RETIREMENT}" = true ] \
+                && [ "${foreign_check_id}" = 101385290558 ] \
+                && [ "${foreign_status}" = completed ] \
+                && [ "${foreign_conclusion}" = failure ] \
+                && [ "${foreign_external_id}" = \
+                  "rep60-required-workflow:v3:33995517721:553:185604152817860a6ac53e2ae191ac51aa423e31:85b1372ce0e0bdb9aec2ced452ad01597965d03b" ] \
+                && [ "${foreign_details_url}" = \
+                  "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/101385290558" ]; then
+                issue_564_legacy_retirement=true
+                issue_564_legacy_retirement_count=$((
+                  issue_564_legacy_retirement_count + 1
+                ))
+                test "${issue_564_legacy_retirement_count}" -eq 1
               fi
 
-              retired_verifier_run="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${foreign_run_id}")"
-              jq -e \
-                --arg conclusion "${foreign_conclusion}" \
-                --arg head "${EVENT_HEAD}" \
-                --argjson pr_number "${foreign_pr_number}" \
-                --argjson run_id "${foreign_run_id}" \
-                --argjson workflow_id "${current_workflow_id}" '
-                  .id == $run_id
-                  and .workflow_id == $workflow_id
-                  and .event == "pull_request_target"
-                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
-                  and .status == "completed"
-                  and .conclusion == $conclusion
-                  and .head_sha == $head
-                  and ((.run_attempt == 1) or (.run_attempt == 2))
-                  and (
-                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
-                  )
-                ' <<<"${retired_verifier_run}" >/dev/null
+              if [ "${issue_564_legacy_retirement}" = true ]; then
+                : # Exact negative evidence was admitted before any mutation.
+              else
+                retired_pr="$(gh api \
+                  "repos/${REPOSITORY}/pulls/${foreign_pr_number}")"
+                if [ "${foreign_pr_number}" = "${PR_NUMBER}" ]; then
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson number "${foreign_pr_number}" '
+                      .number == $number
+                      and .state == "open"
+                      and .base.sha == $base
+                      and .base.repo.full_name == $repository
+                      and .head.sha == $head
+                      and (.head.repo.full_name | type == "string" and length > 0)
+                    ' <<<"${retired_pr}" >/dev/null
+                else
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson number "${foreign_pr_number}" '
+                      .number == $number
+                      and .state == "closed"
+                      and .base.repo.full_name == $repository
+                      and .head.sha == $head
+                      and (.head.repo.full_name | type == "string" and length > 0)
+                    ' <<<"${retired_pr}" >/dev/null
+                fi
+
+                retired_verifier_run="$(gh api \
+                  "repos/${REPOSITORY}/actions/runs/${foreign_run_id}")"
+                jq -e \
+                  --arg conclusion "${foreign_conclusion}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --argjson pr_number "${foreign_pr_number}" \
+                  --argjson run_id "${foreign_run_id}" \
+                  --argjson workflow_id "${current_workflow_id}" '
+                    .id == $run_id
+                    and .workflow_id == $workflow_id
+                    and .event == "pull_request_target"
+                    and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                    and .status == "completed"
+                    and .conclusion == $conclusion
+                    and .head_sha == $head
+                    and ((.run_attempt == 1) or (.run_attempt == 2))
+                    and (
+                      .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                      or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                      or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                      or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
+                      or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
+                    )
+                  ' <<<"${retired_verifier_run}" >/dev/null
+              fi
             done < <(jq -r '.[] | [.id, .status, .conclusion, .external_id, .details_url] | @tsv' <<<"${foreign_reservations}")
           fi
+          if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            test "${issue_564_legacy_retirement_count}" -eq 1
+          else
+            test "${issue_564_legacy_retirement_count}" -eq 0
+          fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
+          if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
           if [ "${reservation_count}" -gt 1 ]; then
             echo "Multiple protected verifier reservations exist for the same PR/head." >&2
             exit 1
@@ -3402,6 +3753,8 @@ jobs:
             ${{ steps.renovate-producer.outputs.labels_sha256 }}
           RENOVATE_LAST_EDITED_AT: >-
             ${{ steps.renovate-producer.outputs.last_edited_at }}
+          ISSUE_564_STAGE_1_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           RESERVATION_ID: ${{ steps.protected-verifier.outputs.reservation_id }}
         run: |
           set -euo pipefail
@@ -3434,6 +3787,58 @@ jobs:
               and .head.sha == $head
               and (.head.repo.full_name | type == "string" and length > 0)
             ' <<<"${final_pr}" >/dev/null
+
+          if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            failure_stage='issue-564-stage-1-final-rebind'
+            expected_pr_body_prefix_bytes=1418
+            expected_pr_body_prefix_sha256='08599172e8138837d6f2a262875bbf48501e3150e3595ca870a1dda8478f146c'
+            expected_source_marker="<!-- rep60-issue564-stage1-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+            expected_source_suffix="${expected_source_marker}"$'\n'
+            jq -e \
+              --arg marker "${expected_source_marker}" \
+              --arg suffix "${expected_source_suffix}" \
+              --arg updated_at "${EVENT_PR_UPDATED_AT}" '
+                .updated_at == $updated_at
+                and (.body | type) == "string"
+                and (.body | endswith($suffix))
+                and ((.body | split($marker) | length) == 2)
+              ' <<<"${final_pr}" >/dev/null
+            final_pr_body_prefix_bytes="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            final_pr_body_prefix_sha256="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | sha256sum | awk '{ print $1 }')"
+            final_pr_body_bytes="$(jq -je '.body' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            expected_pr_body_bytes=$((
+              expected_pr_body_prefix_bytes
+              + ${#expected_source_suffix}
+            ))
+            test "${final_pr_body_prefix_bytes}" = \
+              "${expected_pr_body_prefix_bytes}"
+            test "${final_pr_body_prefix_sha256}" = \
+              "${expected_pr_body_prefix_sha256}"
+            test "${final_pr_body_bytes}" = "${expected_pr_body_bytes}"
+            protected_develop="$(gh api \
+              repos/lightning-it/.github/branches/develop)"
+            jq -e \
+              --arg workflow "${WORKFLOW_SHA}" '
+                .name == "develop"
+                and .protected == true
+                and .commit.sha == $workflow
+              ' <<<"${protected_develop}" >/dev/null
+            protected_main="$(gh api \
+              repos/lightning-it/.github/branches/main)"
+            jq -e \
+              --arg base "${EVENT_BASE}" '
+                .name == "main"
+                and .protected == true
+                and .commit.sha == $base
+              ' <<<"${protected_main}" >/dev/null
+          fi
 
           if [ "${PRODUCER_KIND}" = renovate ]; then
             failure_stage='renovate-final-rebind'
