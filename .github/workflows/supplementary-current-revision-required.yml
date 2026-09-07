@@ -2716,63 +2716,82 @@ jobs:
                       and .pull_requests[0].head.ref == $head_ref
                       and .pull_requests[0].head.sha == $head
                     ' <<<"${recovery_producer}" >/dev/null
-                  recovery_producer_jobs_pages="$(gh api --paginate --slurp \
-                    "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}/attempts/1/jobs?filter=all&per_page=100")"
-                  recovery_producer_jobs="$(jq -c '[.[].jobs[]?]' \
-                    <<<"${recovery_producer_jobs_pages}")"
-                  jq -e \
-                    --arg head "${EVENT_HEAD}" \
-                    --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
-                      length == 4
-                      and ([.[].name] | sort) == [
-                        "Classify protected main trust-root handoff",
-                        "Request Copilot review for current revision",
-                        "Request protected verifier re-evaluation",
-                        "Verify current revision policy"
-                      ]
-                      and all(.[];
-                        .run_id == $run_id
-                        and .run_attempt == 1
-                        and .head_sha == $head)
-                      and any(.[];
-                        .name == "Classify protected main trust-root handoff"
-                        and .status == "completed"
-                        and .conclusion == "success")
-                      and ([.[] |
-                        select(.name
-                          == "Request Copilot review for current revision") |
-                        select(.status == "completed"
-                          and .conclusion == "success") |
-                        select(any(.steps[]?;
-                          .name
-                            == "Request Copilot review for the current revision"
-                          and .number == 2
+                  recovery_producer_jobs_ready=false
+                  for producer_jobs_observation in $(seq 1 30); do
+                    recovery_producer_jobs_pages="$(gh api --paginate --slurp \
+                      "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}/attempts/1/jobs?filter=all&per_page=100")"
+                    recovery_producer_jobs="$(jq -c '[.[].jobs[]?]' \
+                      <<<"${recovery_producer_jobs_pages}")"
+                    jq -e \
+                      --arg head "${EVENT_HEAD}" \
+                      --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                        ([.[].name] | sort) as $names
+                        | ($names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Verify current revision policy"
+                          ] or $names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Request protected verifier re-evaluation",
+                            "Verify current revision policy"
+                          ])
+                        and ([.[].name] | unique | length) == length
+                        and all(.[];
+                          .run_id == $run_id
+                          and .run_attempt == 1
+                          and .head_sha == $head)
+                        and any(.[];
+                          .name == "Classify protected main trust-root handoff"
                           and .status == "completed"
-                          and .conclusion == "success"))] | length) == 1
-                      and ([.[] |
-                        select(.name == "Verify current revision policy") |
-                        select(.status == "completed"
-                          and .conclusion == "success") |
-                        select(any(.steps[]?;
-                          .name
-                            == "Verify current Copilot review and resolved findings"
-                          and .number == 5
-                          and .status == "completed"
-                          and .conclusion == "success")) |
-                        select(any(.steps[]?;
-                          .name == "Publish bound neutral result"
-                          and .number == 6
-                          and .status == "completed"
-                          and .conclusion == "success"))] | length) == 1
-                      and any(.[];
-                        .name == "Request protected verifier re-evaluation"
-                        and (
-                          ((.status == "queued" or .status == "in_progress")
-                            and .conclusion == null)
-                          or (.status == "completed"
-                            and .conclusion == "success")
-                        ))
-                    ' <<<"${recovery_producer_jobs}" >/dev/null
+                          and .conclusion == "success")
+                        and ([.[] |
+                          select(.name
+                            == "Request Copilot review for current revision") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Request Copilot review for the current revision"
+                            and .number == 2
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name == "Verify current revision policy") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Verify current Copilot review and resolved findings"
+                            and .number == 5
+                            and .status == "completed"
+                            and .conclusion == "success")) |
+                          select(any(.steps[]?;
+                            .name == "Publish bound neutral result"
+                            and .number == 6
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name
+                            == "Request protected verifier re-evaluation") |
+                          select(
+                            (((.status | IN(
+                              "requested", "waiting", "pending",
+                              "queued", "in_progress")))
+                              and .conclusion == null)
+                            or (.status == "completed"
+                              and .conclusion == "success"))]
+                          | length) == (length - 3)
+                      ' <<<"${recovery_producer_jobs}" >/dev/null
+                    if [ "$(jq 'length' \
+                        <<<"${recovery_producer_jobs}")" -eq 4 ]; then
+                      recovery_producer_jobs_ready=true
+                      break
+                    fi
+                    test "${producer_jobs_observation}" -lt 30
+                    sleep 2
+                  done
+                  test "${recovery_producer_jobs_ready}" = true
 
                   review_pages="$(gh api --paginate --slurp \
                     "repos/${REPOSITORY}/pulls/568/reviews?per_page=100")"

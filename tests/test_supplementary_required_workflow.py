@@ -927,6 +927,162 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(exact_evidence=exact_evidence):
                 self.assertIn(exact_evidence, recovery_binding)
 
+    def test_issue_564_pr568_producer_job_materialization_is_bounded(
+        self,
+    ) -> None:
+        recovery = self._issue_564_pr568_recovery_binding()
+        poll = recovery.split("recovery_producer_jobs_ready=false\n", 1)[1]
+        poll = poll.split(
+            '                  test "${recovery_producer_jobs_ready}" = true\n',
+            1,
+        )[0]
+        self.assertIn(
+            "for producer_jobs_observation in $(seq 1 30); do", poll
+        )
+        self.assertIn('sleep 2\n', poll)
+        jq_filter = poll.split(
+            '--argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" \'\n', 1
+        )[1].split(
+            '\n                      \' <<<"${recovery_producer_jobs}"', 1
+        )[0]
+        jq = self._test_tool("jq")
+        head = "b" * 40
+        run_id = 901
+
+        def job(
+            name: str,
+            *,
+            status: str = "completed",
+            conclusion: str | None = "success",
+            steps: list[dict[str, object]] | None = None,
+        ) -> dict[str, object]:
+            return {
+                "name": name,
+                "run_id": run_id,
+                "run_attempt": 1,
+                "head_sha": head,
+                "status": status,
+                "conclusion": conclusion,
+                "steps": steps or [],
+            }
+
+        core = [
+            job("Classify protected main trust-root handoff"),
+            job(
+                "Request Copilot review for current revision",
+                steps=[
+                    {
+                        "name": (
+                            "Request Copilot review for the current revision"
+                        ),
+                        "number": 2,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+            ),
+            job(
+                "Verify current revision policy",
+                steps=[
+                    {
+                        "name": (
+                            "Verify current Copilot review and resolved findings"
+                        ),
+                        "number": 5,
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Publish bound neutral result",
+                        "number": 6,
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ],
+            ),
+        ]
+
+        def accepted(snapshot: list[dict[str, object]]) -> bool:
+            return (
+                subprocess.run(
+                    [
+                        jq,
+                        "-e",
+                        "--arg",
+                        "head",
+                        head,
+                        "--argjson",
+                        "run_id",
+                        str(run_id),
+                        jq_filter,
+                    ],
+                    input=json.dumps(snapshot),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        def convergence(
+            snapshots: list[list[dict[str, object]]],
+        ) -> str:
+            for snapshot in snapshots:
+                if not accepted(snapshot):
+                    return "invalid"
+                if len(snapshot) == 4:
+                    return "ready"
+            return "timeout"
+
+        self.assertTrue(accepted(core))
+        for status in (
+            "requested",
+            "waiting",
+            "pending",
+            "queued",
+            "in_progress",
+        ):
+            with self.subTest(status=status):
+                helper = job(
+                    "Request protected verifier re-evaluation",
+                    status=status,
+                    conclusion=None,
+                )
+                self.assertEqual("ready", convergence([core, core + [helper]]))
+        completed_helper = job(
+            "Request protected verifier re-evaluation"
+        )
+        self.assertEqual("ready", convergence([core, core + [completed_helper]]))
+        self.assertEqual("timeout", convergence([core] * 30))
+
+        invalid_snapshots: list[list[dict[str, object]]] = []
+        invalid_snapshots.append(core + [job("Unknown helper")])
+        invalid_snapshots.append(core + [core[0]])
+        invalid_snapshots.append(core + [completed_helper, job("Extra job")])
+        for field, value in (
+            ("run_id", run_id + 1),
+            ("run_attempt", 2),
+            ("head_sha", "c" * 40),
+        ):
+            candidate = json.loads(json.dumps(core + [completed_helper]))
+            candidate[0][field] = value
+            invalid_snapshots.append(candidate)
+        for conclusion in ("failure", "cancelled"):
+            invalid_snapshots.append(
+                core
+                + [
+                    job(
+                        "Request protected verifier re-evaluation",
+                        conclusion=conclusion,
+                    )
+                ]
+            )
+        for snapshot in invalid_snapshots:
+            with self.subTest(snapshot=snapshot):
+                self.assertEqual(
+                    "invalid", convergence([snapshot, core + [completed_helper]])
+                )
+
     def test_issue_564_stage_1_edit_shapes_are_exact(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         source_binding = workflow.split(
