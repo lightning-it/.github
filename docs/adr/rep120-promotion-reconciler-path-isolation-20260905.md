@@ -6,7 +6,7 @@ slug: /adr/rep120-promotion-reconciler-path-isolation-20260905/
 document:
   status: maintained
   approval_status: proposed
-  version: "4.0"
+  version: "5.0"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -27,7 +27,7 @@ document:
 - Scope: `lightning-it/.github` protected `develop` to `main`
   reconciliation
 - Recovery owner: issue `lightning-it/.github#564`
-- Evidence cutoff: `2026-09-07T15:23:12Z`
+- Evidence cutoff: `2026-09-07T16:33:29Z`
 
 This maintained repository ADR is an implementation companion to the canonical
 REP-120 decision. It records the intended repository-local controller and the
@@ -77,6 +77,7 @@ does not implement this ADR:
 | PR #573 | Exact PR #568 main ancestry returned normally to protected `develop` | Protected backmerge evidence only |
 | PR #574 | Helper rerun/materialization transition hardened by normal protected merge `b0622e97c14d0a7c2a4858672c01bdbbf4ce4d0b` | Current-revision helper fix only |
 | PR #575 | Consumed PR #568 authority retired by normal protected merge `842bd4b9c055241380f0e86ec91bdfc3c3e1a6c5`, tree `5cb946132623fd1f022fe7e3ecebb8da3aa13f85` | Recovery closed through PR #575; permanent work remains pending |
+| PR #576 | ADR-only head `8742039b717abc57dbb8c92bbc740f6a2f959f9b` opened against `main`; repository Required run `34143008702` and cross-Required run `34143008743` failed | Fail-closed proof that the earlier feature-to-`main` D1 sequence is invalid; no merge authority |
 
 PR #575 used exactly one owner-authorized `Draft -> Ready` transition to obtain
 a current-head review. That current-head path automatically dispatched
@@ -94,6 +95,23 @@ The PR #575 merge has ordered parents
 26841ed35a723fd0352eae98dfb64c5fd7c8996d]`. Its tree equals the reviewed PR
 head tree. Post-merge repository-quality and CodeQL runs succeeded on the exact
 protected merge. These facts prove the bounded recovery transition only.
+
+PR #576 then supplied new negative evidence. Its protected default-branch
+workflow ran from `develop@842bd4b9...`, while its event base was
+`main@caa39d79...` and its feature head was `8742039b...`. The generic source
+contract accepted neither feature-to-`develop` (`WORKFLOW_SHA == EVENT_BASE`)
+nor exact protected `develop`-to-`main` (`WORKFLOW_SHA == EVENT_HEAD` and head
+ref `develop`). Run `34143008702` therefore failed at
+`protected-source-binding` before creating a `Protected current-revision
+verifier` reservation. Automatic helper `34143164872` observed no reservation,
+timed out, and performed no rerun. Independent cross-run `34143008743` then
+failed after its bounded wait. No operator initiated a rerun, reopen,
+force-push, Ruleset edit, bypass, or merge.
+
+The PR remains open and blocked. Its successful current-head review, Quality,
+and CodeQL results cannot override either Required failure. The earlier
+D1-direct-to-`main` materialization sequence is retired rather than repaired by
+another one-time PR/SHA tuple.
 
 ## Historical over-limit evidence
 
@@ -133,9 +151,9 @@ hunk, policy, or format invalidates the corresponding receipt.
 | R1 — stop hourly self-dispatch | C1 proposes deleting the legacy scheduled/manual workflow and installing a push-only successor; not implemented |
 | R2 — deduplicate before approval | Admission and two read-only history observations are designed to finish no-op/active/consumed states before the Environment; not implemented |
 | R3 — at most one waiter per repository/SHA | Static concurrency, first-attempt binding, exact markers, and one live operation owner are designed here; not implemented or canary-proven |
-| R4 — one aggregate required check | Normative target acknowledged; live migration and leaf retirement remain open outside this repository-local controller |
-| R5 — one-way workflow DAG | Normative source-first target acknowledged; the live reciprocal `.github <-> Supplementary` authority cycle remains open |
-| R6 — complete bounded review units | Exact `1..199999` interval retained; current 324,868-byte single promotion is rejected; D1/A1/C1 and a sealed Coverage Manifest remain pending |
+| R4 — one aggregate required check | Corrected target is one source-bound `promotion / aggregate` job plus a strict status-check rule requiring that same visible context; live canary and leaf retirement remain open |
+| R5 — one-way workflow DAG | Private `shared-assets-lit` cannot protect public `.github`; a separately authorized public execution proxy is required; the live reciprocal `.github <-> Supplementary` cycle remains open |
+| R6 — complete bounded review units | Exact `1..199999` interval retained; current 204,877-byte `main..develop` and the 324,868-byte conceptual target are rejected; D1/S0/serial main units/C1 and a sealed Coverage Manifest remain pending |
 | R7 — controlled cleanup | Stale run, branch, and worktree retention/deletion plan and evidence remain open |
 | R8 — three clean references before fleet | Three consecutive references, including Collection-to-Container, then bounded canary and fleet rollout remain open |
 
@@ -252,43 +270,169 @@ as one pair, and retain rollback to a valid read-only pair. The shadow stays for
 the complete documented historical rerun horizon plus installation-token drain.
 A later eligible historical run or possible token mint restarts that drain.
 
-### 5. Complete bounded materialization sequence
+### 5. Corrected bounded materialization and source bootstrap
 
-The stale worktree is not rebased or published. A fresh sequence starts from
-the exact protected refs and uses normal protected merges only:
+The stale worktree is not rebased or published. PR #576 is not merged to
+`main`, manually rerun, closed/reopened, force-pushed, or bypassed. Subject to a
+separate, explicit PR-#576 lifecycle authorization, it is retargeted to
+protected `develop`. The corrected ADR is first stored as a normal successor
+commit on a clean local branch. After retarget, that clean branch normally
+merges the exact current protected `develop` commit with no amend or rebase;
+the ordered merge parents and result tree are verified before one normal push.
+The resulting new base/head tuple is reviewed once and normally merged to
+`develop`. This ADR remains Proposed and Implementation Pending after that
+merge.
 
-| Unit | Complete ownership | Current diagnostic | Required transition |
-| --- | --- | --- | --- |
-| D1 | This one ADR path, with current recovery state and explicit open gates | Final D1 bytes/digest must be recorded later in an external immutable receipt after an immutable head exists, avoiding a self-referential hash | Review and merge normally to protected `main`, then protected backmerge |
-| A1 | `.github/workflows/current-revision-rerun.yml`, `.github/workflows/supplementary-current-revision-required.yml`, `tests/test_copilot_review_refresh.py`, and `tests/test_supplementary_required_workflow.py` | 156,595 bytes; SHA-256 `7e0d76ecff0989c9bdf3103bb4e77c771b684208b24b5d047978b5bced1cc4b6` for the currently measured blobs | Ruleset/DAG impact review, normal protected `main` merge, exact readback, then protected backmerge |
-| C1 | Delete the legacy workflow; add the successor workflow and all four `scripts/release-promotion-*.sh` helpers; update `tests/test_release_app_promoter.py` | Stale code-only develop delta: 176,657 bytes / `983700569ba9d881b5ddf81f2b71e4057e508186a5d85c801d67ca4f069c68df`; post-A1 promotion proxy: 152,332 bytes / `ec8415e909765f763b4ac72bb86ba346f2c1e554ae99e3384c248b1b36c35321` | Fresh current-base implementation, exact tests, normal protected `develop` merge with enablement absent, bounded protected promotion to `main`, then protected backmerge |
+The earlier authorization for PR #575's one Draft-to-Ready transition is
+consumed and cannot authorize PR #576. The intended PR #576 lifecycle uses one
+Draft-to-Ready cycle so retarget, ADR correction, and protected-develop merge
+produce one final reviewable successor head rather than multiple intermediate
+review requests.
 
-The order is strict:
+After D1 is protected on `develop`, S0 is installed by normal protected PRs on
+`develop`. The bridge implementation changes
+`.github/workflows/supplementary-current-revision-required.yml` and its coupled
+`tests/test_supplementary_required_workflow.py`; a separate protected activation
+policy at `.lit/feature-main-prestage-policy.json` starts in canonical state
+`inactive`. Before it can transition to `active`, the S0 implementation must be
+merged/read back and C1 must be installed default-off on protected `develop`
+with `RELEASE_RECONCILIATION_ENABLED` absent. C1 is one complete workflow/
+helper/test unit, or newly reviewed semantic workflow/test pairs if its fresh
+develop-relative input reaches `200000`. Only then may an immutable
+Authorization Manifest for the complete main series seal every unit ID/order,
+starting main tree, allowed source/destination blob and mode transition,
+per-unit limit, maximum unit count, terminal unit, and reconstruction digest.
+It contains no future runtime claim.
+The one-path activation PR has its own Coverage Manifest entry, exact current-
+head review, Required checks, normal protected merge, and source/tree readback.
 
-`D1 -> D1 backmerge -> A1 -> A1 backmerge -> C1 -> exact protected promotion -> final backmerge`.
+Manifest sealing also requires the exact projected P4 input to be freshly
+proven in `1..199999` canonical bytes. P4's Required-Workflow source, coupled
+test, and `active -> consumed` transition are indivisible. If their combined
+projection is `0` or at least `200000`, activation is NO-GO: the policy remains
+`inactive` and S0 is redesigned before any replacement manifest is sealed.
 
-The A1 receipt is reusable only while its four source and base blobs remain
-unchanged. Both C1 values are diagnostics, not final receipts: required test
-updates and new ancestry evidence change the bytes and digest. The immutable C1
-head must reproduce fresh develop-relative and main-relative inputs, each in
-`1..199999` bytes. At 200,000 bytes or more the unit stops; no assertion,
-documentation, or source byte is dropped to make it fit.
+S0 is a temporary, protected, read-only bridge for serial bounded
+feature-to-`main` pre-stage PRs. It contains no PR/SHA/run-specific exception.
+Its policy is read only from the exact current protected
+`develop@WORKFLOW_SHA` and binds schema, series ID, epoch, expiry, starting main
+tree, repository, `main`, a `prestage/` prefix, allowed author/App classes,
+ordered allowed units and path/blob/mode transitions, canonical diff format,
+maximum unit count, byte ceiling, and the exact monotonic state enum
+`inactive -> active -> consumed`. `consumed` is absorbing under every later
+tree, blob, base, source, expiry, or replay condition.
 
-A machine-readable Coverage Manifest must bind protected bases, heads, merge
-bases, integration trees, total input, every path and hunk, unit bytes and
-digests, policy/prompt/schema digests, workflow authority, review/check receipts,
-merge receipts, and byte-identical reconstruction. Every textual byte is owned
-exactly once; gaps, overlap, truncation, stale evidence, binary content, or a
-zero-byte unit blocks aggregate success.
+For each candidate the protected workflow binds an open, non-draft,
+same-repository PR; exact live protected main base and develop source; supported
+default Required-Workflow event and first attempt; ancestry; conflict-free
+integration tree; complete path/blob/mode projection; and exactly one canonical
+manifest occurrence whose values match the base, head, integration tree,
+ordered projection, blobs, modes, SHA-256, and complete canonical diff in
+`1..199999` bytes. Fork, source/base drift, unsafe mode, rename, binary,
+symlink, submodule, gap, overlap, truncation, duplicate
+reservation, malformed manifest, unexpected author/App, or PR-controlled
+execution fails closed. The deep verifier has read-only permissions and
+references no secret, Environment, token mint, PR/content write, dispatch, or
+rerun. A PR-body manifest is evidence input, never the protected authorization
+by itself.
+
+An isolated reservation/finalization job has only the reads needed for
+elementary source/PR binding plus `checks:write`. It idempotently creates or
+resumes one canonical `external_id` before any long producer wait. An always-
+running finalizer rebinds that exact check and terminally writes success or
+failure; it has no other mutation authority. The deep verifier never waits on
+the downstream cross-verifier or its helper. Tests cover the exact
+`1`/`199999` accept and `0`/`200000` reject boundaries plus every identity,
+source, tree, projection, manifest, mode, duplication, expiry, unit-order, and
+disablement failure.
+
+Main materialization is serial and freshly remeasured:
+
+| Unit | Complete ownership | Transition role |
+| --- | --- | --- |
+| P1 | This ADR copied byte-for-byte from protected `develop` | First bootstrap unit, not the later operational canary |
+| P2 | `current-revision-rerun.yml` with `test_copilot_review_refresh.py` | Whole workflow/test pair |
+| P3 | Remaining protected-develop divergence, including C1 only in complete semantic workflow/helper/test units | Finishes all units that still require active S0 |
+| P4 | `supplementary-current-revision-required.yml`, `test_supplementary_required_workflow.py`, and the sole policy transition `active -> consumed` | Whole source/test/policy pair and final bridge shutdown after sealed coverage |
+
+Before each successor unit, the prior normal protected `main` merge is read
+back and normally backmerged to protected `develop`; all unit inputs are then
+freshly recalculated and parallel main units are forbidden. S0 becomes
+permanently fail-closed only through the sole `active -> consumed` transition
+in P4 after the ordered manifest proves complete coverage and byte-identical
+reconstruction. Raw tree equality alone is not a safe shutdown signal because
+`.lit/main-ancestry.json` changes on backmerges and later unrelated divergence
+must never reactivate the bridge.
+
+P4 is opened only after every declared target blob not owned by P4 itself has
+already reached protected `main`. Its own Required-Workflow, test, and
+`consumed` policy blobs arrive atomically through P4. After P4 no part of this
+series remains: S0 is absorbing `consumed`, and C1 is not deferred to another
+feature-to-main pre-stage. A later exact protected `develop -> main` promotion
+belongs to new, independently reviewed work and cannot finish or reopen this
+series.
+
+The pre-S0 D1-plus-four-path diagnostic was 178,477 bytes and left only 21,522
+bytes of margin. It is not reusable after S0. Every unit is freshly
+reconstructed with `git-diff-binary-full-index-no-renames-v1`, independently
+reviewed, and accepted only at `1..199999`. At 200,000 bytes or more it stops
+and is split by whole workflow/test pairs; no source, assertion, documentation,
+or evidence byte is removed to fit.
+
+The pre-activation Authorization Manifest binds the ordered unit DAG, projected
+predecessor/result content trees, disjoint path/hunk ownership, every authorized
+path/blob/mode, exact unit and total bytes/digests, policy/prompt/schema/
+workflow authority, zero gaps/overlap, and the final target tree. Each runtime
+unit appends an immutable Execution Receipt hash-chained to the Authorization
+Manifest and preceding receipt, recording actual base/head/integration tree,
+review, checks, normal merge, signature, parents/tree, and protected backmerge.
+After P4, a Closure Manifest binds the complete receipt chain and proves final
+byte-identical reconstruction. Preparatory and activation units have their own
+canonical `1..199999` receipts. A future claim in the Authorization Manifest,
+broken chain, zero-byte, stale, missing, overlapping, truncated, or unsafe
+content blocks success.
+
+The manifests and receipts never become later `.github` commits. Before S0
+activation, the separately authorized public execution proxy must provide a
+protected evidence-finalizer workflow on its protected default branch. It has
+read-only access to `.github` and all source repositories; its only writes are
+`id-token:write` and `attestations:write` to the proxy repository's GitHub
+artifact-attestation store. A commit-SHA-pinned `actions/attest` signs a custom
+in-toto predicate containing the complete canonical record. The subject name is
+`rep120:<target-repository-id>:<series-id>:<record-id>` and its subject digest is
+the record's SHA-256. The public proxy causes the bundle to be stored both by
+GitHub and in the immutable Sigstore Public Good transparency log. Validity
+requires an OIDC certificate for the exact proxy repository ID, protected
+workflow path/ref, and source commit.
+
+Append uses one non-cancelling concurrency group per series and strict compare-
+and-swap against the verified attested chain tip. The finalizer reconstructs
+evidence from protected GitHub state: an identical record is an idempotent
+no-op; the exact next record is appended once; any conflicting digest or signer,
+duplicate logical record, gap, or out-of-order unit fails closed. Readback must
+verify the GitHub attestation, custom predicate, subject, signature, OIDC
+identity, transparency-log inclusion, attestation ID, log index, and bundle
+digest. After P4 the same finalizer builds and attests the Closure Manifest from
+read-only protected state and the complete receipt chain. It performs no source,
+target, PR, branch, Ruleset, check, release, or content mutation.
+
+This evidence sink is a P0 pre-activation gate, not an assumed service. The
+exact public proxy repository ID/name, Ruleset, protected workflow blob, pinned
+action digest, predicate schema, OIDC claims, API readback, public-log inclusion,
+duplicate/conflict rejection, and retention/export procedure must be canary-
+proven first. Check output, an expiring Actions artifact alone, Jira, and
+Confluence may index or copy the receipts but are not the immutable trust anchor.
 
 ### 6. Explicitly deferred convergence work
 
 This ADR decides only the proposed `.github` repository-local default-off
 controller and capability boundary. The following remain open and cannot be
-inferred from D1, A1, or C1:
+inferred from D1, S0, any P unit, or C1:
 
 - replacement of the live reciprocal `.github <-> Supplementary` Required-
-  Workflow polling with the approved one-way source-first DAG;
+  Workflow polling through a separately authorized, public, protected,
+  secret-free execution proxy; private `shared-assets-lit` remains the authoring
+  root but is never a public target's runtime source;
 - migration to one stable aggregate required-check context and removal of
   superseded leaf requirements;
 - Source-App and successor-App creation, scope verification, Environment
@@ -305,16 +449,33 @@ inferred from D1, A1, or C1:
   certification claim.
 
 The intended one-way DAG and aggregate check are separate protected changes.
-The repository-local push trigger here must not be misrepresented as their
-implementation.
+The aggregate target is one visible `promotion / aggregate` job: a protected
+public-proxy Required Workflow supplies source authenticity, and a repository
+required-status rule requires that same context from GitHub Actions App ID
+`15368` with strict base freshness. The old `repository / quality` requirement
+and Supplementary gate remain until an additive Evaluate/Active canary proves
+one job satisfies both mechanisms and becomes stale after a base advance.
+
+Ruleset workflows directly re-evaluate only `opened`, `synchronize`, and
+`reopened`; GitHub ignores their `types` filters. Because this system supports
+Draft and mutable authority state, a separate protected, non-required listener
+is mandatory. It authorizes at most one bounded rerun for a new exact
+Ready/edited state digest, under an immutable authorization and minimal rights;
+it cannot request another review or emit the aggregate itself. If that contract
+is not separately accepted, Draft support is removed and promotion PRs must be
+opened ready and converge within the initial aggregate window.
+
+The repository-local push trigger and temporary S0 bridge must not be
+misrepresented as implementation of the permanent DAG or aggregate.
 
 ## Acceptance gates
 
 This ADR remains Proposed / Implementation Pending until all applicable gates
 are supported by immutable evidence:
 
-1. D1, A1, and C1 each have complete, non-overlapping Coverage Manifest entries
-   and current-head independent review.
+1. D1, S0 implementation, S0 activation, every P unit, and C1 have complete,
+   non-overlapping Coverage Manifest entries and current-head independent
+   review.
 2. Every branch transition is a normal protected merge with exact parent, tree,
    signature, ruleset, and no-bypass readback.
 3. C1 is installed with `RELEASE_RECONCILIATION_ENABLED` absent and creates no
@@ -353,8 +514,14 @@ are supported by immutable evidence:
 - Protected recovery PRs `lightning-it/.github#565` through `#575`, including
   source-binding PR #566 and transition PRs #569–#572
 - PR #575 protected merge receipt and independent readback
+- PR #576 fail-closed receipt; Required runs `34143008702` and `34143008743`;
+  automatic no-rerun helper `34143164872`
 - REP-120 canonical bounded-idempotent orchestration decision
 - Generic bounded-review-unit and Coverage Manifest authority
 - Source-first DAG and aggregate-gate migration plan
+- GitHub artifact-attestation trust model and public Sigstore transparency-log
+  behavior: <https://docs.github.com/en/actions/concepts/security/artifact-attestations>
+- GitHub `actions/attest` custom-predicate, subject-digest, permission, and
+  bundle contract: <https://github.com/actions/attest>
 - GitHub documentation for workflow triggers, concurrency, Environments,
   workflow reruns, variables/secrets, and App installation tokens
