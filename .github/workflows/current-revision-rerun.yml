@@ -1302,38 +1302,59 @@ jobs:
             return 10
           }
 
-          wait_for_protected_attempt_two_success() {
-            local attempt conclusion payload status
-            for protected_observation in $(seq 1 60); do
-              payload="$(read_run_with_retry "${run_id}")" || return 1
-              validate_protected_run_binding "${payload}" || return 1
-              attempt="$(jq -er \
-                '.run_attempt | select(type == "number")' \
-                <<<"${payload}")" || return 1
-              status="$(jq -er \
-                '.status | select(type == "string" and length > 0)' \
-                <<<"${payload}")" || return 1
+          wait_for_attempt_two_success() {
+            local attempt attempt_two_seen=false conclusion kind="${1}"
+            local observation payload status target_id
+            case "${kind}" in
+              protected) target_id="${run_id}" ;;
+              cross) target_id="${cross_run_id}" ;;
+              *) return 1 ;;
+            esac
+            for observation in $(seq 1 60); do
+              payload="$(read_run_with_retry "${target_id}")" || return 1
+              if [ "${kind}" = protected ]; then
+                validate_protected_run_binding "${payload}" || return 1
+              else
+                validate_cross_run_binding \
+                  "${payload}" "${target_id}" || return 1
+              fi
+              attempt="$(jq -er '.run_attempt' <<<"${payload}")" || return 1
+              status="$(jq -er '.status' <<<"${payload}")" || return 1
               conclusion="$(jq -r '.conclusion // empty' <<<"${payload}")"
               if [ "${attempt}" -eq 1 ]; then
-                if [ "${status}" != completed ] \
-                  || [ "${conclusion}" != failure ]; then
-                  echo 'The protected attempt-one state changed after authorization.' >&2
+                if [ "${attempt_two_seen}" = true ]; then
+                  echo "The ${kind} verifier rolled back to attempt one." >&2
                   return 1
                 fi
-              elif [ "${attempt}" -eq 2 ]; then
-                if [ "${status}" = completed ]; then
-                  if [ "${conclusion}" != success ]; then
-                    echo 'The protected rerun reached a terminal contradiction.' >&2
+                case "${status}:${conclusion}" in
+                  completed:failure|requested:|waiting:|pending:|queued:|in_progress:) ;;
+                  *)
+                    echo "The ${kind} attempt-one state contradicted authorization." >&2
                     return 1
-                  fi
-                  return 0
-                fi
+                    ;;
+                esac
+              elif [ "${attempt}" -eq 2 ]; then
+                attempt_two_seen=true
+                case "${status}:${conclusion}" in
+                  requested:|waiting:|pending:|queued:|in_progress:) ;;
+                  completed:success)
+                    if [ "${kind}" = cross ]; then
+                      validate_authoritative_cross_success 2 "${target_id}" \
+                        || return 1
+                    fi
+                    return 0
+                    ;;
+                  *)
+                    echo "The ${kind} rerun reached a terminal contradiction." >&2
+                    return 1
+                    ;;
+                esac
               else
-                echo 'The protected verifier exceeded its single allowed rerun.' >&2
+                echo "The ${kind} verifier exceeded its single allowed rerun." >&2
                 return 1
               fi
-              if [ "${protected_observation}" -eq 60 ]; then
-                echo 'The protected verifier rerun did not converge.' >&2
+              if [ "${observation}" -eq 60 ]; then
+                echo "The ${kind} verifier rerun did not converge." >&2
                 return 1
               fi
               bounded_sleep 5 || return 1
@@ -1341,41 +1362,12 @@ jobs:
             return 1
           }
 
+          wait_for_protected_attempt_two_success() {
+            wait_for_attempt_two_success protected
+          }
+
           wait_for_cross_attempt_two_success() {
-            local attempt conclusion payload status
-            for cross_completion_attempt in $(seq 1 60); do
-              payload="$(read_run_with_retry "${cross_run_id}")" || return 1
-              validate_cross_run_binding \
-                "${payload}" "${cross_run_id}" || return 1
-              attempt="$(jq -er \
-                '.run_attempt | select(type == "number")' \
-                <<<"${payload}")" || return 1
-              status="$(jq -er \
-                '.status | select(type == "string" and length > 0)' \
-                <<<"${payload}")" || return 1
-              conclusion="$(jq -r '.conclusion // empty' <<<"${payload}")"
-              if [ "${attempt}" -eq 1 ]; then
-                if [ "${status}" != completed ] \
-                  || [ "${conclusion}" != failure ]; then
-                  echo 'The cross-verifier attempt-one state changed after authorization.' >&2
-                  return 1
-                fi
-              elif [ "${attempt}" -eq 2 ] && [ "${status}" = completed ]; then
-                if [ "${conclusion}" != success ]; then
-                  echo 'The cross-verifier rerun reached a terminal contradiction.' >&2
-                  return 1
-                fi
-                validate_authoritative_cross_success 2 "${cross_run_id}" \
-                  || return 1
-                return 0
-              fi
-              if [ "${cross_completion_attempt}" -eq 60 ]; then
-                echo 'The cross-verifier rerun did not converge.' >&2
-                return 1
-              fi
-              bounded_sleep 5 || return 1
-            done
-            return 1
+            wait_for_attempt_two_success cross
           }
 
           validate_authoritative_cross_inventory() {
