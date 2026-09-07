@@ -747,7 +747,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         for exact_binding in (
             "5c549450321b5c7182ef452977d9587ff1f7f14c",
-            "27a9267b3d79896e8d13f34f160299d4018e53d6",
+            "e5c87afae4e664f313c34f27eced96b4d2c59092",
             "ac5f5aa7eb77737118cd8a7d2f072f3a8735591d",
             "0f3ff650c0d8da4ec2606bc32afd365dfc88e15c",
             "5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a",
@@ -777,15 +777,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for tuple_binding in (
             "2edd5190c88bf32e009848d85df664c29fb4eab6",
             "162fe4ca9ff6a94d3f1f1a8479db047c1fd82453",
+            "27a9267b3d79896e8d13f34f160299d4018e53d6",
         ):
             with self.subTest(tuple_binding=tuple_binding):
                 self.assertIn(tuple_binding, source_binding)
         expected_path_counts = {
-            ".github/workflows/current-revision-rerun.yml": 3,
+            ".github/workflows/current-revision-rerun.yml": 2,
             ".github/workflows/copilot-review.yml": 2,
             ".github/workflows/dot-github-current-revision-required.yml": 1,
             ".github/workflows/supplementary-current-revision-required.yml": 5,
-            "tests/test_copilot_review_refresh.py": 2,
+            "tests/test_copilot_review_refresh.py": 1,
             "tests/test_supplementary_required_workflow.py": 2,
         }
         for path, count in expected_path_counts.items():
@@ -1321,9 +1322,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         controller = "c" * 40
         tree = "d" * 40
         exact_paths = [
-            ".github/workflows/current-revision-rerun.yml",
             ".github/workflows/supplementary-current-revision-required.yml",
-            "tests/test_copilot_review_refresh.py",
             "tests/test_supplementary_required_workflow.py",
         ]
         comparison = {
@@ -1459,7 +1458,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "total_commits": 1,
             "base_commit": {"sha": base, "commit": {"tree": {"sha": base_tree}}},
             "merge_base_commit": {"sha": base},
-            "head_commit": {"sha": head},
             "commits": [
                 {
                     "sha": head,
@@ -1496,6 +1494,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 == 0
             )
 
+        self.assertNotIn(".head_commit", compare_filter)
+        self.assertIn(".commits[-1].sha == $head", compare_filter)
         self.assertTrue(accepts(comparison))
         rejected = (
             {**comparison, "status": "diverged"},
@@ -1511,7 +1511,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 },
             },
             {**comparison, "merge_base_commit": {"sha": head}},
-            {**comparison, "head_commit": {"sha": base}},
             {**comparison, "commits": []},
             {
                 **comparison,

@@ -2245,7 +2245,7 @@ jobs:
                 issue_564_pr568_recovery_authorized=false
                 if issue_564_pr568_recovery_source_tuple; then
                   issue_564_pr568_recovery_authorized=true
-                  expected_source_anchor='27a9267b3d79896e8d13f34f160299d4018e53d6'
+                  expected_source_anchor='e5c87afae4e664f313c34f27eced96b4d2c59092'
                   expected_pr_body_prefix_bytes=2046
                   expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
                   expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
@@ -2291,9 +2291,7 @@ jobs:
                     and .commits[1].commit.verification.verified == true
                     and .commits[-1].sha == $workflow
                     and ([.files[].filename] | sort) == [
-                      ".github/workflows/current-revision-rerun.yml",
                       ".github/workflows/supplementary-current-revision-required.yml",
-                      "tests/test_copilot_review_refresh.py",
                       "tests/test_supplementary_required_workflow.py"
                     ]
                   ' <<<"${source_compare}" >/dev/null
@@ -3031,7 +3029,7 @@ jobs:
                     and .base_commit.sha == $base
                     and .base_commit.commit.tree.sha == $base_tree
                     and .merge_base_commit.sha == $base
-                    and .head_commit.sha == $head
+                    and .commits[-1].sha == $head
                     and (.commits | length) == 1
                     and .commits[0].sha == $head
                     and [.commits[0].parents[].sha] == [$base]
