@@ -2016,6 +2016,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     self._rerun_shell_function("require_deadline"),
                     self._rerun_shell_function("bounded_sleep"),
                     self._rerun_shell_function(validator_name),
+                    self._rerun_shell_function(
+                        "wait_for_attempt_two_success"
+                    ),
                     self._rerun_shell_function(function_name),
                     authoritative_stub,
                     r'''read_run_with_retry() {
@@ -2064,60 +2067,193 @@ sleep() { :; }''',
                 observations = int(state_file.read_text(encoding="utf-8"))
             return result, observations
 
-        protected_sequence = [
-            self._protected_run(),
-            self._protected_run(
-                attempt=2, status="in_progress", conclusion=None
-            ),
-            self._protected_run(attempt=2, conclusion="success"),
-        ]
-        result, observations = execute(
-            "wait_for_protected_attempt_two_success",
-            "validate_protected_run_binding",
-            protected_sequence,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(3, observations)
+        def protected(**state: object) -> dict[str, object]:
+            return self._protected_run(**state)  # type: ignore[arg-type]
 
-        cross_sequence = [
-            self._cross_run(
-                202, "2026-09-05T11:00:00Z", conclusion="failure"
-            ),
-            self._cross_run(
+        def cross(**state: object) -> dict[str, object]:
+            return self._cross_run(
                 202,
                 "2026-09-05T11:00:00Z",
-                attempt=2,
-                status="in_progress",
-                conclusion=None,
-            ),
-            self._cross_run(
-                202,
-                "2026-09-05T11:00:00Z",
-                attempt=2,
-                conclusion="success",
-            ),
-        ]
-        result, observations = execute(
-            "wait_for_cross_attempt_two_success",
-            "validate_cross_run_binding",
-            cross_sequence,
-        )
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(3, observations)
+                **state,  # type: ignore[arg-type]
+            )
 
-        failed_attempt_two = self._cross_run(
-            202,
-            "2026-09-05T11:00:00Z",
-            attempt=2,
-            conclusion="failure",
+        waiters = (
+            (
+                "protected",
+                "wait_for_protected_attempt_two_success",
+                "validate_protected_run_binding",
+                protected,
+            ),
+            (
+                "cross",
+                "wait_for_cross_attempt_two_success",
+                "validate_cross_run_binding",
+                cross,
+            ),
         )
-        result, observations = execute(
-            "wait_for_cross_attempt_two_success",
-            "validate_cross_run_binding",
-            [failed_attempt_two],
-        )
-        self.assertNotEqual(0, result.returncode)
-        self.assertEqual(1, observations)
+        for name, function_name, validator_name, make_run in waiters:
+            with self.subTest(waiter=name, case="full convergence"):
+                sequence = [
+                    make_run(
+                        attempt=1,
+                        status="completed",
+                        conclusion="failure",
+                    ),
+                    make_run(attempt=1, status="queued", conclusion=None),
+                    make_run(
+                        attempt=1,
+                        status="in_progress",
+                        conclusion=None,
+                    ),
+                    make_run(attempt=2, status="queued", conclusion=None),
+                    make_run(
+                        attempt=2,
+                        status="in_progress",
+                        conclusion=None,
+                    ),
+                    make_run(
+                        attempt=2,
+                        status="completed",
+                        conclusion="success",
+                    ),
+                ]
+                result, observations = execute(
+                    function_name, validator_name, sequence
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(6, observations)
+
+            for transient in (
+                "requested",
+                "waiting",
+                "pending",
+                "queued",
+                "in_progress",
+            ):
+                with self.subTest(
+                    waiter=name,
+                    case="nonterminal transition",
+                    status=transient,
+                ):
+                    sequence = [
+                        make_run(
+                            attempt=1,
+                            status=transient,
+                            conclusion=None,
+                        ),
+                        make_run(
+                            attempt=2,
+                            status=transient,
+                            conclusion=None,
+                        ),
+                        make_run(
+                            attempt=2,
+                            status="completed",
+                            conclusion="success",
+                        ),
+                    ]
+                    result, observations = execute(
+                        function_name, validator_name, sequence
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(3, observations)
+
+            rejected_sequences = (
+                (
+                    "attempt-one success",
+                    [
+                        make_run(
+                            attempt=1,
+                            status="completed",
+                            conclusion="success",
+                        )
+                    ],
+                    1,
+                ),
+                (
+                    "attempt-one cancelled",
+                    [
+                        make_run(
+                            attempt=1,
+                            status="completed",
+                            conclusion="cancelled",
+                        )
+                    ],
+                    1,
+                ),
+                (
+                    "attempt-two failure",
+                    [
+                        make_run(
+                            attempt=2,
+                            status="completed",
+                            conclusion="failure",
+                        )
+                    ],
+                    1,
+                ),
+                (
+                    "attempt-two cancelled",
+                    [
+                        make_run(
+                            attempt=2,
+                            status="completed",
+                            conclusion="cancelled",
+                        )
+                    ],
+                    1,
+                ),
+                (
+                    "attempt-two rollback",
+                    [
+                        make_run(
+                            attempt=2,
+                            status="in_progress",
+                            conclusion=None,
+                        ),
+                        make_run(
+                            attempt=1,
+                            status="queued",
+                            conclusion=None,
+                        ),
+                    ],
+                    2,
+                ),
+                (
+                    "nonterminal conclusion",
+                    [
+                        make_run(
+                            attempt=1,
+                            status="queued",
+                            conclusion="failure",
+                        )
+                    ],
+                    1,
+                ),
+            )
+            for case, sequence, expected_observations in rejected_sequences:
+                with self.subTest(waiter=name, case=case):
+                    result, observations = execute(
+                        function_name, validator_name, sequence
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(expected_observations, observations)
+
+            with self.subTest(waiter=name, case="attempt-one timeout"):
+                result, observations = execute(
+                    function_name,
+                    validator_name,
+                    [
+                        make_run(
+                            attempt=1,
+                            status="queued",
+                            conclusion=None,
+                        )
+                    ],
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("did not converge", result.stderr)
+                self.assertEqual(60, observations)
 
     def test_attempt_two_inventory_rejects_a_newer_bound_run(self) -> None:
         strict_function = self._rerun_shell_function(
