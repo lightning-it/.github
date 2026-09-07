@@ -508,6 +508,78 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 candidate[field] = value
                 self.assertNotEqual(0, authorize(candidate))
 
+    def test_issue_564_pr568_source_tuple_is_exact_and_one_shot(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        marker = "          issue_564_pr568_source_tuple() {\n"
+        function = marker + source_binding.split(marker, 1)[1].split(
+            "\n          }\n", 1
+        )[0] + "\n          }\n"
+        script = "set -u\n" + textwrap.dedent(function) + (
+            "issue_564_pr568_source_tuple\n"
+        )
+        valid = {
+            "REPOSITORY": "lightning-it/.github",
+            "PR_NUMBER": "568",
+            "EVENT_ACTION": "ready_for_review",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "EVENT_SENDER_LOGIN": "litroc",
+            "EVENT_SENDER_ID": "76040632",
+            "EVENT_SENDER_TYPE": "User",
+            "EVENT_BASE": "2edd5190c88bf32e009848d85df664c29fb4eab6",
+            "EVENT_HEAD": "162fe4ca9ff6a94d3f1f1a8479db047c1fd82453",
+        }
+        bash = self._test_tool("bash")
+
+        def authorize(candidate: dict[str, str]) -> int:
+            return subprocess.run(
+                [bash, "-c", script],
+                env=candidate,
+                text=True,
+                capture_output=True,
+                check=False,
+            ).returncode
+
+        self.assertEqual(0, authorize(valid))
+        rejected_values = (
+            ("REPOSITORY", "lightning-it/website"),
+            ("REPOSITORY", "fork/.github"),
+            ("PR_NUMBER", "565"),
+            ("PR_NUMBER", "569"),
+            ("PR_NUMBER", "0568"),
+            ("EVENT_ACTION", "opened"),
+            ("EVENT_ACTION", "synchronize"),
+            ("EVENT_ACTION", "reopened"),
+            ("EVENT_ACTION", "edited"),
+            ("GITHUB_RUN_ATTEMPT", "0"),
+            ("GITHUB_RUN_ATTEMPT", "2"),
+            ("EVENT_SENDER_LOGIN", "github-actions[bot]"),
+            ("EVENT_SENDER_LOGIN", "Litroc"),
+            ("EVENT_SENDER_ID", "15368"),
+            ("EVENT_SENDER_ID", "76040633"),
+            ("EVENT_SENDER_TYPE", "Bot"),
+            ("EVENT_BASE", "5c549450321b5c7182ef452977d9587ff1f7f14c"),
+            ("EVENT_BASE", "2edd5190c88bf32e009848d85df664c29fb4eab60"),
+            ("EVENT_HEAD", "2edd5190c88bf32e009848d85df664c29fb4eab6"),
+            ("EVENT_HEAD", "162fe4ca9ff6a94d3f1f1a8479db047c1fd82450"),
+            ("EVENT_HEAD", "162fe4ca9ff6a94d3f1f1a8479db047c1fd824530"),
+        )
+        for field, value in rejected_values:
+            with self.subTest(field=field, value=value):
+                candidate = dict(valid)
+                candidate[field] = value
+                self.assertNotEqual(0, authorize(candidate))
+        for missing_field in valid:
+            with self.subTest(missing_field=missing_field):
+                candidate = dict(valid)
+                candidate.pop(missing_field)
+                self.assertNotEqual(0, authorize(candidate))
+
     def test_issue_564_stage_1_source_authorization_is_fully_bound(
         self,
     ) -> None:
@@ -521,6 +593,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         finalization = workflow.split(
             "      - name: Rebind and finalize the protected result\n", 1
         )[1]
+        stage_1_binding = source_binding.split(
+            "              elif issue_564_stage_1_source_tuple; then\n", 1
+        )[1].split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[0]
 
         for exact_binding in (
             "2bcc17358989f49df2dcc5e138c72e7eaf41decf",
@@ -544,7 +621,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "--no-color --no-ext-diff --no-textconv",
         ):
             with self.subTest(exact_binding=exact_binding):
-                self.assertIn(exact_binding, source_binding)
+                self.assertIn(exact_binding, stage_1_binding)
         expected_path_counts = {
             ".github/workflows/current-revision-rerun.yml": 1,
             ".github/workflows/supplementary-current-revision-required.yml": 3,
@@ -554,7 +631,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         }
         for path, count in expected_path_counts.items():
             with self.subTest(path=path):
-                self.assertEqual(count, source_binding.count(f'\"{path}\"'))
+                self.assertEqual(count, stage_1_binding.count(f'\"{path}\"'))
 
         self.assertIn("EVENT_ACTION: ${{ github.event.action }}", source_binding)
         self.assertIn(
@@ -599,6 +676,112 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("repos/lightning-it/.github/branches/develop", finalization)
         self.assertIn("repos/lightning-it/.github/branches/main", finalization)
         self.assertIn('and .commit.sha == $base', finalization)
+
+    def test_issue_564_pr568_source_authorization_is_fully_bound(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        pr568_binding = source_binding.split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[1].split("              else\n", 1)[0]
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        finalization = workflow.split(
+            "      - name: Rebind and finalize the protected result\n", 1
+        )[1]
+
+        for exact_binding in (
+            "5c549450321b5c7182ef452977d9587ff1f7f14c",
+            "ac5f5aa7eb77737118cd8a7d2f072f3a8735591d",
+            "0f3ff650c0d8da4ec2606bc32afd365dfc88e15c",
+            "5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a",
+            "9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9",
+            "expected_diff_bytes=85276",
+            "expected_pr_body_prefix_bytes=1952",
+            "expected_pr_created_at='2026-09-07T05:43:57Z'",
+            "expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'",
+            "expected_source_marker=\"<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->\"",
+            'and .updated_at == $updated_at',
+            "and .commits == 1",
+            "and .changed_files == 4",
+            "and .ahead_by == 1",
+            "and .total_commits == 1",
+            "rev-list --count",
+            "merge-tree --write-tree refs/prestage/base refs/prestage/head",
+            "diff --binary --full-index",
+            "--no-color --no-ext-diff --no-textconv",
+            'source_sha="${WORKFLOW_SHA}"',
+            "issue_564_pr568_authorized=true",
+        ):
+            with self.subTest(exact_binding=exact_binding):
+                self.assertIn(exact_binding, pr568_binding)
+        for tuple_binding in (
+            "2edd5190c88bf32e009848d85df664c29fb4eab6",
+            "162fe4ca9ff6a94d3f1f1a8479db047c1fd82453",
+        ):
+            with self.subTest(tuple_binding=tuple_binding):
+                self.assertIn(tuple_binding, source_binding)
+        expected_path_counts = {
+            ".github/workflows/current-revision-rerun.yml": 1,
+            ".github/workflows/supplementary-current-revision-required.yml": 2,
+            "tests/test_copilot_review_refresh.py": 1,
+            "tests/test_supplementary_required_workflow.py": 2,
+        }
+        for path, count in expected_path_counts.items():
+            with self.subTest(path=path):
+                self.assertEqual(count, pr568_binding.count(f'\"{path}\"'))
+
+        self.assertIn(
+            "ISSUE_564_PR568_SOURCE: >-\n"
+            "            ${{ steps.protected-source.outputs.issue_564_pr568 }}",
+            permanent,
+        )
+        self.assertIn(
+            'if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then\n'
+            '            test "${reservation_count}" -eq 0\n'
+            "          fi\n",
+            permanent,
+        )
+        self.assertIn(
+            "ISSUE_564_PR568_SOURCE: >-\n"
+            "            ${{ steps.protected-source.outputs.issue_564_pr568 }}",
+            finalization,
+        )
+        self.assertIn(
+            "failure_stage='issue-564-pr568-final-rebind'", finalization
+        )
+        self.assertIn(
+            'expected_source_marker="<!-- rep60-issue564-pr568-source:v1 '
+            'workflow_sha=${WORKFLOW_SHA} -->"',
+            finalization,
+        )
+        self.assertIn('.updated_at == $updated_at', finalization)
+        self.assertIn('and ((.body | split($marker) | length) == 2)', finalization)
+        self.assertIn("repos/lightning-it/.github/branches/develop", finalization)
+        self.assertIn("repos/lightning-it/.github/branches/main", finalization)
+        self.assertIn('and .commit.sha == $workflow', finalization)
+        self.assertIn('and .commit.sha == $base', finalization)
+
+        for forbidden in (
+            "${{ secrets.",
+            "${{ vars.",
+            "create-github-app-token",
+            "actions/checkout",
+            "--method",
+            "/reviews",
+            "/dispatches",
+            "issues/comments",
+            "EVENT_CHANGES_JSON",
+            "issue_564_legacy_retirement",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, pr568_binding)
 
     def test_issue_564_stage_1_edit_shapes_are_exact(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -677,6 +860,179 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertFalse(
                     jq_accepts(marker_filter, {"body": body}, marker_args)
                 )
+
+    def test_issue_564_pr568_marker_shape_is_exact(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        pr568_binding = source_binding.split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[1].split("              else\n", 1)[0]
+        marker_filter = pr568_binding.split(
+            '                  --arg suffix "${expected_source_suffix}" \'\n', 1
+        )[1].split('\n                  \' <<<"${pr}"', 1)[0]
+        jq = self._test_tool("jq")
+        workflow_sha = "c" * 40
+        marker = (
+            "<!-- rep60-issue564-pr568-source:v1 "
+            f"workflow_sha={workflow_sha} -->"
+        )
+        marker_args = ["--arg", "marker", marker, "--arg", "suffix", marker + "\n"]
+        original = "immutable 1,952-byte body prefix\n"
+        self.assertEqual(94, len((marker + "\n").encode("utf-8")))
+        self.assertEqual(2046, 1952 + len((marker + "\n").encode("utf-8")))
+
+        def accepts(body: object) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *marker_args, marker_filter],
+                    input=json.dumps({"body": body}),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(original + marker + "\n"))
+        for body in (
+            None,
+            1,
+            original,
+            original + marker,
+            original + marker + "\nextra",
+            original + marker + marker + "\n",
+            original + marker + "\n" + marker + "\n",
+            original + marker.replace(workflow_sha, "d" * 40) + "\n",
+        ):
+            with self.subTest(body=body):
+                self.assertFalse(accepts(body))
+
+    def test_issue_564_pr568_live_pr_filter_rejects_identity_drift(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        pr568_binding = source_binding.split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[1].split("              else\n", 1)[0]
+        identity_filter = pr568_binding.split(
+            "                  --argjson number 568 '\n", 1
+        )[1].split('\n                  \' <<<"${pr}"', 1)[0]
+        jq = self._test_tool("jq")
+        base = "a" * 40
+        head = "b" * 40
+        repository = "lightning-it/.github"
+        head_ref = "prestage/dot-github-main-four-paths-v1-20260906"
+        title = "fix(rep60): stage bounded controller delta"
+        created_at = "2026-09-07T05:43:57Z"
+        updated_at = "2026-09-07T06:00:00Z"
+        valid = {
+            "number": 568,
+            "state": "open",
+            "draft": False,
+            "user": {"login": "litroc", "id": 76040632, "type": "User"},
+            "title": title,
+            "base": {
+                "ref": "main",
+                "sha": base,
+                "repo": {"full_name": repository},
+            },
+            "head": {
+                "ref": head_ref,
+                "sha": head,
+                "repo": {"full_name": repository},
+            },
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "commits": 1,
+            "changed_files": 4,
+        }
+        args = [
+            "--arg",
+            "base",
+            base,
+            "--arg",
+            "created_at",
+            created_at,
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "head_ref",
+            head_ref,
+            "--arg",
+            "repository",
+            repository,
+            "--arg",
+            "title",
+            title,
+            "--arg",
+            "updated_at",
+            updated_at,
+            "--argjson",
+            "author_id",
+            "76040632",
+            "--argjson",
+            "number",
+            "568",
+        ]
+
+        def accepts(candidate: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *args, identity_filter],
+                    input=json.dumps(candidate),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(valid))
+        rejected = (
+            {**valid, "number": 569},
+            {**valid, "state": "closed"},
+            {**valid, "draft": True},
+            {**valid, "draft": "false"},
+            {**valid, "user": {**valid["user"], "login": "Litroc"}},
+            {**valid, "user": {**valid["user"], "id": 76040633}},
+            {**valid, "user": {**valid["user"], "type": "Bot"}},
+            {**valid, "title": "fix(rep60): stage unbounded controller delta"},
+            {**valid, "base": {**valid["base"], "ref": "develop"}},
+            {**valid, "base": {**valid["base"], "sha": "c" * 40}},
+            {
+                **valid,
+                "base": {
+                    **valid["base"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+            {**valid, "head": {**valid["head"], "ref": "feature"}},
+            {**valid, "head": {**valid["head"], "sha": "c" * 40}},
+            {
+                **valid,
+                "head": {
+                    **valid["head"],
+                    "repo": {"full_name": "fork/.github"},
+                },
+            },
+            {**valid, "created_at": "2026-09-07T05:43:58Z"},
+            {**valid, "updated_at": "2026-09-07T06:00:01Z"},
+            {**valid, "commits": 2},
+            {**valid, "changed_files": 5},
+        )
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                self.assertFalse(accepts(candidate))
 
     def test_issue_564_source_controller_has_exact_merge_topology(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -798,6 +1154,254 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(candidate=candidate_value):
                 self.assertFalse(accepts(candidate_value))
 
+    def test_issue_564_pr568_source_has_exact_merge_topology(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        pr568_binding = source_binding.split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[1].split("              else\n", 1)[0]
+        source_section = pr568_binding.split(
+            '                source_compare="$(gh api \\\n', 1
+        )[1].split('                protected_main="$(gh api', 1)[0]
+        source_filter = source_section.split(
+            '                  --arg workflow "${WORKFLOW_SHA}" \'\n', 1
+        )[1].split('\n                  \' <<<"${source_compare}"', 1)[0]
+        jq = self._test_tool("jq")
+        anchor = "a" * 40
+        candidate = "b" * 40
+        controller = "c" * 40
+        tree = "d" * 40
+        exact_paths = [
+            ".github/workflows/supplementary-current-revision-required.yml",
+            "tests/test_supplementary_required_workflow.py",
+        ]
+        comparison = {
+            "base_commit": {"sha": anchor},
+            "merge_base_commit": {"sha": anchor},
+            "status": "ahead",
+            "ahead_by": 2,
+            "behind_by": 0,
+            "total_commits": 2,
+            "commits": [
+                {
+                    "sha": candidate,
+                    "parents": [{"sha": anchor}],
+                    "commit": {
+                        "tree": {"sha": tree},
+                        "verification": {"verified": True},
+                    },
+                },
+                {
+                    "sha": controller,
+                    "parents": [{"sha": anchor}, {"sha": candidate}],
+                    "commit": {
+                        "tree": {"sha": tree},
+                        "verification": {"verified": True},
+                    },
+                },
+            ],
+            "files": [{"filename": path} for path in exact_paths],
+        }
+        args = ["--arg", "anchor", anchor, "--arg", "workflow", controller]
+
+        def accepts(candidate_value: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *args, source_filter],
+                    input=json.dumps(candidate_value),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(comparison))
+        rejected = (
+            {**comparison, "base_commit": {"sha": "e" * 40}},
+            {**comparison, "merge_base_commit": {"sha": "e" * 40}},
+            {**comparison, "status": "diverged"},
+            {**comparison, "ahead_by": 3},
+            {**comparison, "behind_by": 1},
+            {**comparison, "total_commits": 3},
+            {**comparison, "commits": comparison["commits"][:1]},
+            {
+                **comparison,
+                "commits": [
+                    {**comparison["commits"][0], "parents": [{"sha": "e" * 40}]},
+                    comparison["commits"][1],
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "parents": [{"sha": candidate}, {"sha": anchor}],
+                    },
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "commit": {
+                            "tree": {"sha": "e" * 40},
+                            "verification": {"verified": True},
+                        },
+                    },
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {
+                        **comparison["commits"][1],
+                        "commit": {
+                            "tree": {"sha": tree},
+                            "verification": {"verified": False},
+                        },
+                    },
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    comparison["commits"][0],
+                    {**comparison["commits"][1], "sha": "e" * 40},
+                ],
+            },
+            {**comparison, "files": comparison["files"][:1]},
+            {**comparison, "files": [*comparison["files"], {"filename": "extra"}]},
+        )
+        for candidate_value in rejected:
+            with self.subTest(candidate=candidate_value):
+                self.assertFalse(accepts(candidate_value))
+
+    def test_issue_564_pr568_target_compare_is_exact(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        source_binding = workflow.split(
+            "      - name: Bind the protected Required Workflow source\n", 1
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        pr568_binding = source_binding.split(
+            "              elif issue_564_pr568_source_tuple; then\n", 1
+        )[1].split("              else\n", 1)[0]
+        compare_section = pr568_binding.split(
+            '                prestage_compare="$(gh api \\\n', 1
+        )[1].split("                export GIT_CONFIG_GLOBAL", 1)[0]
+        compare_filter = compare_section.split(
+            '                  --arg head_tree "${expected_head_tree}" \'\n', 1
+        )[1].split('\n                  \' <<<"${prestage_compare}"', 1)[0]
+        jq = self._test_tool("jq")
+        base = "a" * 40
+        base_tree = "b" * 40
+        head = "c" * 40
+        head_tree = "d" * 40
+        exact_paths = [
+            ".github/workflows/current-revision-rerun.yml",
+            ".github/workflows/supplementary-current-revision-required.yml",
+            "tests/test_copilot_review_refresh.py",
+            "tests/test_supplementary_required_workflow.py",
+        ]
+        comparison = {
+            "status": "ahead",
+            "ahead_by": 1,
+            "behind_by": 0,
+            "total_commits": 1,
+            "base_commit": {"sha": base, "commit": {"tree": {"sha": base_tree}}},
+            "merge_base_commit": {"sha": base},
+            "head_commit": {"sha": head},
+            "commits": [
+                {
+                    "sha": head,
+                    "parents": [{"sha": base}],
+                    "commit": {"tree": {"sha": head_tree}},
+                }
+            ],
+            "files": [{"filename": path} for path in exact_paths],
+        }
+        args = [
+            "--arg",
+            "base",
+            base,
+            "--arg",
+            "base_tree",
+            base_tree,
+            "--arg",
+            "head",
+            head,
+            "--arg",
+            "head_tree",
+            head_tree,
+        ]
+
+        def accepts(candidate_value: dict[str, object]) -> bool:
+            return (
+                subprocess.run(
+                    [jq, "-e", *args, compare_filter],
+                    input=json.dumps(candidate_value),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepts(comparison))
+        rejected = (
+            {**comparison, "status": "diverged"},
+            {**comparison, "ahead_by": 2},
+            {**comparison, "behind_by": 1},
+            {**comparison, "total_commits": 2},
+            {**comparison, "base_commit": {**comparison["base_commit"], "sha": head}},
+            {
+                **comparison,
+                "base_commit": {
+                    "sha": base,
+                    "commit": {"tree": {"sha": head_tree}},
+                },
+            },
+            {**comparison, "merge_base_commit": {"sha": head}},
+            {**comparison, "head_commit": {"sha": base}},
+            {**comparison, "commits": []},
+            {
+                **comparison,
+                "commits": [{**comparison["commits"][0], "sha": base}],
+            },
+            {
+                **comparison,
+                "commits": [
+                    {**comparison["commits"][0], "parents": [{"sha": head}]}
+                ],
+            },
+            {
+                **comparison,
+                "commits": [
+                    {
+                        **comparison["commits"][0],
+                        "commit": {"tree": {"sha": base_tree}},
+                    }
+                ],
+            },
+            {**comparison, "files": comparison["files"][:3]},
+            {**comparison, "files": [*comparison["files"], {"filename": "extra"}]},
+        )
+        for candidate_value in rejected:
+            with self.subTest(candidate=candidate_value):
+                self.assertFalse(accepts(candidate_value))
+
     def test_issue_564_stage_1_skips_all_app_token_mints(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         source_token = workflow.split(
@@ -863,6 +1467,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "-c",
                     "set -euo pipefail\n"
                     + f"ISSUE_564_STAGE_1_SOURCE={source}\n"
+                    + "ISSUE_564_PR568_SOURCE=false\n"
                     + f"reservation_count={count}\n"
                     + textwrap.dedent(one_shot),
                 ],
@@ -876,6 +1481,45 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertFalse(accepts("true", 1))
         self.assertFalse(accepts("true", 2))
         self.assertTrue(accepts("false", 1))
+
+    def test_issue_564_pr568_rejects_any_existing_exact_reservation(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[1]
+        marker = (
+            '          reservation_count="$(jq \'length\' '
+            '<<<"${reservations}")"\n'
+        )
+        one_shot = permanent.split(marker, 1)[1].split(
+            '          if [ "${reservation_count}" -gt 1 ]; then\n', 1
+        )[0]
+        bash = self._test_tool("bash")
+
+        def accepts(stage_1: str, pr568: str, count: int) -> bool:
+            result = subprocess.run(
+                [
+                    bash,
+                    "-c",
+                    "set -euo pipefail\n"
+                    + f"ISSUE_564_STAGE_1_SOURCE={stage_1}\n"
+                    + f"ISSUE_564_PR568_SOURCE={pr568}\n"
+                    + f"reservation_count={count}\n"
+                    + textwrap.dedent(one_shot),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(accepts("false", "true", 0))
+        self.assertFalse(accepts("false", "true", 1))
+        self.assertFalse(accepts("false", "true", 2))
+        self.assertTrue(accepts("true", "true", 0))
+        self.assertFalse(accepts("true", "true", 1))
+        self.assertTrue(accepts("false", "false", 1))
 
     def test_pr_comment_read_permissions_are_explicit_and_read_only(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -2037,6 +2681,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "permanent-producer-binding",
             "renovate-final-rebind",
             "issue-564-stage-1-final-rebind",
+            "issue-564-pr568-final-rebind",
             "permanent-finalization",
         }
         observed_stages = {
@@ -3946,6 +4591,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 )
         self.assertIn(
             "issue_564_stage_1_source_tuple",
+            normalized_payload("Bind the protected Required Workflow source"),
+        )
+        self.assertIn(
+            "issue_564_pr568_source_tuple",
             normalized_payload("Bind the protected Required Workflow source"),
         )
 
