@@ -1320,106 +1320,23 @@ jobs:
               == 'lightning-it/shared-assets-lit'
           )
         env:
-          EVENT_SENDER_ID: ${{ github.event.sender.id }}
-          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
-          EVENT_SENDER_TYPE: ${{ github.event.sender.type }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           producer_kind=''
           producer_run_id=''
-          issue_564_pr568_v3=false
-          if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
-            && [ "${PR_NUMBER}" = 568 ] \
-            && [ "${EVENT_ACTION}" = ready_for_review ] \
-            && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
-            && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
-            && [ "${EVENT_SENDER_ID}" = 76040632 ] \
-            && [ "${EVENT_SENDER_TYPE}" = User ] \
-            && [ "${EVENT_BASE}" = \
-              2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
-            && [ "${EVENT_HEAD}" = \
-              162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
-            && [ "${WORKFLOW_SHA}" != \
-              27a9267b3d79896e8d13f34f160299d4018e53d6 ] \
-            && [ "${WORKFLOW_SHA}" != \
-              df3580d35816df22eab58e0fc06c11c5a3cc5f7d ]; then
-            issue_564_pr568_v3=true
-          fi
           for observation in $(seq 1 450); do
             pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
-            if [ "${issue_564_pr568_v3}" = true ]; then
-              jq -e \
-                --arg base "${EVENT_BASE}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg ready_at "${EVENT_PR_UPDATED_AT}" \
-                --arg repository "${REPOSITORY}" \
-                --arg workflow "${WORKFLOW_SHA}" '
-                  [.[].check_runs[]? |
-                    select(.name == "Current revision review") |
-                    select(.app.id == 15368
-                      and .app.slug == "github-actions") |
-                    select(.head_sha == $head)] as $checks
-                  | ($checks | length) == 1
-                  and ($checks[0] as $check
-                    | ($check.output.summary | fromjson?) as $summary
-                    | $check.id == 101703145185
-                    and $check.details_url == (
-                      "https://github.com/" + $repository
-                      + "/runs/101703145185")
-                    and $check.started_at == "2026-09-07T10:07:56Z"
-                    and $check.status == "completed"
-                    and $check.conclusion == "success"
-                    and $check.output.title == "Current revision review passed"
-                    and ($summary | keys | sort) == ([
-                      "base_sha", "controller_sha", "head_sha",
-                      "producer_run_id", "pull_request_number",
-                      "review_path", "run_url", "schema"
-                    ] | sort)
-                    and $summary.schema == 4
-                    and $summary.base_sha == $base
-                    and $summary.head_sha == $head
-                    and $summary.pull_request_number == 568
-                    and $summary.review_path
-                      == "applicable Copilot or governed automation exemption"
-                    and (
-                      ($check.completed_at == "2026-09-07T10:07:56Z"
-                        and $summary.controller_sha
-                          == "df3580d35816df22eab58e0fc06c11c5a3cc5f7d"
-                        and $summary.producer_run_id == 34109778522)
-                      or ($check.completed_at >= $ready_at
-                        and $summary.controller_sha == $workflow
-                        and $summary.producer_run_id != 34109778522)
-                    )
-                    and $check.external_id == (
-                      "mlx90-current-revision:copilot:v6:568:"
-                      + ($summary.producer_run_id | tostring) + ":"
-                      + $base + ":" + $head)
-                    and $summary.run_url == (
-                      "https://github.com/" + $repository
-                      + "/actions/runs/"
-                      + ($summary.producer_run_id | tostring)))
-                ' <<<"${pages}" >/dev/null
-            fi
             neutral="$(jq -c \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
-              --arg pr "${PR_NUMBER}" \
-              --arg ready_at "${EVENT_PR_UPDATED_AT}" \
-              --arg workflow "${WORKFLOW_SHA}" \
-              --argjson issue_564_pr568_v3 \
-                "${issue_564_pr568_v3}" '
+              --arg pr "${PR_NUMBER}" '
                 [.[].check_runs[]? |
                   select(.name == "Current revision review") |
                   select(.app.id == 15368 and .app.slug == "github-actions") |
                   select(.head_sha == $head) |
                   select(.status == "completed" and .conclusion == "success") |
-                  select(($issue_564_pr568_v3 == false) or (
-                    .id == 101703145185
-                    and .completed_at >= $ready_at
-                    and ((.output.summary | fromjson?) as $summary
-                      | $summary.controller_sha == $workflow))) |
                   select((.external_id // "") as $external_id |
                     ($external_id |
                       test("^mlx90-current-revision:v4:[1-9][0-9]*:[0-9a-f]{64}$"))
@@ -2016,11 +1933,8 @@ jobs:
                 2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
               && [ "${EVENT_HEAD}" = \
                 162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
-              && [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]] \
               && [ "${WORKFLOW_SHA}" != \
-                27a9267b3d79896e8d13f34f160299d4018e53d6 ] \
-              && [ "${WORKFLOW_SHA}" != \
-                df3580d35816df22eab58e0fc06c11c5a3cc5f7d ]
+                27a9267b3d79896e8d13f34f160299d4018e53d6 ]
           }
 
           [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
@@ -2331,10 +2245,10 @@ jobs:
                 issue_564_pr568_recovery_authorized=false
                 if issue_564_pr568_recovery_source_tuple; then
                   issue_564_pr568_recovery_authorized=true
-                  expected_source_anchor='df3580d35816df22eab58e0fc06c11c5a3cc5f7d'
-                  expected_pr_body_prefix_bytes=2272
-                  expected_pr_body_prefix_sha256='18a752198f57e5bf037656d9229ca8e8f184b8ed2d9119df089da714cff8c3e3'
-                  expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v3 workflow_sha=${WORKFLOW_SHA} prior_ready=30682792817 failed_verifier=34109778382:101703071330 producer=34109778522 neutral=101703145185 failed_helper=34109816625:101703196664 failed_cross=34087927498 review=5128834710 -->"
+                  expected_source_anchor='e5c87afae4e664f313c34f27eced96b4d2c59092'
+                  expected_pr_body_prefix_bytes=2046
+                  expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+                  expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
                 else
                   expected_source_anchor='5c549450321b5c7182ef452977d9587ff1f7f14c'
                   expected_pr_body_prefix_bytes=1952
@@ -2384,11 +2298,11 @@ jobs:
 
                 if [ "${issue_564_pr568_recovery_authorized}" = true ]; then
                   failure_stage='issue-564-pr568-recovery-evidence'
-                  prior_producer_id=34109778522
-                  prior_verifier_id=34109778382
-                  prior_policy_job_id=101703107519
-                  prior_required_job_id=101703071330
-                  prior_failure_completed_at='2026-09-07T10:11:37Z'
+                  prior_producer_id=34092192358
+                  prior_verifier_id=34092192339
+                  prior_policy_job_id=101647871540
+                  prior_required_job_id=101647850846
+                  prior_failure_completed_at='2026-09-07T07:02:17Z'
                   test "${TERMINAL_PRODUCER_RUN_ID}" != \
                     "${prior_producer_id}"
                   [[ "${TERMINAL_PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
@@ -2415,7 +2329,7 @@ jobs:
                         == "fix(rep60): stage bounded controller delta"
                       and .run_attempt == 1
                       and .status == "completed"
-                      and .conclusion == "success"
+                      and .conclusion == "failure"
                       and .head_branch == $head_ref
                       and .head_sha == $head
                       and .html_url == (
@@ -2444,8 +2358,8 @@ jobs:
                     --argjson run_id "${prior_producer_id}" '
                       length == 4
                       and ([.[].id] | sort) == [
-                        101703071250, 101703107395,
-                        101703107519, 101703156357
+                        101647850458, 101647871478,
+                        101647871540, 101649855917
                       ]
                       and all(.[];
                         .run_id == $run_id
@@ -2453,11 +2367,11 @@ jobs:
                         and .head_sha == $head
                         and .status == "completed")
                       and any(.[];
-                        .id == 101703071250
+                        .id == 101647850458
                         and .name == "Classify protected main trust-root handoff"
                         and .conclusion == "success")
                       and any(.[];
-                        .id == 101703107395
+                        .id == 101647871478
                         and .name == "Request Copilot review for current revision"
                         and .conclusion == "success"
                         and any(.steps[]?;
@@ -2468,28 +2382,22 @@ jobs:
                       and any(.[];
                         .id == $policy_job
                         and .name == "Verify current revision policy"
-                        and .conclusion == "success"
-                        and .completed_at == "2026-09-07T10:07:58Z"
+                        and .conclusion == "failure"
+                        and .completed_at == "2026-09-07T06:53:38Z"
                         and any(.steps[]?;
                           .name == "Verify current Copilot review and resolved findings"
                           and .number == 5
-                          and .conclusion == "success"
-                          and .completed_at == "2026-09-07T10:07:53Z")
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T06:53:35Z")
                         and any(.steps[]?;
                           .name == "Publish bound neutral result"
                           and .number == 6
-                          and .conclusion == "success"
-                          and .completed_at == "2026-09-07T10:07:57Z"))
+                          and .conclusion == "skipped"))
                       and any(.[];
-                        .id == 101703156357
+                        .id == 101649855917
                         and .name == "Request protected verifier re-evaluation"
-                        and .conclusion == "success"
-                        and .completed_at == "2026-09-07T10:08:07Z"
-                        and any(.steps[]?;
-                          .name
-                            == "Dispatch the protected re-evaluation helper from develop"
-                          and .number == 2
-                          and .conclusion == "success"))
+                        and .conclusion == "skipped"
+                        and .steps == [])
                     ' <<<"${prior_producer_jobs}" >/dev/null
 
                   prior_verifier="$(gh api \
@@ -2545,7 +2453,7 @@ jobs:
                     --argjson run_id "${prior_verifier_id}" '
                       length == 2
                       and ([.[].id] | sort)
-                        == [101703071330, 101703073053]
+                        == [101647850846, 101647852037]
                       and all(.[];
                         .run_id == $run_id
                         and .run_attempt == 1
@@ -2555,7 +2463,7 @@ jobs:
                         .id == $required_job
                         and .name == "Required current-revision workflow"
                         and .conclusion == "failure"
-                        and .completed_at == "2026-09-07T10:08:02Z"
+                        and .completed_at == "2026-09-07T07:02:17Z"
                         and any(.steps[]?;
                           .name == "Classify the exact live pull request readiness"
                           and .number == 7
@@ -2563,13 +2471,12 @@ jobs:
                         and any(.steps[]?;
                           .name == "Await the exact protected producer run terminal state"
                           and .number == 8
-                          and .conclusion == "success"
-                          and .completed_at == "2026-09-07T10:07:57Z")
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T07:02:15Z")
                         and any(.steps[]?;
                           .name == "Bind the protected Required Workflow source"
                           and .number == 11
-                          and .conclusion == "failure"
-                          and .completed_at == "2026-09-07T10:08:00Z")
+                          and .conclusion == "skipped")
                         and any(.steps[]?;
                           .name == "Verify one protected result for the exact live revision"
                           and .number == 12
@@ -2579,7 +2486,7 @@ jobs:
                           and .number == 13
                           and .conclusion == "skipped"))
                       and any(.[];
-                        .id == 101703073053
+                        .id == 101647852037
                         and .name
                           == "Authorize exact Supplementary catch-up v5 successor"
                         and .conclusion == "skipped"
@@ -2658,66 +2565,6 @@ jobs:
                         and .conclusion == "failure")
                     ' <<<"${prior_cross_jobs}" >/dev/null
 
-                  prior_helper_id=34109816625
-                  prior_helper="$(gh api \
-                    "repos/${REPOSITORY}/actions/runs/${prior_helper_id}")"
-                  jq -e \
-                    --arg repository "${REPOSITORY}" \
-                    --arg workflow "${expected_source_anchor}" \
-                    --argjson run_id "${prior_helper_id}" '
-                      .id == $run_id
-                      and .workflow_id == 337400721
-                      and .workflow_url == (
-                        "https://api.github.com/repos/" + $repository
-                        + "/actions/workflows/337400721")
-                      and .event == "workflow_dispatch"
-                      and .path == ".github/workflows/current-revision-rerun.yml"
-                      and .name
-                        == "Re-evaluate protected current-revision evidence"
-                      and .display_title == .name
-                      and .run_attempt == 1
-                      and .status == "completed"
-                      and .conclusion == "failure"
-                      and .head_branch == "develop"
-                      and .head_sha == $workflow
-                      and .html_url == (
-                        "https://github.com/" + $repository
-                        + "/actions/runs/" + ($run_id | tostring))
-                      and .actor.login == "github-actions[bot]"
-                      and .actor.id == 41898282
-                      and .actor.type == "Bot"
-                      and .triggering_actor.login == "github-actions[bot]"
-                      and .triggering_actor.id == 41898282
-                      and .triggering_actor.type == "Bot"
-                      and .repository.full_name == $repository
-                      and .head_repository.full_name == $repository
-                      and (.pull_requests | length) == 0
-                    ' <<<"${prior_helper}" >/dev/null
-                  prior_helper_jobs_pages="$(gh api --paginate --slurp \
-                    "repos/${REPOSITORY}/actions/runs/${prior_helper_id}/attempts/1/jobs?filter=all&per_page=100")"
-                  prior_helper_jobs="$(jq -c '[.[].jobs[]?]' \
-                    <<<"${prior_helper_jobs_pages}")"
-                  jq -e \
-                    --arg workflow "${expected_source_anchor}" \
-                    --argjson run_id "${prior_helper_id}" '
-                      length == 1
-                      and .[0].id == 101703196664
-                      and .[0].name
-                        == "Re-run the bounded protected verifier attempts"
-                      and .[0].run_id == $run_id
-                      and .[0].run_attempt == 1
-                      and .[0].head_sha == $workflow
-                      and .[0].status == "completed"
-                      and .[0].conclusion == "failure"
-                      and .[0].completed_at == "2026-09-07T10:11:37Z"
-                      and any(.[0].steps[]?;
-                        .name == "Validate the live binding and rerun exactly once"
-                        and .number == 2
-                        and .status == "completed"
-                        and .conclusion == "failure"
-                        and .completed_at == "2026-09-07T10:11:35Z")
-                    ' <<<"${prior_helper_jobs}" >/dev/null
-
                   timeline_pages="$(gh api --paginate --slurp \
                     "repos/${REPOSITORY}/issues/568/timeline?per_page=100")"
                   timeline="$(jq -c '[.[][]?]' <<<"${timeline_pages}")"
@@ -2728,42 +2575,28 @@ jobs:
                         | sort_by(.created_at, .id)) as $ready
                       | ([.[] | select(.event == "convert_to_draft")]
                         | sort_by(.created_at, .id)) as $draft
-                      | ($ready | length) == 3
+                      | ($ready | length) == 2
                       and $ready[0].id == 30670969356
                       and $ready[0].created_at == "2026-09-07T06:44:37Z"
                       and $ready[0].actor.login == "litroc"
                       and $ready[0].actor.id == 76040632
                       and $ready[0].actor.type == "User"
-                      and $ready[1].id == 30682792817
-                      and $ready[1].created_at == "2026-09-07T10:07:38Z"
+                      and ($ready[1].id | type) == "number"
+                      and $ready[1].id > 30670969356
                       and $ready[1].actor.login == "litroc"
                       and $ready[1].actor.id == 76040632
                       and $ready[1].actor.type == "User"
-                      and ($ready[2].id | type) == "number"
-                      and $ready[2].id > $ready[1].id
-                      and $ready[2].created_at > $prior_failure
-                      and $ready[2].created_at == $event_updated_at
-                      and $ready[2].actor.login == "litroc"
-                      and $ready[2].actor.id == 76040632
-                      and $ready[2].actor.type == "User"
-                      and ($draft | length) == 2
-                      and $draft[0].id == 30682383954
-                      and $draft[0].created_at == "2026-09-07T10:00:56Z"
+                      and $ready[1].created_at > $prior_failure
+                      and $ready[1].created_at == $event_updated_at
+                      and ($draft | length) == 1
+                      and ($draft[0].id | type) == "number"
+                      and $draft[0].id > 30670969356
+                      and $draft[0].id < $ready[1].id
                       and $draft[0].actor.login == "litroc"
                       and $draft[0].actor.id == 76040632
                       and $draft[0].actor.type == "User"
-                      and $ready[0].id < $draft[0].id
-                      and $draft[0].id < $ready[1].id
-                      and $ready[0].created_at < $draft[0].created_at
+                      and $draft[0].created_at > $prior_failure
                       and $draft[0].created_at < $ready[1].created_at
-                      and ($draft[1].id | type) == "number"
-                      and $ready[1].id < $draft[1].id
-                      and $draft[1].id < $ready[2].id
-                      and $draft[1].created_at > $prior_failure
-                      and $draft[1].created_at < $ready[2].created_at
-                      and $draft[1].actor.login == "litroc"
-                      and $draft[1].actor.id == 76040632
-                      and $draft[1].actor.type == "User"
                       and ([.[] | select(.event == "reopened")] | length) == 0
                       and ([.[] |
                         select(.event == "review_requested") |
@@ -2778,15 +2611,8 @@ jobs:
                         and .requested_reviewer.login == "Copilot"
                         and .requested_reviewer.id == 175728472)
                     ' <<<"${timeline}" >/dev/null
-                  third_ready_at="$(jq -er '
+                  second_ready_at="$(jq -er '
                     [.[] | select(.event == "ready_for_review")]
-                    | sort_by(.created_at, .id)
-                    | select(length == 3)
-                    | .[2].created_at
-                    | select(type == "string")
-                    ' <<<"${timeline}")"
-                  second_draft_at="$(jq -er '
-                    [.[] | select(.event == "convert_to_draft")]
                     | sort_by(.created_at, .id)
                     | select(length == 2)
                     | .[1].created_at
@@ -2800,7 +2626,7 @@ jobs:
                     --arg head "${EVENT_HEAD}" \
                     --arg head_ref "${expected_head_ref}" \
                     --arg repository "${REPOSITORY}" \
-                    --arg third_ready "${third_ready_at}" \
+                    --arg second_ready "${second_ready_at}" \
                     --arg workflow "${WORKFLOW_SHA}" \
                     --argjson actor_id 76040632 \
                     --argjson number 568 \
@@ -2820,7 +2646,7 @@ jobs:
                       and .run_attempt == 1
                       and .status == "in_progress"
                       and .conclusion == null
-                      and .created_at >= $third_ready
+                      and .created_at >= $second_ready
                       and .head_branch == $head_ref
                       and .head_sha == $head
                       and .html_url == (
@@ -2850,7 +2676,7 @@ jobs:
                     --arg head "${EVENT_HEAD}" \
                     --arg head_ref "${expected_head_ref}" \
                     --arg repository "${REPOSITORY}" \
-                    --arg third_ready "${third_ready_at}" \
+                    --arg second_ready "${second_ready_at}" \
                     --argjson actor_id 76040632 \
                     --argjson number 568 \
                     --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
@@ -2869,7 +2695,7 @@ jobs:
                         (.status == "in_progress" and .conclusion == null)
                         or (.status == "completed" and .conclusion == "success")
                       )
-                      and .created_at >= $third_ready
+                      and .created_at >= $second_ready
                       and .head_branch == $head_ref
                       and .head_sha == $head
                       and .html_url == (
@@ -3070,33 +2896,15 @@ jobs:
                   ready_runs_pages="$(gh api --paginate --slurp \
                     "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")"
                   jq -e \
-                    --arg second_draft "${second_draft_at}" \
-                    --arg third_ready "${third_ready_at}" \
                     --arg head "${EVENT_HEAD}" \
                     --argjson current_id "${GITHUB_RUN_ID}" '
-                      ([.[].workflow_runs[]? |
+                      [.[].workflow_runs[]? |
                         select(.path
                           == ".github/workflows/supplementary-current-revision-required.yml") |
                         select(.display_title
-                          == ("Protected current revision PR #568 edited "
-                            + $head))] | sort_by(.created_at, .id)) as $edited
-                      | ([.[].workflow_runs[]? |
-                          select(.path
-                            == ".github/workflows/supplementary-current-revision-required.yml") |
-                          select(.display_title
-                            == ("Protected current revision PR #568 ready_for_review "
-                              + $head)) |
-                          .id] | sort) == ([
-                            34092192339, 34109778382, $current_id] | sort)
-                      and ($edited | length) == 3
-                      and $edited[0].id == 34092112690
-                      and $edited[1].id == 34109360705
-                      and $edited[2].id > $edited[1].id
-                      and $edited[2].run_attempt == 1
-                      and $edited[2].status == "completed"
-                      and $edited[2].conclusion == "failure"
-                      and $edited[2].created_at >= $second_draft
-                      and $edited[2].updated_at < $third_ready
+                          == ("Protected current revision PR #568 ready_for_review "
+                            + $head)) |
+                        .id] | sort == ([34092192339, $current_id] | sort)
                     ' <<<"${ready_runs_pages}" >/dev/null
 
                   neutral_pages="$(gh api --paginate --slurp \
@@ -3106,7 +2914,7 @@ jobs:
                     --arg head "${EVENT_HEAD}" \
                     --arg prior_failure "${prior_failure_completed_at}" \
                     --arg repository "${REPOSITORY}" \
-                    --arg third_ready "${third_ready_at}" \
+                    --arg second_ready "${second_ready_at}" \
                     --arg workflow "${WORKFLOW_SHA}" \
                     --argjson producer_id "${TERMINAL_PRODUCER_RUN_ID}" '
                       [.[].check_runs[]? |
@@ -3115,7 +2923,8 @@ jobs:
                           and .app.slug == "github-actions") |
                         select(.head_sha == $head)] as $checks
                       | ($checks | length) == 1
-                      and $checks[0].id == 101703145185
+                      and ($checks[0].id | type) == "number"
+                      and $checks[0].id > 0
                       and $checks[0].status == "completed"
                       and $checks[0].conclusion == "success"
                       and $checks[0].details_url == (
@@ -3123,8 +2932,8 @@ jobs:
                         + "/runs/" + ($checks[0].id | tostring))
                       and $checks[0].output.title
                         == "Current revision review passed"
-                      and $checks[0].completed_at > $prior_failure
-                      and $checks[0].completed_at >= $third_ready
+                      and $checks[0].started_at > $prior_failure
+                      and $checks[0].started_at >= $second_ready
                       and ($checks[0].external_id
                         == ("mlx90-current-revision:copilot:v6:568:"
                           + ($producer_id | tostring) + ":" + $base + ":" + $head))
@@ -4420,23 +4229,6 @@ jobs:
             and .conclusion == "success"
           ' <<<"${check}" >/dev/null
           check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${check}")"
-          if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
-            jq -e \
-              --arg base "${EVENT_BASE}" \
-              --arg head "${EVENT_HEAD}" \
-              --arg ready_at "${EVENT_PR_UPDATED_AT}" \
-              --arg workflow "${WORKFLOW_SHA}" \
-              --argjson producer_id "${TERMINAL_PRODUCER_RUN_ID}" '
-                .id == 101703145185
-                and .completed_at >= $ready_at
-                and .external_id == (
-                  "mlx90-current-revision:copilot:v6:568:"
-                  + ($producer_id | tostring) + ":" + $base + ":" + $head)
-                and ((.output.summary | fromjson) as $summary
-                  | $summary.controller_sha == $workflow
-                  and $summary.producer_run_id == $producer_id)
-              ' <<<"${check}" >/dev/null
-          fi
           details_url="$(jq -r '.details_url // empty' <<<"${check}")"
           test "${details_url}" = "${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
           external_id="$(jq -r '.external_id // empty' <<<"${check}")"
@@ -4970,9 +4762,9 @@ jobs:
           if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
             if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
               failure_stage='issue-564-pr568-recovery-final-rebind'
-              expected_pr_body_prefix_bytes=2272
-              expected_pr_body_prefix_sha256='18a752198f57e5bf037656d9229ca8e8f184b8ed2d9119df089da714cff8c3e3'
-              expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v3 workflow_sha=${WORKFLOW_SHA} prior_ready=30682792817 failed_verifier=34109778382:101703071330 producer=34109778522 neutral=101703145185 failed_helper=34109816625:101703196664 failed_cross=34087927498 review=5128834710 -->"
+              expected_pr_body_prefix_bytes=2046
+              expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+              expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
             else
               failure_stage='issue-564-pr568-final-rebind'
               expected_pr_body_prefix_bytes=1952
@@ -5071,40 +4863,26 @@ jobs:
                       select(.event == "review_requested") |
                       select(.requested_reviewer.login == "Copilot")]
                     | sort_by(.created_at, .id)) as $requests
-                  | ($ready | length) == 3
+                  | ($ready | length) == 2
                   and $ready[0].id == 30670969356
                   and $ready[0].created_at == "2026-09-07T06:44:37Z"
                   and $ready[0].actor.login == "litroc"
                   and $ready[0].actor.id == 76040632
                   and $ready[0].actor.type == "User"
-                  and $ready[1].id == 30682792817
-                  and $ready[1].created_at == "2026-09-07T10:07:38Z"
+                  and ($ready[1].id | type) == "number"
+                  and $ready[1].id > 30670969356
+                  and $ready[1].created_at == $event_updated_at
                   and $ready[1].actor.login == "litroc"
                   and $ready[1].actor.id == 76040632
                   and $ready[1].actor.type == "User"
-                  and ($ready[2].id | type) == "number"
-                  and $ready[2].id > $ready[1].id
-                  and $ready[2].created_at == $event_updated_at
-                  and $ready[2].actor.login == "litroc"
-                  and $ready[2].actor.id == 76040632
-                  and $ready[2].actor.type == "User"
-                  and ($draft | length) == 2
-                  and $draft[0].id == 30682383954
-                  and $draft[0].created_at == "2026-09-07T10:00:56Z"
+                  and ($draft | length) == 1
+                  and $draft[0].id > 30670969356
                   and $draft[0].id < $ready[1].id
                   and $draft[0].created_at > $ready[0].created_at
                   and $draft[0].created_at < $ready[1].created_at
                   and $draft[0].actor.login == "litroc"
                   and $draft[0].actor.id == 76040632
                   and $draft[0].actor.type == "User"
-                  and ($draft[1].id | type) == "number"
-                  and $draft[1].id > $ready[1].id
-                  and $draft[1].id < $ready[2].id
-                  and $draft[1].created_at > "2026-09-07T10:11:37Z"
-                  and $draft[1].created_at < $ready[2].created_at
-                  and $draft[1].actor.login == "litroc"
-                  and $draft[1].actor.id == 76040632
-                  and $draft[1].actor.type == "User"
                   and ([.[] | select(.event == "reopened")] | length) == 0
                   and ($requests | length) == 1
                   and $requests[0].id == 30670983046
@@ -5217,8 +4995,7 @@ jobs:
                 ' <<<"${final_comment_pages}" >/dev/null
 
               for final_attempt_one_run_id in \
-                34092192358 34092192339 34109778382 \
-                34109816625 34087927498; do
+                34092192358 34092192339 34087927498; do
                 final_attempt_one_run="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${final_attempt_one_run_id}")"
                 jq -e \
@@ -5229,14 +5006,6 @@ jobs:
                     and .conclusion == "failure"
                   ' <<<"${final_attempt_one_run}" >/dev/null
               done
-              final_prior_producer="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/34109778522")"
-              jq -e '
-                .id == 34109778522
-                and .run_attempt == 1
-                and .status == "completed"
-                and .conclusion == "success"
-                ' <<<"${final_prior_producer}" >/dev/null
 
               final_neutral_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -5253,7 +5022,8 @@ jobs:
                       and .app.slug == "github-actions") |
                     select(.head_sha == $head)] as $checks
                   | ($checks | length) == 1
-                  and $checks[0].id == 101703145185
+                  and ($checks[0].id | type) == "number"
+                  and $checks[0].id > 0
                   and $checks[0].status == "completed"
                   and $checks[0].conclusion == "success"
                   and $checks[0].details_url == (
@@ -5261,7 +5031,7 @@ jobs:
                     + "/runs/" + ($checks[0].id | tostring))
                   and $checks[0].output.title
                     == "Current revision review passed"
-                  and $checks[0].completed_at >= $ready_at
+                  and $checks[0].started_at >= $ready_at
                   and $checks[0].external_id == (
                     "mlx90-current-revision:copilot:v6:568:"
                     + ($producer_id | tostring) + ":" + $base + ":" + $head)
@@ -5320,64 +5090,6 @@ jobs:
                       and .app.slug == "github-actions") |
                     select(.head_sha == $head)] | length == 0
                 ' <<<"${final_late_pages}" >/dev/null
-
-              terminal_producer_ready=false
-              for terminal_producer_observation in $(seq 1 30); do
-                terminal_producer="$(gh api \
-                  "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-                jq -e --argjson run_id "${producer_run_id}" '
-                  .id == $run_id
-                  and .run_attempt == 1
-                  and (
-                    (.status == "in_progress" and .conclusion == null)
-                    or (.status == "completed" and .conclusion == "success"))
-                  ' <<<"${terminal_producer}" >/dev/null
-                terminal_producer_jobs_pages="$(gh api --paginate --slurp \
-                  "repos/${REPOSITORY}/actions/runs/${producer_run_id}/attempts/1/jobs?filter=all&per_page=100")"
-                terminal_producer_jobs="$(jq -c '[.[].jobs[]?]' \
-                  <<<"${terminal_producer_jobs_pages}")"
-                jq -e \
-                  --arg head "${EVENT_HEAD}" \
-                  --argjson run_id "${producer_run_id}" '
-                    length == 4
-                    and ([.[].name] | sort) == [
-                      "Classify protected main trust-root handoff",
-                      "Request Copilot review for current revision",
-                      "Request protected verifier re-evaluation",
-                      "Verify current revision policy"
-                    ]
-                    and all(.[];
-                      .run_id == $run_id
-                      and .run_attempt == 1
-                      and .head_sha == $head)
-                    and ([.[] |
-                      select(.name
-                        != "Request protected verifier re-evaluation") |
-                      select(.status == "completed"
-                        and .conclusion == "success")] | length) == 3
-                    and ([.[] |
-                      select(.name
-                        == "Request protected verifier re-evaluation") |
-                      select(
-                        (((.status | IN(
-                          "requested", "waiting", "pending",
-                          "queued", "in_progress")))
-                          and .conclusion == null)
-                        or (.status == "completed"
-                          and .conclusion == "success"))] | length) == 1
-                  ' <<<"${terminal_producer_jobs}" >/dev/null
-                if [ "$(jq -r '.status + ":" + (.conclusion // "")' \
-                    <<<"${terminal_producer}")" = completed:success ] \
-                  && jq -e 'all(.[];
-                    .status == "completed" and .conclusion == "success")' \
-                    <<<"${terminal_producer_jobs}" >/dev/null; then
-                  terminal_producer_ready=true
-                  break
-                fi
-                test "${terminal_producer_observation}" -lt 30
-                sleep 2
-              done
-              test "${terminal_producer_ready}" = true
 
               failure_stage='issue-564-pr568-recovery-terminal-rebind'
               terminal_develop="$(gh api \

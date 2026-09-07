@@ -563,8 +563,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
 
         v1_name = "issue_564_pr568_source_tuple"
-        v3_name = "issue_564_pr568_recovery_source_tuple"
-        scripts = {name: tuple_script(name) for name in (v1_name, v3_name)}
+        v2_name = "issue_564_pr568_recovery_source_tuple"
+        scripts = {name: tuple_script(name) for name in (v1_name, v2_name)}
         common = {
             "REPOSITORY": "lightning-it/.github",
             "PR_NUMBER": "568",
@@ -580,11 +580,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             **common,
             "WORKFLOW_SHA": "27a9267b3d79896e8d13f34f160299d4018e53d6",
         }
-        v2 = {
-            **common,
-            "WORKFLOW_SHA": "df3580d35816df22eab58e0fc06c11c5a3cc5f7d",
-        }
-        v3 = {**common, "WORKFLOW_SHA": "f" * 40}
+        v2 = {**common, "WORKFLOW_SHA": "f" * 40}
         bash = self._test_tool("bash")
 
         def authorize(name: str, candidate: dict[str, str]) -> int:
@@ -597,11 +593,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ).returncode
 
         self.assertEqual(0, authorize(v1_name, v1))
-        self.assertNotEqual(0, authorize(v3_name, v1))
+        self.assertNotEqual(0, authorize(v2_name, v1))
+        self.assertEqual(0, authorize(v2_name, v2))
         self.assertNotEqual(0, authorize(v1_name, v2))
-        self.assertNotEqual(0, authorize(v3_name, v2))
-        self.assertNotEqual(0, authorize(v1_name, v3))
-        self.assertEqual(0, authorize(v3_name, v3))
         rejected_values = (
             ("REPOSITORY", "lightning-it/website"),
             ("REPOSITORY", "fork/.github"),
@@ -627,7 +621,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("WORKFLOW_SHA", "not-a-sha"),
             ("WORKFLOW_SHA", "F" * 40),
         )
-        for name, valid in ((v1_name, v1), (v3_name, v3)):
+        for name, valid in ((v1_name, v1), (v2_name, v2)):
             for field, value in rejected_values:
                 with self.subTest(name=name, field=field, value=value):
                     candidate = dict(valid)
@@ -753,19 +747,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         for exact_binding in (
             "5c549450321b5c7182ef452977d9587ff1f7f14c",
-            "df3580d35816df22eab58e0fc06c11c5a3cc5f7d",
+            "e5c87afae4e664f313c34f27eced96b4d2c59092",
             "ac5f5aa7eb77737118cd8a7d2f072f3a8735591d",
             "0f3ff650c0d8da4ec2606bc32afd365dfc88e15c",
             "5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a",
             "9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9",
-            "18a752198f57e5bf037656d9229ca8e8f184b8ed2d9119df089da714cff8c3e3",
+            "d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971",
             "expected_diff_bytes=85276",
             "expected_pr_body_prefix_bytes=1952",
-            "expected_pr_body_prefix_bytes=2272",
+            "expected_pr_body_prefix_bytes=2046",
             "expected_pr_created_at='2026-09-07T05:43:57Z'",
             "expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'",
             "expected_source_marker=\"<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->\"",
-            "rep60-issue564-pr568-recovery-source:v3",
+            "rep60-issue564-pr568-recovery-source:v2",
             'and .updated_at == $updated_at',
             "and .commits == 1",
             "and .changed_files == 4",
@@ -788,10 +782,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(tuple_binding=tuple_binding):
                 self.assertIn(tuple_binding, source_binding)
         expected_path_counts = {
-            ".github/workflows/current-revision-rerun.yml": 3,
+            ".github/workflows/current-revision-rerun.yml": 2,
             ".github/workflows/copilot-review.yml": 2,
             ".github/workflows/dot-github-current-revision-required.yml": 1,
-            ".github/workflows/supplementary-current-revision-required.yml": 6,
+            ".github/workflows/supplementary-current-revision-required.yml": 5,
             "tests/test_copilot_review_refresh.py": 1,
             "tests/test_supplementary_required_workflow.py": 2,
         }
@@ -822,14 +816,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "          fi\n",
             permanent,
         )
-        for permanent_binding in (
-            ".id == 101703145185",
-            ".completed_at >= $ready_at",
-            '$summary.controller_sha == $workflow',
-            '$summary.producer_run_id == $producer_id',
-        ):
-            with self.subTest(permanent_binding=permanent_binding):
-                self.assertIn(permanent_binding, permanent)
         self.assertIn(
             "ISSUE_564_PR568_SOURCE: >-\n"
             "            ${{ steps.protected-source.outputs.issue_564_pr568 }}",
@@ -854,11 +840,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             'expected_source_marker="<!-- '
-            "rep60-issue564-pr568-recovery-source:v3 "
-            'workflow_sha=${WORKFLOW_SHA} prior_ready=30682792817 '
-            'failed_verifier=34109778382:101703071330 '
-            'producer=34109778522 neutral=101703145185 '
-            'failed_helper=34109816625:101703196664 '
+            "rep60-issue564-pr568-recovery-source:v2 "
+            'workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 '
+            'failed_producer=34092192358 failed_verifier=34092192339 '
             'failed_cross=34087927498 review=5128834710 -->"',
             finalization,
         )
@@ -868,19 +852,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("repos/lightning-it/.github/branches/main", finalization)
         self.assertIn('and .commit.sha == $workflow', finalization)
         self.assertIn('and .commit.sha == $base', finalization)
-        for final_binding in (
-            "34092192358 34092192339 34109778382 \\\n"
-            "                34109816625 34087927498",
-            'final_prior_producer="$(gh api',
-            ".id == 34109778522",
-            ".id == 101703145185",
-            ".completed_at >= $ready_at",
-            "terminal_producer_ready=false",
-            "for terminal_producer_observation in $(seq 1 30); do",
-            'test "${terminal_producer_ready}" = true',
-        ):
-            with self.subTest(final_binding=final_binding):
-                self.assertIn(final_binding, finalization)
 
         terminal_marker = (
             "failure_stage='issue-564-pr568-recovery-terminal-rebind'"
@@ -940,91 +911,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertNotIn(forbidden, pr568_binding)
 
         for exact_evidence in (
-            "prior_producer_id=34109778522",
-            "prior_verifier_id=34109778382",
+            "prior_producer_id=34092192358",
+            "prior_verifier_id=34092192339",
             "prior_cross_id=34087927498",
-            "prior_helper_id=34109816625",
-            "prior_policy_job_id=101703107519",
-            "prior_required_job_id=101703071330",
-            "101703196664",
-            "101703145185",
+            "prior_policy_job_id=101647871540",
+            "prior_required_job_id=101647850846",
             "and .[0].id == 5128834710",
             "request_marker='<!-- mlx90-copilot-request ",
             'select(.event == "convert_to_draft")',
             'select(.event == "reopened")',
-            "34092192339, 34109778382, $current_id",
-            "recovery_producer_jobs_ready=false",
-            "for producer_jobs_observation in $(seq 1 30); do",
+            "[34092192339, $current_id]",
             "Protected%20current-revision%20verifier",
             "Late%20review%20rerun%20authorization",
         ):
             with self.subTest(exact_evidence=exact_evidence):
                 self.assertIn(exact_evidence, recovery_binding)
-
-    def test_issue_564_pr568_final_authority_runs_reject_drift(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        finalization = workflow.split(
-            "      - name: Rebind and finalize the protected result\n", 1
-        )[1]
-        match = re.search(
-            r"for final_attempt_one_run_id in \\\n"
-            r"(?P<ids>.*?); do\n.*?"
-            r'--argjson run_id "\$\{final_attempt_one_run_id\}" \'\n'
-            r"(?P<filter>.*?)\n\s+' <<<\"\$\{final_attempt_one_run\}\"",
-            finalization,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(match)
-        assert match is not None
-        run_ids = [
-            int(value)
-            for value in match.group("ids").replace("\\\n", " ").split()
-        ]
-        self.assertEqual(
-            [
-                34092192358,
-                34092192339,
-                34109778382,
-                34109816625,
-                34087927498,
-            ],
-            run_ids,
-        )
-
-        jq = self._test_tool("jq")
-        jq_filter = match.group("filter")
-
-        def accepts(payload: dict[str, object], run_id: int) -> bool:
-            return (
-                subprocess.run(
-                    [jq, "-e", "--argjson", "run_id", str(run_id), jq_filter],
-                    input=json.dumps(payload),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                == 0
-            )
-
-        for run_id in run_ids:
-            canonical: dict[str, object] = {
-                "id": run_id,
-                "run_attempt": 1,
-                "status": "completed",
-                "conclusion": "failure",
-            }
-            with self.subTest(run_id=run_id, drift="none"):
-                self.assertTrue(accepts(canonical, run_id))
-            for field, value in (
-                ("id", run_id + 1),
-                ("run_attempt", 2),
-                ("status", "in_progress"),
-                ("conclusion", "success"),
-            ):
-                drifted = dict(canonical)
-                drifted[field] = value
-                with self.subTest(run_id=run_id, drift=field):
-                    self.assertFalse(accepts(drifted, run_id))
 
     def test_issue_564_pr568_producer_job_materialization_is_bounded(
         self,
@@ -1182,199 +1083,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "invalid", convergence([snapshot, core + [completed_helper]])
                 )
 
-    def test_issue_564_pr568_v3_timeline_is_exactly_interleaved(self) -> None:
-        recovery = self._issue_564_pr568_recovery_binding()
-        timeline_filter = recovery.split(
-            '--arg prior_failure "${prior_failure_completed_at}" \'\n', 1
-        )[1].split('\n                    \' <<<"${timeline}"', 1)[0]
-        jq = self._test_tool("jq")
-        updated_at = "2026-09-07T11:01:00Z"
-        prior_failure = "2026-09-07T10:11:37Z"
-
-        def event(
-            event_name: str,
-            event_id: int,
-            created_at: str,
-            *,
-            actor: str = "litroc",
-        ) -> dict[str, object]:
-            return {
-                "event": event_name,
-                "id": event_id,
-                "created_at": created_at,
-                "actor": {
-                    "login": actor,
-                    "id": 76040632,
-                    "type": "User",
-                },
-            }
-
-        timeline = [
-            event(
-                "ready_for_review",
-                30670969356,
-                "2026-09-07T06:44:37Z",
-            ),
-            event(
-                "convert_to_draft",
-                30682383954,
-                "2026-09-07T10:00:56Z",
-            ),
-            event(
-                "ready_for_review",
-                30682792817,
-                "2026-09-07T10:07:38Z",
-            ),
-            event(
-                "convert_to_draft",
-                30690000000,
-                "2026-09-07T11:00:00Z",
-            ),
-            event("ready_for_review", 30690000001, updated_at),
-            {
-                "event": "review_requested",
-                "id": 30670983046,
-                "created_at": "2026-09-07T06:44:54Z",
-                "actor": {
-                    "login": "github-actions[bot]",
-                    "id": 41898282,
-                },
-                "requested_reviewer": {
-                    "login": "Copilot",
-                    "id": 175728472,
-                },
-            },
-        ]
-
-        def accepted(
-            candidate: list[dict[str, object]],
-            event_updated_at: str = updated_at,
-        ) -> bool:
-            return (
-                subprocess.run(
-                    [
-                        jq,
-                        "-e",
-                        "--arg",
-                        "event_updated_at",
-                        event_updated_at,
-                        "--arg",
-                        "prior_failure",
-                        prior_failure,
-                        timeline_filter,
-                    ],
-                    input=json.dumps(candidate),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                == 0
-            )
-
-        self.assertTrue(accepted(timeline))
-        rejected = []
-        rejected.append(timeline[:3] + timeline[4:])
-        rejected.append(
-            timeline
-            + [event("ready_for_review", 30690000002, "2026-09-07T11:02:00Z")]
-        )
-        rejected.append(
-            timeline
-            + [event("reopened", 30690000002, "2026-09-07T11:02:00Z")]
-        )
-        actor_drift = json.loads(json.dumps(timeline))
-        actor_drift[4]["actor"]["login"] = "github-actions[bot]"
-        rejected.append(actor_drift)
-        for candidate in rejected:
-            with self.subTest(candidate=candidate):
-                self.assertFalse(accepted(candidate))
-        self.assertFalse(accepted(timeline, "2026-09-07T11:01:01Z"))
-
-        runs_filter = recovery.split(
-            '--argjson current_id "${GITHUB_RUN_ID}" \'\n', 1
-        )[1].split('\n                    \' <<<"${ready_runs_pages}"', 1)[0]
-        path = ".github/workflows/supplementary-current-revision-required.yml"
-        title_prefix = "Protected current revision PR #568 "
-        head = "b" * 40
-        current_id = 34120000000
-
-        def workflow_run(
-            action: str,
-            run_id: int,
-            created_at: str,
-            updated_at: str,
-        ) -> dict[str, object]:
-            return {
-                "id": run_id,
-                "path": path,
-                "display_title": f"{title_prefix}{action} {head}",
-                "run_attempt": 1,
-                "status": "completed",
-                "conclusion": "failure",
-                "created_at": created_at,
-                "updated_at": updated_at,
-            }
-
-        runs = [
-            workflow_run(
-                "ready_for_review", 34092192339, "2026-09-07T06:44:40Z", "x"
-            ),
-            workflow_run(
-                "ready_for_review", 34109778382, "2026-09-07T10:07:40Z", "x"
-            ),
-            workflow_run("ready_for_review", current_id, updated_at, "x"),
-            workflow_run(
-                "edited", 34092112690, "2026-09-07T06:43:36Z", "x"
-            ),
-            workflow_run(
-                "edited", 34109360705, "2026-09-07T10:03:04Z", "x"
-            ),
-            workflow_run(
-                "edited",
-                34119999999,
-                "2026-09-07T11:00:01Z",
-                "2026-09-07T11:00:30Z",
-            ),
-        ]
-
-        def runs_accepted(candidate: list[dict[str, object]]) -> bool:
-            return (
-                subprocess.run(
-                    [
-                        jq,
-                        "-e",
-                        "--arg",
-                        "second_draft",
-                        "2026-09-07T11:00:00Z",
-                        "--arg",
-                        "third_ready",
-                        updated_at,
-                        "--arg",
-                        "head",
-                        head,
-                        "--argjson",
-                        "current_id",
-                        str(current_id),
-                        runs_filter,
-                    ],
-                    input=json.dumps([{"workflow_runs": candidate}]),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                == 0
-            )
-
-        self.assertTrue(runs_accepted(runs))
-        self.assertFalse(runs_accepted(runs + [runs[-1]]))
-        nonterminal = json.loads(json.dumps(runs))
-        nonterminal[-1]["status"] = "in_progress"
-        nonterminal[-1]["conclusion"] = None
-        self.assertFalse(runs_accepted(nonterminal))
-        late = json.loads(json.dumps(runs))
-        late[-1]["updated_at"] = updated_at
-        self.assertFalse(runs_accepted(late))
-
     def test_issue_564_stage_1_edit_shapes_are_exact(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         source_binding = workflow.split(
@@ -1502,36 +1210,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertFalse(accepts(body))
 
-        v2_marker = (
+        recovery_marker = (
             "<!-- rep60-issue564-pr568-recovery-source:v2 "
             f"workflow_sha={workflow_sha} prior_ready=30670969356 "
             "failed_producer=34092192358 failed_verifier=34092192339 "
             "failed_cross=34087927498 review=5128834710 -->"
         )
-        v3_marker = (
-            "<!-- rep60-issue564-pr568-recovery-source:v3 "
-            f"workflow_sha={workflow_sha} prior_ready=30682792817 "
-            "failed_verifier=34109778382:101703071330 "
-            "producer=34109778522 neutral=101703145185 "
-            "failed_helper=34109816625:101703196664 "
-            "failed_cross=34087927498 review=5128834710 -->"
-        )
-        self.assertEqual(292, len((v3_marker + "\n").encode("utf-8")))
-        self.assertEqual(2564, 2272 + len((v3_marker + "\n").encode("utf-8")))
-        recovered_prefix = original + marker + "\n" + v2_marker + "\n"
+        recovered_prefix = original + marker + "\n"
         self.assertTrue(
-            accepts(recovered_prefix + v3_marker + "\n", v3_marker)
+            accepts(recovered_prefix + recovery_marker + "\n", recovery_marker)
         )
         for body in (
-            recovered_prefix + v3_marker,
-            recovered_prefix + v3_marker + "\nextra",
-            recovered_prefix + v3_marker + v3_marker + "\n",
+            recovered_prefix + recovery_marker,
+            recovered_prefix + recovery_marker + "\nextra",
+            recovered_prefix + recovery_marker + recovery_marker + "\n",
             recovered_prefix
-            + v3_marker.replace("neutral=101703145185", "neutral=101703145186")
+            + recovery_marker.replace("review=5128834710", "review=5128834711")
             + "\n",
         ):
             with self.subTest(recovery_body=body):
-                self.assertFalse(accepts(body, v3_marker))
+                self.assertFalse(accepts(body, recovery_marker))
 
     def test_issue_564_pr568_live_pr_filter_rejects_identity_drift(self) -> None:
         pr568_binding = self._issue_564_pr568_binding()
@@ -2226,7 +1924,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'if [ "${managed_sync_verified}" = false ]', 1
         )[1]
         self.assertEqual(
-            8,
+            5,
             neutral_producer.count("and .run_attempt == 1"),
         )
         self.assertEqual(workflow.count(".actor.login == $actor"), 7)
@@ -5300,177 +4998,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("    timeout-minutes: 10\n", quality)
 
-    def test_pr568_v3_waits_for_one_in_place_refreshed_neutral(self) -> None:
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        terminal = workflow.split(
-            "      - name: Await the exact protected producer run terminal state\n",
-            1,
-        )[1].split(
-            "      - name: Validate one deterministic Renovate producer handoff\n",
-            1,
-        )[0]
-        for binding in (
-            '&& [ "${GITHUB_RUN_ATTEMPT}" = 1 ]',
-            '&& [ "${EVENT_SENDER_LOGIN}" = litroc ]',
-            '&& [ "${EVENT_SENDER_ID}" = 76040632 ]',
-            '&& [ "${EVENT_SENDER_TYPE}" = User ]',
-            "issue_564_pr568_v3=true",
-            ".id == 101703145185",
-            ".completed_at >= $ready_at",
-        ):
-            with self.subTest(binding=binding):
-                self.assertIn(binding, terminal)
-
-        precheck = terminal.split(
-            '--arg workflow "${WORKFLOW_SHA}" \'\n', 1
-        )[1].split('\n                \' <<<"${pages}"', 1)[0]
-        neutral_section = terminal.split('            neutral="$(jq -c \\\n', 1)[1]
-        neutral_filter = neutral_section.split(
-            '                "${issue_564_pr568_v3}" \'\n', 1
-        )[1].split('\n              \' <<<"${pages}")"', 1)[0]
-        jq = self._test_tool("jq")
-        base = "2edd5190c88bf32e009848d85df664c29fb4eab6"
-        head = "162fe4ca9ff6a94d3f1f1a8479db047c1fd82453"
-        repository = "lightning-it/.github"
-        ready_at = "2026-09-07T11:00:00Z"
-        workflow_sha = "e" * 40
-
-        def summary(controller: str, producer: int) -> dict[str, object]:
-            return {
-                "schema": 4,
-                "base_sha": base,
-                "head_sha": head,
-                "controller_sha": controller,
-                "pull_request_number": 568,
-                "producer_run_id": producer,
-                "review_path": (
-                    "applicable Copilot or governed automation exemption"
-                ),
-                "run_url": (
-                    f"https://github.com/{repository}/actions/runs/{producer}"
-                ),
-            }
-
-        def check(controller: str, producer: int, completed_at: str) -> dict[str, object]:
-            return {
-                "id": 101703145185,
-                "name": "Current revision review",
-                "app": {"id": 15368, "slug": "github-actions"},
-                "head_sha": head,
-                "details_url": (
-                    f"https://github.com/{repository}/runs/101703145185"
-                ),
-                "started_at": "2026-09-07T10:07:56Z",
-                "completed_at": completed_at,
-                "status": "completed",
-                "conclusion": "success",
-                "external_id": (
-                    "mlx90-current-revision:copilot:v6:568:"
-                    f"{producer}:{base}:{head}"
-                ),
-                "output": {
-                    "title": "Current revision review passed",
-                    "summary": json.dumps(
-                        summary(controller, producer), separators=(",", ":")
-                    ),
-                },
-            }
-
-        old = check(
-            "df3580d35816df22eab58e0fc06c11c5a3cc5f7d",
-            34109778522,
-            "2026-09-07T10:07:56Z",
-        )
-        current = check(workflow_sha, 34120000000, ready_at)
-
-        def precheck_accepts(candidate: object) -> bool:
-            return (
-                subprocess.run(
-                    [
-                        jq,
-                        "-e",
-                        "--arg",
-                        "base",
-                        base,
-                        "--arg",
-                        "head",
-                        head,
-                        "--arg",
-                        "ready_at",
-                        ready_at,
-                        "--arg",
-                        "repository",
-                        repository,
-                        "--arg",
-                        "workflow",
-                        workflow_sha,
-                        precheck,
-                    ],
-                    input=json.dumps([{"check_runs": candidate}]),
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                == 0
-            )
-
-        def selected(candidate: dict[str, object]) -> list[object]:
-            result = subprocess.run(
-                [
-                    jq,
-                    "-c",
-                    "--arg",
-                    "base",
-                    base,
-                    "--arg",
-                    "head",
-                    head,
-                    "--arg",
-                    "pr",
-                    "568",
-                    "--arg",
-                    "ready_at",
-                    ready_at,
-                    "--arg",
-                    "workflow",
-                    workflow_sha,
-                    "--argjson",
-                    "issue_564_pr568_v3",
-                    "true",
-                    neutral_filter,
-                ],
-                input=json.dumps([{"check_runs": [candidate]}]),
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            return json.loads(result.stdout)
-
-        self.assertTrue(precheck_accepts([old]))
-        self.assertEqual([], selected(old))
-        self.assertTrue(precheck_accepts([current]))
-        self.assertEqual([current], selected(current))
-
-        invalid = []
-        invalid.append([old, current])
-        wrong_id = json.loads(json.dumps(current))
-        wrong_id["id"] = 101703145186
-        invalid.append([wrong_id])
-        stale = json.loads(json.dumps(current))
-        stale["completed_at"] = "2026-09-07T10:59:59Z"
-        invalid.append([stale])
-        hybrid = json.loads(json.dumps(current))
-        hybrid["external_id"] = old["external_id"]
-        invalid.append([hybrid])
-        mismatch = json.loads(json.dumps(current))
-        mismatch_summary = json.loads(mismatch["output"]["summary"])
-        mismatch_summary["producer_run_id"] = 34120000001
-        mismatch["output"]["summary"] = json.dumps(mismatch_summary)
-        invalid.append([mismatch])
-        for candidate in invalid:
-            with self.subTest(candidate=candidate):
-                self.assertFalse(precheck_accepts(candidate))
-
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         terminal_wait = workflow.split(
@@ -5522,10 +5049,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "PATH": TEST_TOOL_PATH,
                     "EVENT_BASE": base,
                     "EVENT_HEAD": head,
-                    "EVENT_PR_UPDATED_AT": "2026-09-07T11:00:00Z",
                     "PR_NUMBER": pr_number,
-                    "WORKFLOW_SHA": "e" * 40,
-                    "issue_564_pr568_v3": "false",
                     "pages": json.dumps(pages),
                 },
                 text=True,
