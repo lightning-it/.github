@@ -6112,7 +6112,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         raw = S0_POLICY.read_text(encoding="utf-8")
         policy = json.loads(raw)
         self.assertEqual(
-            json.dumps(policy, indent=2, sort_keys=True) + "\n",
+            json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n",
             raw,
         )
         self.assertEqual(0, self._run_s0_policy_contract(policy))
