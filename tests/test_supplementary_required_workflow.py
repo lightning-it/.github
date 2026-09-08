@@ -139,6 +139,76 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             usedforsecurity=False,
         ).hexdigest()
 
+    @staticmethod
+    def _s0_absent_ordinary_entry(path: str) -> dict[str, object]:
+        return {
+            "blob": None,
+            "class": "ordinary",
+            "mode": None,
+            "path": path,
+            "presence": "absent",
+        }
+
+    @classmethod
+    def _s0_ordinary_entry(
+        cls, path: str, seed: str, mode: str = "100644"
+    ) -> dict[str, object]:
+        return {
+            "blob": cls._s0_git_blob((seed + "\n").encode()),
+            "class": "ordinary",
+            "mode": mode,
+            "path": path,
+            "presence": "present",
+        }
+
+    @staticmethod
+    def _s0_policy_entry(
+        state: str | None, normalized_sha256: str | None
+    ) -> dict[str, object]:
+        present = state is not None
+        return {
+            "class": "normalized-policy",
+            "mode": "100644" if present else None,
+            "normalization_schema": "rep120-normalized-policy-v1",
+            "normalized_sha256": normalized_sha256,
+            "path": ".lit/feature-main-prestage-policy.json",
+            "presence": "present" if present else "absent",
+            "state": state,
+        }
+
+    @classmethod
+    def _s0_logical_tree(
+        cls, tree_id: str, entries: list[dict[str, object]]
+    ) -> dict[str, object]:
+        ordered = sorted(entries, key=lambda entry: str(entry["path"]))
+        projection = {
+            "entries": ordered,
+            "schema": "lit.rep120.logical-content-tree/v1",
+        }
+        return {
+            "entries": ordered,
+            "id": tree_id,
+            "logical_tree_sha256": cls._s0_semantic_sha256(
+                "rep120-logical-content-tree-v1", projection
+            ),
+        }
+
+    @staticmethod
+    def _s0_full_tree_raw(entries: list[dict[str, object]]) -> bytes:
+        records: list[bytes] = []
+        for entry in entries:
+            if (
+                entry["class"] == "ordinary"
+                and entry["presence"] == "present"
+            ):
+                records.append(
+                    (
+                        f'{entry["mode"]} blob {entry["blob"]}'
+                        f'\t{entry["path"]}\0'
+                    ).encode()
+                )
+        return b"".join(records)
+
     @classmethod
     def _s0_core_v2_verifier(cls) -> str:
         deep = cls._s0_job(
@@ -186,13 +256,82 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 ]
             ),
         }
+        normalization: dict[str, str] = {
+            "active_sha256": cls._normalized_s0_policy_sha256(policy),
+            "consumed_sha256": cls._normalized_s0_policy_sha256(
+                consumed_template
+            ),
+            "domain": "rep120-normalized-policy-v1",
+            "path": ".lit/feature-main-prestage-policy.json",
+            "sentinel": "0" * 64,
+        }
+        initial_paths = paths["P2"] + [
+            path
+            for path in paths["P4"]
+            if path != ".lit/feature-main-prestage-policy.json"
+        ]
+        current_entries = {
+            path: cls._s0_ordinary_entry(path, f"fixture-base:{path}")
+            for path in initial_paths
+        }
+        current_entries["README.md"] = cls._s0_ordinary_entry(
+            "README.md", "fixture-unchanged-readme"
+        )
+        current_entries[".lit/feature-main-prestage-policy.json"] = (
+            cls._s0_policy_entry(None, None)
+        )
+        logical_trees = [
+            cls._s0_logical_tree(
+                "starting-main", list(current_entries.values())
+            )
+        ]
         units: list[dict[str, object]] = []
         review_bytes = review_bytes or {}
-        for index, unit_id in enumerate(("P1", "P2", "P3", "P4"), start=1):
+        tree_ids = ["post-P1", "post-P2", "post-P3", "post-P4-M"]
+        for index, (unit_id, tree_id) in enumerate(
+            zip(("P1", "P2", "P3", "P4"), tree_ids, strict=True),
+            start=1,
+        ):
+            changes: list[dict[str, object]] = []
+            for path in paths[unit_id]:
+                base_main = current_entries.get(
+                    path, cls._s0_absent_ordinary_entry(path)
+                )
+                if path == ".lit/feature-main-prestage-policy.json":
+                    source_develop = cls._s0_policy_entry(
+                        "active", normalization["active_sha256"]
+                    )
+                    candidate_result = cls._s0_policy_entry(
+                        "consumed", normalization["consumed_sha256"]
+                    )
+                else:
+                    candidate_result = cls._s0_ordinary_entry(
+                        path, f"fixture-result:{unit_id}:{path}"
+                    )
+                    source_develop = candidate_result
+                changes.append(
+                    {
+                        "base_main": base_main,
+                        "candidate_result_main": candidate_result,
+                        "path": path,
+                        "source_develop": source_develop,
+                    }
+                )
+                current_entries[path] = candidate_result
+            logical_trees.append(
+                cls._s0_logical_tree(tree_id, list(current_entries.values()))
+            )
             units.append(
                 {
+                    "changes": changes,
                     "id": unit_id,
                     "paths": paths[unit_id],
+                    "predecessor_logical_tree_sha256": logical_trees[-2][
+                        "logical_tree_sha256"
+                    ],
+                    "result_logical_tree_sha256": logical_trees[-1][
+                        "logical_tree_sha256"
+                    ],
                     "review_bytes": review_bytes.get(unit_id, index * 1000),
                     "review_sha256": hashlib.sha256(
                         f"fixture-review:{unit_id}".encode()
@@ -202,15 +341,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         core: dict[str, object] = {
             "expires_at": policy["expires_at"],
             "issue": 564,
+            "logical_trees": logical_trees,
             "maximum_unit_count": 4,
-            "normalization": {
-                "active_sha256": cls._normalized_s0_policy_sha256(policy),
-                "consumed_sha256": cls._normalized_s0_policy_sha256(
-                    consumed_template
-                ),
-                "domain": "rep120-normalized-policy-v1",
-                "path": ".lit/feature-main-prestage-policy.json",
-                "sentinel": "0" * 64,
+            "normalization": normalization,
+            "object_format": {
+                "enumeration": "git-ls-tree-r-z-v1",
+                "maximum_entries": 4096,
+                "maximum_input_bytes": 199999,
+                "object_hash": "sha1",
+                "oid_hex_length": 40,
+                "ordinary_modes": ["100644", "100755"],
+                "record_type": "blob",
             },
             "ordered_units": ["P1", "P2", "P3", "P4"],
             "policy_epoch": policy["policy_epoch"],
@@ -220,7 +361,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             },
             "schema": "lit.rep120.authorization-manifest-core/v2",
             "series_id": policy["series_id"],
-            "starting_main": {"commit": "1" * 40, "tree": "2" * 40},
+            "starting_main": {
+                "commit": "1" * 40,
+                "logical_tree_sha256": logical_trees[0][
+                    "logical_tree_sha256"
+                ],
+                "tree": "2" * 40,
+            },
             "terminal_unit_id": "P4",
             "units": units,
         }
@@ -310,6 +457,50 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         return policy, policy_raw, bundle
 
     @classmethod
+    def _refresh_s0_logical_tree_commitments(
+        cls, bundle: dict[str, object]
+    ) -> None:
+        core = bundle["records"][0]["record"]
+        logical_trees = core["logical_trees"]
+        for tree in logical_trees:
+            projection = {
+                "entries": tree["entries"],
+                "schema": "lit.rep120.logical-content-tree/v1",
+            }
+            tree["logical_tree_sha256"] = cls._s0_semantic_sha256(
+                "rep120-logical-content-tree-v1", projection
+            )
+        core["starting_main"]["logical_tree_sha256"] = logical_trees[0][
+            "logical_tree_sha256"
+        ]
+        for index, unit in enumerate(core["units"]):
+            unit["predecessor_logical_tree_sha256"] = logical_trees[index][
+                "logical_tree_sha256"
+            ]
+            unit["result_logical_tree_sha256"] = logical_trees[index + 1][
+                "logical_tree_sha256"
+            ]
+
+    @classmethod
+    def _replace_s0_p3_path(
+        cls, bundle: dict[str, object], replacement: object
+    ) -> None:
+        core = bundle["records"][0]["record"]
+        old_path = ".github/workflows/release-reconciler.yml"
+        unit = core["units"][2]
+        unit["paths"] = [replacement]
+        change = unit["changes"][0]
+        change["path"] = replacement
+        for field in ("base_main", "candidate_result_main", "source_develop"):
+            change[field]["path"] = replacement
+        for tree in core["logical_trees"][3:]:
+            for entry in tree["entries"]:
+                if entry["path"] == old_path:
+                    entry["path"] = replacement
+            tree["entries"].sort(key=lambda entry: str(entry["path"]))
+        cls._refresh_s0_logical_tree_commitments(bundle)
+
+    @classmethod
     def _reseal_s0_core_v2_fixture(
         cls,
         policy: dict[str, object],
@@ -383,6 +574,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         policy_raw: bytes | None = None,
         bundle: dict[str, object] | None = None,
         bundle_raw: bytes | None = None,
+        starting_tree_raw: bytes | None = None,
         observed_at: str = "2099-01-01T00:00:00Z",
     ) -> subprocess.CompletedProcess[str]:
         if policy_raw is None or bundle is None:
@@ -393,21 +585,52 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 bundle = default_bundle
         if bundle_raw is None:
             bundle_raw = cls._canonical_s0_json(bundle)
+        if starting_tree_raw is None:
+            starting_tree_raw = cls._s0_full_tree_raw(
+                bundle["records"][0]["record"]["logical_trees"][0][
+                    "entries"
+                ]
+            )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             verifier = root / "verify-core-v2.py"
             policy_path = root / "policy.json"
             roots_path = root / "roots.json"
+            starting_tree_path = root / "starting-tree.raw"
             verifier.write_text(cls._s0_core_v2_verifier(), encoding="utf-8")
             policy_path.write_bytes(policy_raw)
             roots_path.write_bytes(bundle_raw)
+            starting_tree_path.write_bytes(starting_tree_raw)
             return subprocess.run(
                 [
                     sys.executable,
                     str(verifier),
                     str(policy_path),
                     str(roots_path),
+                    str(starting_tree_path),
                     observed_at,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    @classmethod
+    def _run_s0_full_tree_parser(
+        cls, raw: bytes
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            verifier = root / "verify-core-v2.py"
+            tree_path = root / "full-tree.raw"
+            verifier.write_text(cls._s0_core_v2_verifier(), encoding="utf-8")
+            tree_path.write_bytes(raw)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    "--parse-full-tree",
+                    str(tree_path),
                 ],
                 text=True,
                 capture_output=True,
@@ -6732,6 +6955,244 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             self._canonical_s0_json(core).decode(),
         )
 
+    def test_s0_core_v2_parses_one_bounded_complete_full_tree(self) -> None:
+        _, _, bundle = self._s0_core_v2_fixture()
+        core = bundle["records"][0]["record"]
+        starting_entries = core["logical_trees"][0]["entries"]
+        ordinary_entries = [
+            entry
+            for entry in starting_entries
+            if entry["class"] == "ordinary"
+        ]
+        result = self._run_s0_full_tree_parser(
+            self._s0_full_tree_raw(list(reversed(ordinary_entries)))
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+        )
+        parsed = json.loads(result.stdout)
+        self.assertEqual("lit.rep120.full-tree-parse/v1", parsed["schema"])
+        self.assertEqual(core["object_format"], parsed["object_format"])
+        self.assertEqual(ordinary_entries, parsed["entries"])
+        self.assertEqual(
+            [
+                "starting-main",
+                "post-P1",
+                "post-P2",
+                "post-P3",
+                "post-P4-M",
+            ],
+            [tree["id"] for tree in core["logical_trees"]],
+        )
+        for tree in core["logical_trees"]:
+            self.assertEqual(
+                1,
+                sum(
+                    entry["class"] == "normalized-policy"
+                    for entry in tree["entries"]
+                ),
+            )
+            self.assertEqual(
+                1,
+                sum(
+                    entry["path"] == "README.md"
+                    for entry in tree["entries"]
+                ),
+            )
+
+    def test_s0_core_v2_full_tree_parser_rejects_ambiguous_material(
+        self,
+    ) -> None:
+        entry = self._s0_ordinary_entry("safe/file.txt", "fixture-safe")
+        valid = self._s0_full_tree_raw([entry])
+        duplicate = valid + valid
+        cases = {
+            "empty": b"",
+            "truncated": valid[:-1],
+            "double-terminal-NUL": valid + b"\0",
+            "duplicate": duplicate,
+            "multiple-tabs": valid.replace(b"\tsafe/", b"\textra\tsafe/"),
+            "tree-type": valid.replace(b" blob ", b" tree "),
+            "symlink-mode": valid.replace(b"100644", b"120000", 1),
+            "gitlink-mode": valid.replace(b"100644 blob", b"160000 commit", 1),
+            "uppercase-oid": valid.replace(
+                str(entry["blob"]).encode(), b"A" * 40, 1
+            ),
+            "zero-oid": valid.replace(
+                str(entry["blob"]).encode(), b"0" * 40, 1
+            ),
+            "unsafe-path": valid.replace(b"safe/file.txt", b"../file.txt", 1),
+            "logical-policy": valid.replace(
+                b"safe/file.txt",
+                b".lit/feature-main-prestage-policy.json",
+                1,
+            ),
+            "over-byte-bound": b"x" * 199999 + b"\0",
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                self._assert_s0_core_v2_controlled_rejection(
+                    self._run_s0_full_tree_parser(raw)
+                )
+
+    def test_s0_core_v2_complete_tree_and_material_fail_closed(self) -> None:
+        policy, _, baseline = self._s0_core_v2_fixture()
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object], bool]] = []
+
+        missing_unchanged = changed()
+        missing_unchanged["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ] = [
+            entry
+            for entry in missing_unchanged["records"][0]["record"][
+                "logical_trees"
+            ][2]["entries"]
+            if entry["path"] != "README.md"
+        ]
+        candidates.append(("missing-unchanged-leaf", missing_unchanged, True))
+
+        extra_leaf = changed()
+        extra_leaf["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ].append(self._s0_ordinary_entry("extra.txt", "fixture-extra"))
+        extra_leaf["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ].sort(key=lambda entry: entry["path"])
+        candidates.append(("extra-leaf", extra_leaf, True))
+
+        duplicate_leaf = changed()
+        duplicate_leaf["records"][0]["record"]["logical_trees"][0][
+            "entries"
+        ].append(
+            json.loads(
+                json.dumps(
+                    duplicate_leaf["records"][0]["record"]["logical_trees"][
+                        0
+                    ]["entries"][0]
+                )
+            )
+        )
+        candidates.append(("duplicate-leaf", duplicate_leaf, True))
+
+        path_drift = changed()
+        path_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "candidate_result_main"
+        ]["path"] = "other.txt"
+        candidates.append(("material-path-drift", path_drift, False))
+
+        mode_drift = changed()
+        mode_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "source_develop"
+        ]["mode"] = "100755"
+        candidates.append(("material-mode-drift", mode_drift, False))
+
+        blob_drift = changed()
+        blob_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "source_develop"
+        ]["blob"] = "f" * 40
+        candidates.append(("material-blob-drift", blob_drift, False))
+
+        absent_with_blob = changed()
+        absent_with_blob["records"][0]["record"]["units"][0]["changes"][0][
+            "base_main"
+        ]["blob"] = "e" * 40
+        candidates.append(("ambiguous-absence", absent_with_blob, False))
+
+        required_deletion = changed()
+        required_core = required_deletion["records"][0]["record"]
+        required_change = required_core["units"][1]["changes"][0]
+        required_path = required_change["path"]
+        absent_required = self._s0_absent_ordinary_entry(required_path)
+        required_change["source_develop"] = absent_required
+        required_change["candidate_result_main"] = absent_required
+        for tree in required_core["logical_trees"][2:]:
+            tree["entries"] = [
+                entry
+                for entry in tree["entries"]
+                if entry["path"] != required_path
+            ]
+        candidates.append(("required-result-deletion", required_deletion, True))
+
+        wrong_policy_class = changed()
+        final_entries = wrong_policy_class["records"][0]["record"][
+            "logical_trees"
+        ][4]["entries"]
+        policy_index = next(
+            index
+            for index, entry in enumerate(final_entries)
+            if entry["path"] == ".lit/feature-main-prestage-policy.json"
+        )
+        final_entries[policy_index] = self._s0_absent_ordinary_entry(
+            ".lit/feature-main-prestage-policy.json"
+        )
+        candidates.append(("wrong-policy-class", wrong_policy_class, True))
+
+        second_policy_class = changed()
+        second_policy = self._s0_policy_entry("consumed", "d" * 64)
+        second_policy["path"] = ".lit/another-policy.json"
+        second_policy_class["records"][0]["record"]["logical_trees"][4][
+            "entries"
+        ].append(second_policy)
+        second_policy_class["records"][0]["record"]["logical_trees"][4][
+            "entries"
+        ].sort(key=lambda entry: entry["path"])
+        candidates.append(("second-policy-class", second_policy_class, True))
+
+        substituted_tree = changed()
+        substituted_tree["records"][0]["record"]["logical_trees"][1][
+            "logical_tree_sha256"
+        ] = "c" * 64
+        candidates.append(("logical-tree-substitution", substituted_tree, False))
+
+        object_format_drift = changed()
+        object_format_drift["records"][0]["record"]["object_format"][
+            "ordinary_modes"
+        ].append("120000")
+        candidates.append(("object-format-drift", object_format_drift, False))
+
+        for name, candidate, refresh_trees in candidates:
+            with self.subTest(name=name):
+                if refresh_trees:
+                    self._refresh_s0_logical_tree_commitments(candidate)
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, candidate
+                )
+                self._assert_s0_core_v2_controlled_rejection(
+                    self._run_s0_core_v2_verifier(
+                        policy_raw=policy_raw, bundle=sealed
+                    )
+                )
+
+        baseline_starting_tree = self._s0_full_tree_raw(
+            baseline["records"][0]["record"]["logical_trees"][0]["entries"]
+        )
+        omitted_from_every_tree = changed()
+        for tree in omitted_from_every_tree["records"][0]["record"][
+            "logical_trees"
+        ]:
+            tree["entries"] = [
+                entry
+                for entry in tree["entries"]
+                if entry["path"] != "README.md"
+            ]
+        self._refresh_s0_logical_tree_commitments(omitted_from_every_tree)
+        _, omitted_policy_raw, omitted_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, omitted_from_every_tree)
+        )
+        self._assert_s0_core_v2_controlled_rejection(
+            self._run_s0_core_v2_verifier(
+                policy_raw=omitted_policy_raw,
+                bundle=omitted_sealed,
+                starting_tree_raw=baseline_starting_tree,
+            )
+        )
+
     def test_s0_core_v2_rejects_unsafe_paths_after_full_reseal(self) -> None:
         rejected_paths = (
             "",
@@ -6753,9 +7214,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for path in rejected_paths:
             with self.subTest(path=path):
                 policy, _, bundle = self._s0_core_v2_fixture()
-                bundle["records"][0]["record"]["units"][2]["paths"] = [
-                    path
-                ]
+                self._replace_s0_p3_path(bundle, path)
                 _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
                     policy, bundle
                 )
@@ -6774,9 +7233,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(safe_path=path):
                 policy, _, bundle = self._s0_core_v2_fixture()
-                bundle["records"][0]["record"]["units"][2]["paths"] = [
-                    path
-                ]
+                self._replace_s0_p3_path(bundle, path)
                 _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
                     policy, bundle
                 )
@@ -6933,6 +7390,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_s0_core_v2_rejects_alternate_or_conflicting_roots(self) -> None:
         policy, policy_raw, baseline = self._s0_core_v2_fixture()
+        baseline_starting_tree = self._s0_full_tree_raw(
+            baseline["records"][0]["record"]["logical_trees"][0]["entries"]
+        )
 
         def changed() -> dict[str, object]:
             return json.loads(json.dumps(baseline))
@@ -6992,7 +7452,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for name, candidate, candidate_policy in candidates:
             with self.subTest(name=name):
                 result = self._run_s0_core_v2_verifier(
-                    policy_raw=candidate_policy, bundle=candidate
+                    policy_raw=candidate_policy,
+                    bundle=candidate,
+                    starting_tree_raw=baseline_starting_tree,
                 )
                 self.assertNotEqual(0, result.returncode)
 

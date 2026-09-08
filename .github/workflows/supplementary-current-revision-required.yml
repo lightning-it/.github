@@ -796,6 +796,25 @@ jobs:
               POLICY_PATH,
               "tests/test_supplementary_required_workflow.py",
           ]
+          LOGICAL_TREE_IDS = [
+              "starting-main",
+              "post-P1",
+              "post-P2",
+              "post-P3",
+              "post-P4-M",
+          ]
+          FULL_TREE_MAXIMUM_BYTES = 199999
+          FULL_TREE_MAXIMUM_ENTRIES = 4096
+          ORDINARY_MODES = ["100644", "100755"]
+          OBJECT_FORMAT = {
+              "enumeration": "git-ls-tree-r-z-v1",
+              "maximum_entries": FULL_TREE_MAXIMUM_ENTRIES,
+              "maximum_input_bytes": FULL_TREE_MAXIMUM_BYTES,
+              "object_hash": "sha1",
+              "oid_hex_length": 40,
+              "ordinary_modes": ORDINARY_MODES,
+              "record_type": "blob",
+          }
           DOMAINS = [
               "rep120-authorization-manifest-core-v2",
               "rep120-post-core-coverage-v1",
@@ -840,6 +859,16 @@ jobs:
               return value
 
 
+          def git_oid(value: object, label: str) -> str:
+              require(
+                  type(value) is str
+                  and HEX40.fullmatch(value) is not None
+                  and value != "0" * 40,
+                  f"{label}: nonzero Git SHA-1 required",
+              )
+              return value
+
+
           def repository_path(value: object, label: str) -> str:
               require(type(value) is str, f"{label}: string required")
               require(value != "" and not value.startswith("/"),
@@ -855,6 +884,145 @@ jobs:
                   f"{label}: unsafe path component",
               )
               return value
+
+
+          def absent_ordinary(path: str) -> dict:
+              return {
+                  "blob": None,
+                  "class": "ordinary",
+                  "mode": None,
+                  "path": path,
+                  "presence": "absent",
+              }
+
+
+          def validate_material_entry(
+              value: object, label: str, *, allow_absent: bool
+          ) -> dict:
+              require(type(value) is dict, f"{label}: object required")
+              entry_class = value.get("class")
+              if entry_class == "ordinary":
+                  entry = closed(
+                      value,
+                      {"blob", "class", "mode", "path", "presence"},
+                      label,
+                  )
+                  path = repository_path(entry["path"], f"{label} path")
+                  require(path != POLICY_PATH, f"{label}: policy class")
+                  require(
+                      entry["presence"] in ("absent", "present"),
+                      f"{label}: presence",
+                  )
+                  if entry["presence"] == "absent":
+                      require(
+                          allow_absent
+                          and entry["mode"] is None
+                          and entry["blob"] is None,
+                          f"{label}: explicit absence",
+                      )
+                  else:
+                      require(
+                          entry["mode"] in ORDINARY_MODES,
+                          f"{label}: ordinary mode",
+                      )
+                      git_oid(entry["blob"], f"{label} blob")
+                  return entry
+              if entry_class == "normalized-policy":
+                  entry = closed(
+                      value,
+                      {
+                          "class",
+                          "mode",
+                          "normalization_schema",
+                          "normalized_sha256",
+                          "path",
+                          "presence",
+                          "state",
+                      },
+                      label,
+                  )
+                  require(
+                      repository_path(entry["path"], f"{label} path")
+                      == POLICY_PATH
+                      and entry["normalization_schema"]
+                      == "rep120-normalized-policy-v1",
+                      f"{label}: normalized policy identity",
+                  )
+                  require(
+                      entry["presence"] in ("absent", "present"),
+                      f"{label}: presence",
+                  )
+                  if entry["presence"] == "absent":
+                      require(
+                          allow_absent
+                          and entry["mode"] is None
+                          and entry["normalized_sha256"] is None
+                          and entry["state"] is None,
+                          f"{label}: explicit policy absence",
+                      )
+                  else:
+                      require(
+                          entry["mode"] == "100644"
+                          and entry["state"] in ("active", "consumed"),
+                          f"{label}: normalized policy state",
+                      )
+                      sha256_identity(
+                          entry["normalized_sha256"],
+                          f"{label} normalized digest",
+                      )
+                  return entry
+              raise Rejected(f"{label}: unknown material class")
+
+
+          def parse_full_tree(raw: bytes) -> list[dict]:
+              require(type(raw) is bytes, "full tree: bytes required")
+              require(
+                  0 < len(raw) <= FULL_TREE_MAXIMUM_BYTES,
+                  "full tree: byte boundary",
+              )
+              require(raw.endswith(b"\0"), "full tree: terminal NUL")
+              records = raw[:-1].split(b"\0")
+              require(
+                  records
+                  and all(record != b"" for record in records)
+                  and len(records) <= FULL_TREE_MAXIMUM_ENTRIES,
+                  "full tree: record boundary",
+              )
+              entries: list[dict] = []
+              seen: set[str] = set()
+              for record in records:
+                  parts = record.split(b"\t")
+                  require(len(parts) == 2, "full tree: record framing")
+                  header, raw_path = parts
+                  header_parts = header.split(b" ")
+                  require(len(header_parts) == 3, "full tree: header framing")
+                  try:
+                      mode = header_parts[0].decode("ascii")
+                      object_type = header_parts[1].decode("ascii")
+                      oid = header_parts[2].decode("ascii")
+                      path = raw_path.decode("ascii")
+                  except UnicodeDecodeError as error:
+                      raise Rejected("full tree: non-ASCII record") from error
+                  require(
+                      object_type == "blob"
+                      and mode in ORDINARY_MODES,
+                      "full tree: unsupported type or mode",
+                  )
+                  git_oid(oid, "full tree blob")
+                  path = repository_path(path, "full tree path")
+                  require(path != POLICY_PATH, "full tree: policy is logical")
+                  require(path not in seen, "full tree: duplicate path")
+                  seen.add(path)
+                  entries.append(
+                      {
+                          "blob": oid,
+                          "class": "ordinary",
+                          "mode": mode,
+                          "path": path,
+                          "presence": "present",
+                      }
+                  )
+              return sorted(entries, key=lambda entry: entry["path"])
 
 
           def validate_json_tree(
@@ -929,8 +1097,15 @@ jobs:
 
 
           def digest(domain: str, value: object) -> str:
-              require(domain in DOMAINS or domain == "rep120-normalized-policy-v1",
-                      "digest domain")
+              require(
+                  domain in DOMAINS
+                  or domain
+                  in (
+                      "rep120-logical-content-tree-v1",
+                      "rep120-normalized-policy-v1",
+                  ),
+                  "digest domain",
+              )
               result = hashlib.sha256(
                   domain.encode("ascii") + b"\0" + canonical(value)
               ).hexdigest()
@@ -1105,7 +1280,103 @@ jobs:
               return digest("rep120-normalized-policy-v1", value)
 
 
-          def validate_units(core: dict) -> dict[str, list[str]]:
+          def validate_logical_trees(
+              core: dict, normalization: dict
+          ) -> list[tuple[dict[str, dict], str]]:
+              logical_trees = core["logical_trees"]
+              require(
+                  type(logical_trees) is list
+                  and len(logical_trees) == len(LOGICAL_TREE_IDS),
+                  "logical trees",
+              )
+              result: list[tuple[dict[str, dict], str]] = []
+              for expected_id, value in zip(
+                  LOGICAL_TREE_IDS, logical_trees, strict=True
+              ):
+                  tree = closed(
+                      value,
+                      {"entries", "id", "logical_tree_sha256"},
+                      f"logical tree {expected_id}",
+                  )
+                  require(tree["id"] == expected_id, "logical tree order")
+                  entries = tree["entries"]
+                  require(
+                      type(entries) is list
+                      and 1 <= len(entries) <= FULL_TREE_MAXIMUM_ENTRIES + 1,
+                      "logical tree entries",
+                  )
+                  validated = [
+                      validate_material_entry(
+                          entry,
+                          f"logical tree {expected_id} entry",
+                          allow_absent=True,
+                      )
+                      for entry in entries
+                  ]
+                  paths = [entry["path"] for entry in validated]
+                  require(
+                      paths == sorted(paths)
+                      and len(paths) == len(set(paths)),
+                      "logical tree path closure",
+                  )
+                  policies = [
+                      entry
+                      for entry in validated
+                      if entry["class"] == "normalized-policy"
+                  ]
+                  require(len(policies) == 1, "sole normalized policy entry")
+                  require(
+                      all(
+                          entry["presence"] == "present"
+                          for entry in validated
+                          if entry["class"] == "ordinary"
+                      ),
+                      "logical tree ordinary presence",
+                  )
+                  policy_entry = policies[0]
+                  if expected_id == "post-P4-M":
+                      require(
+                          policy_entry["presence"] == "present"
+                          and policy_entry["mode"] == "100644"
+                          and policy_entry["state"] == "consumed"
+                          and policy_entry["normalized_sha256"]
+                          == normalization["consumed_sha256"],
+                          "terminal logical policy",
+                      )
+                  else:
+                      require(
+                          policy_entry["presence"] == "absent",
+                          "pre-P4 logical policy absence",
+                      )
+                  projection = {
+                      "entries": validated,
+                      "schema": "lit.rep120.logical-content-tree/v1",
+                  }
+                  expected_digest = digest(
+                      "rep120-logical-content-tree-v1", projection
+                  )
+                  require(
+                      sha256_identity(
+                          tree["logical_tree_sha256"],
+                          f"logical tree {expected_id} digest",
+                      )
+                      == expected_digest,
+                      "logical tree digest",
+                  )
+                  result.append(
+                      (
+                          {entry["path"]: entry for entry in validated},
+                          expected_digest,
+                      )
+                  )
+              return result
+
+
+          def validate_units(
+              core: dict,
+              logical_trees: list[tuple[dict[str, dict], str]],
+              normalization: dict,
+          ) -> dict[str, list[str]]:
               require(
                   core["ordered_units"] == ["P1", "P2", "P3", "P4"]
                   and core["maximum_unit_count"] == 4
@@ -1116,15 +1387,32 @@ jobs:
               )
               ownership: set[str] = set()
               result: dict[str, list[str]] = {}
-              for expected, item in zip(
-                  core["ordered_units"], core["units"], strict=True
+              for index, (expected, item) in enumerate(
+                  zip(core["ordered_units"], core["units"], strict=True)
               ):
                   unit = closed(
                       item,
-                      {"id", "paths", "review_bytes", "review_sha256"},
+                      {
+                          "changes",
+                          "id",
+                          "paths",
+                          "predecessor_logical_tree_sha256",
+                          "result_logical_tree_sha256",
+                          "review_bytes",
+                          "review_sha256",
+                      },
                       f"Core {expected}",
                   )
                   require(unit["id"] == expected, "Core order")
+                  predecessor, predecessor_digest = logical_trees[index]
+                  result_tree, result_digest = logical_trees[index + 1]
+                  require(
+                      unit["predecessor_logical_tree_sha256"]
+                      == predecessor_digest
+                      and unit["result_logical_tree_sha256"] == result_digest
+                      and predecessor_digest != result_digest,
+                      "Core logical tree transition",
+                  )
                   paths = unit["paths"]
                   require(
                       type(paths) is list
@@ -1152,6 +1440,104 @@ jobs:
                   sha256_identity(
                       unit["review_sha256"], "Core unit review digest"
                   )
+                  changes = unit["changes"]
+                  require(
+                      type(changes) is list and len(changes) == len(paths),
+                      "Core changes",
+                  )
+                  change_paths: list[str] = []
+                  for change_value in changes:
+                      change = closed(
+                          change_value,
+                          {
+                              "base_main",
+                              "candidate_result_main",
+                              "path",
+                              "source_develop",
+                          },
+                          f"Core {expected} change",
+                      )
+                      path = repository_path(
+                          change["path"], f"Core {expected} change path"
+                      )
+                      change_paths.append(path)
+                      base_main = validate_material_entry(
+                          change["base_main"],
+                          f"Core {expected} base material",
+                          allow_absent=True,
+                      )
+                      source_develop = validate_material_entry(
+                          change["source_develop"],
+                          f"Core {expected} source material",
+                          allow_absent=True,
+                      )
+                      candidate_result = validate_material_entry(
+                          change["candidate_result_main"],
+                          f"Core {expected} result material",
+                          allow_absent=True,
+                      )
+                      require(
+                          base_main["path"] == path
+                          and source_develop["path"] == path
+                          and candidate_result["path"] == path,
+                          "Core material path binding",
+                      )
+                      expected_base = predecessor.get(
+                          path, absent_ordinary(path)
+                      )
+                      expected_result = result_tree.get(
+                          path, absent_ordinary(path)
+                      )
+                      require(
+                          base_main == expected_base
+                          and candidate_result == expected_result,
+                          "Core material tree binding",
+                      )
+                      if path == POLICY_PATH:
+                          require(
+                              expected == "P4"
+                              and source_develop
+                              == {
+                                  "class": "normalized-policy",
+                                  "mode": "100644",
+                                  "normalization_schema": (
+                                      "rep120-normalized-policy-v1"
+                                  ),
+                                  "normalized_sha256": normalization[
+                                      "active_sha256"
+                                  ],
+                                  "path": POLICY_PATH,
+                                  "presence": "present",
+                                  "state": "active",
+                              }
+                              and base_main["presence"] == "absent"
+                              and candidate_result["presence"] == "present"
+                              and candidate_result["state"] == "consumed"
+                              and candidate_result["normalized_sha256"]
+                              == normalization["consumed_sha256"],
+                              "Core normalized policy material",
+                          )
+                      else:
+                          require(
+                              source_develop == candidate_result,
+                              "Core ordinary source/result material",
+                          )
+                          if expected in ("P1", "P2", "P4"):
+                              require(
+                                  candidate_result["presence"] == "present",
+                                  "Core required result presence",
+                              )
+                  require(
+                      change_paths == paths,
+                      "Core ordered material",
+                  )
+                  delta_paths = sorted(
+                      path
+                      for path in set(predecessor) | set(result_tree)
+                      if predecessor.get(path, absent_ordinary(path))
+                      != result_tree.get(path, absent_ordinary(path))
+                  )
+                  require(delta_paths == paths, "Core complete tree delta")
                   result[expected] = validated_paths
               require(result["P1"] == [ADR_PATH], "P1 ownership")
               require(result["P2"] == sorted(P2_PATHS), "P2 ownership")
@@ -1159,14 +1545,18 @@ jobs:
               return result
 
 
-          def validate_core(value: object, policy: dict) -> tuple[dict, dict]:
+          def validate_core(
+              value: object, policy: dict, starting_tree_raw: bytes
+          ) -> tuple[dict, dict]:
               core = closed(
                   value,
                   {
                       "expires_at",
                       "issue",
+                      "logical_trees",
                       "maximum_unit_count",
                       "normalization",
+                      "object_format",
                       "ordered_units",
                       "policy_epoch",
                       "repository",
@@ -1186,6 +1576,8 @@ jobs:
                   == {"id": 1112629689, "name": "lightning-it/.github"},
                   "Core identity",
               )
+              require(core["object_format"] == OBJECT_FORMAT,
+                      "Core object format")
               require(
                   core["series_id"] == policy["series_id"]
                   and core["policy_epoch"] == policy["policy_epoch"]
@@ -1193,15 +1585,12 @@ jobs:
                   "Core policy dependency",
               )
               start = closed(
-                  core["starting_main"], {"commit", "tree"}, "starting main"
-              )
-              require(
-                  type(start["commit"]) is str
-                  and HEX40.fullmatch(start["commit"]) is not None
-                  and type(start["tree"]) is str
-                  and HEX40.fullmatch(start["tree"]) is not None,
+                  core["starting_main"],
+                  {"commit", "logical_tree_sha256", "tree"},
                   "starting main",
               )
+              git_oid(start["commit"], "starting main commit")
+              git_oid(start["tree"], "starting main tree")
               consumed = copy.deepcopy(policy)
               consumed["state"] = "consumed"
               normalization = closed(
@@ -1234,7 +1623,27 @@ jobs:
                   },
                   "Core normalization",
               )
-              return core, validate_units(core)
+              logical_trees = validate_logical_trees(core, normalization)
+              require(
+                  start["logical_tree_sha256"] == logical_trees[0][1],
+                  "starting main logical tree",
+              )
+              expected_starting_entries = sorted(
+                  (
+                      entry
+                      for entry in logical_trees[0][0].values()
+                      if entry["class"] == "ordinary"
+                  ),
+                  key=lambda entry: entry["path"],
+              )
+              require(
+                  parse_full_tree(starting_tree_raw)
+                  == expected_starting_entries,
+                  "starting main full tree closure",
+              )
+              return core, validate_units(
+                  core, logical_trees, normalization
+              )
 
 
           def validate_coverage(
@@ -1429,11 +1838,7 @@ jobs:
                   "Activation merge",
               )
               for field in ("base", "head", "result_tree"):
-                  require(
-                      type(merge[field]) is str
-                      and HEX40.fullmatch(merge[field]) is not None,
-                      "Activation Git identity",
-                  )
+                  git_oid(merge[field], f"Activation {field}")
               require(
                   merge["base"] != merge["head"]
                   and merge["parents"] == [merge["base"], merge["head"]]
@@ -1443,7 +1848,12 @@ jobs:
               )
 
 
-          def run(policy_raw: bytes, bundle_raw: bytes, observed_at: str) -> dict:
+          def run(
+              policy_raw: bytes,
+              bundle_raw: bytes,
+              starting_tree_raw: bytes,
+              observed_at: str,
+          ) -> dict:
               policy = validate_policy(strict_json(policy_raw, "active policy"))
               require(policy["state"] == "active", "policy is not active")
               require(
@@ -1472,7 +1882,9 @@ jobs:
                   require(envelope["domain"] == domain, "root order")
                   values.append(envelope["record"])
                   digests.append(digest(domain, envelope["record"]))
-              core, paths = validate_core(values[0], policy)
+              core, paths = validate_core(
+                  values[0], policy, starting_tree_raw
+              )
               require(
                   policy["authorization_manifest_sha256"] == digests[0],
                   "policy selected Core",
@@ -1497,9 +1909,24 @@ jobs:
 
 
           def main() -> int:
-              if len(sys.argv) != 4:
+              if len(sys.argv) == 3 and sys.argv[1] == "--parse-full-tree":
+                  try:
+                      with open(sys.argv[2], "rb") as handle:
+                          raw_tree = handle.read(FULL_TREE_MAXIMUM_BYTES + 1)
+                      result = {
+                          "entries": parse_full_tree(raw_tree),
+                          "object_format": OBJECT_FORMAT,
+                          "schema": "lit.rep120.full-tree-parse/v1",
+                      }
+                  except (OSError, Rejected) as error:
+                      print(f"S0 Core-v2 rejected: {error}", file=sys.stderr)
+                      return 1
+                  sys.stdout.buffer.write(canonical(result))
+                  return 0
+              if len(sys.argv) != 5:
                   print(
-                      "usage: verify-core-v2.py POLICY ROOTS OBSERVED_AT",
+                      "usage: verify-core-v2.py POLICY ROOTS "
+                      "STARTING_TREE OBSERVED_AT",
                       file=sys.stderr,
                   )
                   return 2
@@ -1508,7 +1935,16 @@ jobs:
                       policy_raw = handle.read(200000)
                   with open(sys.argv[2], "rb") as handle:
                       bundle_raw = handle.read(200000)
-                  result = run(policy_raw, bundle_raw, sys.argv[3])
+                  with open(sys.argv[3], "rb") as handle:
+                      starting_tree_raw = handle.read(
+                          FULL_TREE_MAXIMUM_BYTES + 1
+                      )
+                  result = run(
+                      policy_raw,
+                      bundle_raw,
+                      starting_tree_raw,
+                      sys.argv[4],
+                  )
               except (OSError, Rejected) as error:
                   print(f"S0 Core-v2 rejected: {error}", file=sys.stderr)
                   return 1
