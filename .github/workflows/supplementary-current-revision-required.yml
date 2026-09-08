@@ -1875,6 +1875,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          TERMINAL_PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
@@ -1901,6 +1903,38 @@ jobs:
                 185604152817860a6ac53e2ae191ac51aa423e31 ] \
               && [ "${EVENT_HEAD}" = \
                 85b1372ce0e0bdb9aec2ced452ad01597965d03b ]
+          }
+
+          issue_564_pr568_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 568 ] \
+              && [ "${EVENT_ACTION}" = ready_for_review ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
+              && [ "${EVENT_HEAD}" = \
+                162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
+              && [ "${WORKFLOW_SHA}" = \
+                27a9267b3d79896e8d13f34f160299d4018e53d6 ]
+          }
+
+          issue_564_pr568_recovery_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 568 ] \
+              && [ "${EVENT_ACTION}" = ready_for_review ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
+              && [ "${EVENT_HEAD}" = \
+                162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
+              && [ "${WORKFLOW_SHA}" != \
+                27a9267b3d79896e8d13f34f160299d4018e53d6 ]
           }
 
           [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
@@ -2205,6 +2239,874 @@ jobs:
                 source_sha="${WORKFLOW_SHA}"
                 issue_564_stage_1_authorized=true
                 issue_564_legacy_retirement_authorized=true
+              # issue-564-pr568-source-transition: start
+              elif issue_564_pr568_recovery_source_tuple \
+                || issue_564_pr568_source_tuple; then
+                issue_564_pr568_recovery_authorized=false
+                if issue_564_pr568_recovery_source_tuple; then
+                  issue_564_pr568_recovery_authorized=true
+                  expected_source_anchor='e5c87afae4e664f313c34f27eced96b4d2c59092'
+                  expected_pr_body_prefix_bytes=2046
+                  expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+                  expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
+                else
+                  expected_source_anchor='5c549450321b5c7182ef452977d9587ff1f7f14c'
+                  expected_pr_body_prefix_bytes=1952
+                  expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+                  expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+                fi
+                expected_base_tree='ac5f5aa7eb77737118cd8a7d2f072f3a8735591d'
+                expected_head_tree='0f3ff650c0d8da4ec2606bc32afd365dfc88e15c'
+                expected_diff_bytes=85276
+                expected_diff_sha256='5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a'
+                expected_pr_title='fix(rep60): stage bounded controller delta'
+                expected_pr_created_at='2026-09-07T05:43:57Z'
+                expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+
+                [[ "${EVENT_PR_UPDATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+                jq -e \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $workflow
+                  ' <<<"${protected_develop}" >/dev/null
+                source_compare="$(gh api \
+                  "repos/lightning-it/.github/compare/${expected_source_anchor}...${WORKFLOW_SHA}")"
+                jq -e \
+                  --arg anchor "${expected_source_anchor}" \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .base_commit.sha == $anchor
+                    and .merge_base_commit.sha == $anchor
+                    and .status == "ahead"
+                    and .behind_by == 0
+                    and .ahead_by == 2
+                    and .total_commits == 2
+                    and (.commits | length) == 2
+                    and [.commits[0].parents[].sha] == [$anchor]
+                    and [.commits[1].parents[].sha] == [
+                      $anchor, .commits[0].sha
+                    ]
+                    and .commits[1].commit.tree.sha ==
+                      .commits[0].commit.tree.sha
+                    and .commits[1].commit.verification.verified == true
+                    and .commits[-1].sha == $workflow
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${source_compare}" >/dev/null
+
+                if [ "${issue_564_pr568_recovery_authorized}" = true ]; then
+                  failure_stage='issue-564-pr568-recovery-evidence'
+                  prior_producer_id=34092192358
+                  prior_verifier_id=34092192339
+                  prior_policy_job_id=101647871540
+                  prior_required_job_id=101647850846
+                  prior_failure_completed_at='2026-09-07T07:02:17Z'
+                  test "${TERMINAL_PRODUCER_RUN_ID}" != \
+                    "${prior_producer_id}"
+                  [[ "${TERMINAL_PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+
+                  prior_producer="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_producer_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_producer_id}" '
+                      .id == $run_id
+                      and .workflow_id == 314418918
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/314418918")
+                      and .event == "pull_request_target"
+                      and .path == ".github/workflows/copilot-review.yml"
+                      and .name == "Current revision review gate"
+                      and .display_title
+                        == "fix(rep60): stage bounded controller delta"
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_producer}" >/dev/null
+                  prior_producer_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_producer_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_producer_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_producer_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson policy_job "${prior_policy_job_id}" \
+                    --argjson run_id "${prior_producer_id}" '
+                      length == 4
+                      and ([.[].id] | sort) == [
+                        101647850458, 101647871478,
+                        101647871540, 101649855917
+                      ]
+                      and all(.[];
+                        .run_id == $run_id
+                        and .run_attempt == 1
+                        and .head_sha == $head
+                        and .status == "completed")
+                      and any(.[];
+                        .id == 101647850458
+                        and .name == "Classify protected main trust-root handoff"
+                        and .conclusion == "success")
+                      and any(.[];
+                        .id == 101647871478
+                        and .name == "Request Copilot review for current revision"
+                        and .conclusion == "success"
+                        and any(.steps[]?;
+                          .name == "Request Copilot review for the current revision"
+                          and .number == 2
+                          and .status == "completed"
+                          and .conclusion == "success"))
+                      and any(.[];
+                        .id == $policy_job
+                        and .name == "Verify current revision policy"
+                        and .conclusion == "failure"
+                        and .completed_at == "2026-09-07T06:53:38Z"
+                        and any(.steps[]?;
+                          .name == "Verify current Copilot review and resolved findings"
+                          and .number == 5
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T06:53:35Z")
+                        and any(.steps[]?;
+                          .name == "Publish bound neutral result"
+                          and .number == 6
+                          and .conclusion == "skipped"))
+                      and any(.[];
+                        .id == 101649855917
+                        and .name == "Request protected verifier re-evaluation"
+                        and .conclusion == "skipped"
+                        and .steps == [])
+                    ' <<<"${prior_producer_jobs}" >/dev/null
+
+                  prior_verifier="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_verifier_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_verifier_id}" '
+                      .id == $run_id
+                      and .workflow_id == 335885126
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/335885126")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/supplementary-current-revision-required.yml"
+                      and .name == (
+                        "Protected current revision PR #568 ready_for_review "
+                        + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_verifier}" >/dev/null
+                  prior_verifier_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_verifier_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_verifier_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_verifier_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson required_job "${prior_required_job_id}" \
+                    --argjson run_id "${prior_verifier_id}" '
+                      length == 2
+                      and ([.[].id] | sort)
+                        == [101647850846, 101647852037]
+                      and all(.[];
+                        .run_id == $run_id
+                        and .run_attempt == 1
+                        and .head_sha == $head
+                        and .status == "completed")
+                      and any(.[];
+                        .id == $required_job
+                        and .name == "Required current-revision workflow"
+                        and .conclusion == "failure"
+                        and .completed_at == "2026-09-07T07:02:17Z"
+                        and any(.steps[]?;
+                          .name == "Classify the exact live pull request readiness"
+                          and .number == 7
+                          and .conclusion == "success")
+                        and any(.steps[]?;
+                          .name == "Await the exact protected producer run terminal state"
+                          and .number == 8
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T07:02:15Z")
+                        and any(.steps[]?;
+                          .name == "Bind the protected Required Workflow source"
+                          and .number == 11
+                          and .conclusion == "skipped")
+                        and any(.steps[]?;
+                          .name == "Verify one protected result for the exact live revision"
+                          and .number == 12
+                          and .conclusion == "skipped")
+                        and any(.steps[]?;
+                          .name == "Rebind and finalize the protected result"
+                          and .number == 13
+                          and .conclusion == "skipped"))
+                      and any(.[];
+                        .id == 101647852037
+                        and .name
+                          == "Authorize exact Supplementary catch-up v5 successor"
+                        and .conclusion == "skipped"
+                        and .steps == [])
+                    ' <<<"${prior_verifier_jobs}" >/dev/null
+
+                  prior_cross_id=34087927498
+                  prior_cross="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_cross_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_cross_id}" '
+                      .id == $run_id
+                      and .workflow_id == 340250245
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/required_workflows/340250245")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/dot-github-current-revision-required.yml"
+                      and .name == (
+                        "Cross-protect .github PR #568 opened " + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_cross}" >/dev/null
+                  prior_cross_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_cross_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_cross_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_cross_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson run_id "${prior_cross_id}" '
+                      length == 1
+                      and .[0].id == 101635454245
+                      and .[0].name
+                        == "Required dot-github current-revision workflow"
+                      and .[0].run_id == $run_id
+                      and .[0].run_attempt == 1
+                      and .[0].head_sha == $head
+                      and .[0].status == "completed"
+                      and .[0].conclusion == "failure"
+                      and .[0].completed_at == "2026-09-07T05:44:08Z"
+                      and any(.[0].steps[]?;
+                        .name
+                          == "Check out the immutable cross-repository verifier only"
+                        and .number == 2
+                        and .conclusion == "success")
+                      and any(.[0].steps[]?;
+                        .name
+                          == "Verify the independently protected current-revision result"
+                        and .number == 3
+                        and .conclusion == "failure")
+                    ' <<<"${prior_cross_jobs}" >/dev/null
+
+                  timeline_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/issues/568/timeline?per_page=100")"
+                  timeline="$(jq -c '[.[][]?]' <<<"${timeline_pages}")"
+                  jq -e \
+                    --arg event_updated_at "${EVENT_PR_UPDATED_AT}" \
+                    --arg prior_failure "${prior_failure_completed_at}" '
+                      ([.[] | select(.event == "ready_for_review")]
+                        | sort_by(.created_at, .id)) as $ready
+                      | ([.[] | select(.event == "convert_to_draft")]
+                        | sort_by(.created_at, .id)) as $draft
+                      | ($ready | length) == 2
+                      and $ready[0].id == 30670969356
+                      and $ready[0].created_at == "2026-09-07T06:44:37Z"
+                      and $ready[0].actor.login == "litroc"
+                      and $ready[0].actor.id == 76040632
+                      and $ready[0].actor.type == "User"
+                      and ($ready[1].id | type) == "number"
+                      and $ready[1].id > 30670969356
+                      and $ready[1].actor.login == "litroc"
+                      and $ready[1].actor.id == 76040632
+                      and $ready[1].actor.type == "User"
+                      and $ready[1].created_at > $prior_failure
+                      and $ready[1].created_at == $event_updated_at
+                      and ($draft | length) == 1
+                      and ($draft[0].id | type) == "number"
+                      and $draft[0].id > 30670969356
+                      and $draft[0].id < $ready[1].id
+                      and $draft[0].actor.login == "litroc"
+                      and $draft[0].actor.id == 76040632
+                      and $draft[0].actor.type == "User"
+                      and $draft[0].created_at > $prior_failure
+                      and $draft[0].created_at < $ready[1].created_at
+                      and ([.[] | select(.event == "reopened")] | length) == 0
+                      and ([.[] |
+                        select(.event == "review_requested") |
+                        select(.requested_reviewer.login == "Copilot")]
+                        | length) == 1
+                      and any(.[];
+                        .id == 30670983046
+                        and .event == "review_requested"
+                        and .created_at == "2026-09-07T06:44:54Z"
+                        and .actor.login == "github-actions[bot]"
+                        and .actor.id == 41898282
+                        and .requested_reviewer.login == "Copilot"
+                        and .requested_reviewer.id == 175728472)
+                    ' <<<"${timeline}" >/dev/null
+                  second_ready_at="$(jq -er '
+                    [.[] | select(.event == "ready_for_review")]
+                    | sort_by(.created_at, .id)
+                    | select(length == 2)
+                    | .[1].created_at
+                    | select(type == "string")
+                    ' <<<"${timeline}")"
+
+                  recovery_run="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --arg workflow "${WORKFLOW_SHA}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${GITHUB_RUN_ID}" '
+                      .id == $run_id
+                      and .workflow_id == 335885126
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/335885126")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/supplementary-current-revision-required.yml"
+                      and .name == (
+                        "Protected current revision PR #568 ready_for_review "
+                        + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "in_progress"
+                      and .conclusion == null
+                      and .created_at >= $second_ready
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                      and ($workflow | test("^[0-9a-f]{40}$"))
+                    ' <<<"${recovery_run}" >/dev/null
+
+                  recovery_producer="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                      .id == $run_id
+                      and .workflow_id == 314418918
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/314418918")
+                      and .event == "pull_request_target"
+                      and .path == ".github/workflows/copilot-review.yml"
+                      and .name == "Current revision review gate"
+                      and .display_title
+                        == "fix(rep60): stage bounded controller delta"
+                      and .run_attempt == 1
+                      and (
+                        (.status == "in_progress" and .conclusion == null)
+                        or (.status == "completed" and .conclusion == "success")
+                      )
+                      and .created_at >= $second_ready
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${recovery_producer}" >/dev/null
+                  recovery_producer_jobs_ready=false
+                  for producer_jobs_observation in $(seq 1 30); do
+                    recovery_producer_jobs_pages="$(gh api --paginate --slurp \
+                      "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}/attempts/1/jobs?filter=all&per_page=100")"
+                    recovery_producer_jobs="$(jq -c '[.[].jobs[]?]' \
+                      <<<"${recovery_producer_jobs_pages}")"
+                    jq -e \
+                      --arg head "${EVENT_HEAD}" \
+                      --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                        ([.[].name] | sort) as $names
+                        | ($names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Verify current revision policy"
+                          ] or $names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Request protected verifier re-evaluation",
+                            "Verify current revision policy"
+                          ])
+                        and ([.[].name] | unique | length) == length
+                        and all(.[];
+                          .run_id == $run_id
+                          and .run_attempt == 1
+                          and .head_sha == $head)
+                        and any(.[];
+                          .name == "Classify protected main trust-root handoff"
+                          and .status == "completed"
+                          and .conclusion == "success")
+                        and ([.[] |
+                          select(.name
+                            == "Request Copilot review for current revision") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Request Copilot review for the current revision"
+                            and .number == 2
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name == "Verify current revision policy") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Verify current Copilot review and resolved findings"
+                            and .number == 5
+                            and .status == "completed"
+                            and .conclusion == "success")) |
+                          select(any(.steps[]?;
+                            .name == "Publish bound neutral result"
+                            and .number == 6
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name
+                            == "Request protected verifier re-evaluation") |
+                          select(
+                            (((.status | IN(
+                              "requested", "waiting", "pending",
+                              "queued", "in_progress")))
+                              and .conclusion == null)
+                            or (.status == "completed"
+                              and .conclusion == "success"))]
+                          | length) == (length - 3)
+                      ' <<<"${recovery_producer_jobs}" >/dev/null
+                    if [ "$(jq 'length' \
+                        <<<"${recovery_producer_jobs}")" -eq 4 ]; then
+                      recovery_producer_jobs_ready=true
+                      break
+                    fi
+                    test "${producer_jobs_observation}" -lt 30
+                    sleep 2
+                  done
+                  test "${recovery_producer_jobs_ready}" = true
+
+                  review_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/pulls/568/reviews?per_page=100")"
+                  copilot_reviews="$(jq -c '[.[][]? |
+                    select(.user.login == "copilot-pull-request-reviewer[bot]")]
+                    ' <<<"${review_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" '
+                      length == 1
+                      and .[0].id == 5128834710
+                      and .[0].user.type == "Bot"
+                      and .[0].state == "COMMENTED"
+                      and .[0].commit_id == $head
+                      and .[0].submitted_at == "2026-09-07T06:48:29Z"
+                      and (.[0].body | type) == "string"
+                      and ((.[0].body | ascii_downcase |
+                        contains("unable to review this pull request")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("no files to review")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("able to review any files")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("quota exhausted")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("quota exceeded")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("suppressed comments")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("encountered an error")) | not)
+                    ' <<<"${copilot_reviews}" >/dev/null
+
+                  # shellcheck disable=SC2016
+                  thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'
+                  thread_payload="$(gh api graphql \
+                    -f query="${thread_query}" \
+                    -f owner=lightning-it \
+                    -f name=.github \
+                    -F number=568)"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" '
+                      .data.repository.pullRequest as $pr
+                      | $pr.baseRefOid == $base
+                      and $pr.headRefOid == $head
+                      and $pr.reviewThreads.totalCount == 1
+                      and $pr.reviewThreads.pageInfo.hasNextPage == false
+                      and ($pr.reviewThreads.nodes | length) == 1
+                      and $pr.reviewThreads.nodes[0].id
+                        == "PRRT_kwDOQlFhuc6fz6Xy"
+                      and $pr.reviewThreads.nodes[0].isResolved == true
+                      and $pr.reviewThreads.nodes[0].isOutdated == false
+                      and $pr.reviewThreads.nodes[0].path
+                        == ".github/workflows/current-revision-rerun.yml"
+                      and $pr.reviewThreads.nodes[0].line == 132
+                      and $pr.reviewThreads.nodes[0].originalLine == 132
+                      and $pr.reviewThreads.nodes[0].comments.totalCount == 2
+                      and $pr.reviewThreads.nodes[0].comments.pageInfo.hasNextPage
+                        == false
+                      and ($pr.reviewThreads.nodes[0].comments.nodes | length) == 2
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].databaseId
+                        == 3947202975
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].author.login
+                        == "copilot-pull-request-reviewer"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].createdAt
+                        == "2026-09-07T06:48:29Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].updatedAt
+                        == "2026-09-07T06:48:29Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.databaseId
+                        == 5128834710
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.commit.oid
+                        == $head
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].databaseId
+                        == 3947241014
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].author.login
+                        == "litroc"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].createdAt
+                        == "2026-09-07T06:54:44Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].updatedAt
+                        == "2026-09-07T06:54:44Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.databaseId
+                        == 5128881849
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.commit.oid
+                        == $head
+                    ' <<<"${thread_payload}" >/dev/null
+
+                  request_comments_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/issues/568/comments?per_page=100")"
+                  request_marker='<!-- mlx90-copilot-request head=162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 -->Copilot review request accepted for finalized head 162fe4ca9ff6a94d3f1f1a8479db047c1fd82453.'
+                  jq -e \
+                    --arg marker "${request_marker}" '
+                      [.[][]? |
+                        select(.body == $marker) |
+                        select(.user.login == "github-actions[bot]") |
+                        select(.user.id == 41898282) |
+                        select(.user.type == "Bot")] as $markers
+                      | ($markers | length) == 1
+                      and $markers[0].id == 5566200461
+                      and $markers[0].created_at == "2026-09-07T06:44:55Z"
+                      and $markers[0].updated_at == "2026-09-07T06:44:55Z"
+                    ' <<<"${request_comments_pages}" >/dev/null
+
+                  ready_runs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson current_id "${GITHUB_RUN_ID}" '
+                      [.[].workflow_runs[]? |
+                        select(.path
+                          == ".github/workflows/supplementary-current-revision-required.yml") |
+                        select(.display_title
+                          == ("Protected current revision PR #568 ready_for_review "
+                            + $head)) |
+                        .id] | sort == ([34092192339, $current_id] | sort)
+                    ' <<<"${ready_runs_pages}" >/dev/null
+
+                  neutral_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg prior_failure "${prior_failure_completed_at}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --arg workflow "${WORKFLOW_SHA}" \
+                    --argjson producer_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                      [.[].check_runs[]? |
+                        select(.name == "Current revision review") |
+                        select(.app.id == 15368
+                          and .app.slug == "github-actions") |
+                        select(.head_sha == $head)] as $checks
+                      | ($checks | length) == 1
+                      and ($checks[0].id | type) == "number"
+                      and $checks[0].id > 0
+                      and $checks[0].status == "completed"
+                      and $checks[0].conclusion == "success"
+                      and $checks[0].details_url == (
+                        "https://github.com/" + $repository
+                        + "/runs/" + ($checks[0].id | tostring))
+                      and $checks[0].output.title
+                        == "Current revision review passed"
+                      and $checks[0].started_at > $prior_failure
+                      and $checks[0].started_at >= $second_ready
+                      and ($checks[0].external_id
+                        == ("mlx90-current-revision:copilot:v6:568:"
+                          + ($producer_id | tostring) + ":" + $base + ":" + $head))
+                      and (($checks[0].output.summary | fromjson) as $summary
+                        | ($summary | keys | sort) == ([
+                            "base_sha", "controller_sha", "head_sha",
+                            "producer_run_id", "pull_request_number",
+                            "review_path", "run_url", "schema"
+                          ] | sort)
+                        and $summary.schema == 4
+                        and $summary.base_sha == $base
+                        and $summary.head_sha == $head
+                        and $summary.controller_sha == $workflow
+                        and $summary.pull_request_number == 568
+                        and $summary.producer_run_id == $producer_id
+                        and $summary.run_url == (
+                          "https://github.com/" + $repository
+                          + "/actions/runs/" + ($producer_id | tostring))
+                        and $summary.review_path
+                          == "applicable Copilot or governed automation exemption")
+                    ' <<<"${neutral_pages}" >/dev/null
+
+                  for absent_check_name in \
+                    'Protected%20current-revision%20verifier' \
+                    'Late%20review%20rerun%20authorization'; do
+                    absent_pages="$(gh api --paginate --slurp \
+                      "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=${absent_check_name}&filter=all&per_page=100")"
+                    jq -e --arg head "${EVENT_HEAD}" '
+                      [.[].check_runs[]? |
+                        select(.app.id == 15368
+                          and .app.slug == "github-actions") |
+                        select(.head_sha == $head)] | length == 0
+                      ' <<<"${absent_pages}" >/dev/null
+                  done
+                fi
+
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg created_at "${expected_pr_created_at}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_ref "${expected_head_ref}" \
+                  --arg repository "${REPOSITORY}" \
+                  --arg title "${expected_pr_title}" \
+                  --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                  --argjson author_id 76040632 \
+                  --argjson number 568 '
+                    .number == $number
+                    and .state == "open"
+                    and .draft == false
+                    and .user.login == "litroc"
+                    and .user.id == $author_id
+                    and .user.type == "User"
+                    and .title == $title
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == $head_ref
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                    and .created_at == $created_at
+                    and .updated_at == $updated_at
+                    and .commits == 1
+                    and .changed_files == 4
+                  ' <<<"${pr}" >/dev/null
+                expected_source_suffix="${expected_source_marker}"$'\n'
+                jq -e \
+                  --arg marker "${expected_source_marker}" \
+                  --arg suffix "${expected_source_suffix}" '
+                    (.body | type) == "string"
+                    and (.body | endswith($suffix))
+                    and ((.body | split($marker) | length) == 2)
+                  ' <<<"${pr}" >/dev/null
+                pr_body_prefix_bytes="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                pr_body_prefix_sha256="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | sha256sum | awk '{ print $1 }')"
+                pr_body_bytes="$(jq -je '.body' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                expected_pr_body_bytes=$((
+                  expected_pr_body_prefix_bytes
+                  + ${#expected_source_suffix}
+                ))
+                test "${pr_body_prefix_bytes}" = \
+                  "${expected_pr_body_prefix_bytes}"
+                test "${pr_body_prefix_sha256}" = \
+                  "${expected_pr_body_prefix_sha256}"
+                test "${pr_body_bytes}" = "${expected_pr_body_bytes}"
+
+                prestage_compare="$(gh api \
+                  "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg base_tree "${expected_base_tree}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_tree "${expected_head_tree}" '
+                    .status == "ahead"
+                    and .ahead_by == 1
+                    and .behind_by == 0
+                    and .total_commits == 1
+                    and .base_commit.sha == $base
+                    and .base_commit.commit.tree.sha == $base_tree
+                    and .merge_base_commit.sha == $base
+                    and .commits[-1].sha == $head
+                    and (.commits | length) == 1
+                    and .commits[0].sha == $head
+                    and [.commits[0].parents[].sha] == [$base]
+                    and .commits[0].commit.tree.sha == $head_tree
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/current-revision-rerun.yml",
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_copilot_review_refresh.py",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${prestage_compare}" >/dev/null
+
+                export GIT_CONFIG_GLOBAL=/dev/null
+                export GIT_CONFIG_NOSYSTEM=1
+                export GIT_TERMINAL_PROMPT=0
+                export LC_ALL=C
+                umask 077
+                prestage_directory="$(mktemp -d \
+                  "${RUNNER_TEMP}/issue-564-pr568.XXXXXX")"
+                prestage_git="${prestage_directory}/objects.git"
+                git init --bare --quiet "${prestage_git}"
+                git --git-dir="${prestage_git}" remote add origin \
+                  https://github.com/lightning-it/.github.git
+                git --git-dir="${prestage_git}" fetch --quiet --no-tags \
+                  --no-recurse-submodules origin \
+                  '+refs/heads/main:refs/prestage/base' \
+                  "+refs/heads/${expected_head_ref}:refs/prestage/head"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{commit}')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{commit}')" = "${EVENT_HEAD}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{tree}')" = \
+                  "${expected_base_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{tree}')" = \
+                  "${expected_head_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" rev-list --count \
+                  refs/prestage/base..refs/prestage/head)" = 1
+                test "$(git --git-dir="${prestage_git}" merge-base --all \
+                  refs/prestage/base refs/prestage/head)" = "${EVENT_BASE}"
+                integration_tree="$(git --git-dir="${prestage_git}" \
+                  merge-tree --write-tree refs/prestage/base refs/prestage/head)"
+                test "${integration_tree}" = "${expected_head_tree}"
+                patch="${prestage_directory}/change.patch"
+                git --git-dir="${prestage_git}" diff --binary --full-index \
+                  --no-color --no-ext-diff --no-textconv \
+                  'refs/prestage/base^{tree}' "${integration_tree}" >"${patch}"
+                diff_bytes="$(wc -c <"${patch}" | tr -d '[:space:]')"
+                diff_sha256="$(sha256sum "${patch}" | awk '{ print $1 }')"
+                test "${diff_bytes}" = "${expected_diff_bytes}"
+                test "${diff_sha256}" = "${expected_diff_sha256}"
+
+                source_sha="${WORKFLOW_SHA}"
+                issue_564_pr568_authorized=true
+                # issue-564-pr568-source-transition: end
               else
                 test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
                 pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -2245,10 +3147,12 @@ jobs:
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
-          echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
+          {
+            echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}"
+            echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}"
+            echo "issue_564_pr568=${issue_564_pr568_authorized:-false}"
+            echo "issue_564_pr568_recovery=${issue_564_pr568_recovery_authorized:-false}"
+          } >>"${GITHUB_OUTPUT}"
 
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
@@ -2286,6 +3190,10 @@ jobs:
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           ISSUE_564_LEGACY_RETIREMENT: >-
             ${{ steps.protected-source.outputs.issue_564_legacy_retirement }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
+          ISSUE_564_PR568_RECOVERY_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568_recovery }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
           RENOVATE_PRODUCER_VERIFIED: >-
@@ -2557,6 +3465,13 @@ jobs:
           fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
+          if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+            test "${ISSUE_564_PR568_SOURCE}" = true
             test "${reservation_count}" -eq 0
           fi
           if [ "${reservation_count}" -gt 1 ]; then
@@ -3755,6 +4670,10 @@ jobs:
             ${{ steps.renovate-producer.outputs.last_edited_at }}
           ISSUE_564_STAGE_1_SOURCE: >-
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
+          ISSUE_564_PR568_RECOVERY_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568_recovery }}
           RESERVATION_ID: ${{ steps.protected-verifier.outputs.reservation_id }}
         run: |
           set -euo pipefail
@@ -3838,6 +4757,407 @@ jobs:
                 and .protected == true
                 and .commit.sha == $base
               ' <<<"${protected_main}" >/dev/null
+          fi
+
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
+            if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+              failure_stage='issue-564-pr568-recovery-final-rebind'
+              expected_pr_body_prefix_bytes=2046
+              expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+              expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
+            else
+              failure_stage='issue-564-pr568-final-rebind'
+              expected_pr_body_prefix_bytes=1952
+              expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+              expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+            fi
+            expected_pr_created_at='2026-09-07T05:43:57Z'
+            expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+            expected_source_suffix="${expected_source_marker}"$'\n'
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg created_at "${expected_pr_created_at}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${expected_head_ref}" \
+              --arg marker "${expected_source_marker}" \
+              --arg repository "${REPOSITORY}" \
+              --arg suffix "${expected_source_suffix}" \
+              --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+              --argjson author_id 76040632 \
+              --argjson number 568 '
+                .number == $number
+                and .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .user.id == $author_id
+                and .user.type == "User"
+                and .title == "fix(rep60): stage bounded controller delta"
+                and .base.ref == "main"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+                and .created_at == $created_at
+                and .updated_at == $updated_at
+                and .commits == 1
+                and .changed_files == 4
+                and (.body | type) == "string"
+                and (.body | endswith($suffix))
+                and ((.body | split($marker) | length) == 2)
+              ' <<<"${final_pr}" >/dev/null
+            final_pr_body_prefix_bytes="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            final_pr_body_prefix_sha256="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | sha256sum | awk '{ print $1 }')"
+            final_pr_body_bytes="$(jq -je '.body' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            expected_pr_body_bytes=$((
+              expected_pr_body_prefix_bytes
+              + ${#expected_source_suffix}
+            ))
+            test "${final_pr_body_prefix_bytes}" = \
+              "${expected_pr_body_prefix_bytes}"
+            test "${final_pr_body_prefix_sha256}" = \
+              "${expected_pr_body_prefix_sha256}"
+            test "${final_pr_body_bytes}" = "${expected_pr_body_bytes}"
+            protected_develop="$(gh api \
+              repos/lightning-it/.github/branches/develop)"
+            jq -e \
+              --arg workflow "${WORKFLOW_SHA}" '
+                .name == "develop"
+                and .protected == true
+                and .commit.sha == $workflow
+              ' <<<"${protected_develop}" >/dev/null
+            protected_main="$(gh api \
+              repos/lightning-it/.github/branches/main)"
+            jq -e \
+              --arg base "${EVENT_BASE}" '
+                .name == "main"
+                and .protected == true
+                and .commit.sha == $base
+              ' <<<"${protected_main}" >/dev/null
+
+            if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+              failure_stage='issue-564-pr568-recovery-final-mutable-rebind'
+              producer_run_id="${PRODUCER_RUN_URL##*/}"
+              [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
+              test "${PRODUCER_RUN_URL}" = \
+                "https://github.com/${REPOSITORY}/actions/runs/${producer_run_id}"
+
+              final_timeline_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/issues/568/timeline?per_page=100")"
+              final_timeline="$(jq -c '[.[][]?]' \
+                <<<"${final_timeline_pages}")"
+              jq -e \
+                --arg event_updated_at "${EVENT_PR_UPDATED_AT}" '
+                  ([.[] | select(.event == "ready_for_review")]
+                    | sort_by(.created_at, .id)) as $ready
+                  | ([.[] | select(.event == "convert_to_draft")]
+                    | sort_by(.created_at, .id)) as $draft
+                  | ([.[] |
+                      select(.event == "review_requested") |
+                      select(.requested_reviewer.login == "Copilot")]
+                    | sort_by(.created_at, .id)) as $requests
+                  | ($ready | length) == 2
+                  and $ready[0].id == 30670969356
+                  and $ready[0].created_at == "2026-09-07T06:44:37Z"
+                  and $ready[0].actor.login == "litroc"
+                  and $ready[0].actor.id == 76040632
+                  and $ready[0].actor.type == "User"
+                  and ($ready[1].id | type) == "number"
+                  and $ready[1].id > 30670969356
+                  and $ready[1].created_at == $event_updated_at
+                  and $ready[1].actor.login == "litroc"
+                  and $ready[1].actor.id == 76040632
+                  and $ready[1].actor.type == "User"
+                  and ($draft | length) == 1
+                  and $draft[0].id > 30670969356
+                  and $draft[0].id < $ready[1].id
+                  and $draft[0].created_at > $ready[0].created_at
+                  and $draft[0].created_at < $ready[1].created_at
+                  and $draft[0].actor.login == "litroc"
+                  and $draft[0].actor.id == 76040632
+                  and $draft[0].actor.type == "User"
+                  and ([.[] | select(.event == "reopened")] | length) == 0
+                  and ($requests | length) == 1
+                  and $requests[0].id == 30670983046
+                  and $requests[0].created_at == "2026-09-07T06:44:54Z"
+                  and $requests[0].actor.login == "github-actions[bot]"
+                  and $requests[0].actor.id == 41898282
+                  and $requests[0].requested_reviewer.id == 175728472
+                ' <<<"${final_timeline}" >/dev/null
+
+              final_review_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/568/reviews?per_page=100")"
+              final_reviews="$(jq -c '
+                [.[][]? |
+                  select(.user.login
+                    == "copilot-pull-request-reviewer[bot]")]
+                ' <<<"${final_review_pages}")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" '
+                  length == 1
+                  and .[0].id == 5128834710
+                  and .[0].user.type == "Bot"
+                  and .[0].state == "COMMENTED"
+                  and .[0].commit_id == $head
+                  and .[0].submitted_at == "2026-09-07T06:48:29Z"
+                  and (.[0].body | type) == "string"
+                  and ((.[0].body | ascii_downcase |
+                    contains("unable to review this pull request")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("no files to review")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("able to review any files")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("quota exhausted")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("quota exceeded")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("suppressed comments")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("encountered an error")) | not)
+                ' <<<"${final_reviews}" >/dev/null
+
+              # shellcheck disable=SC2016
+              final_thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'
+              final_threads="$(gh api graphql \
+                -f query="${final_thread_query}" \
+                -f owner=lightning-it \
+                -f name=.github \
+                -F number=568)"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" '
+                  .data.repository.pullRequest as $pr
+                  | $pr.baseRefOid == $base
+                  and $pr.headRefOid == $head
+                  and $pr.reviewThreads.totalCount == 1
+                  and $pr.reviewThreads.pageInfo.hasNextPage == false
+                  and ($pr.reviewThreads.nodes | length) == 1
+                  and $pr.reviewThreads.nodes[0].id
+                    == "PRRT_kwDOQlFhuc6fz6Xy"
+                  and $pr.reviewThreads.nodes[0].isResolved == true
+                  and $pr.reviewThreads.nodes[0].isOutdated == false
+                  and $pr.reviewThreads.nodes[0].path
+                    == ".github/workflows/current-revision-rerun.yml"
+                  and $pr.reviewThreads.nodes[0].line == 132
+                  and $pr.reviewThreads.nodes[0].originalLine == 132
+                  and $pr.reviewThreads.nodes[0].comments.totalCount == 2
+                  and $pr.reviewThreads.nodes[0].comments.pageInfo.hasNextPage
+                    == false
+                  and ($pr.reviewThreads.nodes[0].comments.nodes | length) == 2
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].databaseId
+                    == 3947202975
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].author.login
+                    == "copilot-pull-request-reviewer"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].createdAt
+                    == "2026-09-07T06:48:29Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].updatedAt
+                    == "2026-09-07T06:48:29Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.databaseId
+                    == 5128834710
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.commit.oid
+                    == $head
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].databaseId
+                    == 3947241014
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].author.login
+                    == "litroc"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].createdAt
+                    == "2026-09-07T06:54:44Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].updatedAt
+                    == "2026-09-07T06:54:44Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.databaseId
+                    == 5128881849
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.commit.oid
+                    == $head
+                ' <<<"${final_threads}" >/dev/null
+
+              final_comment_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/issues/568/comments?per_page=100")"
+              final_request_marker='<!-- mlx90-copilot-request head=162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 -->Copilot review request accepted for finalized head 162fe4ca9ff6a94d3f1f1a8479db047c1fd82453.'
+              jq -e \
+                --arg marker "${final_request_marker}" '
+                  [.[][]? |
+                    select(.body == $marker) |
+                    select(.user.login == "github-actions[bot]") |
+                    select(.user.id == 41898282) |
+                    select(.user.type == "Bot")] as $markers
+                  | ($markers | length) == 1
+                  and $markers[0].id == 5566200461
+                  and $markers[0].created_at == "2026-09-07T06:44:55Z"
+                  and $markers[0].updated_at == "2026-09-07T06:44:55Z"
+                ' <<<"${final_comment_pages}" >/dev/null
+
+              for final_attempt_one_run_id in \
+                34092192358 34092192339 34087927498; do
+                final_attempt_one_run="$(gh api \
+                  "repos/${REPOSITORY}/actions/runs/${final_attempt_one_run_id}")"
+                jq -e \
+                  --argjson run_id "${final_attempt_one_run_id}" '
+                    .id == $run_id
+                    and .run_attempt == 1
+                    and .status == "completed"
+                    and .conclusion == "failure"
+                  ' <<<"${final_attempt_one_run}" >/dev/null
+              done
+
+              final_neutral_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg ready_at "${EVENT_PR_UPDATED_AT}" \
+                --arg repository "${REPOSITORY}" \
+                --arg workflow "${WORKFLOW_SHA}" \
+                --argjson producer_id "${producer_run_id}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Current revision review") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] as $checks
+                  | ($checks | length) == 1
+                  and ($checks[0].id | type) == "number"
+                  and $checks[0].id > 0
+                  and $checks[0].status == "completed"
+                  and $checks[0].conclusion == "success"
+                  and $checks[0].details_url == (
+                    "https://github.com/" + $repository
+                    + "/runs/" + ($checks[0].id | tostring))
+                  and $checks[0].output.title
+                    == "Current revision review passed"
+                  and $checks[0].started_at >= $ready_at
+                  and $checks[0].external_id == (
+                    "mlx90-current-revision:copilot:v6:568:"
+                    + ($producer_id | tostring) + ":" + $base + ":" + $head)
+                  and (($checks[0].output.summary | fromjson) as $summary
+                    | ($summary | keys | sort) == ([
+                        "base_sha", "controller_sha", "head_sha",
+                        "producer_run_id", "pull_request_number",
+                        "review_path", "run_url", "schema"
+                      ] | sort)
+                    and $summary.schema == 4
+                    and $summary.base_sha == $base
+                    and $summary.head_sha == $head
+                    and $summary.controller_sha == $workflow
+                    and $summary.pull_request_number == 568
+                    and $summary.producer_run_id == $producer_id
+                    and $summary.run_url == (
+                      "https://github.com/" + $repository
+                      + "/actions/runs/" + ($producer_id | tostring))
+                    and $summary.review_path
+                      == "applicable Copilot or governed automation exemption")
+                ' <<<"${final_neutral_pages}" >/dev/null
+
+              final_reservation_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson check_id "${RESERVATION_ID}" \
+                --argjson pr_number "${PR_NUMBER}" \
+                --argjson run_id "${GITHUB_RUN_ID}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Protected current-revision verifier") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] as $checks
+                  | ($checks | length) == 1
+                  and $checks[0].id == $check_id
+                  and $checks[0].status == "in_progress"
+                  and $checks[0].conclusion == null
+                  and $checks[0].external_id == (
+                    "rep60-required-workflow:v3:" + ($run_id | tostring)
+                    + ":" + ($pr_number | tostring) + ":" + $base + ":" + $head)
+                  and $checks[0].details_url == (
+                    "https://github.com/" + $repository
+                    + "/runs/" + ($check_id | tostring))
+                ' <<<"${final_reservation_pages}" >/dev/null
+
+              final_late_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Late%20review%20rerun%20authorization&filter=all&per_page=100")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Late review rerun authorization") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] | length == 0
+                ' <<<"${final_late_pages}" >/dev/null
+
+              failure_stage='issue-564-pr568-recovery-terminal-rebind'
+              terminal_develop="$(gh api \
+                repos/lightning-it/.github/branches/develop)"
+              jq -e \
+                --arg workflow "${WORKFLOW_SHA}" '
+                  .name == "develop"
+                  and .protected == true
+                  and .commit.sha == $workflow
+                ' <<<"${terminal_develop}" >/dev/null
+              terminal_main="$(gh api \
+                repos/lightning-it/.github/branches/main)"
+              jq -e \
+                --arg base "${EVENT_BASE}" '
+                  .name == "main"
+                  and .protected == true
+                  and .commit.sha == $base
+                ' <<<"${terminal_main}" >/dev/null
+              terminal_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg created_at "${expected_pr_created_at}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg head_ref "${expected_head_ref}" \
+                --arg marker "${expected_source_marker}" \
+                --arg repository "${REPOSITORY}" \
+                --arg suffix "${expected_source_suffix}" \
+                --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                --argjson author_id 76040632 \
+                --argjson number 568 '
+                  .number == $number
+                  and .state == "open"
+                  and .draft == false
+                  and .user.login == "litroc"
+                  and .user.id == $author_id
+                  and .user.type == "User"
+                  and .title == "fix(rep60): stage bounded controller delta"
+                  and .base.ref == "main"
+                  and .base.sha == $base
+                  and .base.repo.full_name == $repository
+                  and .head.ref == $head_ref
+                  and .head.sha == $head
+                  and .head.repo.full_name == $repository
+                  and .created_at == $created_at
+                  and .updated_at == $updated_at
+                  and .commits == 1
+                  and .changed_files == 4
+                  and (.body | type) == "string"
+                  and (.body | endswith($suffix))
+                  and ((.body | split($marker) | length) == 2)
+                ' <<<"${terminal_pr}" >/dev/null
+              terminal_prefix_bytes="$(jq -je \
+                --arg suffix "${expected_source_suffix}" \
+                '.body | rtrimstr($suffix)' <<<"${terminal_pr}" \
+                | wc -c | tr -d '[:space:]')"
+              terminal_prefix_sha256="$(jq -je \
+                --arg suffix "${expected_source_suffix}" \
+                '.body | rtrimstr($suffix)' <<<"${terminal_pr}" \
+                | sha256sum | awk '{ print $1 }')"
+              terminal_body_bytes="$(jq -je '.body' <<<"${terminal_pr}" \
+                | wc -c | tr -d '[:space:]')"
+              test "${terminal_prefix_bytes}" = \
+                "${expected_pr_body_prefix_bytes}"
+              test "${terminal_prefix_sha256}" = \
+                "${expected_pr_body_prefix_sha256}"
+              test "${terminal_body_bytes}" = "${expected_pr_body_bytes}"
+            fi
           fi
 
           if [ "${PRODUCER_KIND}" = renovate ]; then
