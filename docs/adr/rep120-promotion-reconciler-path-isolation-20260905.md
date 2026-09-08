@@ -1,7 +1,7 @@
 ---
 id: adr-rep120-promotion-reconciler-path-isolation-20260905
 title: REP-120 default-off promotion reconciler and capability isolation
-description: Defines the proposed repository-local replacement for the retired hourly promoter, its capability boundaries, and its evidence-gated rollout.
+description: Defines the proposed repository-local replacement for the still-present legacy hourly promoter, its capability boundaries, and its evidence-gated rollout.
 slug: /adr/rep120-promotion-reconciler-path-isolation-20260905/
 document:
   status: maintained
