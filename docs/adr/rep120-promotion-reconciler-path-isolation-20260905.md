@@ -6,7 +6,7 @@ slug: /adr/rep120-promotion-reconciler-path-isolation-20260905/
 document:
   status: maintained
   approval_status: proposed
-  version: "5.0"
+  version: "6.0"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -14,7 +14,7 @@ document:
     - repository maintainers
     - platform engineers
     - security reviewers
-  last_reviewed: "2026-09-07"
+  last_reviewed: "2026-09-08"
   review_cadence: annual
 ---
 
@@ -27,7 +27,7 @@ document:
 - Scope: `lightning-it/.github` protected `develop` to `main`
   reconciliation
 - Recovery owner: issue `lightning-it/.github#564`
-- Evidence cutoff: `2026-09-07T16:33:29Z`
+- Evidence cutoff: `2026-09-08T03:03:47Z`
 
 This maintained repository ADR is an implementation companion to the canonical
 REP-120 decision. It records the intended repository-local controller and the
@@ -113,6 +113,20 @@ and CodeQL results cannot override either Required failure. The earlier
 D1-direct-to-`main` materialization sequence is retired rather than repaired by
 another one-time PR/SHA tuple.
 
+A final read-only CAS at `2026-09-08T02:31:18Z` confirmed the same protected
+refs, PR tuple, two Required failures, Rulesets and clean local successor. That
+receipt made no mutation and granted no lifecycle authority. Subsequent local
+S0 materialization then exposed a cryptographic self-reference in Version 5.0:
+the protected policy was required to embed the ordered P4 source/destination
+blob table while P4 also owned that policy's `active -> consumed` blob change.
+Embedding the policy's own raw blob, or a manifest digest whose bytes embed
+that raw blob, cannot be materialized without a forbidden hash fixed point.
+The same cycle exists transitively if the Core embeds a Git-tree, diff, unit,
+series, or reconstruction commitment whose bytes include the actual policy.
+Version 5.0 and its preflight-v2 tuple therefore remain historical local
+evidence and are **NO-GO for execution**. This Version 6.0 is a normal local
+successor; it is not an amend and is not yet protected evidence.
+
 ## Historical over-limit evidence
 
 The first eight-path successor draft produced result tree
@@ -152,7 +166,7 @@ hunk, policy, or format invalidates the corresponding receipt.
 | R2 — deduplicate before approval | Admission and two read-only history observations are designed to finish no-op/active/consumed states before the Environment; not implemented |
 | R3 — at most one waiter per repository/SHA | Static concurrency, first-attempt binding, exact markers, and one live operation owner are designed here; not implemented or canary-proven |
 | R4 — one aggregate required check | Corrected target is one source-bound `promotion / aggregate` job plus a strict status-check rule requiring that same visible context; live canary and leaf retirement remain open |
-| R5 — one-way workflow DAG | Private `shared-assets-lit` cannot protect public `.github`; a separately authorized public execution proxy is required; the live reciprocal `.github <-> Supplementary` cycle remains open |
+| R5 — one-way workflow DAG | Private `shared-assets-lit` cannot protect public `.github`; a separately selected and authorized public execution proxy is required; the live reciprocal `.github <-> Supplementary` cycle remains open |
 | R6 — complete bounded review units | Exact `1..199999` interval retained; current 204,877-byte `main..develop` and the 324,868-byte conceptual target are rejected; D1/S0/serial main units/C1 and a sealed Coverage Manifest remain pending |
 | R7 — controlled cleanup | Stale run, branch, and worktree retention/deletion plan and evidence remain open |
 | R8 — three clean references before fleet | Three consecutive references, including Collection-to-Container, then bounded canary and fleet rollout remain open |
@@ -273,21 +287,26 @@ A later eligible historical run or possible token mint restarts that drain.
 ### 5. Corrected bounded materialization and source bootstrap
 
 The stale worktree is not rebased or published. PR #576 is not merged to
-`main`, manually rerun, closed/reopened, force-pushed, or bypassed. Subject to a
-separate, explicit PR-#576 lifecycle authorization, it is retargeted to
-protected `develop`. The corrected ADR is first stored as a normal successor
-commit on a clean local branch. After retarget, that clean branch normally
-merges the exact current protected `develop` commit with no amend or rebase;
-the ordered merge parents and result tree are verified before one normal push.
-The resulting new base/head tuple is reviewed once and normally merged to
-`develop`. This ADR remains Proposed and Implementation Pending after that
-merge.
+`main`, manually rerun, closed/reopened, force-pushed, or bypassed. The owner
+has authorized exactly one bounded lifecycle through fresh review: Draft,
+retarget to protected `develop`, merge the action-time exact protected
+`develop` into the clean corrected-ADR branch without amend or rebase, verify
+ordered parents/result tree, make one normal push, mark Ready, and obtain one
+fresh current-head review. A pinned local validation plus a fresh action-time
+CAS and versioned preflight must pass before the Draft mutation; any tuple
+drift invalidates the preflight. This authority ends at fresh review. It does
+not authorize an old rerun, reopen, force-push, bypass, intermediate review
+request or the later protected merge. After green Required checks and review,
+the eventual normal merge/readback to `develop` remains a separately authorized
+transition. This ADR remains Proposed and Implementation Pending after that
+future merge.
 
 The earlier authorization for PR #575's one Draft-to-Ready transition is
-consumed and cannot authorize PR #576. The intended PR #576 lifecycle uses one
-Draft-to-Ready cycle so retarget, ADR correction, and protected-develop merge
-produce one final reviewable successor head rather than multiple intermediate
-review requests.
+consumed and cannot authorize PR #576. The PR #576 authorization is recorded in
+`issue564-owner-decisions-20260908-v1.md`; it uses one Draft-to-Ready cycle so
+retarget, ADR correction, and the action-time protected-develop merge into the
+branch produce one final reviewable successor head rather than multiple
+intermediate review requests.
 
 After D1 is protected on `develop`, S0 is installed by normal protected PRs on
 `develop`. The bridge implementation changes
@@ -299,30 +318,142 @@ merged/read back and C1 must be installed default-off on protected `develop`
 with `RELEASE_RECONCILIATION_ENABLED` absent. C1 is one complete workflow/
 helper/test unit, or newly reviewed semantic workflow/test pairs if its fresh
 develop-relative input reaches `200000`. Only then may an immutable
-Authorization Manifest for the complete main series seal every unit ID/order,
-starting main tree, allowed source/destination blob and mode transition,
-per-unit limit, maximum unit count, terminal unit, and reconstruction digest.
-It contains no future runtime claim.
+Authorization Manifest Core for the complete main series seal every unit
+ID/order, every logical predecessor/result boundary, every ordinary
+source/destination blob and mode transition, the sole normalized policy
+transition, per-unit limit, maximum unit count, terminal unit, and logical
+reconstruction digest. It contains no future runtime claim or direct/transitive
+actual-policy-derived Git commitment. The protected
+policy contains the exact Core digest and runtime envelope, but never embeds
+the ordered unit table or a raw hash of itself.
 The one-path activation PR has its own Coverage Manifest entry, exact current-
 head review, Required checks, normal protected merge, and source/tree readback.
+Here, one-path means that only the protected policy path changes. The
+`inactive -> active` transition may also populate the sealed series ID, epoch,
+expiry, principals, and exact Core digest; it must not change a workflow,
+helper, or test.
 
-Manifest sealing also requires the exact projected P4 input to be freshly
-proven in `1..199999` canonical bytes. P4's Required-Workflow source, coupled
-test, and `active -> consumed` transition are indivisible. If their combined
-projection is `0` or at least `200000`, activation is NO-GO: the policy remains
-`inactive` and S0 is redesigned before any replacement manifest is sealed.
+Manifest sealing also requires both terminal P4 phases to be freshly projected.
+P4-M's Required-Workflow source, coupled test and consumed target-main policy
+are indivisible; P4-D is the mandatory protected-develop finalization, not a
+partition escape. Each canonical review input must independently be
+`1..199999`. If either is `0` or at least `200000`, activation is NO-GO: the
+policy remains `inactive` and S0 is redesigned before a replacement Core is
+sealed.
 
 S0 is a temporary, protected, read-only bridge for serial bounded
 feature-to-`main` pre-stage PRs. It contains no PR/SHA/run-specific exception.
 Its policy is read only from the exact current protected
-`develop@WORKFLOW_SHA` and binds schema, series ID, epoch, expiry, starting main
-tree, repository, `main`, a `prestage/` prefix, allowed author/App classes,
-ordered allowed units and path/blob/mode transitions, canonical diff format,
-maximum unit count, byte ceiling, and the exact monotonic state enum
-`inactive -> active -> consumed`. `consumed` is absorbing under every later
-tree, blob, base, source, expiry, or replay condition.
+`develop@WORKFLOW_SHA` and binds schema, series ID, epoch, expiry, repository,
+source/target refs, a `prestage/` prefix, allowed author/App classes, the exact
+Authorization Manifest Core digest, canonical diff format, byte ceiling, and
+the exact monotonic state enum `inactive -> active -> consumed`. The Core, not
+the policy, binds the exact starting-main commit/tree and maximum unit count.
+`consumed` is globally absorbing for the repository: the bounded authority
+ledger is enumerated before activation/reservation, and no later Core, series,
+tree, blob, base, source, expiry or replay can create another active root.
 
-For each candidate the protected workflow binds an open, non-draft,
+The complete ordered unit and ordinary path/blob/mode table lives only in the
+separately attested Core. Each projected target-main content boundary uses a
+domain-separated `rep120-logical-content-tree-v1` projection over the complete
+closed recursive target-main leaf inventory, including unchanged paths, from
+NUL-delimited full-tree Git enumeration under the bound object format. Missing,
+extra, duplicate, unparseable or unsupported entries reject. Every ordinary
+entry retains exact presence, path, mode and raw Git blob. The sole policy entry
+retains presence, path, mode, state, normalization schema and normalized digest,
+never its actual Git blob. Absence is explicit. The projection SHA-256 is never
+represented as a Git tree OID.
+
+Each target-main unit uses a domain-separated
+`rep120-logical-review-input-v1` projection over its logical predecessor/result,
+ordered changes, exact source-path commitments and review contract. The Core
+does not claim future full protected-develop commits or trees. P1 resolves its
+source only from the protected Activation Receipt; later units resolve source
+from the immediately preceding backmerge receipt. P1 uses the Core's exact
+starting-main commit/tree; later bases resolve from the preceding main
+Execution Receipt. Live protected refs must equal those receipt-derived values.
+
+Future `.lit/main-ancestry.json` blobs contain future merge SHAs and are never
+presealed. The Core binds their one closed derivation schema, exact path/mode,
+repository, canonical serializer and parent roles. Runtime derives `main_sha`
+from the prior verified main merge and `develop_parent_sha` from the exact
+protected-develop prestate, then receipts the bytes/blob, two parents, result
+tree and signature. The ancestry file is excluded from P1-P4 target-main
+ownership and preserved from the main base; this is an explicit dynamic
+backmerge rule, not a coverage gap or second normalized policy path.
+
+Every Core predecessor/result, unit, series and final commitment is computed
+solely from domain-separated logical records. No raw Git tree, diff, unit/total
+digest, byte count or reconstruction commitment whose bytes contain the Core
+digest is a Core field. Each logical review input is constructed with synthetic
+Git objects; textual replacement inside an actual diff is forbidden.
+
+All policy, Core, logical projection, Coverage and receipt JSON uses
+`rep120-canonical-json-v1`: strict duplicate-free UTF-8 without BOM, RFC 8785
+JCS bytes and exactly one terminal LF. Raw policy bytes must already equal that
+serialization before substitution. Each semantic SHA-256 hashes its ASCII
+domain/schema tag, one NUL byte, and the canonical bytes.
+
+Policy normalization replaces only `authorization_manifest_sha256` with
+exactly 64 lowercase zeroes after the raw canonical-byte and closed-schema
+checks, then hashes the same canonical serialization under domain
+`rep120-normalized-policy-v1`. No pretty-print, key order, escape, number,
+encoding or other byte variant is normalized into acceptance.
+The 64-zero value is reserved exclusively for offline construction and
+normalization. Every accepted real Core semantic digest must be non-sentinel;
+a real Core whose digest equals the reserved value rejects.
+
+For P4 the Core separates three tuples: protected-develop source is present
+`active`/`100644` with its normalized digest; target-main predecessor is
+explicitly absent because P1-P3 do not own the policy path; target-main result
+is present `consumed`/`100644` with its normalized digest. Semantic
+source-to-candidate derivation preserves the selected Core SHA and every field
+except `active -> consumed`; the actual target-main Git diff is independently
+`absent -> consumed`. They are never conflated. Any unexpected main policy,
+second normalized path, alternative sentinel/schema, or raw policy commitment
+inside the Core fails closed.
+
+Construction order is templates/logical projections -> Core bytes ->
+domain-separated Core semantic SHA-256 -> authoritative Core
+create-if-absent/index-CAS/readback -> Core attestation/readback -> actual
+policies/Git objects -> post-Core Coverage bytes/semantic digest ->
+authoritative Coverage create-if-absent/index-CAS/readback -> Coverage
+attestation/readback -> Activation eligibility. Both authoritative store
+readback and proof readback must succeed before the successor step. Actual
+policy blobs, activation and target-main P1-P4-M diffs/Git trees are
+deterministic outputs, never Core inputs.
+
+The unique authoritatively stored and separately attested post-Core Coverage
+Manifest is a deterministic materialization receipt, not discretionary
+authority. It binds the Core and attestation, exact preactivation
+source/starting-base refs/commits/trees,
+selected raw active/consumed policy bytes/blobs, actual target-main review
+inputs/lengths/digests and projected result trees, derivation schemas and every
+logical-to-actual mapping. It contains no invented future source, merge,
+backmerge or P4-D commit/tree. Those values exist only in the later protected
+Activation, Execution and backmerge receipt chain.
+
+The Core and policy contain no Coverage digest/ID/attestation ID or other
+actual-policy-derived value. The protected verifier derives one expected record
+identity, rejects zero/multiple/conflicting valid records, recomputes every
+value, and never selects the latest. Coverage and the Activation Receipt pin
+the exact selected Core and raw active policy blob. Every unit must descend from
+that root with the same Core. Swapping only the policy field to another valid
+Core, including one with identical normalized policy digests, rejects.
+
+Every Activation, Execution, backmerge, pending and Closure record must pass
+the same authoritative append/readback and attestation/readback gate before
+its successor. The P4 Execution Receipt binds both phases without collapsing
+them: all P4-M
+pending/protected-main source, destination, diff, merge, parent, tree and
+signature values, plus all P4-D reviewed-candidate `H` and protected-merge `Q`
+source, destination, diff, ordered-parent, tree and signature values. The
+Closure Manifest binds those plural actual values and the complete verified
+chain. Coverage, Activation, Execution, backmerge and Closure records are never
+referenced back from the policy or Core.
+
+For each target-main S0 candidate from P1 through P4-M, the protected workflow
+binds an open, non-draft,
 same-repository PR; exact live protected main base and develop source; supported
 default Required-Workflow event and first attempt; ancestry; conflict-free
 integration tree; complete path/blob/mode projection; and exactly one canonical
@@ -352,25 +483,75 @@ Main materialization is serial and freshly remeasured:
 | --- | --- | --- |
 | P1 | This ADR copied byte-for-byte from protected `develop` | First bootstrap unit, not the later operational canary |
 | P2 | `current-revision-rerun.yml` with `test_copilot_review_refresh.py` | Whole workflow/test pair |
-| P3 | Remaining protected-develop divergence, including C1 only in complete semantic workflow/helper/test units | Finishes all units that still require active S0 |
-| P4 | `supplementary-current-revision-required.yml`, `test_supplementary_required_workflow.py`, and the sole policy transition `active -> consumed` | Whole source/test/policy pair and final bridge shutdown after sealed coverage |
+| P3 | Remaining protected-develop divergence, excluding `.lit/main-ancestry.json` and including C1 only in complete semantic workflow/helper/test units | Finishes all non-P4 target-main blobs that still require active S0 |
+| P4-M | `supplementary-current-revision-required.yml`, `test_supplementary_required_workflow.py`, and target-main consumed policy | Unsplittable main phase of the single terminal P4 unit |
+| P4-D | Exact terminal protected-develop merge: deterministic policy add/add resolution to same-Core `consumed` plus derived ancestry record | Mandatory finalization phase under the same P4 reservation; not P5 |
+
+The Core encodes exactly `ordered_units=[P1,P2,P3,P4]`, so maximum logical
+unit count is four. P4 alone has closed ordered `phases=[P4-M,P4-D]`; the
+target-main Coverage list contains P4-M, never P4-D. A separate closed
+lifecycle-record count covers Activation, each ordinary main/backmerge receipt,
+P4 pending, P4-D, the P4 Receipt and Closure. P4-D is neither a fifth unit nor
+an optional phase.
 
 Before each successor unit, the prior normal protected `main` merge is read
 back and normally backmerged to protected `develop`; all unit inputs are then
-freshly recalculated and parallel main units are forbidden. S0 becomes
-permanently fail-closed only through the sole `active -> consumed` transition
-in P4 after the ordered manifest proves complete coverage and byte-identical
-reconstruction. Raw tree equality alone is not a safe shutdown signal because
-`.lit/main-ancestry.json` changes on backmerges and later unrelated divergence
-must never reactivate the bridge.
+freshly recalculated and parallel main units are forbidden. Ordinary backmerges
+derive only the ancestry record. P4-D is the sole exception to the generic
+`ours` content strategy: it must also deterministically resolve the expected
+active/consumed add/add policy conflict to the exact same-Core consumed bytes.
 
-P4 is opened only after every declared target blob not owned by P4 itself has
-already reached protected `main`. Its own Required-Workflow, test, and
-`consumed` policy blobs arrive atomically through P4. After P4 no part of this
-series remains: S0 is absorbing `consumed`, and C1 is not deferred to another
-feature-to-main pre-stage. A later exact protected `develop -> main` promotion
-belongs to new, independently reviewed work and cannot finish or reopen this
-series.
+P4 is one indivisible terminal state machine under one non-releasing
+reservation: `ready -> P4-M merged/read back -> terminal-finalization-pending ->
+P4-D merged/read back -> P4 receipt -> Closure`. Both P4-M and P4-D have their
+own complete `1..199999` current-head review input, Required checks and normal
+protected merge. P4-D cannot carry any P4-M content and no P5 exists.
+
+The Core's domain-separated `rep120-p4d-review-projection-v1` uses four exact,
+pairwise-distinct, construction-only 40-byte ASCII ancestry role tokens:
+`PRIOR_MAIN______________________________`,
+`PRIOR_DEVELOP___________________________`,
+`P4_MAIN_________________________________`, and
+`P4_DEVELOP______________________________`. The predecessor ancestry blob uses
+the first pair and the result ancestry blob the second pair, preserving the
+two-field delta. None is a hexadecimal Git object ID; runtime rejects every
+token in every ancestry field. The projection constructs its old active-policy
+and new consumed-policy entries using the same sole normalized-policy rule and
+exactly 64 lowercase zeroes for `authorization_manifest_sha256`; it never uses
+actual Core-bearing policy bytes. Synthetic blobs/diff are built from canonical
+projected bytes, never by text replacement, and the Core binds the exact
+synthetic diff SHA-256 and byte count.
+
+For runtime P4-D, `D` is the exact protected-develop prestate and `M` the exact
+protected P4-M main merge. Mapping the four verified ancestry roles and both
+verified policy states back into the construction projection must reproduce
+the Core-bound SHA-256 and byte count. The reviewed current-head candidate
+merge `H` has ordered parents `[D,M]` and the exact derived tree. The normal
+protected PR merge `Q` has ordered parents `[D,H]` and `Q.tree == H.tree`;
+fast-forward, squash, rebase and parent reordering reject. Both `H` and `Q`
+receive exact OID, ordered-parent, tree and signature readback. Preactivation
+fit failure blocks activation; a runtime failure after activation remains
+fail-closed in live or `terminal-finalization-pending` state.
+
+After P4-M, a composite-sealed pending record binds its exact protected main
+merge, parents, tree and signature. P4-D is ineligible until both its
+authoritative store readback and attestation readback succeed. Live main
+matching the terminal Coverage target
+blocks every new S0 reservation even if that record's attestation is delayed.
+Only the identical derived P4-D head may recover a failed finalization; no
+intervening main/develop commit, rollback, new series or reactivation is valid.
+S0 becomes permanently fail-closed only after P4-D changes protected develop
+from the exact authorized active blob to consumed and the terminal receipt/
+Closure chain verifies.
+
+P4-M is opened only after every declared target blob outside its own ownership
+has reached protected `main`. Its Required Workflow, test and consumed policy
+arrive atomically. After P4-D and Closure no part of this series remains: S0 is
+globally absorbing `consumed`, and C1 is not deferred to another feature-to-main
+pre-stage. Before every activation/reservation the bounded repository authority
+ledger rejects a prior consumed/Closure state, a second activation root or a
+same-Core `consumed -> active` attempt. A later exact protected
+`develop -> main` promotion is new work and cannot finish or reopen this series.
 
 The pre-S0 D1-plus-four-path diagnostic was 178,477 bytes and left only 21,522
 bytes of margin. It is not reusable after S0. Every unit is freshly
@@ -379,49 +560,99 @@ reviewed, and accepted only at `1..199999`. At 200,000 bytes or more it stops
 and is split by whole workflow/test pairs; no source, assertion, documentation,
 or evidence byte is removed to fit.
 
-The pre-activation Authorization Manifest binds the ordered unit DAG, projected
-predecessor/result content trees, disjoint path/hunk ownership, every authorized
-path/blob/mode, exact unit and total bytes/digests, policy/prompt/schema/
-workflow authority, zero gaps/overlap, and the final target tree. Each runtime
-unit appends an immutable Execution Receipt hash-chained to the Authorization
-Manifest and preceding receipt, recording actual base/head/integration tree,
-review, checks, normal merge, signature, parents/tree, and protected backmerge.
-After P4, a Closure Manifest binds the complete receipt chain and proves final
+The pre-activation Authorization Manifest Core binds the ordered unit DAG,
+target-main logical predecessor/result projections, receipt-derived source/base
+roles, disjoint path/hunk ownership, every authorized ordinary
+path/presence/raw-blob/mode, the sole normalized policy path, logical review
+inputs, the exact ancestry/P4-D derivation schemas, policy/prompt/schema/workflow
+authority, zero gaps/overlap, and final logical target state. The post-Core
+Coverage Manifest binds every immediately derivable target-main Git object and
+raw review input; it never invents future commits/trees. Each runtime phase
+creates and CAS-links an immutable authoritative receipt hash-chained to the
+Core and predecessor, reads it back, then attests and reads back its proof
+before any successor. It records actual base/head/integration tree, review,
+checks, normal merge, signature, parents/tree, and protected backmerge.
+After P4-D, a Closure Manifest binds the complete receipt chain and proves final
 byte-identical reconstruction. Preparatory and activation units have their own
-canonical `1..199999` receipts. A future claim in the Authorization Manifest,
-broken chain, zero-byte, stale, missing, overlapping, truncated, or unsafe
-content blocks success.
+canonical `1..199999` receipts. A future runtime claim in the Core, a broken
+chain, zero-byte, stale, missing, overlapping, truncated, or unsafe content
+blocks success.
 
-The manifests and receipts never become later `.github` commits. Before S0
-activation, the separately authorized public execution proxy must provide a
-protected evidence-finalizer workflow on its protected default branch. It has
-read-only access to `.github` and all source repositories; its only writes are
-`id-token:write` and `attestations:write` to the proxy repository's GitHub
-artifact-attestation store. A commit-SHA-pinned `actions/attest` signs a custom
-in-toto predicate containing the complete canonical record. The subject name is
-`rep120:<target-repository-id>:<series-id>:<record-id>` and its subject digest is
-the record's SHA-256. The public proxy causes the bundle to be stored both by
+The manifests and receipts never become later `.github` commits. The accepted
+DEC-IA01 architecture makes an external conditional-write/WORM store the
+authoritative series store; GitHub attestations and Sigstore are independent
+proof/transparency and export layers, not the sole series authority. Before S0
+activation, the separately selected and authorized public execution proxy must
+provide a protected evidence-finalizer workflow on its protected default
+branch. It has
+read-only access to `.github` and all source repositories. Its GitHub mutation
+permissions are limited to `id-token:write` and `attestations:write`; OIDC must
+yield a short-lived, exact-workflow/ref/repository-bound session for the chosen
+external writer role. That role may only create the exact series record and
+conditionally advance its exact index. It cannot delete, shorten retention,
+change Object Lock/legal hold, bucket policy, public access, encryption key,
+identity policy or another series.
+
+The external append contract has two independent write-once boundaries. An
+exact logical record key is created with provider-enforced create-if-absent;
+an existing byte-identical record is a verified idempotent no-op and an
+existing divergent record rejects. The closed per-series index is then advanced
+only with provider-enforced exact-predecessor conditional write against the
+fully enumerated current object/version; missing, stale, ambiguous, forked,
+gapped, duplicate, delete-marker or uncertain state rejects until authoritative
+readback resolves it. Process-local concurrency is defense in depth and never
+substitutes for provider CAS. Versioning and Object Lock Compliance retain each
+record and every index version for seven years; mandatory encryption uses the
+accepted customer-controlled key profile. Readback verifies object key,
+version ID, validator, canonical bytes, semantic digest, checksum, encryption,
+retention mode/until, legal-hold state, complete version pagination and exact
+record/index linkage. Only that successful authoritative readback permits the
+attestation write and proof readback for the same semantic record.
+
+A commit-SHA-pinned `actions/attest` also signs a custom in-toto predicate
+containing the complete canonical record. The subject name is
+`rep120:<target-repository-id>:<series-id>:<record-id>`. For every record,
+including the Core, `subject.digest.sha256` is exactly
+`SHA256(ASCII domain tag || 0x00 || canonical record bytes)`; the predicate
+carries or lets the verifier reconstruct that exact tag and those exact bytes.
+The Core record ID and subject name are externally assigned or derived only
+from pre-Core fields, never from the Core digest if the identifier is embedded
+in the Core. A record never embeds its own object version/validator,
+attestation ID, transparency-log index or bundle locator. Those values belong
+to its external seal envelope and may be bound by the next record; terminal
+verification queries them directly. The public proxy causes the proof bundle to be stored both by
 GitHub and in the immutable Sigstore Public Good transparency log. Validity
 requires an OIDC certificate for the exact proxy repository ID, protected
 workflow path/ref, and source commit.
 
-Append uses one non-cancelling concurrency group per series and strict compare-
-and-swap against the verified attested chain tip. The finalizer reconstructs
-evidence from protected GitHub state: an identical record is an idempotent
-no-op; the exact next record is appended once; any conflicting digest or signer,
-duplicate logical record, gap, or out-of-order unit fails closed. Readback must
-verify the GitHub attestation, custom predicate, subject, signature, OIDC
-identity, transparency-log inclusion, attestation ID, log index, and bundle
-digest. After P4 the same finalizer builds and attests the Closure Manifest from
-read-only protected state and the complete receipt chain. It performs no source,
-target, PR, branch, Ruleset, check, release, or content mutation.
+Append uses one non-cancelling concurrency group per series plus the external
+create-only/conditional-write contract above. The finalizer reconstructs
+evidence from protected GitHub state and the complete authoritative store: an
+identical record is an idempotent no-op; the exact next record is appended once;
+any conflicting digest or signer, duplicate logical record, stale validator,
+gap, fork or out-of-order unit fails closed. Readback must verify the external
+record/index/version/retention chain and the GitHub attestation, custom
+predicate, subject, signature, OIDC identity, transparency-log inclusion,
+attestation ID, log index and bundle digest. After P4 the same finalizer builds,
+authoritatively appends and reads back, then attests and reads back the Closure
+Manifest from protected read-only state and the complete receipt chain. It
+performs no source, target, PR, branch, Ruleset, check, release or content
+mutation.
 
-This evidence sink is a P0 pre-activation gate, not an assumed service. The
-exact public proxy repository ID/name, Ruleset, protected workflow blob, pinned
-action digest, predicate schema, OIDC claims, API readback, public-log inclusion,
-duplicate/conflict rejection, and retention/export procedure must be canary-
-proven first. Check output, an expiring Actions artifact alone, Jira, and
-Confluence may index or copy the receipts but are not the immutable trust anchor.
+This authority/proof stack is a P0 pre-activation gate, not an assumed service.
+Qualification order is fixed: first read-only test the existing PGE Hetzner
+Object Storage FND without inheriting its product acceptance; if any required
+conditional-write, seven-year Compliance WORM, versioning, key-custody, OIDC,
+enumeration, export/recovery or negative-canary property is absent or unprovable,
+prepare the AWS S3 fallback in `eu-central-1` with Object Lock enabled from
+bucket creation, Versioning, seven-year Compliance default retention, a
+customer-managed KMS key and exact GitHub OIDC trust. Cloudflare R2 may be an
+export/mirror but cannot be the sole accepted authority while S3 Object Lock
+and the required KMS contract are absent. Exact provider/account/project,
+region, bucket/resource ID, endpoint, key ID, role/principal and OIDC subject
+must be resource-bound and canary-read back before activation. Check output, an
+expiring Actions artifact alone, Jira, Confluence, GitHub or Sigstore may index,
+attest or copy receipts but do not replace the external WORM/CAS trust anchor.
 
 ### 6. Explicitly deferred convergence work
 
@@ -485,11 +716,33 @@ are supported by immutable evidence:
 5. Enabled no-delta, active-head, consumed-head, duplicate-event, newer-event,
    cancellation, timeout, pagination, malformed-history, source-drift, and
    over-limit cases converge or fail closed exactly as decided.
-6. The one-way DAG and single aggregate gate are live and the reciprocal cycle
+6. The acyclic S0 constructor reproducibly proves templates/logical projections
+   -> Core bytes/digest -> authoritative Core append/CAS/readback -> Core
+   attestation/readback -> actual policies/Git objects -> Coverage bytes/digest
+   -> authoritative Coverage append/CAS/readback -> Coverage
+   attestation/readback -> Activation ordering. Every later receipt/pending/
+   Closure repeats both seal layers before its successor. Tests reject a
+   record containing its own store/proof metadata, noncanonical raw JSON,
+   an unhashed domain tag, every direct/transitive self-reference, duplicate
+   key, alternative role token, a real Core digest equal to the reserved
+   sentinel, second normalized path, alternate-Core policy substitution or
+   conflicting Coverage/activation root. They separately prove
+   P4-M absent-main-to-consumed versus active-source-to-consumed semantics,
+   receipt-derived source/backmerge state, all four distinct P4-D ancestry role
+   tokens, normalized P4-D policy projection, exact synthetic diff digest/size,
+   the `H=[D,M]` and `Q=[D,H]` parent topology with equal result trees, both P4
+   byte limits, durable terminal pending, deterministic P4-D resolution and
+   global post-Closure absorption.
+7. The external authoritative store passes exact provider/resource/OIDC/key/
+   retention readback, create-if-absent and stale-predecessor race negatives,
+   seven-year Compliance-WORM/delete negatives, exhaustive version pagination,
+   uncertain-outcome recovery and independent export/reconstruction; GitHub/
+   Sigstore proof mirrors match the authoritative bytes.
+8. The one-way DAG and single aggregate gate are live and the reciprocal cycle
    and superseded leaf requirements are absent.
-7. Cleanup, three references including Collection-to-Container, canary, and
+9. Cleanup, three references including Collection-to-Container, canary, and
    fleet evidence pass their independent acceptance gates.
-8. Only then may the maintained ADR set be considered for a separately reviewed
+10. Only then may the maintained ADR set be considered for a separately reviewed
    status promotion. No implementation step promotes its own status.
 
 ## Consequences
@@ -516,6 +769,20 @@ are supported by immutable evidence:
 - PR #575 protected merge receipt and independent readback
 - PR #576 fail-closed receipt; Required runs `34143008702` and `34143008743`;
   automatic no-rerun helper `34143164872`
+- PR #576 live CAS pre-read through `2026-09-08T02:31:18Z`, local receipt
+  SHA-256 `cf2604201f72ea7c1988226214f41212d13dbf1f38c1cc63fd16145332608734`
+- Owner decision receipt for DEC-PR576-LIFECYCLE-01 and DEC-IA01, local
+  SHA-256 `99971258ca48af486393cb7c41d4f62e59f4a5211783f32b43e8073c6346dca7`
+- S0 policy self-reference decision v1, local SHA-256
+  `30e620cf00297f132598166c7517931af89a01a2fd85757fcffc6f3a11008518`
+- Fresh residual materialization plan v3, local SHA-256
+  `539d91fc78801c346de381e8cb7ce10f6814f435a3be145d7f667b9c368a175a`
+- Independent exact acyclic-decision review v1, local SHA-256
+  `2ce754e0e9290adb842efbc297d5fa9d9aa80d1bdb24ec6ebec06249bf0a2689`
+- S0 provisional prebuild receipt v1, local SHA-256
+  `9b6aa18a2a7f16eb4521967ca2b802e4f07628d821e5a9df30946efd64f80022`
+- IA-01 provider read-only inventory v1, local SHA-256
+  `90d95bc67154aa44eddfa97cb3a01adb25d13452fcf604c69139e2c2b166c495`
 - REP-120 canonical bounded-idempotent orchestration decision
 - Generic bounded-review-unit and Coverage Manifest authority
 - Source-first DAG and aggregate-gate migration plan
@@ -523,5 +790,13 @@ are supported by immutable evidence:
   behavior: <https://docs.github.com/en/actions/concepts/security/artifact-attestations>
 - GitHub `actions/attest` custom-predicate, subject-digest, permission, and
   bundle contract: <https://github.com/actions/attest>
+- Hetzner Object Lock/Compliance and supported-action profiles:
+  <https://docs.hetzner.com/storage/object-storage/howto-protect-objects/protect-object-lock-retention/>
+  and <https://docs.hetzner.com/storage/object-storage/supported-actions/>
+- Cloudflare R2 S3 compatibility profile:
+  <https://developers.cloudflare.com/r2/api/s3/api/>
+- AWS S3 conditional-write and Object Lock profiles:
+  <https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html>
+  and <https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html>
 - GitHub documentation for workflow triggers, concurrency, Environments,
   workflow reruns, variables/secrets, and App installation tokens
