@@ -310,6 +310,73 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         return policy, policy_raw, bundle
 
     @classmethod
+    def _reseal_s0_core_v2_fixture(
+        cls,
+        policy: dict[str, object],
+        bundle: dict[str, object],
+    ) -> tuple[dict[str, object], bytes, dict[str, object]]:
+        sealed_policy = json.loads(json.dumps(policy))
+        sealed_bundle = json.loads(json.dumps(bundle))
+        core = sealed_bundle["records"][0]["record"]
+        coverage = sealed_bundle["records"][1]["record"]
+        activation = sealed_bundle["records"][2]["record"]
+
+        core_sha256 = cls._s0_semantic_sha256(
+            "rep120-authorization-manifest-core-v2", core
+        )
+        sealed_policy["authorization_manifest_sha256"] = core_sha256
+        consumed = json.loads(json.dumps(sealed_policy))
+        consumed["state"] = "consumed"
+        policy_raw = cls._canonical_s0_json(sealed_policy)
+        consumed_raw = cls._canonical_s0_json(consumed)
+        policy_material = {
+            "active_blob": cls._s0_git_blob(policy_raw),
+            "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+            "active_normalized_sha256": cls._normalized_s0_policy_sha256(
+                sealed_policy
+            ),
+            "consumed_blob": cls._s0_git_blob(consumed_raw),
+            "consumed_bytes_sha256": hashlib.sha256(
+                consumed_raw
+            ).hexdigest(),
+            "consumed_normalized_sha256": cls._normalized_s0_policy_sha256(
+                consumed
+            ),
+        }
+        coverage.update(
+            {
+                "core_sha256": core_sha256,
+                "policy": policy_material,
+                "previous_record_sha256": core_sha256,
+                "repository": core["repository"],
+                "series_id": core["series_id"],
+                "units": [
+                    {
+                        "diff_bytes": unit["review_bytes"],
+                        "diff_sha256": unit["review_sha256"],
+                        "id": unit["id"],
+                        "paths": unit["paths"],
+                    }
+                    for unit in core["units"]
+                ],
+            }
+        )
+        coverage_sha256 = cls._s0_semantic_sha256(
+            "rep120-post-core-coverage-v1", coverage
+        )
+        activation.update(
+            {
+                "active_policy_blob": policy_material["active_blob"],
+                "core_sha256": core_sha256,
+                "coverage_sha256": coverage_sha256,
+                "diff": json.loads(json.dumps(coverage["activation"])),
+                "previous_record_sha256": coverage_sha256,
+                "series_id": core["series_id"],
+            }
+        )
+        return sealed_policy, policy_raw, sealed_bundle
+
+    @classmethod
     def _run_s0_core_v2_verifier(
         cls,
         *,
@@ -346,6 +413,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 capture_output=True,
                 check=False,
             )
+
+    def _assert_s0_core_v2_controlled_rejection(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("S0 Core-v2 rejected:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     @staticmethod
     def _protected_source_binding() -> str:
@@ -6656,6 +6730,136 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn(
             coverage["policy"]["consumed_blob"],
             self._canonical_s0_json(core).decode(),
+        )
+
+    def test_s0_core_v2_rejects_unsafe_paths_after_full_reseal(self) -> None:
+        rejected_paths = (
+            "",
+            ".",
+            "..",
+            "foo/.",
+            "foo/..",
+            "foo/./bar",
+            "foo/../bar",
+            "/absolute",
+            "foo//bar",
+            ".git",
+            ".Git",
+            ".GIT",
+            ".git/config",
+            "foo/.git",
+            "foo/.gIt/config",
+        )
+        for path in rejected_paths:
+            with self.subTest(path=path):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                bundle["records"][0]["record"]["units"][2]["paths"] = [
+                    path
+                ]
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self._assert_s0_core_v2_controlled_rejection(result)
+
+        for path in (
+            "safe/file.txt",
+            "foo/bar",
+            ".github/workflows/safe.yml",
+            ".lit/safe.json",
+            "foo/.gitignore",
+            "foo/git",
+        ):
+            with self.subTest(safe_path=path):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                bundle["records"][0]["record"]["units"][2]["paths"] = [
+                    path
+                ]
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    f"path={path!r}; stderr={result.stderr!r}",
+                )
+
+    def test_s0_core_v2_rejects_mixed_path_shapes_without_traceback(
+        self,
+    ) -> None:
+        for paths in (
+            ["safe/file.txt", 1],
+            [{"x": "y"}],
+            [["nested"]],
+        ):
+            with self.subTest(paths=paths):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                bundle["records"][0]["record"]["units"][2]["paths"] = paths
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self._assert_s0_core_v2_controlled_rejection(result)
+
+    def test_s0_core_v2_reserves_zero_digest_for_normalization_only(
+        self,
+    ) -> None:
+        zero64 = "0" * 64
+        policy, policy_raw, baseline = self._s0_core_v2_fixture()
+        self.assertEqual(
+            zero64,
+            baseline["records"][0]["record"]["normalization"]["sentinel"],
+        )
+        accepted = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw, bundle=baseline
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+
+        zero_review = json.loads(json.dumps(baseline))
+        zero_review["records"][0]["record"]["units"][2][
+            "review_sha256"
+        ] = zero64
+        _, zero_review_policy, zero_review_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, zero_review)
+        )
+        review_result = self._run_s0_core_v2_verifier(
+            policy_raw=zero_review_policy, bundle=zero_review_sealed
+        )
+        self._assert_s0_core_v2_controlled_rejection(review_result)
+        self.assertEqual(
+            zero64,
+            zero_review_sealed["records"][1]["record"]["units"][2][
+                "diff_sha256"
+            ],
+        )
+
+        zero_activation = json.loads(json.dumps(baseline))
+        zero_activation["records"][1]["record"]["activation"][
+            "diff_sha256"
+        ] = zero64
+        _, zero_activation_policy, zero_activation_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, zero_activation)
+        )
+        activation_result = self._run_s0_core_v2_verifier(
+            policy_raw=zero_activation_policy, bundle=zero_activation_sealed
+        )
+        self._assert_s0_core_v2_controlled_rejection(activation_result)
+        self.assertEqual(
+            zero64,
+            zero_activation_sealed["records"][2]["record"]["diff"][
+                "diff_sha256"
+            ],
+        )
+        self.assertIn(
+            'return sha256_identity(result, "derived semantic digest")',
+            self._s0_core_v2_verifier(),
         )
 
     def test_s0_core_v2_strict_json_and_default_deny_hostile_inputs(

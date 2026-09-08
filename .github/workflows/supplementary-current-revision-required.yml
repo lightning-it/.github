@@ -803,10 +803,7 @@ jobs:
           ]
           HEX40 = re.compile(r"^[0-9a-f]{40}$")
           HEX64 = re.compile(r"^[0-9a-f]{64}$")
-          SAFE_PATH = re.compile(
-              r"^(?!/)(?!.*(?:^|/)\.\.?/)(?!.*//)"
-              r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
-          )
+          PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
           class Rejected(Exception):
@@ -830,6 +827,33 @@ jobs:
           ) -> int:
               require(type(value) is int, f"{label}: integer required")
               require(minimum <= value <= maximum, f"{label}: range")
+              return value
+
+
+          def sha256_identity(value: object, label: str) -> str:
+              require(
+                  type(value) is str
+                  and HEX64.fullmatch(value) is not None
+                  and value != ZERO64,
+                  f"{label}: nonzero SHA-256 required",
+              )
+              return value
+
+
+          def repository_path(value: object, label: str) -> str:
+              require(type(value) is str, f"{label}: string required")
+              require(value != "" and not value.startswith("/"),
+                      f"{label}: unsafe path")
+              components = value.split("/")
+              require(
+                  all(
+                      component not in ("", ".", "..")
+                      and component.casefold() != ".git"
+                      and PATH_COMPONENT.fullmatch(component) is not None
+                      for component in components
+                  ),
+                  f"{label}: unsafe path component",
+              )
               return value
 
 
@@ -907,9 +931,10 @@ jobs:
           def digest(domain: str, value: object) -> str:
               require(domain in DOMAINS or domain == "rep120-normalized-policy-v1",
                       "digest domain")
-              return hashlib.sha256(
+              result = hashlib.sha256(
                   domain.encode("ascii") + b"\0" + canonical(value)
               ).hexdigest()
+              return sha256_identity(result, "derived semantic digest")
 
 
           def git_blob(raw: bytes) -> str:
@@ -1004,12 +1029,8 @@ jobs:
                       "inactive policy authority",
                   )
                   return policy
-              require(
-                  type(policy["authorization_manifest_sha256"]) is str
-                  and HEX64.fullmatch(
-                      policy["authorization_manifest_sha256"]
-                  ) is not None
-                  and policy["authorization_manifest_sha256"] != ZERO64,
+              sha256_identity(
+                  policy["authorization_manifest_sha256"],
                   "policy Core digest",
               )
               bounded_int(policy["policy_epoch"], 1, 2147483647, "policy epoch")
@@ -1107,27 +1128,31 @@ jobs:
                   paths = unit["paths"]
                   require(
                       type(paths) is list
-                      and paths == sorted(paths)
-                      and len(paths) == len(set(paths))
                       and len(paths) > 0,
                       "Core paths",
                   )
-                  for path in paths:
-                      require(
-                          type(path) is str
-                          and SAFE_PATH.fullmatch(path) is not None
-                          and path != ".lit/main-ancestry.json",
-                          "unsafe Core path",
-                      )
-                  require(ownership.isdisjoint(paths), "overlapping ownership")
-                  ownership.update(paths)
-                  bounded_int(unit["review_bytes"], 1, 199999, "review bytes")
+                  validated_paths = [
+                      repository_path(path, "Core path") for path in paths
+                  ]
                   require(
-                      type(unit["review_sha256"]) is str
-                      and HEX64.fullmatch(unit["review_sha256"]) is not None,
-                      "review digest",
+                      paths == sorted(validated_paths)
+                      and len(paths) == len(set(validated_paths)),
+                      "Core paths",
                   )
-                  result[expected] = paths
+                  require(
+                      ".lit/main-ancestry.json" not in validated_paths,
+                      "unsafe Core path",
+                  )
+                  require(
+                      ownership.isdisjoint(validated_paths),
+                      "overlapping ownership",
+                  )
+                  ownership.update(validated_paths)
+                  bounded_int(unit["review_bytes"], 1, 199999, "review bytes")
+                  sha256_identity(
+                      unit["review_sha256"], "Core unit review digest"
+                  )
+                  result[expected] = validated_paths
               require(result["P1"] == [ADR_PATH], "P1 ownership")
               require(result["P2"] == sorted(P2_PATHS), "P2 ownership")
               require(result["P4"] == sorted(P4_PATHS), "P4 ownership")
@@ -1179,8 +1204,27 @@ jobs:
               )
               consumed = copy.deepcopy(policy)
               consumed["state"] = "consumed"
+              normalization = closed(
+                  core["normalization"],
+                  {
+                      "active_sha256",
+                      "consumed_sha256",
+                      "domain",
+                      "path",
+                      "sentinel",
+                  },
+                  "Core normalization",
+              )
+              sha256_identity(
+                  normalization["active_sha256"],
+                  "active normalized-policy digest",
+              )
+              sha256_identity(
+                  normalization["consumed_sha256"],
+                  "consumed normalized-policy digest",
+              )
               require(
-                  core["normalization"]
+                  normalization
                   == {
                       "active_sha256": normalized(policy),
                       "consumed_sha256": normalized(consumed),
@@ -1215,6 +1259,11 @@ jobs:
                   },
                   "Coverage",
               )
+              sha256_identity(coverage["core_sha256"], "Coverage Core digest")
+              sha256_identity(
+                  coverage["previous_record_sha256"],
+                  "Coverage predecessor digest",
+              )
               require(
                   coverage["schema"] == "lit.rep120.post-core-coverage/v1"
                   and coverage["core_sha256"] == core_digest
@@ -1228,15 +1277,31 @@ jobs:
               consumed_raw = canonical(consumed)
               expected_material = {
                   "active_blob": git_blob(policy_raw),
-                  "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+                  "active_bytes_sha256": sha256_identity(
+                      hashlib.sha256(policy_raw).hexdigest(),
+                      "derived active-policy bytes digest",
+                  ),
                   "active_normalized_sha256": normalized(policy),
                   "consumed_blob": git_blob(consumed_raw),
-                  "consumed_bytes_sha256": hashlib.sha256(
-                      consumed_raw
-                  ).hexdigest(),
+                  "consumed_bytes_sha256": sha256_identity(
+                      hashlib.sha256(consumed_raw).hexdigest(),
+                      "derived consumed-policy bytes digest",
+                  ),
                   "consumed_normalized_sha256": normalized(consumed),
               }
-              require(coverage["policy"] == expected_material,
+              coverage_policy = closed(
+                  coverage["policy"], set(expected_material), "Coverage policy"
+              )
+              for field in (
+                  "active_bytes_sha256",
+                  "active_normalized_sha256",
+                  "consumed_bytes_sha256",
+                  "consumed_normalized_sha256",
+              ):
+                  sha256_identity(
+                      coverage_policy[field], f"Coverage policy {field}"
+                  )
+              require(coverage_policy == expected_material,
                       "Coverage policy material")
               require(
                   type(coverage["units"]) is list
@@ -1253,6 +1318,10 @@ jobs:
                       covered,
                       {"diff_bytes", "diff_sha256", "id", "paths"},
                       f"Coverage {expected}",
+                  )
+                  sha256_identity(
+                      covered["diff_sha256"],
+                      f"Coverage {expected} diff digest",
                   )
                   require(
                       covered
@@ -1274,8 +1343,11 @@ jobs:
               )
               require(
                   activation["paths"] == [POLICY_PATH]
-                  and type(activation["diff_sha256"]) is str
-                  and HEX64.fullmatch(activation["diff_sha256"]) is not None,
+                  and sha256_identity(
+                      activation["diff_sha256"],
+                      "Coverage activation diff digest",
+                  )
+                  == activation["diff_sha256"],
                   "activation Coverage",
               )
               core_bytes = canonical(core)
@@ -1314,6 +1386,25 @@ jobs:
                   },
                   "Activation",
               )
+              sha256_identity(activation["core_sha256"],
+                              "Activation Core digest")
+              sha256_identity(
+                  activation["coverage_sha256"],
+                  "Activation Coverage digest",
+              )
+              sha256_identity(
+                  activation["previous_record_sha256"],
+                  "Activation predecessor digest",
+              )
+              activation_diff = closed(
+                  activation["diff"],
+                  {"diff_bytes", "diff_sha256", "paths"},
+                  "Activation diff",
+              )
+              sha256_identity(
+                  activation_diff["diff_sha256"],
+                  "Activation diff digest",
+              )
               require(
                   activation["schema"]
                   == "lit.rep120.protected-activation-receipt/v1"
@@ -1322,7 +1413,7 @@ jobs:
                   and activation["coverage_sha256"] == coverage_digest
                   and activation["previous_record_sha256"] == coverage_digest
                   and activation["active_policy_blob"] == active_blob
-                  and activation["diff"] == coverage["activation"],
+                  and activation_diff == coverage["activation"],
                   "Activation dependencies",
               )
               merge = closed(
@@ -1381,7 +1472,6 @@ jobs:
                   require(envelope["domain"] == domain, "root order")
                   values.append(envelope["record"])
                   digests.append(digest(domain, envelope["record"]))
-                  require(digests[-1] != ZERO64, "reserved digest")
               core, paths = validate_core(values[0], policy)
               require(
                   policy["authorization_manifest_sha256"] == digests[0],
