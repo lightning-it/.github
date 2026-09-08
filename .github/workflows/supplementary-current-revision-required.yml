@@ -325,18 +325,1012 @@ jobs:
             and ([.protection_rules[]? | select(.type == "required_reviewers")][0].reviewers[0].reviewer.id == 15545798)
           ' <<<"${environment}" >/dev/null
 
+  route-protected-current-revision:
+    name: Route protected current-revision verification
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      s0_prestage: ${{ steps.route.outputs.s0_prestage }}
+
+    steps:
+      - name: Classify the protected S0 feature-to-main route
+        id: route
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          s0_prestage=false
+          if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+            && [ "${BASE_REF}" = main ] \
+            && [[ "${HEAD_REF}" == prestage/* ]]; then
+            s0_prestage=true
+          fi
+          printf 's0_prestage=%s\n' "${s0_prestage}" >>"${GITHUB_OUTPUT}"
+
+  reserve-s0-feature-main-prestage:
+    name: Reserve protected S0 feature-to-main verification
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      check_id: ${{ steps.reserve.outputs.check_id }}
+      external_id: ${{ steps.reserve.outputs.external_id }}
+
+    steps:
+      - name: Bind the protected source and reserve one S0 operation
+        id: reserve
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          reservation_id=''
+          finalize_reservation_failure() {
+            local exit_code="$?"
+            trap - EXIT
+            set +e
+            if [[ "${reservation_id}" =~ ^[1-9][0-9]*$ ]]; then
+              gh api --method PATCH \
+                "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+                -f status=completed \
+                -f conclusion=failure \
+                -f 'output[title]=REP-120 S0 reservation failed closed' \
+                -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}." \
+                >/dev/null
+            fi
+            exit "${exit_code}"
+          }
+          trap finalize_reservation_failure EXIT
+
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${WORKFLOW_REF}" = \
+            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop'
+          [[ "${HEAD_REF}" =~ ^prestage/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$ ]]
+          [[ "${HEAD_REF}" != *..* ]]
+          [[ "${HEAD_REF}" != *//* ]]
+          [[ "${HEAD_REF}" != *@\{* ]]
+          [[ "${HEAD_REF}" != *.lock ]]
+
+          repository_json="$(gh api "repos/${REPOSITORY}")"
+          jq -e --arg repository "${REPOSITORY}" --argjson id 1112629689 '
+            .id == $id
+            and .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${repository_json}" >/dev/null
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "${HEAD_REF}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and (.user.id | type) == "number" and .user.id > 0
+              and (.user.login | type) == "string" and (.user.login | length) > 0
+              and (.user.type == "User" or .user.type == "Bot")
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.ref == $head_ref
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+            ' <<<"${pull}" >/dev/null
+
+          repository_id="$(jq -er '.id' <<<"${repository_json}")"
+          reservation_name='REP-120 S0 prestage authorization'
+          reservation_external_id="rep120-s0-prestage:v1:${repository_id}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          read_reservations() {
+            gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=REP-120%20S0%20prestage%20authorization&filter=all&per_page=100"
+          }
+          reservation_pages="$(read_reservations)"
+          s0_reservations="$(jq -c \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg name "${reservation_name}" '
+              [.[].check_runs[]?
+                | select(.name == $name)
+                | select(.app.id == 15368 and .app.slug == "github-actions")
+                | select(.head_sha == $head)]
+              | if length <= 1 then . else error("duplicate S0 reservations") end
+              | if length == 0 or .[0].external_id == $external_id
+                then . else error("conflicting S0 reservation") end
+            ' <<<"${reservation_pages}")"
+
+          if [ "$(jq 'length' <<<"${s0_reservations}")" -eq 0 ]; then
+            reservation="$(gh api --method POST \
+              "repos/${REPOSITORY}/check-runs" \
+              -f name="${reservation_name}" \
+              -f head_sha="${EVENT_HEAD}" \
+              -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
+              -f "details_url=${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              -f 'output[title]=REP-120 S0 verification reserved' \
+              -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}.")"
+          else
+            reservation="$(jq -c '.[0]' <<<"${s0_reservations}")"
+          fi
+          reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+            <<<"${reservation}")"
+          jq -e \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg name "${reservation_name}" \
+            --argjson check_id "${reservation_id}" '
+              .id == $check_id
+              and .name == $name
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and (
+                .status == "in_progress"
+                or (.status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure"))
+              )
+            ' <<<"${reservation}" >/dev/null
+
+          visible="$(read_reservations | jq -c \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson check_id "${reservation_id}" '
+              [.[].check_runs[]?
+                | select(.id == $check_id)
+                | select(.app.id == 15368 and .app.slug == "github-actions")
+                | select(.head_sha == $head)
+                | select(.external_id == $external_id)]
+            ')"
+          test "$(jq 'length' <<<"${visible}")" -eq 1
+          printf 'check_id=%s\n' "${reservation_id}" >>"${GITHUB_OUTPUT}"
+          printf 'external_id=%s\n' "${reservation_external_id}" \
+            >>"${GITHUB_OUTPUT}"
+          trap - EXIT
+
+  verify-s0-feature-main-prestage:
+    name: Verify protected S0 feature-to-main input
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+    if: >-
+      needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+      && needs['reserve-s0-feature-main-prestage'].result == 'success'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      diff_sha256: ${{ steps.verify.outputs.diff_sha256 }}
+      policy_blob: ${{ steps.verify.outputs.policy_blob }}
+      series_id: ${{ steps.verify.outputs.series_id }}
+      unit_id: ${{ steps.verify.outputs.unit_id }}
+
+    steps:
+      - name: Verify the complete policy-bound S0 review unit
+        id: verify
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RESERVATION_EXTERNAL_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.external_id }}
+          RESERVATION_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.check_id }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${WORKFLOW_REF}" = \
+            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop'
+          [[ "${HEAD_REF}" =~ ^prestage/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$ ]]
+          [[ "${HEAD_REF}" != *..* ]]
+          [[ "${HEAD_REF}" != *//* ]]
+          [[ "${HEAD_REF}" != *@\{* ]]
+          [[ "${HEAD_REF}" != *.lock ]]
+
+          repository_json="$(gh api "repos/${REPOSITORY}")"
+          jq -e --arg repository "${REPOSITORY}" --argjson id 1112629689 '
+            .id == $id
+            and .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${repository_json}" >/dev/null
+          repository_id="$(jq -er '.id' <<<"${repository_json}")"
+          expected_reservation_external_id="rep120-s0-prestage:v1:${repository_id}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          test "${RESERVATION_EXTERNAL_ID}" = \
+            "${expected_reservation_external_id}"
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "${HEAD_REF}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and (.user.id | type) == "number" and .user.id > 0
+              and (.user.login | type) == "string" and (.user.login | length) > 0
+              and (.user.type == "User" or .user.type == "Bot")
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.ref == $head_ref
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+            ' <<<"${pull}" >/dev/null
+
+          policy_path='.lit/feature-main-prestage-policy.json'
+          policy_asset="$(gh api \
+            "repos/${REPOSITORY}/contents/${policy_path}?ref=${WORKFLOW_SHA}")"
+          jq -e \
+            --arg path "${policy_path}" \
+            --arg url "${GITHUB_API_URL}/repos/${REPOSITORY}/contents/${policy_path}?ref=${WORKFLOW_SHA}" '
+              .type == "file"
+              and .path == $path
+              and .url == $url
+              and .encoding == "base64"
+              and (.sha | type) == "string"
+              and (.sha | test("^[0-9a-f]{40}$"))
+              and (.size | type) == "number"
+              and .size > 0 and .size < 200000
+              and (.content | type) == "string" and (.content | length) > 0
+            ' <<<"${policy_asset}" >/dev/null
+
+          umask 077
+          s0_directory="$(mktemp -d "${RUNNER_TEMP}/rep120-s0.XXXXXX")"
+          cleanup_s0_directory() {
+            rm -rf -- "${s0_directory}"
+          }
+          trap cleanup_s0_directory EXIT
+          policy_file="${s0_directory}/policy.json"
+          jq -er .content <<<"${policy_asset}" | base64 --decode >"${policy_file}"
+          policy_blob="$(jq -er .sha <<<"${policy_asset}")"
+          test "$(git hash-object "${policy_file}")" = "${policy_blob}"
+          canonical_policy="$(jq -S . "${policy_file}")"
+          printf '%s\n' "${canonical_policy}" \
+            | cmp -s - "${policy_file}"
+
+          # rep120-s0-policy-contract: start
+          s0_policy_contract="$(cat <<'JQ'
+          (keys == [
+            "allowed_principals",
+            "authorization_manifest_sha256",
+            "canonical_diff",
+            "expires_at",
+            "issue",
+            "policy_epoch",
+            "schema",
+            "series_id",
+            "state",
+            "target",
+            "transitions"
+          ])
+          and .schema == "lit.rep120.feature-main-prestage-policy/v2"
+          and .issue == 564
+          and .target == {
+            "base_ref": "refs/heads/main",
+            "head_prefix": "prestage/",
+            "repository": "lightning-it/.github",
+            "repository_id": 1112629689,
+            "source_ref": "refs/heads/develop"
+          }
+          and .canonical_diff == {
+            "format": "git-diff-binary-full-index-no-renames-v1",
+            "maximum_bytes": 199999,
+            "minimum_bytes": 1,
+            "options": [
+              "--binary",
+              "--full-index",
+              "--no-renames",
+              "--no-color",
+              "--no-ext-diff",
+              "--no-textconv"
+            ]
+          }
+          and .transitions == ["inactive", "active", "consumed"]
+          and (.state == "inactive" or .state == "active" or .state == "consumed")
+          and (
+            if .state == "inactive" then
+              .allowed_principals == []
+              and .authorization_manifest_sha256 == null
+              and .expires_at == null
+              and .policy_epoch == 0
+              and .series_id == null
+            else
+              (.authorization_manifest_sha256 | type) == "string"
+              and (.authorization_manifest_sha256 | test("^[0-9a-f]{64}$"))
+              and .authorization_manifest_sha256
+                != "0000000000000000000000000000000000000000000000000000000000000000"
+              and (.expires_at | type) == "string"
+              and (.expires_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+              and (.policy_epoch | type) == "number"
+              and (.policy_epoch | floor) == .policy_epoch
+              and .policy_epoch > 0
+              and (.series_id | type) == "string"
+              and (.series_id | test("^rep120-main-[a-z0-9][a-z0-9-]{0,63}$"))
+              and (.allowed_principals | type) == "array"
+              and (.allowed_principals | length) > 0
+              and (.allowed_principals | length) <= 4
+              and all(.allowed_principals[];
+                keys == [
+                  "github_app_id", "login", "review_class", "type", "user_id"
+                ]
+                and (.login | type) == "string"
+                and (.login | test("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9]|[A-Za-z0-9])?(?:\\[bot\\])?$"))
+                and (.user_id | type) == "number"
+                and (.user_id | floor) == .user_id
+                and .user_id > 0
+                and (
+                  (.type == "User"
+                    and .github_app_id == null
+                    and .review_class == "copilot")
+                  or
+                  (.type == "Bot"
+                    and (.github_app_id | type) == "number"
+                    and (.github_app_id | floor) == .github_app_id
+                    and .github_app_id > 0
+                    and (.review_class == "managed-sync"
+                      or .review_class == "renovate"
+                      or .review_class == "exact-revision"))
+                ))
+              and ([.allowed_principals[] | [.login, .user_id]] | unique | length)
+                == (.allowed_principals | length)
+              and ([.allowed_principals[].user_id] | unique | length)
+                == (.allowed_principals | length)
+            end
+          )
+          JQ
+          )"
+          # rep120-s0-policy-contract: end
+          jq -e "${s0_policy_contract}" "${policy_file}" >/dev/null
+          test "$(jq -er .state "${policy_file}")" = active
+          now_epoch="$(date -u +%s)"
+          expires_epoch="$(jq -er '.expires_at | fromdateiso8601' \
+            "${policy_file}")"
+          test "${expires_epoch}" -gt "${now_epoch}"
+
+          normalization_sentinel='0000000000000000000000000000000000000000000000000000000000000000'
+          normalized_policy_sha256="$(jq -Sc \
+            --arg sentinel "${normalization_sentinel}" \
+            '.authorization_manifest_sha256 = $sentinel' \
+            "${policy_file}" | sha256sum | awk '{print $1}')"
+          [[ "${normalized_policy_sha256}" =~ ^[0-9a-f]{64}$ ]]
+
+          # Provisional/pre-D1 fail-closed boundary. The acyclic v2 envelope is
+          # ready, but the public Core proxy repository, protected attestation
+          # workflow/ref, OIDC identity and transparency verifier are not yet
+          # concrete. No active policy may authorize a candidate until that P0
+          # trust root is implemented here and its exact Core is verified.
+          echo 'S0 Authorization Manifest Core verifier is not materialized.' >&2
+          exit 1
+
+          issue_view="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}")"
+          user_id="$(jq -er '.user.id' <<<"${pull}")"
+          user_login="$(jq -er '.user.login' <<<"${pull}")"
+          user_type="$(jq -er '.user.type' <<<"${pull}")"
+          github_app_id="$(jq -c '.performed_via_github_app.id // null' \
+            <<<"${issue_view}")"
+          principal_matches="$(jq -c \
+            --arg login "${user_login}" \
+            --arg type "${user_type}" \
+            --argjson app_id "${github_app_id}" \
+            --argjson user_id "${user_id}" '
+              [.allowed_principals[]
+                | select(.login == $login)
+                | select(.type == $type)
+                | select(.user_id == $user_id)
+                | select(.github_app_id == $app_id)]
+            ' "${policy_file}")"
+          test "$(jq 'length' <<<"${principal_matches}")" -eq 1
+          review_class="$(jq -er '.[0].review_class' \
+            <<<"${principal_matches}")"
+
+          auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" \
+            | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          s0_git="${s0_directory}/objects.git"
+          git init --bare --quiet "${s0_git}"
+          git --git-dir="${s0_git}" remote add origin \
+            "${GITHUB_SERVER_URL}/${REPOSITORY}.git"
+          git --git-dir="${s0_git}" \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --quiet --no-tags --no-recurse-submodules origin \
+            '+refs/heads/main:refs/s0/main' \
+            '+refs/heads/develop:refs/s0/develop' \
+            "+refs/heads/${HEAD_REF}:refs/s0/head"
+          test "$(git --git-dir="${s0_git}" rev-parse 'refs/s0/main^{commit}')" \
+            = "${EVENT_BASE}"
+          test "$(git --git-dir="${s0_git}" rev-parse 'refs/s0/develop^{commit}')" \
+            = "${WORKFLOW_SHA}"
+          test "$(git --git-dir="${s0_git}" rev-parse 'refs/s0/head^{commit}')" \
+            = "${EVENT_HEAD}"
+          test "$(git --git-dir="${s0_git}" merge-base --all \
+            refs/s0/main refs/s0/head)" = "${EVENT_BASE}"
+          git --git-dir="${s0_git}" merge-base --is-ancestor \
+            refs/s0/main refs/s0/head
+          integration_tree="$(git --git-dir="${s0_git}" merge-tree \
+            --write-tree refs/s0/main refs/s0/head)"
+          [[ "${integration_tree}" =~ ^[0-9a-f]{40}$ ]]
+          base_tree="$(git --git-dir="${s0_git}" rev-parse 'refs/s0/main^{tree}')"
+          head_tree="$(git --git-dir="${s0_git}" rev-parse 'refs/s0/head^{tree}')"
+          test "${integration_tree}" = "${head_tree}"
+
+          canonical_diff="${s0_directory}/canonical.diff"
+          git --git-dir="${s0_git}" diff \
+            --binary --full-index --no-renames --no-color \
+            --no-ext-diff --no-textconv \
+            "${base_tree}" "${integration_tree}" >"${canonical_diff}"
+          diff_bytes="$(wc -c <"${canonical_diff}" | tr -d '[:space:]')"
+          diff_sha256="$(sha256sum "${canonical_diff}" | awk '{print $1}')"
+          [[ "${diff_bytes}" =~ ^[0-9]+$ ]]
+          test "${diff_bytes}" -ge 1
+          test "${diff_bytes}" -le 199999
+          [[ "${diff_sha256}" =~ ^[0-9a-f]{64}$ ]]
+
+          test -z "$(git --git-dir="${s0_git}" diff --name-status \
+            --find-renames=1% "${base_tree}" "${integration_tree}" \
+            | awk '$1 ~ /^[RC]/ {print; exit}')"
+          git --git-dir="${s0_git}" diff --numstat --no-renames \
+            "${base_tree}" "${integration_tree}" \
+            | awk '$1 == "-" || $2 == "-" {exit 1}'
+
+          zero_oid='0000000000000000000000000000000000000000'
+          actual_paths='[]'
+          while IFS= read -r -d '' raw_metadata \
+            && IFS= read -r -d '' changed_path; do
+            [[ "${changed_path}" =~ ^[A-Za-z0-9._/-]{1,240}$ ]]
+            [[ "${changed_path}" != /* ]]
+            [[ "${changed_path}" != */ ]]
+            [[ "/${changed_path}/" != */../* ]]
+            [[ "/${changed_path}/" != */./* ]]
+            [[ "${changed_path}" != *//* ]]
+            read -r source_mode destination_mode source_blob \
+              destination_blob operation_code <<<"${raw_metadata#:}"
+            [[ "${source_blob}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${destination_blob}" =~ ^[0-9a-f]{40}$ ]]
+            case "${operation_code}" in
+              A)
+                test "${source_mode}" = 000000
+                test "${source_blob}" = "${zero_oid}"
+                [[ "${destination_mode}" =~ ^100(644|755)$ ]]
+                git --git-dir="${s0_git}" cat-file -e \
+                  "${destination_blob}^{blob}"
+                operation=add
+                ;;
+              M)
+                [[ "${source_mode}" =~ ^100(644|755)$ ]]
+                [[ "${destination_mode}" =~ ^100(644|755)$ ]]
+                git --git-dir="${s0_git}" cat-file -e "${source_blob}^{blob}"
+                git --git-dir="${s0_git}" cat-file -e \
+                  "${destination_blob}^{blob}"
+                if [ "${source_blob}" = "${destination_blob}" ] \
+                  && [ "${source_mode}" = "${destination_mode}" ]; then
+                  exit 1
+                fi
+                operation=modify
+                ;;
+              D)
+                [[ "${source_mode}" =~ ^100(644|755)$ ]]
+                git --git-dir="${s0_git}" cat-file -e "${source_blob}^{blob}"
+                test "${destination_mode}" = 000000
+                test "${destination_blob}" = "${zero_oid}"
+                operation=delete
+                ;;
+              *)
+                echo 'Unsupported path operation.' >&2
+                exit 1
+                ;;
+            esac
+            actual_paths="$(jq -c \
+              --arg destination_blob "${destination_blob}" \
+              --arg destination_mode "${destination_mode}" \
+              --arg operation "${operation}" \
+              --arg path "${changed_path}" \
+              --arg source_blob "${source_blob}" \
+              --arg source_mode "${source_mode}" \
+              --arg zero "${zero_oid}" '
+                . + [{
+                  destination_blob: (
+                    if $destination_blob == $zero then null
+                    else $destination_blob end
+                  ),
+                  destination_mode: (
+                    if $destination_mode == "000000" then null
+                    else $destination_mode end
+                  ),
+                  operation: $operation,
+                  path: $path,
+                  source_blob: (
+                    if $source_blob == $zero then null else $source_blob end
+                  ),
+                  source_mode: (
+                    if $source_mode == "000000" then null
+                    else $source_mode end
+                  )
+                }]
+              ' <<<"${actual_paths}")"
+          done < <(git --git-dir="${s0_git}" diff --raw -z --abbrev=40 \
+            --no-renames "${base_tree}" "${integration_tree}")
+          test "$(jq 'length' <<<"${actual_paths}")" -gt 0
+          jq -e '[.[].path] == ([.[].path] | sort)' \
+            <<<"${actual_paths}" >/dev/null
+          jq -e '([.[].path] | length) == ([.[].path] | unique | length)' \
+            <<<"${actual_paths}" >/dev/null
+
+          matching_units="$(jq -c \
+            --arg base_tree "${base_tree}" \
+            --arg diff_sha256 "${diff_sha256}" \
+            --arg integration_tree "${integration_tree}" \
+            --argjson diff_bytes "${diff_bytes}" \
+            --argjson paths "${actual_paths}" '
+              [.ordered_units[]
+                | select(.base_tree == $base_tree)
+                | select(.integration_tree == $integration_tree)
+                | select(.result_tree == $integration_tree)
+                | select(.diff_bytes == $diff_bytes)
+                | select(.diff_sha256 == $diff_sha256)
+                | select(.paths == $paths)]
+            ' "${policy_file}")"
+          test "$(jq 'length' <<<"${matching_units}")" -eq 1
+          unit_id="$(jq -er '.[0].unit_id' <<<"${matching_units}")"
+          series_id="$(jq -er .series_id "${policy_file}")"
+          test "$(jq -er .starting_main_tree "${policy_file}")" = \
+            "$(jq -er '.ordered_units[0].base_tree' "${policy_file}")"
+
+          expected_manifest="$(jq -S -n \
+            --arg authorization_manifest_sha256 \
+              "$(jq -er .authorization_manifest_sha256 "${policy_file}")" \
+            --arg base_sha "${EVENT_BASE}" \
+            --arg base_tree "${base_tree}" \
+            --arg diff_sha256 "${diff_sha256}" \
+            --arg head_sha "${EVENT_HEAD}" \
+            --arg integration_tree "${integration_tree}" \
+            --arg policy_blob "${policy_blob}" \
+            --arg series_id "${series_id}" \
+            --arg unit_id "${unit_id}" \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --argjson diff_bytes "${diff_bytes}" \
+            --argjson ordered_paths "${actual_paths}" \
+            --argjson policy_epoch "$(jq -er .policy_epoch "${policy_file}")" \
+            --argjson pull_request_number "${PR_NUMBER}" \
+            --argjson repository_id "${repository_id}" '
+              {
+                authorization_manifest_sha256: $authorization_manifest_sha256,
+                base_sha: $base_sha,
+                base_tree: $base_tree,
+                canonical_diff: {
+                  bytes: $diff_bytes,
+                  format: "git-diff-binary-full-index-no-renames-v1",
+                  sha256: $diff_sha256
+                },
+                head_sha: $head_sha,
+                integration_tree: $integration_tree,
+                ordered_paths: $ordered_paths,
+                policy_blob: $policy_blob,
+                policy_epoch: $policy_epoch,
+                pull_request_number: $pull_request_number,
+                repository_id: $repository_id,
+                schema: "lit.rep120.feature-main-prestage-manifest/v1",
+                series_id: $series_id,
+                unit_id: $unit_id,
+                workflow_sha: $workflow_sha
+              }
+            ')"
+          expected_body='<!-- rep120-s0-prestage-manifest:v1 -->'
+          expected_body+=$'\n'"${expected_manifest}"$'\n'
+          expected_body+='<!-- /rep120-s0-prestage-manifest:v1 -->'
+          test "$(jq -er '.body | select(type == "string")' <<<"${pull}")" = \
+            "${expected_body}"
+          test "$(grep -Fo '<!-- rep120-s0-prestage-manifest:v1 -->' \
+            <<<"${expected_body}" | wc -l | tr -d '[:space:]')" -eq 1
+          test "$(grep -Fo '<!-- /rep120-s0-prestage-manifest:v1 -->' \
+            <<<"${expected_body}" | wc -l | tr -d '[:space:]')" -eq 1
+
+          review='[]'
+          for observation in $(seq 1 90); do
+            review_pages="$(gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+            review="$(jq -c --arg head "${EVENT_HEAD}" '
+              [.[].check_runs[]?
+                | select(.name == "Current revision review")
+                | select(.app.id == 15368 and .app.slug == "github-actions")
+                | select(.head_sha == $head)]
+              | if length <= 1 then .
+                else error("ambiguous current-revision evidence") end
+            ' <<<"${review_pages}")"
+            if [ "$(jq 'length' <<<"${review}")" -eq 1 ]; then
+              review_status="$(jq -er '.[0].status' <<<"${review}")"
+              if [ "${review_status}" = completed ]; then
+                break
+              fi
+              [[ "${review_status}" =~ ^(queued|in_progress)$ ]]
+            fi
+            test "${observation}" -lt 90
+            sleep 2
+          done
+          test "$(jq 'length' <<<"${review}")" -eq 1
+          jq -e '
+            .[0].status == "completed"
+            and .[0].conclusion == "success"
+            and .[0].output.title == "Current revision review passed"
+          ' <<<"${review}" >/dev/null
+          review_external_id="$(jq -er '.[0].external_id' <<<"${review}")"
+          review_summary="$(jq -er '.[0].output.summary | fromjson' \
+            <<<"${review}")"
+          producer_run_id=''
+          if [ "${review_class}" = exact-revision ]; then
+            [[ "${review_external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*):([0-9a-f]{64})$ ]]
+            producer_run_id="${BASH_REMATCH[1]}"
+            input_sha256="${BASH_REMATCH[2]}"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg input_sha256 "${input_sha256}" \
+              --argjson number "${PR_NUMBER}" \
+              --argjson run_id "${producer_run_id}" '
+                .schema == 4
+                and .base_sha == $base
+                and .head_sha == $head
+                and .input_sha256 == $input_sha256
+                and .pull_request_number == $number
+                and .producer_run_id == $run_id
+              ' <<<"${review_summary}" >/dev/null
+          else
+            [[ "${review_class}" =~ ^(copilot|managed-sync|renovate)$ ]]
+            [[ "${review_external_id}" =~ ^mlx90-current-revision:([a-z-]+):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]
+            test "${BASH_REMATCH[1]}" = "${review_class}"
+            producer_run_id="${BASH_REMATCH[2]}"
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --argjson number "${PR_NUMBER}" \
+              --argjson run_id "${producer_run_id}" '
+                .schema == 4
+                and .base_sha == $base
+                and .head_sha == $head
+                and .pull_request_number == $number
+                and .producer_run_id == $run_id
+              ' <<<"${review_summary}" >/dev/null
+          fi
+          producer_run="$(gh api \
+            "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+          jq -e \
+            --arg repository "${REPOSITORY}" \
+            --argjson run_id "${producer_run_id}" '
+              .id == $run_id
+              and .run_attempt == 1
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' <<<"${producer_run}" >/dev/null
+
+          thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){baseRefOid headRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{isResolved}}}}}'
+          thread_payload="$(gh api graphql \
+            -f query="${thread_query}" \
+            -f owner=lightning-it \
+            -f name=.github \
+            -F number="${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" '
+              .data.repository.pullRequest as $pr
+              | $pr.baseRefOid == $base
+              and $pr.headRefOid == $head
+              and ($pr.reviewThreads.totalCount | type) == "number"
+              and $pr.reviewThreads.totalCount <= 100
+              and $pr.reviewThreads.pageInfo.hasNextPage == false
+              and all($pr.reviewThreads.nodes[]; .isResolved == true)
+            ' <<<"${thread_payload}" >/dev/null
+
+          printf 'diff_sha256=%s\n' "${diff_sha256}" >>"${GITHUB_OUTPUT}"
+          printf 'policy_blob=%s\n' "${policy_blob}" >>"${GITHUB_OUTPUT}"
+          printf 'series_id=%s\n' "${series_id}" >>"${GITHUB_OUTPUT}"
+          printf 'unit_id=%s\n' "${unit_id}" >>"${GITHUB_OUTPUT}"
+
+  finalize-s0-feature-main-prestage:
+    name: Finalize the protected S0 feature-to-main result
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+      - verify-s0-feature-main-prestage
+    if: >-
+      always()
+      && needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+      && needs['reserve-s0-feature-main-prestage'].result == 'success'
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Rebind and terminally finalize exactly one S0 check
+        env:
+          DEEP_RESULT: ${{ needs['verify-s0-feature-main-prestage'].result }}
+          DIFF_SHA256: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.diff_sha256 }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXTERNAL_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.external_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RESERVATION_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.check_id }}
+          SERIES_ID: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.series_id }}
+          UNIT_ID: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.unit_id }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
+          expected_external_id="rep120-s0-prestage:v1:1112629689:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          test "${EXTERNAL_ID}" = "${expected_external_id}"
+
+          terminal_patch() {
+            local conclusion="$1"
+            local title="$2"
+            local summary="$3"
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
+              -f status=completed \
+              -f conclusion="${conclusion}" \
+              -f "output[title]=${title}" \
+              -f "output[summary]=${summary}"
+          }
+          failure_summary="$(jq -cn \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --argjson pull_request_number "${PR_NUMBER}" '
+              {
+                base_sha: $base,
+                conclusion: "failure",
+                diff_sha256: null,
+                head_sha: $head,
+                pull_request_number: $pull_request_number,
+                schema: 1,
+                series_id: null,
+                unit_id: null,
+                workflow_sha: $workflow_sha
+              }
+            ')"
+          failure_armed=0
+          terminally_fail() {
+            local exit_code="$?"
+            trap - ERR
+            set +e
+            if [ "${failure_armed}" = 1 ]; then
+              terminal_patch \
+                failure \
+                'REP-120 S0 verification failed closed' \
+                "${failure_summary}" \
+                >/dev/null
+            fi
+            exit "${exit_code}"
+          }
+          trap terminally_fail ERR
+
+          check="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}")"
+          jq -e \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and (
+                .status == "in_progress"
+                or (.status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure"))
+              )
+            ' <<<"${check}" >/dev/null
+          if [ "$(jq -r .status <<<"${check}")" = in_progress ]; then
+            failure_armed=1
+          fi
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+              and (.head.ref | startswith("prestage/"))
+            ' <<<"${pull}" >/dev/null
+
+          desired_conclusion=failure
+          output_title='REP-120 S0 verification failed closed'
+          if [ "${DEEP_RESULT}" = success ]; then
+            desired_conclusion=success
+            output_title='REP-120 S0 verification passed'
+            [[ "${DIFF_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            [[ "${SERIES_ID}" =~ ^rep120-main-[a-z0-9][a-z0-9-]{0,63}$ ]]
+            [[ "${UNIT_ID}" =~ ^P[1-4]$ ]]
+          else
+            [[ "${DEEP_RESULT}" =~ ^(failure|cancelled|skipped)$ ]]
+            DIFF_SHA256=''
+            SERIES_ID=''
+            UNIT_ID=''
+          fi
+          summary="$(jq -cn \
+            --arg base "${EVENT_BASE}" \
+            --arg conclusion "${desired_conclusion}" \
+            --arg diff_sha256 "${DIFF_SHA256}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg series_id "${SERIES_ID}" \
+            --arg unit_id "${UNIT_ID}" \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --argjson pull_request_number "${PR_NUMBER}" '
+              {
+                base_sha: $base,
+                conclusion: $conclusion,
+                diff_sha256: (if $diff_sha256 == "" then null else $diff_sha256 end),
+                head_sha: $head,
+                pull_request_number: $pull_request_number,
+                schema: 1,
+                series_id: (if $series_id == "" then null else $series_id end),
+                unit_id: (if $unit_id == "" then null else $unit_id end),
+                workflow_sha: $workflow_sha
+              }
+            ')"
+          if [ "$(jq -r .status <<<"${check}")" = in_progress ]; then
+            finalized="$(terminal_patch \
+              "${desired_conclusion}" "${output_title}" "${summary}")"
+          else
+            test "$(jq -r .conclusion <<<"${check}")" = \
+              "${desired_conclusion}"
+            finalized="${check}"
+          fi
+          jq -e \
+            --arg conclusion "${desired_conclusion}" \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg summary "${summary}" \
+            --arg title "${output_title}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == $conclusion
+              and .output.title == $title
+              and .output.summary == $summary
+            ' <<<"${finalized}" >/dev/null
+          readback="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}")"
+          jq -e \
+            --arg conclusion "${desired_conclusion}" \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg summary "${summary}" \
+            --arg title "${output_title}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == $conclusion
+              and .output.title == $title
+              and .output.summary == $summary
+            ' <<<"${readback}" >/dev/null
+          failure_armed=0
+          trap - ERR
+
   verify-protected-current-revision-evidence:
     # Keep the native Required-Workflow job distinct from the API evidence
     # check it verifies. GitHub Actions check runs share one App identity, so
     # identical names would make the producer target this job instead of its
     # immutable evidence check.
-    name: Required current-revision workflow
+    name: Legacy protected current-revision verifier
     # Required Workflows do not reliably receive ready_for_review after their
     # initial Draft event. The exact trust-root bootstrap therefore classifies
     # its immutable candidate while Draft and keeps this same protected run
     # alive until the one local pipeline review is final. Other paths keep the
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.s0_prestage != 'true'
     permissions:
       actions: read
       checks: write
@@ -5213,3 +6207,47 @@ jobs:
               and .app.slug == "github-actions"
             ' <<<"${finalized}" >/dev/null
           trap - ERR
+
+  required-current-revision-workflow:
+    name: Required current-revision workflow
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+      - verify-s0-feature-main-prestage
+      - finalize-s0-feature-main-prestage
+      - verify-protected-current-revision-evidence
+    if: always()
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Enforce exactly one terminal verification route
+        env:
+          FINALIZE_RESULT: >-
+            ${{ needs['finalize-s0-feature-main-prestage'].result }}
+          LEGACY_RESULT: >-
+            ${{ needs['verify-protected-current-revision-evidence'].result }}
+          RESERVE_RESULT: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].result }}
+          ROUTE_RESULT: >-
+            ${{ needs['route-protected-current-revision'].result }}
+          S0_PRESTAGE: >-
+            ${{ needs['route-protected-current-revision'].outputs.s0_prestage }}
+          VERIFY_RESULT: >-
+            ${{ needs['verify-s0-feature-main-prestage'].result }}
+        run: |
+          set -euo pipefail
+          test "${ROUTE_RESULT}" = success
+          if [ "${S0_PRESTAGE}" = true ]; then
+            test "${RESERVE_RESULT}" = success
+            test "${VERIFY_RESULT}" = success
+            test "${FINALIZE_RESULT}" = success
+            test "${LEGACY_RESULT}" = skipped
+          else
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = success
+          fi
