@@ -6232,21 +6232,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
     ) -> None:
         canonical = S0_POLICY.read_text(encoding="utf-8")
         duplicate = canonical.replace(
-            '  "state": "inactive",\n',
-            '  "state": "inactive",\n  "state": "inactive",\n',
+            '"state":"inactive"',
+            '"state":"inactive","state":"inactive"',
             1,
         )
         normalized_duplicate = (
-            json.dumps(json.loads(duplicate), indent=2, sort_keys=True) + "\n"
+            json.dumps(
+                json.loads(duplicate), sort_keys=True, separators=(",", ":")
+            )
+            + "\n"
         )
         self.assertNotEqual(duplicate, normalized_duplicate)
-        noncanonical = json.dumps(json.loads(canonical), separators=(",", ":"))
+        noncanonical = (
+            json.dumps(json.loads(canonical), indent=2, sort_keys=True) + "\n"
+        )
         self.assertNotEqual(canonical, noncanonical)
         deep = self._s0_job(
             "verify-s0-feature-main-prestage",
             "finalize-s0-feature-main-prestage",
         )
-        self.assertIn('canonical_policy="$(jq -S . "${policy_file}")"', deep)
+        self.assertIn('canonical_policy="$(jq -cS . "${policy_file}")"', deep)
         self.assertIn('| cmp -s - "${policy_file}"', deep)
 
     def test_s0_normalized_policy_construction_is_acyclic_and_repeatable(
@@ -6477,7 +6482,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'and .protected == true and .commit.sha == $sha',
             'contents/${policy_path}?ref=${WORKFLOW_SHA}',
             'test "$(git hash-object "${policy_file}")" = "${policy_blob}"',
-            'canonical_policy="$(jq -S . "${policy_file}")"',
+            'canonical_policy="$(jq -cS . "${policy_file}")"',
             'test "$(jq -er .state "${policy_file}")" = active',
             ".authorization_manifest_sha256 = $sentinel",
             "normalized_policy_sha256=",

@@ -644,6 +644,7 @@ jobs:
 
           umask 077
           s0_directory="$(mktemp -d "${RUNNER_TEMP}/rep120-s0.XXXXXX")"
+          # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
           cleanup_s0_directory() {
             rm -rf -- "${s0_directory}"
           }
@@ -652,7 +653,7 @@ jobs:
           jq -er .content <<<"${policy_asset}" | base64 --decode >"${policy_file}"
           policy_blob="$(jq -er .sha <<<"${policy_asset}")"
           test "$(git hash-object "${policy_file}")" = "${policy_blob}"
-          canonical_policy="$(jq -S . "${policy_file}")"
+          canonical_policy="$(jq -cS . "${policy_file}")"
           printf '%s\n' "${canonical_policy}" \
             | cmp -s - "${policy_file}"
 
