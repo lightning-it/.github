@@ -6162,13 +6162,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     0,
                     self._run_s0_policy_contract(rejected),
                 )
-        deep = self._s0_job(
-            "verify-s0-feature-main-prestage",
-            "finalize-s0-feature-main-prestage",
-        )
-        self.assertIn('test "${diff_bytes}" -ge 1', deep)
-        self.assertIn('test "${diff_bytes}" -le 199999', deep)
-
     def test_s0_policy_rejects_malformed_or_ambiguous_authority(self) -> None:
         policy = self._active_s0_policy()
         rejected: list[tuple[str, dict[str, object]]] = []
@@ -6493,7 +6486,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         p0_block = deep.index(
             "S0 Authorization Manifest Core verifier is not materialized."
         )
-        self.assertLess(p0_block, deep.index('issue_view="$(gh api'))
+        self.assertGreater(p0_block, deep.index("normalized_policy_sha256="))
+        self.assertNotIn("ordered_units", deep)
+        self.assertNotIn("starting_main_tree", deep)
+        self.assertNotIn("merge-base --is-ancestor", deep)
+        self.assertNotIn("rep120-s0-prestage-manifest:v1", deep)
         self.assertNotIn("id-token: write", deep)
         self.assertNotIn("attestations: write", deep)
 
