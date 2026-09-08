@@ -757,18 +757,686 @@ jobs:
           test "${expires_epoch}" -gt "${now_epoch}"
 
           normalization_sentinel='0000000000000000000000000000000000000000000000000000000000000000'
-          normalized_policy_sha256="$(jq -Sc \
-            --arg sentinel "${normalization_sentinel}" \
-            '.authorization_manifest_sha256 = $sentinel' \
-            "${policy_file}" | sha256sum | awk '{print $1}')"
+          normalized_policy_sha256="$(
+            {
+              printf '%s\0' 'rep120-normalized-policy-v1'
+              jq -Sc \
+                --arg sentinel "${normalization_sentinel}" \
+                '.authorization_manifest_sha256 = $sentinel' \
+                "${policy_file}"
+            } | sha256sum | awk '{print $1}'
+          )"
           [[ "${normalized_policy_sha256}" =~ ^[0-9a-f]{64}$ ]]
 
-          # Provisional/pre-D1 fail-closed boundary. The acyclic v2 envelope is
-          # ready, but the public Core proxy repository, protected attestation
-          # workflow/ref, OIDC identity and transparency verifier are not yet
-          # concrete. No active policy may authorize a candidate until that P0
-          # trust root is implemented here and its exact Core is verified.
-          echo 'S0 Authorization Manifest Core verifier is not materialized.' >&2
+          # rep120-s0-core-v2-verifier: start
+          s0_core_verifier="${s0_directory}/verify-core-v2.py"
+          cat >"${s0_core_verifier}" <<'PY'
+          from __future__ import annotations
+
+          import copy
+          import datetime as dt
+          import hashlib
+          import json
+          import re
+          import sys
+
+
+          ZERO64 = "0" * 64
+          POLICY_PATH = ".lit/feature-main-prestage-policy.json"
+          ADR_PATH = (
+              "docs/adr/"
+              "rep120-promotion-reconciler-path-isolation-20260905.md"
+          )
+          P2_PATHS = [
+              ".github/workflows/current-revision-rerun.yml",
+              "tests/test_copilot_review_refresh.py",
+          ]
+          P4_PATHS = [
+              ".github/workflows/supplementary-current-revision-required.yml",
+              POLICY_PATH,
+              "tests/test_supplementary_required_workflow.py",
+          ]
+          DOMAINS = [
+              "rep120-authorization-manifest-core-v2",
+              "rep120-post-core-coverage-v1",
+              "rep120-protected-activation-receipt-v1",
+          ]
+          HEX40 = re.compile(r"^[0-9a-f]{40}$")
+          HEX64 = re.compile(r"^[0-9a-f]{64}$")
+          SAFE_PATH = re.compile(
+              r"^(?!/)(?!.*(?:^|/)\.\.?/)(?!.*//)"
+              r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+          )
+
+
+          class Rejected(Exception):
+              pass
+
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise Rejected(message)
+
+
+          def closed(value: object, keys: set[str], label: str) -> dict:
+              require(type(value) is dict, f"{label}: object required")
+              result = value
+              require(set(result) == keys, f"{label}: closed schema")
+              return result
+
+
+          def bounded_int(
+              value: object, minimum: int, maximum: int, label: str
+          ) -> int:
+              require(type(value) is int, f"{label}: integer required")
+              require(minimum <= value <= maximum, f"{label}: range")
+              return value
+
+
+          def validate_json_tree(
+              value: object, depth: int = 0, counter: list[int] | None = None
+          ) -> None:
+              if counter is None:
+                  counter = [0]
+              counter[0] += 1
+              require(depth <= 32 and counter[0] <= 20000, "JSON complexity")
+              if value is None or type(value) in (bool, int):
+                  if type(value) is int:
+                      require(abs(value) <= 9007199254740991, "unsafe integer")
+                  return
+              if type(value) is str:
+                  require(value.isascii(), "non-ASCII JSON")
+                  return
+              if type(value) is list:
+                  for item in value:
+                      validate_json_tree(item, depth + 1, counter)
+                  return
+              if type(value) is dict:
+                  for key, item in value.items():
+                      require(type(key) is str and key.isascii(), "invalid key")
+                      validate_json_tree(item, depth + 1, counter)
+                  return
+              raise Rejected("unsupported JSON type")
+
+
+          def canonical(value: object) -> bytes:
+              validate_json_tree(value)
+              return (
+                  json.dumps(
+                      value,
+                      ensure_ascii=False,
+                      sort_keys=True,
+                      separators=(",", ":"),
+                  )
+                  + "\n"
+              ).encode("utf-8")
+
+
+          def strict_json(raw: bytes, label: str) -> object:
+              require(0 < len(raw) < 200000, f"{label}: byte boundary")
+              require(not raw.startswith(b"\xef\xbb\xbf"), f"{label}: BOM")
+              require(b"\r" not in raw, f"{label}: CR")
+              require(
+                  raw.endswith(b"\n") and not raw.endswith(b"\n\n"),
+                  f"{label}: terminal LF",
+              )
+
+              def unique_pairs(items: list[tuple[str, object]]) -> dict:
+                  result: dict[str, object] = {}
+                  for key, value in items:
+                      require(key not in result, f"{label}: duplicate key")
+                      result[key] = value
+                  return result
+
+              def reject_number(_: str) -> object:
+                  raise Rejected(f"{label}: non-integer number")
+
+              try:
+                  value = json.loads(
+                      raw[:-1].decode("utf-8", errors="strict"),
+                      object_pairs_hook=unique_pairs,
+                      parse_float=reject_number,
+                      parse_constant=reject_number,
+                  )
+              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                  raise Rejected(f"{label}: invalid JSON") from error
+              require(canonical(value) == raw, f"{label}: noncanonical JSON")
+              return value
+
+
+          def digest(domain: str, value: object) -> str:
+              require(domain in DOMAINS or domain == "rep120-normalized-policy-v1",
+                      "digest domain")
+              return hashlib.sha256(
+                  domain.encode("ascii") + b"\0" + canonical(value)
+              ).hexdigest()
+
+
+          def git_blob(raw: bytes) -> str:
+              return hashlib.sha1(
+                  f"blob {len(raw)}\0".encode("ascii") + raw,
+                  usedforsecurity=False,
+              ).hexdigest()
+
+
+          def timestamp(value: object, label: str) -> dt.datetime:
+              require(
+                  type(value) is str
+                  and re.fullmatch(
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+                      r"[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                      value,
+                  )
+                  is not None,
+                  f"{label}: timestamp",
+              )
+              try:
+                  return dt.datetime.strptime(
+                      value, "%Y-%m-%dT%H:%M:%SZ"
+                  ).replace(tzinfo=dt.timezone.utc)
+              except ValueError as error:
+                  raise Rejected(f"{label}: timestamp") from error
+
+
+          def validate_policy(value: object) -> dict:
+              policy = closed(
+                  value,
+                  {
+                      "allowed_principals",
+                      "authorization_manifest_sha256",
+                      "canonical_diff",
+                      "expires_at",
+                      "issue",
+                      "policy_epoch",
+                      "schema",
+                      "series_id",
+                      "state",
+                      "target",
+                      "transitions",
+                  },
+                  "policy",
+              )
+              require(
+                  policy["schema"]
+                  == "lit.rep120.feature-main-prestage-policy/v2"
+                  and policy["issue"] == 564,
+                  "policy identity",
+              )
+              require(
+                  policy["target"]
+                  == {
+                      "base_ref": "refs/heads/main",
+                      "head_prefix": "prestage/",
+                      "repository": "lightning-it/.github",
+                      "repository_id": 1112629689,
+                      "source_ref": "refs/heads/develop",
+                  },
+                  "policy target",
+              )
+              require(
+                  policy["canonical_diff"]
+                  == {
+                      "format": "git-diff-binary-full-index-no-renames-v1",
+                      "maximum_bytes": 199999,
+                      "minimum_bytes": 1,
+                      "options": [
+                          "--binary",
+                          "--full-index",
+                          "--no-renames",
+                          "--no-color",
+                          "--no-ext-diff",
+                          "--no-textconv",
+                      ],
+                  }
+                  and policy["transitions"]
+                  == ["inactive", "active", "consumed"],
+                  "policy contract",
+              )
+              require(policy["state"] in ("inactive", "active", "consumed"),
+                      "policy state")
+              if policy["state"] == "inactive":
+                  require(
+                      policy["allowed_principals"] == []
+                      and policy["authorization_manifest_sha256"] is None
+                      and policy["expires_at"] is None
+                      and policy["policy_epoch"] == 0
+                      and policy["series_id"] is None,
+                      "inactive policy authority",
+                  )
+                  return policy
+              require(
+                  type(policy["authorization_manifest_sha256"]) is str
+                  and HEX64.fullmatch(
+                      policy["authorization_manifest_sha256"]
+                  ) is not None
+                  and policy["authorization_manifest_sha256"] != ZERO64,
+                  "policy Core digest",
+              )
+              bounded_int(policy["policy_epoch"], 1, 2147483647, "policy epoch")
+              require(
+                  type(policy["series_id"]) is str
+                  and re.fullmatch(
+                      r"rep120-main-[a-z0-9][a-z0-9-]{0,63}",
+                      policy["series_id"],
+                  )
+                  is not None,
+                  "policy series",
+              )
+              timestamp(policy["expires_at"], "policy expiry")
+              principals = policy["allowed_principals"]
+              require(type(principals) is list and 1 <= len(principals) <= 4,
+                      "principals")
+              identities: set[tuple[str, int]] = set()
+              user_ids: set[int] = set()
+              for item in principals:
+                  principal = closed(
+                      item,
+                      {
+                          "github_app_id",
+                          "login",
+                          "review_class",
+                          "type",
+                          "user_id",
+                      },
+                      "principal",
+                  )
+                  require(
+                      type(principal["login"]) is str
+                      and re.fullmatch(
+                          r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}"
+                          r"[A-Za-z0-9]|[A-Za-z0-9])?(?:\[bot\])?",
+                          principal["login"],
+                      )
+                      is not None,
+                      "principal login",
+                  )
+                  user_id = bounded_int(
+                      principal["user_id"], 1, 9007199254740991, "user id"
+                  )
+                  if principal["type"] == "User":
+                      require(
+                          principal["github_app_id"] is None
+                          and principal["review_class"] == "copilot",
+                          "user principal",
+                      )
+                  else:
+                      require(
+                          principal["type"] == "Bot"
+                          and type(principal["github_app_id"]) is int
+                          and principal["github_app_id"] > 0
+                          and principal["review_class"]
+                          in ("managed-sync", "renovate", "exact-revision"),
+                          "bot principal",
+                      )
+                  identity = (principal["login"], user_id)
+                  require(
+                      identity not in identities and user_id not in user_ids,
+                      "duplicate principal",
+                  )
+                  identities.add(identity)
+                  user_ids.add(user_id)
+              return policy
+
+
+          def normalized(policy: dict) -> str:
+              value = copy.deepcopy(policy)
+              value["authorization_manifest_sha256"] = ZERO64
+              return digest("rep120-normalized-policy-v1", value)
+
+
+          def validate_units(core: dict) -> dict[str, list[str]]:
+              require(
+                  core["ordered_units"] == ["P1", "P2", "P3", "P4"]
+                  and core["maximum_unit_count"] == 4
+                  and core["terminal_unit_id"] == "P4"
+                  and type(core["units"]) is list
+                  and len(core["units"]) == 4,
+                  "Core topology",
+              )
+              ownership: set[str] = set()
+              result: dict[str, list[str]] = {}
+              for expected, item in zip(
+                  core["ordered_units"], core["units"], strict=True
+              ):
+                  unit = closed(
+                      item,
+                      {"id", "paths", "review_bytes", "review_sha256"},
+                      f"Core {expected}",
+                  )
+                  require(unit["id"] == expected, "Core order")
+                  paths = unit["paths"]
+                  require(
+                      type(paths) is list
+                      and paths == sorted(paths)
+                      and len(paths) == len(set(paths))
+                      and len(paths) > 0,
+                      "Core paths",
+                  )
+                  for path in paths:
+                      require(
+                          type(path) is str
+                          and SAFE_PATH.fullmatch(path) is not None
+                          and path != ".lit/main-ancestry.json",
+                          "unsafe Core path",
+                      )
+                  require(ownership.isdisjoint(paths), "overlapping ownership")
+                  ownership.update(paths)
+                  bounded_int(unit["review_bytes"], 1, 199999, "review bytes")
+                  require(
+                      type(unit["review_sha256"]) is str
+                      and HEX64.fullmatch(unit["review_sha256"]) is not None,
+                      "review digest",
+                  )
+                  result[expected] = paths
+              require(result["P1"] == [ADR_PATH], "P1 ownership")
+              require(result["P2"] == sorted(P2_PATHS), "P2 ownership")
+              require(result["P4"] == sorted(P4_PATHS), "P4 ownership")
+              return result
+
+
+          def validate_core(value: object, policy: dict) -> tuple[dict, dict]:
+              core = closed(
+                  value,
+                  {
+                      "expires_at",
+                      "issue",
+                      "maximum_unit_count",
+                      "normalization",
+                      "ordered_units",
+                      "policy_epoch",
+                      "repository",
+                      "schema",
+                      "series_id",
+                      "starting_main",
+                      "terminal_unit_id",
+                      "units",
+                  },
+                  "Core",
+              )
+              require(
+                  core["schema"]
+                  == "lit.rep120.authorization-manifest-core/v2"
+                  and core["issue"] == 564
+                  and core["repository"]
+                  == {"id": 1112629689, "name": "lightning-it/.github"},
+                  "Core identity",
+              )
+              require(
+                  core["series_id"] == policy["series_id"]
+                  and core["policy_epoch"] == policy["policy_epoch"]
+                  and core["expires_at"] == policy["expires_at"],
+                  "Core policy dependency",
+              )
+              start = closed(
+                  core["starting_main"], {"commit", "tree"}, "starting main"
+              )
+              require(
+                  type(start["commit"]) is str
+                  and HEX40.fullmatch(start["commit"]) is not None
+                  and type(start["tree"]) is str
+                  and HEX40.fullmatch(start["tree"]) is not None,
+                  "starting main",
+              )
+              consumed = copy.deepcopy(policy)
+              consumed["state"] = "consumed"
+              require(
+                  core["normalization"]
+                  == {
+                      "active_sha256": normalized(policy),
+                      "consumed_sha256": normalized(consumed),
+                      "domain": "rep120-normalized-policy-v1",
+                      "path": POLICY_PATH,
+                      "sentinel": ZERO64,
+                  },
+                  "Core normalization",
+              )
+              return core, validate_units(core)
+
+
+          def validate_coverage(
+              value: object,
+              core: dict,
+              core_digest: str,
+              paths: dict[str, list[str]],
+              policy: dict,
+              policy_raw: bytes,
+          ) -> tuple[dict, str]:
+              coverage = closed(
+                  value,
+                  {
+                      "activation",
+                      "core_sha256",
+                      "policy",
+                      "previous_record_sha256",
+                      "repository",
+                      "schema",
+                      "series_id",
+                      "units",
+                  },
+                  "Coverage",
+              )
+              require(
+                  coverage["schema"] == "lit.rep120.post-core-coverage/v1"
+                  and coverage["core_sha256"] == core_digest
+                  and coverage["previous_record_sha256"] == core_digest
+                  and coverage["repository"] == core["repository"]
+                  and coverage["series_id"] == core["series_id"],
+                  "Coverage Core dependency",
+              )
+              consumed = copy.deepcopy(policy)
+              consumed["state"] = "consumed"
+              consumed_raw = canonical(consumed)
+              expected_material = {
+                  "active_blob": git_blob(policy_raw),
+                  "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+                  "active_normalized_sha256": normalized(policy),
+                  "consumed_blob": git_blob(consumed_raw),
+                  "consumed_bytes_sha256": hashlib.sha256(
+                      consumed_raw
+                  ).hexdigest(),
+                  "consumed_normalized_sha256": normalized(consumed),
+              }
+              require(coverage["policy"] == expected_material,
+                      "Coverage policy material")
+              require(
+                  type(coverage["units"]) is list
+                  and len(coverage["units"]) == 4,
+                  "Coverage units",
+              )
+              for expected, covered, core_unit in zip(
+                  core["ordered_units"],
+                  coverage["units"],
+                  core["units"],
+                  strict=True,
+              ):
+                  covered = closed(
+                      covered,
+                      {"diff_bytes", "diff_sha256", "id", "paths"},
+                      f"Coverage {expected}",
+                  )
+                  require(
+                      covered
+                      == {
+                          "diff_bytes": core_unit["review_bytes"],
+                          "diff_sha256": core_unit["review_sha256"],
+                          "id": expected,
+                          "paths": paths[expected],
+                      },
+                      "Coverage unit mapping",
+                  )
+              activation = closed(
+                  coverage["activation"],
+                  {"diff_bytes", "diff_sha256", "paths"},
+                  "activation Coverage",
+              )
+              bounded_int(
+                  activation["diff_bytes"], 1, 199999, "activation bytes"
+              )
+              require(
+                  activation["paths"] == [POLICY_PATH]
+                  and type(activation["diff_sha256"]) is str
+                  and HEX64.fullmatch(activation["diff_sha256"]) is not None,
+                  "activation Coverage",
+              )
+              core_bytes = canonical(core)
+              for field in (
+                  "active_blob",
+                  "active_bytes_sha256",
+                  "consumed_blob",
+                  "consumed_bytes_sha256",
+              ):
+                  require(
+                      expected_material[field].encode("ascii") not in core_bytes,
+                      "cyclic Core material",
+                  )
+              return coverage, expected_material["active_blob"]
+
+
+          def validate_activation(
+              value: object,
+              core: dict,
+              coverage: dict,
+              core_digest: str,
+              coverage_digest: str,
+              active_blob: str,
+          ) -> None:
+              activation = closed(
+                  value,
+                  {
+                      "active_policy_blob",
+                      "core_sha256",
+                      "coverage_sha256",
+                      "diff",
+                      "merge",
+                      "previous_record_sha256",
+                      "schema",
+                      "series_id",
+                  },
+                  "Activation",
+              )
+              require(
+                  activation["schema"]
+                  == "lit.rep120.protected-activation-receipt/v1"
+                  and activation["series_id"] == core["series_id"]
+                  and activation["core_sha256"] == core_digest
+                  and activation["coverage_sha256"] == coverage_digest
+                  and activation["previous_record_sha256"] == coverage_digest
+                  and activation["active_policy_blob"] == active_blob
+                  and activation["diff"] == coverage["activation"],
+                  "Activation dependencies",
+              )
+              merge = closed(
+                  activation["merge"],
+                  {
+                      "base",
+                      "bypass_used",
+                      "head",
+                      "parents",
+                      "result_tree",
+                      "signature_verified",
+                  },
+                  "Activation merge",
+              )
+              for field in ("base", "head", "result_tree"):
+                  require(
+                      type(merge[field]) is str
+                      and HEX40.fullmatch(merge[field]) is not None,
+                      "Activation Git identity",
+                  )
+              require(
+                  merge["base"] != merge["head"]
+                  and merge["parents"] == [merge["base"], merge["head"]]
+                  and merge["signature_verified"] is True
+                  and merge["bypass_used"] is False,
+                  "protected Activation merge",
+              )
+
+
+          def run(policy_raw: bytes, bundle_raw: bytes, observed_at: str) -> dict:
+              policy = validate_policy(strict_json(policy_raw, "active policy"))
+              require(policy["state"] == "active", "policy is not active")
+              require(
+                  timestamp(policy["expires_at"], "policy expiry")
+                  > timestamp(observed_at, "observed at"),
+                  "policy expired",
+              )
+              bundle = closed(
+                  strict_json(bundle_raw, "sealed roots"),
+                  {"records", "schema"},
+                  "sealed roots",
+              )
+              require(
+                  bundle["schema"] == "lit.rep120.s0-core-v2-fixture/v1",
+                  "sealed roots schema",
+              )
+              records = bundle["records"]
+              require(type(records) is list and len(records) == 3,
+                      "exact root count")
+              values: list[dict] = []
+              digests: list[str] = []
+              for index, domain in enumerate(DOMAINS):
+                  envelope = closed(
+                      records[index], {"domain", "record"}, f"root {index}"
+                  )
+                  require(envelope["domain"] == domain, "root order")
+                  values.append(envelope["record"])
+                  digests.append(digest(domain, envelope["record"]))
+                  require(digests[-1] != ZERO64, "reserved digest")
+              core, paths = validate_core(values[0], policy)
+              require(
+                  policy["authorization_manifest_sha256"] == digests[0],
+                  "policy selected Core",
+              )
+              coverage, active_blob = validate_coverage(
+                  values[1], core, digests[0], paths, policy, policy_raw
+              )
+              validate_activation(
+                  values[2],
+                  core,
+                  coverage,
+                  digests[0],
+                  digests[1],
+                  active_blob,
+              )
+              return {
+                  "activation_sha256": digests[2],
+                  "core_sha256": digests[0],
+                  "coverage_sha256": digests[1],
+                  "series_id": core["series_id"],
+              }
+
+
+          def main() -> int:
+              if len(sys.argv) != 4:
+                  print(
+                      "usage: verify-core-v2.py POLICY ROOTS OBSERVED_AT",
+                      file=sys.stderr,
+                  )
+                  return 2
+              try:
+                  with open(sys.argv[1], "rb") as handle:
+                      policy_raw = handle.read(200000)
+                  with open(sys.argv[2], "rb") as handle:
+                      bundle_raw = handle.read(200000)
+                  result = run(policy_raw, bundle_raw, sys.argv[3])
+              except (OSError, Rejected) as error:
+                  print(f"S0 Core-v2 rejected: {error}", file=sys.stderr)
+                  return 1
+              sys.stdout.buffer.write(canonical(result))
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          chmod 0400 "${s0_core_verifier}"
+          # rep120-s0-core-v2-verifier: end
+
+          # This local successor deliberately has no external store, proxy,
+          # OIDC, attestation or digest-pinned runtime transport binding.
+          # Verification fixtures are exercised only by the coupled tests;
+          # the inactive protected policy therefore grants no authority.
+          echo 'S0 sealed Core-v2 transport is intentionally not configured.' >&2
           exit 1
 
   finalize-s0-feature-main-prestage:

@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -114,7 +115,237 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     @classmethod
     def _normalized_s0_policy_sha256(cls, policy: dict[str, object]) -> str:
-        return hashlib.sha256(cls._normalized_s0_policy_bytes(policy)).hexdigest()
+        return hashlib.sha256(
+            b"rep120-normalized-policy-v1\0"
+            + cls._normalized_s0_policy_bytes(policy)
+        ).hexdigest()
+
+    @staticmethod
+    def _canonical_s0_json(value: object) -> bytes:
+        return (
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+
+    @classmethod
+    def _s0_semantic_sha256(cls, domain: str, value: object) -> str:
+        return hashlib.sha256(
+            domain.encode() + b"\0" + cls._canonical_s0_json(value)
+        ).hexdigest()
+
+    @staticmethod
+    def _s0_git_blob(raw: bytes) -> str:
+        return hashlib.sha1(  # noqa: S324 -- exact Git SHA-1 object identity
+            f"blob {len(raw)}\0".encode() + raw,
+            usedforsecurity=False,
+        ).hexdigest()
+
+    @classmethod
+    def _s0_core_v2_verifier(cls) -> str:
+        deep = cls._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        start = "          # rep120-s0-core-v2-verifier: start\n"
+        end = "          # rep120-s0-core-v2-verifier: end\n"
+        block = deep.split(start, 1)[1].split(end, 1)[0]
+        source = block.split(
+            "          cat >\"${s0_core_verifier}\" <<'PY'\n", 1
+        )[1].rsplit("\n          PY\n", 1)[0]
+        return textwrap.dedent(source) + "\n"
+
+    @classmethod
+    def _s0_core_v2_fixture(
+        cls,
+        *,
+        expires_at: str = "2099-12-31T23:59:59Z",
+        review_bytes: dict[str, int] | None = None,
+    ) -> tuple[dict[str, object], bytes, dict[str, object]]:
+        policy = cls._active_s0_policy()
+        policy["expires_at"] = expires_at
+        policy["authorization_manifest_sha256"] = "a" * 64
+        consumed_template = json.loads(json.dumps(policy))
+        consumed_template["state"] = "consumed"
+        paths = {
+            "P1": [
+                "docs/adr/"
+                "rep120-promotion-reconciler-path-isolation-20260905.md"
+            ],
+            "P2": sorted(
+                [
+                    ".github/workflows/current-revision-rerun.yml",
+                    "tests/test_copilot_review_refresh.py",
+                ]
+            ),
+            "P3": [".github/workflows/release-reconciler.yml"],
+            "P4": sorted(
+                [
+                    ".github/workflows/"
+                    "supplementary-current-revision-required.yml",
+                    ".lit/feature-main-prestage-policy.json",
+                    "tests/test_supplementary_required_workflow.py",
+                ]
+            ),
+        }
+        units: list[dict[str, object]] = []
+        review_bytes = review_bytes or {}
+        for index, unit_id in enumerate(("P1", "P2", "P3", "P4"), start=1):
+            units.append(
+                {
+                    "id": unit_id,
+                    "paths": paths[unit_id],
+                    "review_bytes": review_bytes.get(unit_id, index * 1000),
+                    "review_sha256": hashlib.sha256(
+                        f"fixture-review:{unit_id}".encode()
+                    ).hexdigest(),
+                }
+            )
+        core: dict[str, object] = {
+            "expires_at": policy["expires_at"],
+            "issue": 564,
+            "maximum_unit_count": 4,
+            "normalization": {
+                "active_sha256": cls._normalized_s0_policy_sha256(policy),
+                "consumed_sha256": cls._normalized_s0_policy_sha256(
+                    consumed_template
+                ),
+                "domain": "rep120-normalized-policy-v1",
+                "path": ".lit/feature-main-prestage-policy.json",
+                "sentinel": "0" * 64,
+            },
+            "ordered_units": ["P1", "P2", "P3", "P4"],
+            "policy_epoch": policy["policy_epoch"],
+            "repository": {
+                "id": 1112629689,
+                "name": "lightning-it/.github",
+            },
+            "schema": "lit.rep120.authorization-manifest-core/v2",
+            "series_id": policy["series_id"],
+            "starting_main": {"commit": "1" * 40, "tree": "2" * 40},
+            "terminal_unit_id": "P4",
+            "units": units,
+        }
+        core_sha256 = cls._s0_semantic_sha256(
+            "rep120-authorization-manifest-core-v2", core
+        )
+        policy["authorization_manifest_sha256"] = core_sha256
+        consumed = json.loads(json.dumps(policy))
+        consumed["state"] = "consumed"
+        policy_raw = cls._canonical_s0_json(policy)
+        consumed_raw = cls._canonical_s0_json(consumed)
+        policy_material = {
+            "active_blob": cls._s0_git_blob(policy_raw),
+            "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+            "active_normalized_sha256": cls._normalized_s0_policy_sha256(
+                policy
+            ),
+            "consumed_blob": cls._s0_git_blob(consumed_raw),
+            "consumed_bytes_sha256": hashlib.sha256(consumed_raw).hexdigest(),
+            "consumed_normalized_sha256": cls._normalized_s0_policy_sha256(
+                consumed
+            ),
+        }
+        activation_diff = {
+            "diff_bytes": 777,
+            "diff_sha256": hashlib.sha256(
+                b"fixture-inactive-to-active"
+            ).hexdigest(),
+            "paths": [".lit/feature-main-prestage-policy.json"],
+        }
+        coverage_units = [
+            {
+                "diff_bytes": unit["review_bytes"],
+                "diff_sha256": unit["review_sha256"],
+                "id": unit["id"],
+                "paths": unit["paths"],
+            }
+            for unit in units
+        ]
+        coverage: dict[str, object] = {
+            "activation": activation_diff,
+            "core_sha256": core_sha256,
+            "policy": policy_material,
+            "previous_record_sha256": core_sha256,
+            "repository": core["repository"],
+            "schema": "lit.rep120.post-core-coverage/v1",
+            "series_id": core["series_id"],
+            "units": coverage_units,
+        }
+        coverage_sha256 = cls._s0_semantic_sha256(
+            "rep120-post-core-coverage-v1", coverage
+        )
+        activation: dict[str, object] = {
+            "active_policy_blob": policy_material["active_blob"],
+            "core_sha256": core_sha256,
+            "coverage_sha256": coverage_sha256,
+            "diff": activation_diff,
+            "merge": {
+                "base": "3" * 40,
+                "bypass_used": False,
+                "head": "4" * 40,
+                "parents": ["3" * 40, "4" * 40],
+                "result_tree": "5" * 40,
+                "signature_verified": True,
+            },
+            "previous_record_sha256": coverage_sha256,
+            "schema": "lit.rep120.protected-activation-receipt/v1",
+            "series_id": core["series_id"],
+        }
+        bundle: dict[str, object] = {
+            "records": [
+                {
+                    "domain": "rep120-authorization-manifest-core-v2",
+                    "record": core,
+                },
+                {
+                    "domain": "rep120-post-core-coverage-v1",
+                    "record": coverage,
+                },
+                {
+                    "domain": "rep120-protected-activation-receipt-v1",
+                    "record": activation,
+                },
+            ],
+            "schema": "lit.rep120.s0-core-v2-fixture/v1",
+        }
+        return policy, policy_raw, bundle
+
+    @classmethod
+    def _run_s0_core_v2_verifier(
+        cls,
+        *,
+        policy_raw: bytes | None = None,
+        bundle: dict[str, object] | None = None,
+        bundle_raw: bytes | None = None,
+        observed_at: str = "2099-01-01T00:00:00Z",
+    ) -> subprocess.CompletedProcess[str]:
+        if policy_raw is None or bundle is None:
+            _, default_policy_raw, default_bundle = cls._s0_core_v2_fixture()
+            if policy_raw is None:
+                policy_raw = default_policy_raw
+            if bundle is None:
+                bundle = default_bundle
+        if bundle_raw is None:
+            bundle_raw = cls._canonical_s0_json(bundle)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            verifier = root / "verify-core-v2.py"
+            policy_path = root / "policy.json"
+            roots_path = root / "roots.json"
+            verifier.write_text(cls._s0_core_v2_verifier(), encoding="utf-8")
+            policy_path.write_bytes(policy_raw)
+            roots_path.write_bytes(bundle_raw)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    str(policy_path),
+                    str(roots_path),
+                    observed_at,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
 
     @staticmethod
     def _protected_source_binding() -> str:
@@ -6388,6 +6619,242 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     self._normalized_s0_policy_sha256(changed),
                 )
 
+    def test_s0_core_v2_accepts_one_closed_acyclic_root_chain(self) -> None:
+        policy, policy_raw, bundle = self._s0_core_v2_fixture()
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw, bundle=bundle
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+        )
+        output = json.loads(result.stdout)
+        core = bundle["records"][0]["record"]
+        coverage = bundle["records"][1]["record"]
+        activation = bundle["records"][2]["record"]
+        self.assertEqual(
+            policy["authorization_manifest_sha256"],
+            output["core_sha256"],
+        )
+        self.assertEqual(
+            self._s0_semantic_sha256(
+                "rep120-post-core-coverage-v1", coverage
+            ),
+            output["coverage_sha256"],
+        )
+        self.assertEqual(
+            self._s0_semantic_sha256(
+                "rep120-protected-activation-receipt-v1", activation
+            ),
+            output["activation_sha256"],
+        )
+        self.assertNotIn(
+            coverage["policy"]["active_blob"],
+            self._canonical_s0_json(core).decode(),
+        )
+        self.assertNotIn(
+            coverage["policy"]["consumed_blob"],
+            self._canonical_s0_json(core).decode(),
+        )
+
+    def test_s0_core_v2_strict_json_and_default_deny_hostile_inputs(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        canonical_bundle = self._canonical_s0_json(bundle)
+        duplicate = canonical_bundle.replace(
+            b'"issue":564', b'"issue":564,"issue":564', 1
+        )
+        pretty = (
+            json.dumps(bundle, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        unknown = json.loads(json.dumps(bundle))
+        unknown["records"][0]["record"]["unexpected"] = True
+        inactive_raw = S0_POLICY.read_bytes()
+        malformed_principal = json.loads(policy_raw)
+        malformed_principal["allowed_principals"][0]["login"] = "-unsafe"
+        cases = (
+            (
+                "recursive-duplicate-key",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw,
+                    bundle=bundle,
+                    bundle_raw=duplicate,
+                ),
+            ),
+            (
+                "noncanonical-root",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw,
+                    bundle=bundle,
+                    bundle_raw=pretty,
+                ),
+            ),
+            (
+                "unknown-Core-key",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=unknown
+                ),
+            ),
+            (
+                "inactive-policy",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=inactive_raw, bundle=bundle
+                ),
+            ),
+            (
+                "malformed-principal",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=self._canonical_s0_json(malformed_principal),
+                    bundle=bundle,
+                ),
+            ),
+        )
+        for name, result in cases:
+            with self.subTest(name=name):
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("rejected", result.stderr)
+
+        _, expired_raw, expired_bundle = self._s0_core_v2_fixture(
+            expires_at="2098-12-31T23:59:59Z"
+        )
+        expired = self._run_s0_core_v2_verifier(
+            policy_raw=expired_raw,
+            bundle=expired_bundle,
+            observed_at="2099-01-01T00:00:00Z",
+        )
+        self.assertNotEqual(0, expired.returncode)
+        self.assertIn("expired", expired.stderr)
+
+    def test_s0_core_v2_rejects_alternate_or_conflicting_roots(self) -> None:
+        policy, policy_raw, baseline = self._s0_core_v2_fixture()
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object], bytes]] = []
+        reordered = changed()
+        reordered["records"][0], reordered["records"][1] = (
+            reordered["records"][1],
+            reordered["records"][0],
+        )
+        candidates.append(("reordered-roots", reordered, policy_raw))
+        duplicate = changed()
+        duplicate["records"].append(json.loads(json.dumps(duplicate["records"][1])))
+        candidates.append(("duplicate-Coverage", duplicate, policy_raw))
+        alternate_core = changed()
+        alternate_core["records"][0]["record"]["units"][2][
+            "review_sha256"
+        ] = "f" * 64
+        candidates.append(("alternate-Core", alternate_core, policy_raw))
+        coverage_core = changed()
+        coverage_core["records"][1]["record"]["core_sha256"] = "e" * 64
+        candidates.append(("Coverage-Core-conflict", coverage_core, policy_raw))
+        coverage_predecessor = changed()
+        coverage_predecessor["records"][1]["record"][
+            "previous_record_sha256"
+        ] = "d" * 64
+        candidates.append(
+            ("Coverage-predecessor-conflict", coverage_predecessor, policy_raw)
+        )
+        activation_coverage = changed()
+        activation_coverage["records"][2]["record"][
+            "coverage_sha256"
+        ] = "c" * 64
+        candidates.append(
+            ("Activation-Coverage-conflict", activation_coverage, policy_raw)
+        )
+        activation_predecessor = changed()
+        activation_predecessor["records"][2]["record"][
+            "previous_record_sha256"
+        ] = "b" * 64
+        candidates.append(
+            (
+                "Activation-predecessor-conflict",
+                activation_predecessor,
+                policy_raw,
+            )
+        )
+        different_policy = json.loads(json.dumps(policy))
+        different_policy["authorization_manifest_sha256"] = "9" * 64
+        candidates.append(
+            (
+                "policy-Core-substitution",
+                changed(),
+                self._canonical_s0_json(different_policy),
+            )
+        )
+        for name, candidate, candidate_policy in candidates:
+            with self.subTest(name=name):
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=candidate_policy, bundle=candidate
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_s0_core_v2_topology_mapping_and_merge_fail_closed(self) -> None:
+        _, policy_raw, baseline = self._s0_core_v2_fixture()
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object]]] = []
+        gap = changed()
+        gap["records"][1]["record"]["units"][2]["paths"] = []
+        candidates.append(("Coverage-gap", gap))
+        overlap = changed()
+        overlap["records"][0]["record"]["units"][2]["paths"].append(
+            overlap["records"][0]["record"]["units"][0]["paths"][0]
+        )
+        overlap["records"][0]["record"]["units"][2]["paths"].sort()
+        candidates.append(("Core-overlap", overlap))
+        reordered = changed()
+        reordered["records"][0]["record"]["units"].reverse()
+        candidates.append(("unit-reorder", reordered))
+        wrong_p4 = changed()
+        wrong_p4["records"][0]["record"]["units"][3]["paths"].remove(
+            ".lit/feature-main-prestage-policy.json"
+        )
+        candidates.append(("wrong-P4-policy-topology", wrong_p4))
+        extra_activation_path = changed()
+        extra_activation_path["records"][1]["record"]["activation"][
+            "paths"
+        ].append("README.md")
+        candidates.append(("activation-extra-path", extra_activation_path))
+        bypass = changed()
+        bypass["records"][2]["record"]["merge"]["bypass_used"] = True
+        candidates.append(("activation-bypass", bypass))
+        unsigned = changed()
+        unsigned["records"][2]["record"]["merge"][
+            "signature_verified"
+        ] = False
+        candidates.append(("activation-unsigned", unsigned))
+        parent_drift = changed()
+        parent_drift["records"][2]["record"]["merge"]["parents"].reverse()
+        candidates.append(("activation-parent-drift", parent_drift))
+        for name, candidate in candidates:
+            with self.subTest(name=name):
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=candidate
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_s0_core_v2_enforces_exact_review_byte_interval(self) -> None:
+        for value, accepted in (
+            (1, True),
+            (199999, True),
+            (0, False),
+            (200000, False),
+        ):
+            _, policy_raw, bundle = self._s0_core_v2_fixture(
+                review_bytes={"P3": value}
+            )
+            result = self._run_s0_core_v2_verifier(
+                policy_raw=policy_raw, bundle=bundle
+            )
+            with self.subTest(value=value):
+                self.assertEqual(accepted, result.returncode == 0)
+
     def test_s0_inactive_consumed_expired_and_replay_authority_fail_closed(
         self,
     ) -> None:
@@ -6412,6 +6879,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             deep,
         )
         self.assertIn(
+            "S0 sealed Core-v2 transport is intentionally not configured.",
+            deep,
+        )
+        self.assertIn("rep120-normalized-policy-v1", deep)
+        self.assertNotIn(
             "S0 Authorization Manifest Core verifier is not materialized.",
             deep,
         )
@@ -6470,7 +6942,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
 
-    def test_s0_binds_protected_develop_policy_before_p0_core_block(
+    def test_s0_binds_policy_before_inactive_core_v2_transport_block(
         self,
     ) -> None:
         deep = self._s0_job(
@@ -6486,14 +6958,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "$(jq -er .state "${policy_file}")" = active',
             ".authorization_manifest_sha256 = $sentinel",
             "normalized_policy_sha256=",
+            "rep120-authorization-manifest-core-v2",
+            "rep120-post-core-coverage-v1",
+            "rep120-protected-activation-receipt-v1",
+            "S0 sealed Core-v2 transport is intentionally not configured.",
         ):
             self.assertIn(fragment, deep)
         p0_block = deep.index(
-            "S0 Authorization Manifest Core verifier is not materialized."
+            "S0 sealed Core-v2 transport is intentionally not configured."
         )
         self.assertGreater(p0_block, deep.index("normalized_policy_sha256="))
-        self.assertNotIn("ordered_units", deep)
-        self.assertNotIn("starting_main_tree", deep)
+        self.assertIn("ordered_units", deep)
+        self.assertIn("starting_main", deep)
         self.assertNotIn("merge-base --is-ancestor", deep)
         self.assertNotIn("rep120-s0-prestage-manifest:v1", deep)
         self.assertNotIn("id-token: write", deep)
