@@ -1884,6 +1884,20 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
         ):
             self.collect(truncated)
 
+    def test_duplicate_cursor_chain_blocks_at_collector_boundary(self):
+        records = [self.run_record(run_id) for run_id in range(1, 4)]
+        manifest, _ = self.manifest(
+            [[record] for record in records],
+            [[record] for record in records],
+        )
+        for read in manifest["reads"]:
+            read["pages"][1]["next_cursor"] = "cursor-2"
+            read["pages"][2]["cursor"] = "cursor-2"
+        with self.assertRaisesRegex(
+            INVENTORY.ContractError, "inventory-cursor-duplicate"
+        ):
+            self.collect(manifest)
+
 
 class ReleasePromotionHistoryCollectorTests(unittest.TestCase):
     operation_key = "a" * 64

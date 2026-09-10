@@ -161,6 +161,8 @@ def normalize_read(kind: str, read_value: Any, *, maximum_bytes: int,
         for left, right in zip(pages, pages[1:]):
             require(left["next_cursor"] is not None, "inventory-cursor-truncated")
             require(left["next_cursor"] == right["cursor"], "inventory-cursor-chain")
+        cursors = [page["cursor"] for page in pages[1:]]
+        require(len(cursors) == len(set(cursors)), "inventory-cursor-duplicate")
     records = [record for page in pages for record in page["records"]]
     require(len(records) <= maximum_records, "inventory-record-limit")
     identities: set[Any] = set()
