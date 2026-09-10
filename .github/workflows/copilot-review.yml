@@ -1170,17 +1170,56 @@ jobs:
             test "${author}" != 'lightning-it-shared-assets-sync[bot]'
           fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          evidence="$(jq -cn \
-            --arg base "${EVENT_BASE}" \
-            --arg controller "${TRUSTED_WORKFLOW_SHA}" \
-            --arg head "${EVENT_HEAD}" \
-            --arg review_path "${review_path}" \
-            --argjson pr_number "${PR_NUMBER}" \
-            --argjson run_id "${GITHUB_RUN_ID}" \
-            --arg run_url "${run_url}" \
-            '{schema:4,base_sha:$base,head_sha:$head,controller_sha:$controller,
-              pull_request_number:$pr_number,producer_run_id:$run_id,
-              review_path:$review_path,run_url:$run_url}')"
+          if [ "${TRUSTED_KIND}" = renovate ]; then
+            renovate_labels_json="$(jq -cer '
+              if (.labels | type) == "array"
+                and all(.labels[]?;
+                  type == "object" and (.name | type) == "string")
+              then [.labels[].name] | sort
+              else error("malformed Renovate pull-request labels") end
+              ' <<<"${pr}")"
+            renovate_labels_sha256="$(printf '%s' "${renovate_labels_json}" \
+              | sha256sum | cut -d ' ' -f 1)"
+            [[ "${renovate_labels_sha256}" =~ ^[0-9a-f]{64}$ ]]
+            renovate_last_edited_at="$(jq -r '.last_edited_at // "null"' \
+              <<<"${pr}")"
+            renovate_head_repository="$(jq -er \
+              '.head.repo.full_name | select(type == "string" and length > 0)' \
+              <<<"${pr}")"
+            test "${renovate_head_repository}" = "${REPOSITORY}"
+            evidence="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg controller "${TRUSTED_WORKFLOW_SHA}" \
+              --arg controller_ref "${DEFAULT_BRANCH}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_repository "${renovate_head_repository}" \
+              --arg labels_sha256 "${renovate_labels_sha256}" \
+              --arg last_edited_at "${renovate_last_edited_at}" \
+              --arg review_path "${review_path}" \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_id "${GITHUB_RUN_ID}" \
+              --arg run_url "${run_url}" \
+              '{schema:4,base_sha:$base,controller_ref:$controller_ref,
+                controller_sha:$controller,head_repository:$head_repository,
+                head_sha:$head,producer_run_id:$run_id,
+                pull_request_labels_sha256:$labels_sha256,
+                pull_request_last_edited_at:(if $last_edited_at == "null"
+                  then null else $last_edited_at end),
+                pull_request_number:$pr_number,review_id:null,
+                review_path:$review_path,run_url:$run_url}')"
+          else
+            evidence="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg controller "${TRUSTED_WORKFLOW_SHA}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg review_path "${review_path}" \
+              --argjson pr_number "${PR_NUMBER}" \
+              --argjson run_id "${GITHUB_RUN_ID}" \
+              --arg run_url "${run_url}" \
+              '{schema:4,base_sha:$base,head_sha:$head,controller_sha:$controller,
+                pull_request_number:$pr_number,producer_run_id:$run_id,
+                review_path:$review_path,run_url:$run_url}')"
+          fi
           publish_once() {
             local check_name="$1" external_id="$2" title="$3"
             local checks named count check_id check_url completed_at created

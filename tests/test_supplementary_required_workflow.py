@@ -925,6 +925,37 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
 
+    def test_neutral_renovate_evidence_binds_verifier_required_fields(
+        self,
+    ) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        renovate_evidence = publish.split(
+            '          if [ "${TRUSTED_KIND}" = renovate ]; then\n', 1
+        )[1].split("          else\n            evidence=", 1)[0]
+        for binding in (
+            'renovate_labels_json="$(jq -cer',
+            'error("malformed Renovate pull-request labels")',
+            'renovate_labels_sha256="$(printf',
+            'renovate_last_edited_at="$(jq -r',
+            'renovate_head_repository="$(jq -er',
+            'test "${renovate_head_repository}" = "${REPOSITORY}"',
+            '--arg controller_ref "${DEFAULT_BRANCH}"',
+            '--arg head_repository "${renovate_head_repository}"',
+            '--arg labels_sha256 "${renovate_labels_sha256}"',
+            '--arg last_edited_at "${renovate_last_edited_at}"',
+            'controller_ref:$controller_ref',
+            'head_repository:$head_repository',
+            'pull_request_labels_sha256:$labels_sha256',
+            'pull_request_last_edited_at:(if $last_edited_at == "null"',
+            'pull_request_number:$pr_number,review_id:null',
+            'review_path:$review_path,run_url:$run_url',
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, renovate_evidence)
+
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)
