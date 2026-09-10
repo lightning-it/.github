@@ -111,15 +111,35 @@ def normalized_string_list(value: Any, label: str) -> list[str]:
     return sorted(value)
 
 
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> JSON:
+    value: JSON = {}
+    for key, item in pairs:
+        require(key not in value, "input-duplicate-key")
+        value[key] = item
+    return value
+
+
+def reject_nonstandard_constant(_: str) -> None:
+    raise ContractError("input-not-canonical-json")
+
+
 def load_json(path_text: str) -> Any:
     path = Path(path_text)
     metadata = path.lstat()
     require(stat.S_ISREG(metadata.st_mode), "input-not-regular")
     require(metadata.st_size <= 8 * 1024 * 1024, "input-too-large")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+        require(len(raw) == metadata.st_size, "input-size-drift")
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise ContractError("input-not-canonical-json") from error
+    require(raw == canonical(value), "input-not-canonical-json")
+    return value
 
 
 def normalize_reviewers(value: Any, label: str) -> list[JSON]:

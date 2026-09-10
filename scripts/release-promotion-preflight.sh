@@ -32,11 +32,20 @@ promotion_patch_format=""
 controller_blob=""
 reported=false
 review_file=""
+projection_file=""
+projection_listing_file=""
 
 cleanup() {
-  if [ -n "${review_file}" ] && [ -f "${review_file}" ]; then
-    rm -f -- "${review_file}"
-  fi
+  local temporary_file
+  for temporary_file in \
+    "${review_file}" \
+    "${projection_file}" \
+    "${projection_listing_file}"
+  do
+    if [ -n "${temporary_file}" ] && [ -f "${temporary_file}" ]; then
+      rm -f -- "${temporary_file}"
+    fi
+  done
 }
 
 report_disposition() {
@@ -113,6 +122,24 @@ fail_closed() {
   return 1
 }
 
+validate_runner_temp() {
+  local mode
+  [ -n "${RUNNER_TEMP:-}" ] \
+    || fail_closed "RUNNER_TEMP is required for release admission."
+  [[ "${RUNNER_TEMP}" = /* ]] \
+    || fail_closed "RUNNER_TEMP must be an absolute directory."
+  [ -d "${RUNNER_TEMP}" ] \
+    && [ ! -L "${RUNNER_TEMP}" ] \
+    && [ -O "${RUNNER_TEMP}" ] \
+    && [ -w "${RUNNER_TEMP}" ] \
+    && [ -x "${RUNNER_TEMP}" ] \
+    || fail_closed "RUNNER_TEMP must be an owned, writable, searchable real directory."
+  mode="$(stat -c '%a' -- "${RUNNER_TEMP}")" \
+    || fail_closed "RUNNER_TEMP permissions are unreadable."
+  [[ "${mode}" =~ ^[0-7]{1,2}[0145][0145]$ ]] \
+    || fail_closed "RUNNER_TEMP must not be group- or world-writable."
+}
+
 reject_persisted_git_credentials() {
   local credential_config config_status
   if credential_config="$(
@@ -152,10 +179,10 @@ bind_regular_file() {
 
 projection_digest() {
   local commit="${1}"
-  local entry listing_file metadata mode name object projection_file type unexpected
-  listing_file="$(mktemp "${RUNNER_TEMP:-/tmp}/promotion-tree.XXXXXX")"
-  projection_file="$(mktemp "${RUNNER_TEMP:-/tmp}/promotion-projection.XXXXXX")"
-  git ls-tree -r -z --full-tree "${commit}" >"${listing_file}" \
+  local entry metadata mode name object type unexpected
+  projection_listing_file="$(mktemp "${RUNNER_TEMP}/promotion-tree.XXXXXX")"
+  projection_file="$(mktemp "${RUNNER_TEMP}/promotion-projection.XXXXXX")"
+  git ls-tree -r -z --full-tree "${commit}" >"${projection_listing_file}" \
     || fail_closed "The repository projection could not be enumerated."
   while IFS= read -r -d '' entry; do
     metadata="${entry%%$'\t'*}"
@@ -166,14 +193,18 @@ projection_digest() {
       || [ "${type}" != blob ] \
       || ! [[ "${object}" =~ ^[0-9a-f]{40}$ ]] \
       || [ -z "${name}" ]; then
-      rm -f -- "${listing_file}" "${projection_file}"
+      rm -f -- "${projection_listing_file}" "${projection_file}"
+      projection_listing_file=""
+      projection_file=""
       fail_closed "The repository projection contains an unsafe tree entry."
       return 1
     fi
     printf '%s\0' "${entry}" >>"${projection_file}"
-  done <"${listing_file}"
+  done <"${projection_listing_file}"
   sha256sum "${projection_file}" | LC_ALL=C awk '{ print $1 }'
-  rm -f -- "${listing_file}" "${projection_file}"
+  rm -f -- "${projection_listing_file}" "${projection_file}"
+  projection_listing_file=""
+  projection_file=""
 }
 
 reject_unsafe_delta() {
@@ -214,7 +245,7 @@ trap cleanup EXIT
 trap on_error ERR
 umask 077
 
-for command_name in git jq sha256sum; do
+for command_name in git jq sha256sum stat; do
   command -v "${command_name}" >/dev/null \
     || fail_closed "${command_name} is required for release admission."
 done
@@ -233,6 +264,7 @@ done
   || fail_closed "The workflow revision is malformed."
 test -z "$(git status --porcelain=v1 --untracked-files=all)" \
   || fail_closed "The release admission worktree is not exact."
+validate_runner_temp
 
 reject_persisted_git_credentials
 git fetch --quiet --no-tags origin \
@@ -271,7 +303,7 @@ integration_tree="$(git merge-tree --write-tree "${base_sha}" "${head_sha}")" \
   || fail_closed "The protected merge tree differs from develop."
 reject_unsafe_delta "${base_sha}" "${head_sha}"
 
-review_file="$(mktemp "${RUNNER_TEMP:-/tmp}/promotion-review.XXXXXX")"
+review_file="$(mktemp "${RUNNER_TEMP}/promotion-review.XXXXXX")"
 git diff \
   --binary \
   --full-index \

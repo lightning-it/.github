@@ -55,11 +55,29 @@ fail_closed() {
   return 1
 }
 
+validate_runner_temp() {
+  local mode
+  [ -n "${RUNNER_TEMP:-}" ] \
+    || fail_closed "RUNNER_TEMP is required for promotion history admission."
+  [[ "${RUNNER_TEMP}" = /* ]] \
+    || fail_closed "RUNNER_TEMP must be an absolute directory."
+  [ -d "${RUNNER_TEMP}" ] \
+    && [ ! -L "${RUNNER_TEMP}" ] \
+    && [ -O "${RUNNER_TEMP}" ] \
+    && [ -w "${RUNNER_TEMP}" ] \
+    && [ -x "${RUNNER_TEMP}" ] \
+    || fail_closed "RUNNER_TEMP must be an owned, writable, searchable real directory."
+  mode="$(stat -c '%a' -- "${RUNNER_TEMP}")" \
+    || fail_closed "RUNNER_TEMP permissions are unreadable."
+  [[ "${mode}" =~ ^[0-7]{1,2}[0145][0145]$ ]] \
+    || fail_closed "RUNNER_TEMP must not be group- or world-writable."
+}
+
 trap cleanup EXIT
 trap on_error ERR
 umask 077
 
-for command_name in gh head jq sha256sum timeout wc; do
+for command_name in gh head jq sha256sum stat timeout wc; do
   command -v "${command_name}" >/dev/null \
     || fail_closed "${command_name} is required for promotion history admission."
 done
@@ -92,8 +110,9 @@ done
   || fail_closed "A read-capable GitHub token is required for history admission."
 [ -n "${GITHUB_OUTPUT:-}" ] \
   || fail_closed "Promotion history requires a GitHub output path."
+validate_runner_temp
 
-history_file="$(mktemp "${RUNNER_TEMP:-/tmp}/promotion-history.XXXXXX")"
+history_file="$(mktemp "${RUNNER_TEMP}/promotion-history.XXXXXX")"
 set +o pipefail
 timeout "${HISTORY_DEADLINE_SECONDS}" \
   gh api --paginate --slurp \

@@ -412,6 +412,26 @@ class StateFixture(unittest.TestCase):
 
 
 class ReleasePromotionCanonicalStateTests(StateFixture):
+    def test_raw_duplicate_input_keys_block_before_normalization(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "duplicate.json"
+            path.write_text('{"issue":564,"issue":565}\n', encoding="utf-8")
+            with self.assertRaisesRegex(
+                STATE.ContractError, "input-duplicate-key"
+            ):
+                STATE.load_json(str(path))
+
+    def test_noncanonical_input_encoding_blocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "noncanonical.json"
+            for raw in ('{"issue": 564}\n', "NaN\n"):
+                with self.subTest(raw=raw):
+                    path.write_text(raw, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        STATE.ContractError, "input-not-canonical-json"
+                    ):
+                        STATE.load_json(str(path))
+
     def test_provisional_policy_remains_explicitly_non_authorizing(self):
         policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
         self.assertEqual("provisional-pre-d1-pre-s0", policy["lifecycle"])
@@ -1774,7 +1794,7 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
     def page_file(self, records):
         self.counter += 1
         path = self.root / f"page-{self.counter}.json"
-        raw = json.dumps(records, separators=(",", ":")).encode()
+        raw = INVENTORY.canonical(records)
         path.write_bytes(raw)
         return str(path), len(raw)
 
@@ -1913,6 +1933,26 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(INVENTORY.ContractError, "page-not-regular"):
             self.collect(linked)
 
+    def test_raw_duplicate_page_keys_block_before_normalization(self):
+        path = self.root / "duplicate-page.json"
+        path.write_text(
+            '[{"attempt":1,"run_id":1,"run_id":2}]', encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            INVENTORY.ContractError, "page-duplicate-key"
+        ):
+            INVENTORY.load_json(str(path), 1024)
+
+    def test_noncanonical_page_encoding_blocks(self):
+        path = self.root / "noncanonical-page.json"
+        for raw in ('[{"run_id": 1}]\n', "NaN\n"):
+            with self.subTest(raw=raw):
+                path.write_text(raw, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    INVENTORY.ContractError, "page-not-canonical-json"
+                ):
+                    INVENTORY.load_json(str(path), 1024)
+
     def test_exactly_two_reads_and_complete_cursor_chain_are_mandatory(self):
         record = self.run_record(1)
         manifest, _ = self.manifest([[record]], [[record]])
@@ -1935,7 +1975,7 @@ class ReleasePromotionHistoryCollectorTests(unittest.TestCase):
 
     def run_history(self, pages, *, api_failure=False, deadline=5,
                     max_bytes=1048576, max_pages=10, max_records=100,
-                    sleep_seconds=0):
+                    runner_temp_kind="valid", sleep_seconds=0):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -1953,31 +1993,73 @@ printf '%s\n' "$HISTORY_PAGES"
             encoding="utf-8",
         )
         fake_gh.chmod(0o755)
+        runner_temp = temporary.name
+        if runner_temp_kind == "unset":
+            runner_temp = None
+        elif runner_temp_kind == "relative":
+            runner_temp = "relative-runner-temp"
+        elif runner_temp_kind == "missing":
+            runner_temp = str(root / "missing-runner-temp")
+        elif runner_temp_kind == "symlink":
+            target = root / "runner-temp-target"
+            target.mkdir(mode=0o700)
+            linked = root / "runner-temp-link"
+            linked.symlink_to(target, target_is_directory=True)
+            runner_temp = str(linked)
+        elif runner_temp_kind == "unsafe-mode":
+            unsafe = root / "unsafe-runner-temp"
+            unsafe.mkdir(mode=0o700)
+            unsafe.chmod(0o777)
+            runner_temp = str(unsafe)
+        elif runner_temp_kind != "valid":
+            raise AssertionError(f"unknown runner temp kind: {runner_temp_kind}")
+        environment = {
+            **os.environ,
+            "EXPECTED_BASE_SHA": "1" * 40,
+            "EXPECTED_HEAD_SHA": "2" * 40,
+            "GH_TOKEN": "read-only-fixture-token",
+            "GITHUB_OUTPUT": str(output),
+            "HISTORY_API_FAILURE": "true" if api_failure else "false",
+            "HISTORY_DEADLINE_SECONDS": str(deadline),
+            "HISTORY_MAX_BYTES": str(max_bytes),
+            "HISTORY_MAX_PAGES": str(max_pages),
+            "HISTORY_MAX_RECORDS": str(max_records),
+            "HISTORY_PAGES": json.dumps(pages, separators=(",", ":")),
+            "HISTORY_SLEEP_SECONDS": str(sleep_seconds),
+            "OPERATION_KEY": self.operation_key,
+            "OWNER_RUN_ATTEMPT": "1",
+            "OWNER_RUN_ID": "12345",
+            "PATH": f"{root}:{os.environ['PATH']}",
+            "REPOSITORY": "lightning-it/.github",
+        }
+        if runner_temp is not None:
+            environment["RUNNER_TEMP"] = runner_temp
+        else:
+            environment.pop("RUNNER_TEMP", None)
         result = subprocess.run(["bash", "scripts/release-promotion-history.sh"],
-            cwd=ROOT, text=True, capture_output=True, check=False, env={
-                **os.environ,
-                "EXPECTED_BASE_SHA": "1" * 40,
-                "EXPECTED_HEAD_SHA": "2" * 40,
-                "GH_TOKEN": "read-only-fixture-token",
-                "GITHUB_OUTPUT": str(output),
-                "HISTORY_API_FAILURE": "true" if api_failure else "false",
-                "HISTORY_DEADLINE_SECONDS": str(deadline),
-                "HISTORY_MAX_BYTES": str(max_bytes),
-                "HISTORY_MAX_PAGES": str(max_pages),
-                "HISTORY_MAX_RECORDS": str(max_records),
-                "HISTORY_PAGES": json.dumps(pages, separators=(",", ":")),
-                "HISTORY_SLEEP_SECONDS": str(sleep_seconds),
-                "OPERATION_KEY": self.operation_key,
-                "OWNER_RUN_ATTEMPT": "1",
-                "OWNER_RUN_ID": "12345",
-                "PATH": f"{root}:{os.environ['PATH']}",
-                "REPOSITORY": "lightning-it/.github",
-                "RUNNER_TEMP": temporary.name,
-            },
+            cwd=ROOT, text=True, capture_output=True, check=False,
+            env=environment,
         )
         outputs = dict(line.split("=", 1)
                        for line in output.read_text(encoding="utf-8").splitlines())
         return result, outputs
+
+    def test_collector_requires_a_private_absolute_runner_temp(self):
+        cases = (
+            ("unset", "required"),
+            ("relative", "absolute"),
+            ("missing", "real directory"),
+            ("symlink", "real directory"),
+            ("unsafe-mode", "group- or world-writable"),
+        )
+        for kind, message in cases:
+            with self.subTest(kind=kind):
+                result, outputs = self.run_history(
+                    [[]], runner_temp_kind=kind
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual("blocked", outputs["disposition"])
+                self.assertIn(message, result.stderr)
 
     def promotion_record(self, *, dispatch="succeeded", number=575,
                          operation_key=None, run_id=12345, state="open"):
@@ -2108,6 +2190,11 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         self.assertIn('[ "${promotion_patch_bytes}" -lt 200000 ]', preflight)
         self.assertIn('[ "${promotion_patch_bytes}" -eq 0 ]', preflight)
         self.assertIn("unset GH_TOKEN GITHUB_TOKEN", preflight)
+        self.assertNotIn("${RUNNER_TEMP:-/tmp}", preflight)
+        self.assertEqual(3, preflight.count('mktemp "${RUNNER_TEMP}/'))
+        self.assertIn("validate_runner_temp", preflight)
+        self.assertIn('projection_listing_file=""', preflight)
+        self.assertIn('projection_file=""', preflight)
 
 
 if __name__ == "__main__":

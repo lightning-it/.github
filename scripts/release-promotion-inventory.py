@@ -59,6 +59,18 @@ def digest(value: Any) -> str:
     return digest_bytes(canonical(value))
 
 
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> JSON:
+    value: JSON = {}
+    for key, item in pairs:
+        require(key not in value, "page-duplicate-key")
+        value[key] = item
+    return value
+
+
+def reject_nonstandard_constant(_: str) -> None:
+    raise ContractError("page-not-canonical-json")
+
+
 def load_json(path_text: str, maximum_bytes: int) -> tuple[Any, bytes]:
     path = Path(path_text)
     metadata = path.lstat()
@@ -70,9 +82,15 @@ def load_json(path_text: str, maximum_bytes: int) -> tuple[Any, bytes]:
         raise ContractError("page-read-failed") from error
     require(len(raw) == metadata.st_size, "page-size-drift")
     try:
-        return json.loads(raw.decode("utf-8")), raw
-    except (UnicodeError, json.JSONDecodeError) as error:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise ContractError("page-not-json") from error
+    require(raw == canonical(value), "page-not-canonical-json")
+    return value, raw
 
 
 def cursor(value: Any, label: str) -> str | None:
