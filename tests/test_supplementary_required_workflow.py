@@ -7388,6 +7388,32 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotEqual(0, expired.returncode)
         self.assertIn("expired", expired.stderr)
 
+    def test_s0_core_v2_rejects_huge_json_integer_without_traceback(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        huge_integer = self._canonical_s0_json(bundle).replace(
+            b'"issue":564', b'"issue":' + (b"9" * 5000), 1
+        )
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw,
+            bundle=bundle,
+            bundle_raw=huge_integer,
+        )
+        self._assert_s0_core_v2_controlled_rejection(result)
+
+    def test_s0_core_v2_rejects_deep_json_nesting_without_traceback(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        deeply_nested = (b"[" * 2000) + b"0" + (b"]" * 2000) + b"\n"
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw,
+            bundle=bundle,
+            bundle_raw=deeply_nested,
+        )
+        self._assert_s0_core_v2_controlled_rejection(result)
+
     def test_s0_core_v2_rejects_alternate_or_conflicting_roots(self) -> None:
         policy, policy_raw, baseline = self._s0_core_v2_fixture()
         baseline_starting_tree = self._s0_full_tree_raw(

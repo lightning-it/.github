@@ -1090,7 +1090,12 @@ jobs:
                       parse_float=reject_number,
                       parse_constant=reject_number,
                   )
-              except (UnicodeDecodeError, json.JSONDecodeError) as error:
+              except (
+                  UnicodeDecodeError,
+                  json.JSONDecodeError,
+                  ValueError,
+                  RecursionError,
+              ) as error:
                   raise Rejected(f"{label}: invalid JSON") from error
               require(canonical(value) == raw, f"{label}: noncanonical JSON")
               return value
