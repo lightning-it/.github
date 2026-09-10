@@ -411,6 +411,12 @@ class StateFixture(unittest.TestCase):
         with self.assertRaisesRegex(STATE.ContractError, reason):
             STATE.classify(policy, snapshot)
 
+    @staticmethod
+    def set_path(value, path, replacement):
+        for key in path[:-1]:
+            value = value[key]
+        value[path[-1]] = replacement
+
 
 class ReleasePromotionCanonicalStateTests(StateFixture):
     def test_raw_duplicate_input_keys_block_before_normalization(self):
@@ -433,22 +439,14 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                     ):
                         STATE.load_json(str(path))
 
-    def test_missing_input_has_a_stable_contract_reason(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "missing.json"
-            with self.assertRaises(STATE.ContractError) as caught:
-                STATE.load_json(str(path))
-            self.assertEqual("input-stat-failed", str(caught.exception))
-
-    def test_unreadable_input_does_not_leak_os_details(self):
-        with mock.patch.object(
-            STATE.Path,
-            "lstat",
-            side_effect=PermissionError(13, "OS-SENTINEL", "/private/sentinel"),
-        ):
-            with self.assertRaises(STATE.ContractError) as caught:
+    def test_input_stat_error_has_a_stable_contract_reason(self):
+        for error in (FileNotFoundError(2, "OS-SENTINEL", "/private/sentinel"),
+                      PermissionError(13, "OS-SENTINEL", "/private/sentinel")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                STATE.Path, "lstat", side_effect=error
+            ), self.assertRaises(STATE.ContractError) as caught:
                 STATE.load_json("/private/sentinel")
-        self.assertEqual("input-stat-failed", str(caught.exception))
+            self.assertEqual("input-stat-failed", str(caught.exception))
 
     def test_provisional_policy_remains_explicitly_non_authorizing(self):
         policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
@@ -1091,61 +1089,21 @@ class ReleasePromotionReservationTests(StateFixture):
     def test_reservation_identity_time_and_source_substitutions_block(self):
         policy = self.policy()
         cases = (
-            (
-                "external",
-                lambda record: record.update(external_id="wrong"),
-                "reservation-external-id",
-            ),
-            (
-                "check",
-                lambda record: record.update(check_run_id=0),
-                "reservation-check-run-id",
-            ),
-            (
-                "positive-check-substitution",
-                lambda record: record.update(check_run_id=701),
-                "reservation-readback-mismatch",
-            ),
-            (
-                "readback",
-                lambda record: record.update(readback_sha256="0" * 64),
-                "reservation-readback-mismatch",
-            ),
-            (
-                "future-owner",
-                lambda record: record["materialized_state"].update(
-                    owner_run_created_at="2026-09-07T12:31:00Z"
-                ),
-                "reservation-owner-created-at-future",
-            ),
-            (
-                "future-create",
-                lambda record: record["materialized_state"].update(
-                    created_at="2026-09-07T12:31:00Z"
-                ),
-                "reservation-created-at-future",
-            ),
-            (
-                "source",
-                lambda record: record["materialized_state"][
-                    "source_identity"
-                ].update(repository_id=1),
-                "reservation-source-identity-drift",
-            ),
+            ("external", ("external_id",), "wrong", "reservation-external-id", False),
+            ("check", ("check_run_id",), 0, "reservation-check-run-id", False),
+            ("positive-check-substitution", ("check_run_id",), 701, "reservation-readback-mismatch", False),
+            ("readback", ("readback_sha256",), "0" * 64, "reservation-readback-mismatch", False),
+            ("future-owner", ("materialized_state", "owner_run_created_at"), "2026-09-07T12:31:00Z", "reservation-owner-created-at-future", True),
+            ("future-create", ("materialized_state", "created_at"), "2026-09-07T12:31:00Z", "reservation-created-at-future", True),
+            ("source", ("materialized_state", "source_identity", "repository_id"), 1, "reservation-source-identity-drift", True),
         )
-        for name, mutate, reason in cases:
+        for name, path, value, reason, reseal in cases:
             with self.subTest(name=name):
                 snapshot = self.snapshot(policy)
                 reservation = self.reservation_record(policy, snapshot)
-                mutate(reservation)
-                if name in {"future-owner", "future-create", "source"}:
-                    reservation["readback_sha256"] = STATE.digest(
-                        {
-                            "check_run_id": reservation["check_run_id"],
-                            "external_id": reservation["external_id"],
-                            "materialized_state": reservation["materialized_state"],
-                        }
-                    )
+                self.set_path(reservation, path, value)
+                if reseal:
+                    self.seal_reservation(reservation)
                 self.replace_inventory(snapshot, "reservations", [reservation])
                 self.assert_blocked(reason, policy, snapshot)
 
@@ -1634,97 +1592,27 @@ class ReleasePromotionReservationTests(StateFixture):
 
     def test_hostile_attempt_two_authority_and_attempt_three_block(self):
         policy = self.policy()
+        authorization = ("attempt_authorization",)
+        core = authorization + ("core",)
         cases = (
-            (
-                "missing",
-                lambda snapshot: snapshot.update(attempt_authorization=None),
-                "attempt-authorization-not-object",
-            ),
-            (
-                "used",
-                lambda snapshot: snapshot["attempt_authorization"].update(
-                    used=True
-                ),
-                "attempt-authorization-readback-mismatch",
-            ),
-            (
-                "issuer",
-                lambda snapshot: snapshot["attempt_authorization"].update(
-                    issuer="untrusted"
-                ),
-                "attempt-authorization-issuer",
-            ),
-            (
-                "check-id",
-                lambda snapshot: snapshot["attempt_authorization"].update(
-                    check_run_id=901
-                ),
-                "attempt-authorization-readback-mismatch",
-            ),
-            (
-                "external-id",
-                lambda snapshot: snapshot["attempt_authorization"].update(
-                    external_id="wrong"
-                ),
-                "attempt-authorization-external-id",
-            ),
-            (
-                "wrong-state",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    state_digest="0" * 64
-                ),
-                "attempt-authorization-state",
-            ),
-            (
-                "wrong-action",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    allowed_action="downstream-dispatch"
-                ),
-                "attempt-authorization-action",
-            ),
-            (
-                "wrong-prior-intent",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    prior_intent_sha256="0" * 64
-                ),
-                "attempt-authorization-prior-intent",
-            ),
-            (
-                "wrong-prior-run",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    prior_run_sha256="0" * 64
-                ),
-                "attempt-authorization-prior-run",
-            ),
-            (
-                "expired",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    expires_at="2026-09-07T12:25:00Z"
-                ),
-                "attempt-authorization-expired",
-            ),
-            (
-                "future",
-                lambda snapshot: snapshot["attempt_authorization"]["core"].update(
-                    created_at="2026-09-07T12:31:00Z"
-                ),
-                "attempt-authorization-created-at-future",
-            ),
+            ("missing", authorization, None, "attempt-authorization-not-object", False),
+            ("used", authorization + ("used",), True, "attempt-authorization-readback-mismatch", False),
+            ("issuer", authorization + ("issuer",), "untrusted", "attempt-authorization-issuer", False),
+            ("check-id", authorization + ("check_run_id",), 901, "attempt-authorization-readback-mismatch", False),
+            ("external-id", authorization + ("external_id",), "wrong", "attempt-authorization-external-id", False),
+            ("wrong-state", core + ("state_digest",), "0" * 64, "attempt-authorization-state", True),
+            ("wrong-action", core + ("allowed_action",), "downstream-dispatch", "attempt-authorization-action", True),
+            ("wrong-prior-intent", core + ("prior_intent_sha256",), "0" * 64, "attempt-authorization-prior-intent", True),
+            ("wrong-prior-run", core + ("prior_run_sha256",), "0" * 64, "attempt-authorization-prior-run", True),
+            ("expired", core + ("expires_at",), "2026-09-07T12:25:00Z", "attempt-authorization-expired", True),
+            ("future", core + ("created_at",), "2026-09-07T12:31:00Z", "attempt-authorization-created-at-future", True),
         )
-        for name, mutate, reason in cases:
+        for name, path, value, reason, reseal in cases:
             with self.subTest(name=name):
                 snapshot, _ = self.attempt_two_snapshot(policy)
-                mutate(snapshot)
-                if name in {
-                    "expired",
-                    "future",
-                    "wrong-action",
-                    "wrong-prior-intent",
-                    "wrong-prior-run",
-                    "wrong-state",
-                }:
-                    authorization = snapshot["attempt_authorization"]
-                    self.seal_attempt_authorization(authorization)
+                self.set_path(snapshot, path, value)
+                if reseal:
+                    self.seal_attempt_authorization(snapshot["attempt_authorization"])
                 self.assert_blocked(reason, policy, snapshot)
 
     def test_attempt_two_and_terminal_owner_hostile_replays_block(self):
@@ -1971,21 +1859,14 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
                 ):
                     INVENTORY.load_json(str(path), 1024)
 
-    def test_missing_page_has_a_stable_contract_reason(self):
-        path = self.root / "missing-page.json"
-        with self.assertRaises(INVENTORY.ContractError) as caught:
-            INVENTORY.load_json(str(path), 1024)
-        self.assertEqual("page-stat-failed", str(caught.exception))
-
-    def test_unreadable_page_does_not_leak_os_details(self):
-        with mock.patch.object(
-            INVENTORY.Path,
-            "lstat",
-            side_effect=PermissionError(13, "OS-SENTINEL", "/private/sentinel"),
-        ):
-            with self.assertRaises(INVENTORY.ContractError) as caught:
+    def test_page_stat_error_has_a_stable_contract_reason(self):
+        for error in (FileNotFoundError(2, "OS-SENTINEL", "/private/sentinel"),
+                      PermissionError(13, "OS-SENTINEL", "/private/sentinel")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                INVENTORY.Path, "lstat", side_effect=error
+            ), self.assertRaises(INVENTORY.ContractError) as caught:
                 INVENTORY.load_json("/private/sentinel", 1024)
-        self.assertEqual("page-stat-failed", str(caught.exception))
+            self.assertEqual("page-stat-failed", str(caught.exception))
 
     def test_exactly_two_reads_and_complete_cursor_chain_are_mandatory(self):
         record = self.run_record(1)
@@ -2230,7 +2111,6 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         self.assertIn("validate_runner_temp", preflight)
         self.assertIn('projection_listing_file=""', preflight)
         self.assertIn('projection_file=""', preflight)
-        self.assertIn('[ -n "${GITHUB_OUTPUT:-}" ]', preflight)
         self.assertIn('[ -n "${GITHUB_STEP_SUMMARY:-}" ]', preflight)
 
         history = (
@@ -2255,44 +2135,22 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
             self.assertEqual(expected_commands, declared_commands)
 
     def test_shell_guards_fail_closed_with_explicit_diagnostics(self):
-        clean_environment = {"PATH": os.environ["PATH"]}
-        preflight = subprocess.run(
-            ["bash", "scripts/release-promotion-preflight.sh"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-            env=clean_environment,
-        )
-        self.assertNotEqual(0, preflight.returncode)
-        self.assertIn("requires a GitHub output path", preflight.stderr)
-        self.assertNotIn("unbound variable", preflight.stderr)
-
-        revalidator = subprocess.run(
-            ["bash", "scripts/release-promotion-preflight-revalidate.sh"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=False,
-            env=clean_environment,
-        )
-        self.assertNotEqual(0, revalidator.returncode)
-        self.assertIn("revalidation revision is malformed", revalidator.stderr)
-        self.assertNotIn("unbound variable", revalidator.stderr)
-
-        revalidator_source = (
-            ROOT / "scripts/release-promotion-preflight-revalidate.sh"
-        ).read_text(encoding="utf-8")
-        for diagnostic in (
-            "admitted controller blob is malformed",
-            "admitted controller tree entry is unreadable",
-            "admitted controller tree binding does not match",
-            "local controller is not a regular non-symlink file",
-            "local controller bytes are unreadable",
-            "local controller bytes do not match the admitted blob",
+        for script, diagnostic in (
+            ("release-promotion-preflight.sh", "requires a GitHub output path"),
+            ("release-promotion-preflight-revalidate.sh", "revalidation revision is malformed"),
         ):
-            with self.subTest(diagnostic=diagnostic):
-                self.assertIn(diagnostic, revalidator_source)
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    ["bash", f"scripts/{script}"], cwd=ROOT, text=True,
+                    capture_output=True, env={"PATH": os.environ["PATH"]},
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn("unbound variable", result.stderr)
+        source = (ROOT / "scripts/release-promotion-preflight-revalidate.sh").read_text()
+        self.assertEqual(7, source.count("|| fail_closed"))
+        for diagnostic in "admitted controller blob is malformed|admitted controller tree entry is unreadable|admitted controller tree binding does not match|local controller is not a regular non-symlink file|local controller bytes are unreadable|local controller bytes do not match the admitted blob".split("|"):
+            self.assertIn(diagnostic, source)
 
 
 if __name__ == "__main__":
