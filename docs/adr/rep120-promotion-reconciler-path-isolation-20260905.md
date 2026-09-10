@@ -21,6 +21,7 @@ document:
 # ADR: REP-120 default-off promotion reconciler and capability isolation
 
 - Decision status: **Proposed**
+- Date: 2026-09-05
 - Implementation status: **Pending**
 - Technical acceptance: **Open / Inconclusive / fail-closed**
 - Operationalized: **No**
