@@ -77,7 +77,7 @@ trap cleanup EXIT
 trap on_error ERR
 umask 077
 
-for command_name in gh head jq sha256sum stat timeout wc; do
+for command_name in awk gh head jq mktemp rm sha256sum stat timeout wc; do
   command -v "${command_name}" >/dev/null \
     || fail_closed "${command_name} is required for promotion history admission."
 done

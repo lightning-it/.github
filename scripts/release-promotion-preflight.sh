@@ -245,7 +245,7 @@ trap cleanup EXIT
 trap on_error ERR
 umask 077
 
-for command_name in git jq sha256sum stat; do
+for command_name in awk git grep jq mktemp rm sha256sum stat tr wc; do
   command -v "${command_name}" >/dev/null \
     || fail_closed "${command_name} is required for release admission."
 done

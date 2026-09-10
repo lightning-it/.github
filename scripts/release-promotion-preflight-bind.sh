@@ -12,7 +12,6 @@ readonly HISTORY_PATH="scripts/release-promotion-history.sh"
 readonly INVENTORY_PATH="scripts/release-promotion-inventory.py"
 readonly POLICY_PATH=".lit/release-reconciliation-policy.json"
 readonly STATE_PATH="scripts/release-promotion-state.py"
-readonly WRITE_ONCE_PATH="scripts/release-promotion-write-once.py"
 readonly WORKFLOW_PATH=".github/workflows/reconcile-develop-to-main.yml"
 runtime_manifest=""
 
@@ -27,7 +26,6 @@ for path in \
   "${INVENTORY_PATH}" \
   "${POLICY_PATH}" \
   "${STATE_PATH}" \
-  "${WRITE_ONCE_PATH}" \
   "${WORKFLOW_PATH}"
 do
   entry="$(git ls-tree "${RUN_SHA}" -- "${path}")"

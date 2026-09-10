@@ -2177,6 +2177,7 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         for path in STATE.RUNTIME_INPUT_PATHS:
             with self.subTest(path=path):
                 self.assertIn(path, binder)
+        self.assertNotIn("scripts/release-promotion-write-once.py", binder)
         self.assertIn("ADMITTED_RUNTIME_INPUTS_SHA256", binder)
         self.assertIn("REVALIDATED_RUNTIME_INPUTS_SHA256", binder)
         self.assertIn('test "${mode}" = 100644', binder)
@@ -2195,6 +2196,27 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         self.assertIn("validate_runner_temp", preflight)
         self.assertIn('projection_listing_file=""', preflight)
         self.assertIn('projection_file=""', preflight)
+
+        history = (
+            ROOT / "scripts/release-promotion-history.sh"
+        ).read_text(encoding="utf-8")
+        dependency_contracts = (
+            (history, {"awk", "gh", "head", "jq", "mktemp", "rm",
+                       "sha256sum", "stat", "timeout", "wc"}),
+            (preflight, {"awk", "git", "grep", "jq", "mktemp", "rm",
+                         "sha256sum", "stat", "tr", "wc"}),
+        )
+        for source, expected_commands in dependency_contracts:
+            guard = next(
+                line for line in source.splitlines()
+                if line.startswith("for command_name in ")
+            )
+            declared_commands = set(
+                guard.removeprefix("for command_name in ")
+                .removesuffix("; do")
+                .split()
+            )
+            self.assertEqual(expected_commands, declared_commands)
 
 
 if __name__ == "__main__":
