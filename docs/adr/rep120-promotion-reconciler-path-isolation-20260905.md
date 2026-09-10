@@ -302,10 +302,12 @@ transition. This ADR remains Proposed and Implementation Pending after that
 future merge.
 
 The earlier authorization for PR #575's one Draft-to-Ready transition is
-consumed and cannot authorize PR #576. The PR #576 authorization is recorded in
-`issue564-owner-decisions-20260908-v1.md`; it uses one Draft-to-Ready cycle so
-retarget, ADR correction, and the action-time protected-develop merge into the
-branch produce one final reviewable successor head rather than multiple
+consumed and cannot authorize PR #576. That historical PR #576 authorization
+is preserved in a controlled local owner-decision receipt maintained outside
+this repository; recovery tracking remains in issue
+`lightning-it/.github#564`. It authorized one Draft-to-Ready cycle so retarget,
+ADR correction, and the action-time protected-develop merge into the branch
+could produce one final reviewable successor head rather than multiple
 intermediate review requests.
 
 After D1 is protected on `develop`, S0 is installed by normal protected PRs on
