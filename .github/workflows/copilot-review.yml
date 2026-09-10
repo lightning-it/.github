@@ -165,7 +165,7 @@ jobs:
                   select(.run_id == $run_id) |
                   select(.run_attempt == $attempt) |
                   select(.head_sha == $head) |
-                  select(.name == "Required current-revision workflow")]
+                  select(.name == "Legacy protected current-revision verifier")]
               ' <<<"${job_pages}")"
             job_count="$(jq 'length' <<<"${required_jobs}")"
             if [ "${job_count}" -gt 1 ]; then

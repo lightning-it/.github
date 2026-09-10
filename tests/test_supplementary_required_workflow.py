@@ -6559,6 +6559,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        required_workflow = WORKFLOW.read_text(encoding="utf-8")
         classifier = workflow.split(
             "\n  classify-main-trust-root-handoff:", 1
         )[1].split("\n  request-current-revision-review:", 1)[0]
@@ -6578,7 +6579,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.head_repository.full_name == $repository)',
             'select(.actor.login == "litroc")',
             '.triggering_actor.login == "github-actions[bot]"',
-            'select(.name == "Required current-revision workflow")',
+            'select(.name == "Legacy protected current-revision verifier")',
             'select(.name == "Classify protected main trust-root bootstrap handoff")',
             'if [ "${run_count}" -gt 1 ]',
             'if [ "${job_count}" -gt 1 ]',
@@ -6591,6 +6592,33 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("required_workflow_url_prefix", classifier)
         self.assertNotIn("contents: read", classifier)
+        self.assertNotIn(
+            'select(.name == "Required current-revision workflow")',
+            classifier,
+        )
+        legacy = required_workflow.split(
+            "  verify-protected-current-revision-evidence:\n", 1
+        )[1].split("  required-current-revision-workflow:\n", 1)[0]
+        aggregate = required_workflow.split(
+            "  required-current-revision-workflow:\n", 1
+        )[1]
+        classification_step = (
+            "- name: Classify protected main trust-root bootstrap handoff"
+        )
+        self.assertEqual(
+            1,
+            required_workflow.count(
+                "    name: Legacy protected current-revision verifier\n"
+            ),
+        )
+        self.assertEqual(
+            1,
+            required_workflow.count(
+                "    name: Required current-revision workflow\n"
+            ),
+        )
+        self.assertEqual(1, legacy.count(classification_step))
+        self.assertNotIn(classification_step, aggregate)
         self.assertIn(
             '" opened " + $head)', classifier
         )
