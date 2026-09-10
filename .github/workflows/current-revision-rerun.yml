@@ -42,6 +42,129 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Materialize the terminal reservation-producer guard
+        run: |
+          set -euo pipefail
+          umask 077
+          guard="${RUNNER_TEMP}/current-revision-rerun-guard.sh"
+          install -m 0600 /dev/null "${guard}"
+          cat >"${guard}" <<'GUARD'
+          bounded_sleep() {
+            local requested="${1}" remaining
+            [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
+            require_deadline || return 1
+            remaining=$((OPERATION_DEADLINE - SECONDS))
+            if [ "${remaining}" -le "${requested}" ]; then
+              echo 'The shared re-evaluation deadline was exhausted.' >&2
+              return 1
+            fi
+            sleep "${requested}"
+          }
+          validate_reservation_producer_jobs() {
+            local attempt="${1}" jobs="${2}"
+            jq -e \
+              --arg head "${EXPECTED_HEAD}" \
+              --argjson attempt "${attempt}" \
+              --argjson run_id "${run_id}" '
+                type == "object"
+                and (.total_count | type) == "number"
+                and .total_count > 0 and .total_count <= 100
+                and (.jobs | type) == "array"
+                and (.jobs | length) == .total_count
+                and ([.jobs[].id] | unique | length) == .total_count
+                and all(.jobs[];
+                  type == "object"
+                  and (.id | type) == "number" and .id > 0
+                  and (.name | type) == "string" and (.name | length) > 0
+                  and .run_id == $run_id and .head_sha == $head
+                  and .run_attempt == $attempt
+                  and (.status | type) == "string"
+                  and (if .status == "completed" then
+                    (.conclusion | type) == "string"
+                  else
+                    (.status == "queued" or .status == "in_progress"
+                      or .status == "requested" or .status == "waiting"
+                      or .status == "pending") and .conclusion == null
+                  end))
+              ' <<<"${jobs}" >/dev/null
+          }
+          capture_reservation_producer_success() {
+            local attempt jobs reservation run_snapshot snapshot_status
+            if reservation="$(load_reservation_inventory_snapshot success)"; then
+              :
+            else
+              snapshot_status=$?
+              [ "${snapshot_status}" -eq 10 ] && return 10
+              return 20
+            fi
+            run_snapshot="$(read_run_with_retry "${run_id}")" || return 10
+            validate_protected_run_binding "${run_snapshot}" || return 20
+            [ "$(jq -r '.status' <<<"${run_snapshot}")" = completed ] \
+              || return 10
+            [ "$(jq -r '.conclusion' <<<"${run_snapshot}")" = success ] \
+              || return 20
+            attempt="$(jq -er '.run_attempt | select(. == 1 or . == 2)' \
+              <<<"${run_snapshot}")" || return 20
+            jobs="$(bounded_gh_api \
+              "repos/${REPOSITORY}/actions/runs/${run_id}/attempts/${attempt}/jobs?filter=all&per_page=100")" \
+              || return 10
+            validate_reservation_producer_jobs "${attempt}" "${jobs}" \
+              || return 20
+            if jq -e 'any(.jobs[]; .status == "completed" and
+                (.conclusion != "success" and .conclusion != "skipped"))' \
+                <<<"${jobs}" >/dev/null; then
+              return 20
+            fi
+            [ "$(jq '[.jobs[] | select(
+              .name == "Required current-revision workflow")] | length' \
+              <<<"${jobs}")" -le 1 ] || return 20
+            jq -e '
+              all(.jobs[]; .status == "completed"
+                and (.conclusion == "success" or .conclusion == "skipped"))
+              and ([.jobs[] | select(
+                .name == "Required current-revision workflow"
+                and .conclusion == "success")] | length) == 1
+            ' <<<"${jobs}" >/dev/null || return 10
+            jq -Scn \
+              --argjson jobs "${jobs}" \
+              --argjson reservation "${reservation}" \
+              --argjson run "${run_snapshot}" '
+                {reservation: $reservation, run: $run,
+                  jobs: ($jobs.jobs | sort_by(.id))}
+              '
+          }
+          wait_for_stable_reservation_producer_success() {
+            local first observation_status second
+            for producer_observation in $(seq 1 30); do
+              if first="$(capture_reservation_producer_success)"; then
+                :
+              else
+                observation_status=$?
+                [ "${observation_status}" -eq 20 ] && return 1
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              bounded_sleep 2 || return 1
+              if second="$(capture_reservation_producer_success)"; then
+                :
+              else
+                observation_status=$?
+                [ "${observation_status}" -eq 20 ] && return 1
+                bounded_sleep 2 || return 1
+                continue
+              fi
+              if [ "${first}" = "${second}" ]; then
+                printf '%s\n' "${second}"
+                return 0
+              fi
+              bounded_sleep 2 || return 1
+            done
+            echo 'The reservation producer did not stabilize at success.' >&2
+            return 1
+          }
+          GUARD
+          test -s "${guard}" && test ! -L "${guard}"
+
       - name: Validate the live binding and rerun exactly once
         env:
           EXPECTED_BASE: ${{ inputs.expected_base }}
@@ -82,17 +205,8 @@ jobs:
               --kill-after="${shutdown_seconds}s" "${request_seconds}s" \
               gh api "$@"
           }
-          bounded_sleep() {
-            local requested="${1}" remaining
-            [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
-            require_deadline || return 1
-            remaining=$((OPERATION_DEADLINE - SECONDS))
-            if [ "${remaining}" -le "${requested}" ]; then
-              echo 'The shared re-evaluation deadline was exhausted.' >&2
-              return 1
-            fi
-            sleep "${requested}"
-          }
+          # shellcheck disable=SC1091
+          source "${RUNNER_TEMP}/current-revision-rerun-guard.sh"
           pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
@@ -1247,8 +1361,10 @@ jobs:
 
           authorize_cross_rerun_transaction() {
             local cross_inventory cross_job_snapshot cross_snapshot
-            local live_pr neutral_snapshot
+            local live_pr neutral_snapshot producer_binding producer_rebind
             local reservation_inventory reservation_snapshot
+            producer_binding="$(wait_for_stable_reservation_producer_success)" \
+              || return 1
             neutral_snapshot="$(revalidate_neutral_authorization)" || return 1
             live_pr="$(bounded_gh_api \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" \
@@ -1285,7 +1401,10 @@ jobs:
               "${reservation_snapshot}" \
               "${cross_snapshot}" \
               "${cross_inventory}" \
-              "${neutral_snapshot}"
+              "${neutral_snapshot}" || return 1
+            producer_rebind="$(capture_reservation_producer_success)" \
+              || return 1
+            test "${producer_rebind}" = "${producer_binding}"
           }
 
           rerun_protected_verifier_once() {
