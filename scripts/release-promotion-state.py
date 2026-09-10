@@ -582,6 +582,16 @@ def normalize_inventory(
         number = integer(page["number"], f"{label}-page-number")
         records = page["records"]
         require(type(records) is list, f"{label}-page-records")
+        raw = canonical(records)
+        raw_sha256 = string(page["raw_sha256"], SHA256,
+                            f"{label}-page-raw-digest")
+        page_response_bytes = integer(
+            page["response_bytes"], f"{label}-page-response-bytes", minimum=0
+        )
+        require(raw_sha256 == hashlib.sha256(raw).hexdigest(),
+                f"{label}-page-raw-digest-mismatch")
+        require(page_response_bytes == len(raw),
+                f"{label}-page-response-byte-mismatch")
         pages.append(
             {
                 "cursor": normalize_cursor(page["cursor"], f"{label}-cursor"),
@@ -589,15 +599,9 @@ def normalize_inventory(
                     page["next_cursor"], f"{label}-next-cursor"
                 ),
                 "number": number,
-                "raw_sha256": string(
-                    page["raw_sha256"], SHA256, f"{label}-page-raw-digest"
-                ),
+                "raw_sha256": raw_sha256,
                 "records": records,
-                "response_bytes": integer(
-                    page["response_bytes"],
-                    f"{label}-page-response-bytes",
-                    minimum=0,
-                ),
+                "response_bytes": page_response_bytes,
             }
         )
     pages.sort(key=lambda item: item["number"])
@@ -615,10 +619,11 @@ def normalize_inventory(
             )
         cursors = [page["cursor"] for page in pages[1:]]
         require(len(cursors) == len(set(cursors)), f"{label}-cursor-duplicate")
-    require(
-        sum(page["response_bytes"] for page in pages) == response_bytes,
-        f"{label}-response-byte-mismatch",
-    )
+    computed_response_bytes = sum(page["response_bytes"] for page in pages)
+    require(computed_response_bytes == response_bytes,
+            f"{label}-response-byte-mismatch")
+    require(computed_response_bytes <= bounds["max_inventory_bytes"],
+            f"{label}-byte-limit")
     require(
         sum(len(page["records"]) for page in pages) == record_count,
         f"{label}-record-count-mismatch",

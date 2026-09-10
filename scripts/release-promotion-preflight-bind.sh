@@ -15,7 +15,18 @@ readonly STATE_PATH="scripts/release-promotion-state.py"
 readonly WORKFLOW_PATH=".github/workflows/reconcile-develop-to-main.yml"
 runtime_manifest=""
 
-[[ "${RUN_SHA}" =~ ^[0-9a-f]{40}$ ]]
+report_failure() {
+  local status=$?
+  trap - EXIT
+  if [ "${status}" -ne 0 ]; then
+    printf '%s\n' '::error::Runtime-input binding failed closed.' >&2
+  fi
+  exit "${status}"
+}
+
+trap report_failure EXIT
+
+[[ "${RUN_SHA:-}" =~ ^[0-9a-f]{40}$ ]]
 test "$(git rev-parse HEAD)" = "${RUN_SHA}"
 test -z "$(git status --porcelain=v1 --untracked-files=all)"
 for path in \

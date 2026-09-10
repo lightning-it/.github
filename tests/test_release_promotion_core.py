@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import copy
+from copy import deepcopy
 import importlib.util
 import json
 import os
@@ -84,7 +84,7 @@ class StateFixture(unittest.TestCase):
         pages = []
         offset = 0
         for number, size in enumerate(sizes, start=1):
-            chunk = copy.deepcopy(records[offset : offset + size])
+            chunk = deepcopy(records[offset : offset + size])
             offset += size
             pages.append(
                 {
@@ -93,7 +93,7 @@ class StateFixture(unittest.TestCase):
                     "number": number,
                     "raw_sha256": STATE.digest(chunk),
                     "records": chunk,
-                    "response_bytes": 10 + len(chunk),
+                    "response_bytes": len(STATE.canonical(chunk)),
                 }
             )
         if reverse_pages:
@@ -102,7 +102,7 @@ class StateFixture(unittest.TestCase):
 
     def inventory(self, source, records, sizes=None, *, reverse_pages=False):
         pages = self.page_list(records, sizes, reverse_pages=reverse_pages)
-        normalized_records = sorted(copy.deepcopy(records), key=STATE.canonical)
+        normalized_records = sorted(deepcopy(records), key=STATE.canonical)
         return {
             "collector": "release-promotion-inventory-v1",
             "complete": True,
@@ -113,7 +113,7 @@ class StateFixture(unittest.TestCase):
             "record_count": len(records),
             "response_bytes": sum(int(page["response_bytes"]) for page in pages),
             "semantic_sha256": STATE.digest({"records": normalized_records, "source": source}),
-            "source": copy.deepcopy(source),
+            "source": deepcopy(source),
         }
 
     @staticmethod
@@ -180,12 +180,12 @@ class StateFixture(unittest.TestCase):
             "attempt_authorization": None,
             "configuration": {
                 "environment": {
-                    "deployment_branch_policy": copy.deepcopy(
+                    "deployment_branch_policy": deepcopy(
                         environment["deployment_branch_policy"]
                     ),
                     "name": environment["name"],
                     "prevent_self_review": environment["prevent_self_review"],
-                    "reviewers": copy.deepcopy(environment["reviewers"]),
+                    "reviewers": deepcopy(environment["reviewers"]),
                 },
                 "environment_secret_names": ["AUXILIARY_ENVIRONMENT_SECRET", environment["secret_name"]],
                 "organization_enablement": {"present": False, "scope": "organization", "value": None},
@@ -243,11 +243,11 @@ class StateFixture(unittest.TestCase):
         records = pages[0]["records"]
         return records[0]
 
-    def operation_key(self, policy, snapshot):
+    def opkey(self, policy, snapshot):
         return STATE.digest(STATE.operation_record(policy, snapshot))
 
     def refresh_operation_key(self, policy, snapshot):
-        operation_key = self.operation_key(policy, snapshot)
+        operation_key = self.opkey(policy, snapshot)
         record = self.first_record(snapshot, "runs")
         record["operation_key"] = operation_key
         self.refresh_inventory_semantic(snapshot, "runs")
@@ -257,13 +257,18 @@ class StateFixture(unittest.TestCase):
     def refresh_inventory_semantic(snapshot, name):
         inventory = snapshot[name]
         pages = inventory["pages"]
+        for page in pages:
+            raw = STATE.canonical(page["records"])
+            page["raw_sha256"] = STATE.digest(page["records"])
+            page["response_bytes"] = len(raw)
+        inventory["response_bytes"] = sum(page["response_bytes"] for page in pages)
         records = [record for page in pages for record in page["records"]]
         inventory["semantic_sha256"] = STATE.digest({
-            "records": sorted(copy.deepcopy(records), key=STATE.canonical),
+            "records": sorted(deepcopy(records), key=STATE.canonical),
             "source": inventory["source"],
         })
 
-    def replace_inventory(
+    def set_inventory(
         self,
         snapshot,
         name,
@@ -325,7 +330,7 @@ class StateFixture(unittest.TestCase):
         terminal_disposition=None,
     ):
         event = snapshot["event"]
-        operation_key = operation_key or self.operation_key(policy, snapshot)
+        operation_key = operation_key or self.opkey(policy, snapshot)
         owner_created_at = "2026-09-07T12:00:00Z"
         stage_evidence = {
             "reserved": {"downstream_state": "not-dispatched", "last_intent_sha256": "2" * 64,
@@ -361,7 +366,7 @@ class StateFixture(unittest.TestCase):
 
     def attempt_authorization(self, policy, snapshot, orphan, predecessor):
         event = snapshot["event"]
-        operation_key = self.operation_key(policy, snapshot)
+        operation_key = self.opkey(policy, snapshot)
         orphan_state = orphan["materialized_state"]
         core = {
             "allowed_action": STATE.ATTEMPT2_ACTION_BY_STAGE[orphan_state["stage"]],
@@ -407,7 +412,7 @@ class StateFixture(unittest.TestCase):
             }
         )
 
-    def assert_blocked(self, reason, policy, snapshot):
+    def blocked(self, reason, policy, snapshot):
         with self.assertRaisesRegex(STATE.ContractError, reason):
             STATE.classify(policy, snapshot)
 
@@ -459,7 +464,7 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
         policy = self.policy()
         snapshot = self.snapshot(policy)
         result = STATE.classify(policy, snapshot)
-        operation_key = self.operation_key(policy, snapshot)
+        operation_key = self.opkey(policy, snapshot)
         self.assertEqual("mutate", result["disposition"])
         self.assertEqual("reservation-required", result["reason"])
         self.assertEqual(operation_key, result["operation_key"])
@@ -480,7 +485,7 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
     def test_configuration_normalization_is_permutation_invariant(self):
         policy = self.policy()
         first = self.snapshot(policy)
-        second = copy.deepcopy(first)
+        second = deepcopy(first)
         configuration = second["configuration"]
         environment = configuration["environment"]
         environment["reviewers"].reverse()
@@ -546,7 +551,7 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                 configuration = snapshot["configuration"]
                 record = configuration["repository_enablement"]
                 record["value"] = malformed
-                self.assert_blocked(
+                self.blocked(
                     "repository-variable-malformed|repository-enablement-value",
                     policy,
                     snapshot,
@@ -583,7 +588,7 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                 for component in path[:-1]:
                     target = target[component]
                 target[path[-1]] = value
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
         for field, value, reason in (
             ("environment_secret_names", [], "environment-secret-absent"),
             (
@@ -601,14 +606,14 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                 snapshot = self.snapshot(policy)
                 configuration = snapshot["configuration"]
                 configuration[field] = value
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
 
     def test_page_order_boundaries_and_record_order_do_not_change_digests(
         self,
     ):
         policy = self.policy()
         first = self.snapshot(policy)
-        operation_key = self.operation_key(policy, first)
+        operation_key = self.opkey(policy, first)
         completed_runs = [
             self.current_run(policy, key * 64, run_id=run_id,
                              status="completed", conclusion=conclusion)
@@ -616,7 +621,7 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                                              ("9", 90, "failure"))
         ]
         current = self.first_record(first, "runs")
-        self.replace_inventory(first, "runs", [copy.deepcopy(current), *completed_runs], [1, 2])
+        self.set_inventory(first, "runs", [deepcopy(current), *completed_runs], [1, 2])
         histories = [
             self.history_record(policy, "6" * 64, number=560, state="closed"),
             self.history_record(policy, "7" * 64, number=561, state="closed"),
@@ -639,16 +644,16 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
             )
         ]
         for name, records in (("history", histories), ("reservations", reservations)):
-            self.replace_inventory(first, name, records, [1, 1])
+            self.set_inventory(first, name, records, [1, 1])
 
         second = self.snapshot(policy)
         current = self.first_record(second, "runs")
-        self.replace_inventory(second, "runs",
-                               [*reversed(completed_runs), copy.deepcopy(current)],
+        self.set_inventory(second, "runs",
+                               [*reversed(completed_runs), deepcopy(current)],
                                [2, 1], reverse_pages=True)
-        self.replace_inventory(second, "history", list(reversed(histories)),
+        self.set_inventory(second, "history", list(reversed(histories)),
                                [2], reverse_pages=True)
-        self.replace_inventory(second, "reservations", list(reversed(reservations)), [2])
+        self.set_inventory(second, "reservations", list(reversed(reservations)), [2])
         first_result = STATE.classify(policy, first)
         second_result = STATE.classify(policy, second)
         self.assertEqual(operation_key, first_result["operation_key"])
@@ -668,62 +673,43 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
             "reservations": "reservation-inventory",
         }
         mutations = (
-            ("incomplete", lambda item: item.update(complete=False), "incomplete"),
-            (
-                "elapsed",
-                lambda item: item.update(elapsed_ms=30001),
-                "elapsed-limit",
-            ),
-            (
-                "bytes",
-                lambda item: item.update(response_bytes=1048577),
-                "byte-limit",
-            ),
-            (
-                "pages",
-                lambda item: item.update(page_count=11),
-                "page-limit",
-            ),
-            (
-                "records",
-                lambda item: item.update(record_count=101),
-                "record-limit",
-            ),
+            ("incomplete", (("complete", False),), "incomplete"),
+            ("elapsed", (("elapsed_ms", 30001),), "elapsed-limit"),
+            ("bytes", (("response_bytes", 1048577),), "byte-limit"),
+            ("pages", (("page_count", 11),), "page-limit"),
+            ("records", (("record_count", 101),), "record-limit"),
+            ("page-digest", (("pages", 0, "raw_sha256", "0" * 64),),
+             "page-raw-digest-mismatch"),
+            ("page-bytes", (("pages", 0, "response_bytes", 0),
+                            ("response_bytes", 0)),
+             "page-response-byte-mismatch"),
         )
         for inventory_name, label in labels.items():
-            for name, mutate, reason in mutations:
+            for name, changes, reason in mutations:
                 with self.subTest(inventory=inventory_name, boundary=name):
                     snapshot = self.snapshot(policy)
                     inventory = snapshot[inventory_name]
-                    mutate(inventory)
-                    self.assert_blocked(
+                    for *path, value in changes:
+                        self.set_path(inventory, path, value)
+                    self.blocked(
                         f"{label}-{reason}", policy, snapshot
                     )
             with self.subTest(inventory=inventory_name, boundary="cursor"):
                 snapshot = self.snapshot(policy)
                 inventory = snapshot[inventory_name]
-                pages = inventory["pages"]
-                pages.append(
-                    {
-                        "cursor": "wrong",
-                        "next_cursor": None,
-                        "number": 2,
-                        "raw_sha256": "0" * 64,
-                        "records": [],
-                        "response_bytes": 0,
-                    }
-                )
+                page = self.page_list([])[0]
+                page.update(cursor="wrong", number=2)
+                inventory["pages"].append(page)
                 inventory["page_count"] = 2
-                self.assert_blocked(
+                self.blocked(
                     f"{label}-cursor-(chain|truncated)", policy, snapshot
                 )
-
 
 class ReleasePromotionOperationTests(StateFixture):
     def test_every_operation_scalar_is_independently_bound(self):
         policy = self.policy()
         baseline = self.snapshot(policy)
-        baseline_key = self.operation_key(policy, baseline)
+        baseline_key = self.opkey(policy, baseline)
         git_changes = (
             ("candidate_sha", "2" * 40),
             ("integration_tree", "3" * 40),
@@ -733,33 +719,33 @@ class ReleasePromotionOperationTests(StateFixture):
         )
         for field, value in git_changes:
             with self.subTest(field=field):
-                snapshot = copy.deepcopy(baseline)
+                snapshot = deepcopy(baseline)
                 git = snapshot["git"]
                 git[field] = value
                 self.assertNotEqual(
-                    baseline_key, self.operation_key(policy, snapshot)
+                    baseline_key, self.opkey(policy, snapshot)
                 )
         for field, value in (
             ("merge_base_sha", "6" * 40),
             ("target_base_sha", "7" * 40),
         ):
             with self.subTest(field=field):
-                snapshot = copy.deepcopy(baseline)
+                snapshot = deepcopy(baseline)
                 git = snapshot["git"]
                 discovery = snapshot["discovery"]
                 git[field] = value
                 discovery[field] = value
                 self.assertNotEqual(
-                    baseline_key, self.operation_key(policy, snapshot)
+                    baseline_key, self.opkey(policy, snapshot)
                 )
-        source = copy.deepcopy(baseline)
+        source = deepcopy(baseline)
         git = source["git"]
         discovery = source["discovery"]
         event = source["event"]
         git["source_sha"] = "8" * 40
         discovery["source_sha"] = "8" * 40
         event["run_sha"] = "8" * 40
-        self.assertNotEqual(baseline_key, self.operation_key(policy, source))
+        self.assertNotEqual(baseline_key, self.opkey(policy, source))
 
         for field, value in (
             ("repository_id", 999),
@@ -771,7 +757,7 @@ class ReleasePromotionOperationTests(StateFixture):
             ("workflow_path", ".github/workflows/other.yml"),
         ):
             with self.subTest(policy_field=field):
-                changed_policy = copy.deepcopy(policy)
+                changed_policy = deepcopy(policy)
                 changed_policy[field] = value
                 self.assertNotEqual(
                     baseline_key,
@@ -783,38 +769,38 @@ class ReleasePromotionOperationTests(StateFixture):
     def test_each_runtime_blob_is_bound_and_input_order_is_canonical(self):
         policy = self.policy()
         baseline = self.snapshot(policy)
-        baseline_key = self.operation_key(policy, baseline)
+        baseline_key = self.opkey(policy, baseline)
         git = baseline["git"]
         inputs = git["runtime_inputs"]
-        permuted = copy.deepcopy(baseline)
+        permuted = deepcopy(baseline)
         permuted_git = permuted["git"]
         permuted_git["runtime_inputs"].reverse()
-        self.assertEqual(baseline_key, self.operation_key(policy, permuted))
+        self.assertEqual(baseline_key, self.opkey(policy, permuted))
         for index in range(len(inputs)):
             with self.subTest(path=inputs[index]["path"]):
-                snapshot = copy.deepcopy(baseline)
+                snapshot = deepcopy(baseline)
                 candidate_git = snapshot["git"]
                 candidate_inputs = candidate_git["runtime_inputs"]
                 candidate_inputs[index]["blob"] = "f" * 40
                 self.assertNotEqual(
-                    baseline_key, self.operation_key(policy, snapshot)
+                    baseline_key, self.opkey(policy, snapshot)
                 )
-        wrong_path = copy.deepcopy(baseline)
+        wrong_path = deepcopy(baseline)
         wrong_path["git"]["runtime_inputs"][0]["path"] = "scripts/substitute.py"
         with self.assertRaisesRegex(STATE.ContractError, "runtime-input-path-set"):
-            self.operation_key(policy, wrong_path)
-        wrong_mode = copy.deepcopy(baseline)
+            self.opkey(policy, wrong_path)
+        wrong_mode = deepcopy(baseline)
         wrong_mode["git"]["runtime_inputs"][0]["mode"] = "100755"
         with self.assertRaisesRegex(STATE.ContractError, "runtime-input-mode"):
-            self.operation_key(policy, wrong_mode)
-        duplicate = copy.deepcopy(baseline)
+            self.opkey(policy, wrong_mode)
+        duplicate = deepcopy(baseline)
         duplicate["git"]["runtime_inputs"][1]["path"] = (
             duplicate["git"]["runtime_inputs"][0]["path"]
         )
         with self.assertRaisesRegex(
             STATE.ContractError, "runtime-input-path-duplicate"
         ):
-            self.operation_key(policy, duplicate)
+            self.opkey(policy, duplicate)
 
     def test_independent_substitution_is_rejected_not_silently_coupled(self):
         policy = self.policy()
@@ -828,13 +814,13 @@ class ReleasePromotionOperationTests(StateFixture):
                 git = snapshot["git"]
                 git[field] = value
                 with self.assertRaisesRegex(STATE.ContractError, reason):
-                    self.operation_key(policy, snapshot)
+                    self.opkey(policy, snapshot)
         candidate = self.snapshot(policy)
         candidate["git"]["candidate_sha"] = "5" * 40
-        self.assertIsInstance(self.operation_key(policy, candidate), str)
+        self.assertIsInstance(self.opkey(policy, candidate), str)
         tree = self.snapshot(policy)
         tree["git"]["integration_tree"] = "6" * 40
-        self.assertIsInstance(self.operation_key(policy, tree), str)
+        self.assertIsInstance(self.opkey(policy, tree), str)
 
     def test_discovery_no_delta_and_zero_byte_review_are_distinct(self):
         policy = self.policy()
@@ -853,13 +839,13 @@ class ReleasePromotionOperationTests(StateFixture):
         self.assertEqual("noop", result["disposition"])
         self.assertEqual("no-content-delta", result["reason"])
 
-        smuggled_review = copy.deepcopy(no_delta)
+        smuggled_review = deepcopy(no_delta)
         smuggled_review["git"] = {"patch_bytes": 0}
-        self.assert_blocked("no-delta-review-present", policy, smuggled_review)
+        self.blocked("no-delta-review-present", policy, smuggled_review)
 
         zero_review = self.snapshot(policy)
         zero_review["git"]["patch_bytes"] = 0
-        self.assert_blocked("patch-empty", policy, zero_review)
+        self.blocked("patch-empty", policy, zero_review)
 
     def test_review_boundaries_and_unsafe_inputs_are_exact(self):
         policy = self.policy()
@@ -875,7 +861,7 @@ class ReleasePromotionOperationTests(StateFixture):
             with self.subTest(rejected=size):
                 snapshot = self.snapshot(policy)
                 snapshot["git"]["patch_bytes"] = size
-                self.assert_blocked("patch-oversized", policy, snapshot)
+                self.blocked("patch-oversized", policy, snapshot)
         for field, value, reason in (
             ("unsafe_delta", True, "unsafe-delta"),
             ("patch_format", "truncated", "patch-format"),
@@ -884,7 +870,7 @@ class ReleasePromotionOperationTests(StateFixture):
             with self.subTest(field=field):
                 snapshot = self.snapshot(policy)
                 snapshot["git"][field] = value
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
 
     def test_policy_rejects_recursive_tbd_and_noncanonical_reviewer_order(
         self,
@@ -909,14 +895,14 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
         ):
             with self.subTest(state=state, dispatch=dispatch):
                 snapshot = self.snapshot(policy)
-                operation_key = self.operation_key(policy, snapshot)
+                operation_key = self.opkey(policy, snapshot)
                 record = self.history_record(
                     policy,
                     operation_key,
                     dispatch_state=dispatch,
                     state=state,
                 )
-                self.replace_inventory(snapshot, "history", [record])
+                self.set_inventory(snapshot, "history", [record])
                 result = STATE.classify(policy, snapshot)
                 self.assertEqual(disposition, result["disposition"])
                 self.assertEqual("terminal-history", result["reason"])
@@ -934,19 +920,19 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
         for field, value, reason in cases:
             with self.subTest(field=field):
                 snapshot = self.snapshot(policy)
-                operation_key = self.operation_key(policy, snapshot)
+                operation_key = self.opkey(policy, snapshot)
                 record = self.history_record(policy, operation_key)
                 record[field] = value
-                self.replace_inventory(snapshot, "history", [record])
-                self.assert_blocked(reason, policy, snapshot)
+                self.set_inventory(snapshot, "history", [record])
+                self.blocked(reason, policy, snapshot)
         duplicate = self.snapshot(policy)
-        operation_key = self.operation_key(policy, duplicate)
+        operation_key = self.opkey(policy, duplicate)
         records = [
             self.history_record(policy, operation_key, number=575),
             self.history_record(policy, operation_key, number=576),
         ]
-        self.replace_inventory(duplicate, "history", records)
-        self.assert_blocked("history-operation-key-duplicate", policy, duplicate)
+        self.set_inventory(duplicate, "history", records)
+        self.blocked("history-operation-key-duplicate", policy, duplicate)
 
     def test_run_identity_source_and_future_time_are_exact(self):
         policy = self.policy()
@@ -965,7 +951,7 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
                 record = self.first_record(snapshot, "runs")
                 record[field] = value
                 self.refresh_inventory_semantic(snapshot, "runs")
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
 
     def test_duplicate_newer_older_expired_and_attempt_three_block(self):
         policy = self.policy()
@@ -984,7 +970,7 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
             with self.subTest(name=name):
                 snapshot = self.snapshot(policy)
                 mutate(snapshot)
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
         for name, run_id, operation_key, reason in (
             ("duplicate", 101, None, "duplicate-run"),
             ("newer", 101, "8" * 64, "superseded-by-newer-run"),
@@ -993,12 +979,12 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
             with self.subTest(name=name):
                 snapshot = self.snapshot(policy)
                 current = self.first_record(snapshot, "runs")
-                other = copy.deepcopy(current)
+                other = deepcopy(current)
                 other["run_id"] = run_id
                 if operation_key is not None:
                     other["operation_key"] = operation_key
-                self.replace_inventory(snapshot, "runs", [current, other])
-                self.assert_blocked(reason, policy, snapshot)
+                self.set_inventory(snapshot, "runs", [current, other])
+                self.blocked(reason, policy, snapshot)
 
     def test_same_run_id_attempts_are_distinct_but_duplicate_tuple_blocks(
         self,
@@ -1006,16 +992,16 @@ class ReleasePromotionHistoryAndRunTests(StateFixture):
         policy = self.policy()
         snapshot = self.snapshot(policy)
         current = self.first_record(snapshot, "runs")
-        prior = copy.deepcopy(current)
+        prior = deepcopy(current)
         prior["attempt"] = 2
         prior["status"] = "completed"
         prior["conclusion"] = "cancelled"
-        self.replace_inventory(snapshot, "runs", [current, prior])
+        self.set_inventory(snapshot, "runs", [current, prior])
         self.assertEqual("mutate", STATE.classify(policy, snapshot)["disposition"])
-        duplicate = copy.deepcopy(snapshot)
+        duplicate = deepcopy(snapshot)
         current = self.first_record(duplicate, "runs")
-        self.replace_inventory(duplicate, "runs", [current, copy.deepcopy(current)])
-        self.assert_blocked("run-inventory-record-duplicate", policy, duplicate)
+        self.set_inventory(duplicate, "runs", [current, deepcopy(current)])
+        self.blocked("run-inventory-record-duplicate", policy, duplicate)
 
 
 class ReleasePromotionReservationTests(StateFixture):
@@ -1023,7 +1009,7 @@ class ReleasePromotionReservationTests(StateFixture):
         policy = self.policy()
         snapshot = self.snapshot(policy)
         reservation = self.reservation_record(policy, snapshot)
-        self.replace_inventory(snapshot, "reservations", [reservation])
+        self.set_inventory(snapshot, "reservations", [reservation])
         result = STATE.classify(policy, snapshot)
         self.assertEqual("lease-owned", result["reason"])
         self.assertEqual(700, result["lease"]["check_run_id"])
@@ -1049,12 +1035,12 @@ class ReleasePromotionReservationTests(StateFixture):
             state="completed",
             terminal_disposition="active",
         )
-        self.replace_inventory(
+        self.set_inventory(
             snapshot,
             "history",
-            [self.history_record(policy, self.operation_key(policy, snapshot))],
+            [self.history_record(policy, self.opkey(policy, snapshot))],
         )
-        self.replace_inventory(snapshot, "reservations", [terminal])
+        self.set_inventory(snapshot, "reservations", [terminal])
         result = STATE.classify(policy, snapshot)
         self.assertEqual("active", result["disposition"])
         self.assertEqual("terminal-reservation", result["reason"])
@@ -1077,10 +1063,10 @@ class ReleasePromotionReservationTests(StateFixture):
         for field, value in state_fields:
             with self.subTest(field=field):
                 hostile = self.snapshot(policy)
-                changed = copy.deepcopy(terminal)
+                changed = deepcopy(terminal)
                 changed["materialized_state"][field] = value
-                self.replace_inventory(hostile, "reservations", [changed])
-                self.assert_blocked(
+                self.set_inventory(hostile, "reservations", [changed])
+                self.blocked(
                     "reservation-readback-mismatch|reservation-external-id",
                     policy,
                     hostile,
@@ -1104,8 +1090,8 @@ class ReleasePromotionReservationTests(StateFixture):
                 self.set_path(reservation, path, value)
                 if reseal:
                     self.seal_reservation(reservation)
-                self.replace_inventory(snapshot, "reservations", [reservation])
-                self.assert_blocked(reason, policy, snapshot)
+                self.set_inventory(snapshot, "reservations", [reservation])
+                self.blocked(reason, policy, snapshot)
 
     def test_reservation_inventory_is_complete_bounded_and_unique(self):
         policy = self.policy()
@@ -1116,10 +1102,10 @@ class ReleasePromotionReservationTests(StateFixture):
         two = self.reservation_record(
             policy, snapshot, operation_key="3" * 64, check_run_id=702
         )
-        self.replace_inventory(snapshot, "reservations", [one, two], [1, 1])
+        self.set_inventory(snapshot, "reservations", [one, two], [1, 1])
         first = STATE.classify(policy, snapshot)
         permuted = self.snapshot(policy)
-        self.replace_inventory(
+        self.set_inventory(
             permuted,
             "reservations",
             [two, one],
@@ -1132,8 +1118,8 @@ class ReleasePromotionReservationTests(StateFixture):
             second["reservation_inventory_sha256"],
         )
         duplicate = self.snapshot(policy)
-        self.replace_inventory(duplicate, "reservations", [one, copy.deepcopy(one)])
-        self.assert_blocked(
+        self.set_inventory(duplicate, "reservations", [one, deepcopy(one)])
+        self.blocked(
             "reservation-inventory-record-duplicate", policy, duplicate
         )
 
@@ -1159,20 +1145,20 @@ class ReleasePromotionReservationTests(StateFixture):
                 terminal_disposition=terminal_disposition,
             )
             if stage != "reserved":
-                self.replace_inventory(
+                self.set_inventory(
                     snapshot,
                     "history",
                     [
                         self.history_record(
                             policy,
-                            self.operation_key(policy, snapshot),
+                            self.opkey(policy, snapshot),
                             dispatch_state=(
                                 "pending" if stage == "pr-created" else "succeeded"
                             ),
                         )
                     ],
                 )
-            self.replace_inventory(snapshot, "reservations", [reservation])
+            self.set_inventory(snapshot, "reservations", [reservation])
         return snapshot
 
     def test_cancellation_stages_are_terminal_and_never_successors(self):
@@ -1205,24 +1191,24 @@ class ReleasePromotionReservationTests(StateFixture):
         event["run_attempt"] = 2
         current = self.first_record(snapshot, "runs")
         current["attempt"] = 2
-        prior = copy.deepcopy(current)
+        prior = deepcopy(current)
         prior["attempt"] = 1
         prior["status"] = "completed"
         prior["conclusion"] = "cancelled"
-        self.replace_inventory(snapshot, "runs", [prior, current], [1, 1])
+        self.set_inventory(snapshot, "runs", [prior, current], [1, 1])
         history_dispatch = {
             "dispatched": "succeeded",
             "pr-created": "pending",
             "reserved": None,
         }[stage]
         if history_dispatch is not None:
-            self.replace_inventory(
+            self.set_inventory(
                 snapshot,
                 "history",
                 [
                     self.history_record(
                         policy,
-                        self.operation_key(policy, snapshot),
+                        self.opkey(policy, snapshot),
                         dispatch_state=history_dispatch,
                     )
                 ],
@@ -1234,7 +1220,7 @@ class ReleasePromotionReservationTests(StateFixture):
             stage=stage,
             state="orphaned",
         )
-        self.replace_inventory(snapshot, "reservations", [orphan])
+        self.set_inventory(snapshot, "reservations", [orphan])
         snapshot["attempt_authorization"] = self.attempt_authorization(
             policy, snapshot, orphan, prior
         )
@@ -1249,8 +1235,8 @@ class ReleasePromotionReservationTests(StateFixture):
             stage="dispatched",
             state="orphaned",
         )
-        self.replace_inventory(snapshot, "reservations", [orphan])
-        self.assert_blocked(
+        self.set_inventory(snapshot, "reservations", [orphan])
+        self.blocked(
             "orphan-attempt-2-authority-required", policy, snapshot
         )
 
@@ -1286,10 +1272,10 @@ class ReleasePromotionReservationTests(StateFixture):
                 snapshot, _ = self.attempt_two_snapshot(policy, stage)
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, snapshot),
+                    self.opkey(policy, snapshot),
                     dispatch_state=dispatch_state,
                 )
-                self.replace_inventory(snapshot, "history", [history])
+                self.set_inventory(snapshot, "history", [history])
                 consume = STATE.classify(policy, snapshot)
                 self.assertEqual("mutate", consume["disposition"])
                 self.assertEqual(
@@ -1317,13 +1303,13 @@ class ReleasePromotionReservationTests(StateFixture):
                 snapshot, orphan = self.attempt_two_snapshot(policy, stage)
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, snapshot),
+                    self.opkey(policy, snapshot),
                     dispatch_state=dispatch_state,
                 )
-                self.replace_inventory(snapshot, "history", [history])
+                self.set_inventory(snapshot, "history", [history])
                 orphan["materialized_state"]["pr_state"] = "closed"
                 self.seal_reservation(orphan)
-                self.replace_inventory(snapshot, "reservations", [orphan])
+                self.set_inventory(snapshot, "reservations", [orphan])
                 predecessor = next(
                     record
                     for page in snapshot["runs"]["pages"]
@@ -1333,7 +1319,7 @@ class ReleasePromotionReservationTests(StateFixture):
                 snapshot["attempt_authorization"] = self.attempt_authorization(
                     policy, snapshot, orphan, predecessor
                 )
-                self.assert_blocked(
+                self.blocked(
                     "reservation-history-pr-state-drift", policy, snapshot
                 )
 
@@ -1363,13 +1349,13 @@ class ReleasePromotionReservationTests(StateFixture):
                 )
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, snapshot),
+                    self.opkey(policy, snapshot),
                     dispatch_state="succeeded",
                     merged_at=merged_at,
                     state=history_state,
                 )
-                self.replace_inventory(snapshot, "history", [history])
-                self.replace_inventory(snapshot, "reservations", [terminal])
+                self.set_inventory(snapshot, "history", [history])
+                self.set_inventory(snapshot, "reservations", [terminal])
                 result = STATE.classify(policy, snapshot)
                 self.assertEqual(disposition, result["disposition"])
                 self.assertEqual("terminal-reservation", result["reason"])
@@ -1394,13 +1380,13 @@ class ReleasePromotionReservationTests(StateFixture):
                 )
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, snapshot),
+                    self.opkey(policy, snapshot),
                     merged_at=merged_at,
                     state=history_state,
                 )
-                self.replace_inventory(snapshot, "history", [history])
-                self.replace_inventory(snapshot, "reservations", [terminal])
-                self.assert_blocked(
+                self.set_inventory(snapshot, "history", [history])
+                self.set_inventory(snapshot, "reservations", [terminal])
+                self.blocked(
                     "reservation-history-pr-state-drift", policy, snapshot
                 )
 
@@ -1416,13 +1402,13 @@ class ReleasePromotionReservationTests(StateFixture):
             state="completed",
             terminal_disposition="active",
         )
-        self.replace_inventory(
+        self.set_inventory(
             completed,
             "history",
-            [self.history_record(policy, self.operation_key(policy, completed))],
+            [self.history_record(policy, self.opkey(policy, completed))],
         )
-        self.replace_inventory(completed, "reservations", [terminal])
-        self.assert_blocked(
+        self.set_inventory(completed, "reservations", [terminal])
+        self.blocked(
             "reservation-history-dispatch-drift", policy, completed
         )
 
@@ -1448,25 +1434,25 @@ class ReleasePromotionReservationTests(StateFixture):
                 )
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, snapshot),
+                    self.opkey(policy, snapshot),
                     dispatch_state=dispatch_state,
                     state=history_state,
                 )
-                self.replace_inventory(snapshot, "history", [history])
-                self.replace_inventory(snapshot, "reservations", [reservation])
+                self.set_inventory(snapshot, "history", [history])
+                self.set_inventory(snapshot, "reservations", [reservation])
                 result = STATE.classify(policy, snapshot)
                 self.assertEqual(disposition, result["disposition"])
                 self.assertTrue(result["reason"].startswith("cancelled-after-"))
 
-                contradictory = copy.deepcopy(snapshot)
+                contradictory = deepcopy(snapshot)
                 history = self.history_record(
                     policy,
-                    self.operation_key(policy, contradictory),
+                    self.opkey(policy, contradictory),
                     dispatch_state=dispatch_state,
                     state="open",
                 )
-                self.replace_inventory(contradictory, "history", [history])
-                self.assert_blocked(
+                self.set_inventory(contradictory, "history", [history])
+                self.blocked(
                     "reservation-history-pr-state-drift", policy, contradictory
                 )
 
@@ -1488,7 +1474,7 @@ class ReleasePromotionReservationTests(StateFixture):
                     state=terminal_state,
                     terminal_disposition=disposition,
                 )
-                self.replace_inventory(snapshot, "reservations", [terminal])
+                self.set_inventory(snapshot, "reservations", [terminal])
                 result = STATE.classify(policy, snapshot)
                 self.assertEqual("active", result["disposition"])
                 expected_reason = (
@@ -1504,63 +1490,63 @@ class ReleasePromotionReservationTests(StateFixture):
         for stage in ("pr-created", "dispatched"):
             with self.subTest(case="missing", stage=stage):
                 snapshot, _ = self.attempt_two_snapshot(policy, stage)
-                self.replace_inventory(snapshot, "history", [])
-                self.assert_blocked(
+                self.set_inventory(snapshot, "history", [])
+                self.blocked(
                     "reservation-history-pr-state-drift", policy, snapshot
                 )
 
         wrong_stage, _ = self.attempt_two_snapshot(policy, "pr-created")
         history = self.history_record(
             policy,
-            self.operation_key(policy, wrong_stage),
+            self.opkey(policy, wrong_stage),
             dispatch_state="succeeded",
         )
-        self.replace_inventory(wrong_stage, "history", [history])
-        self.assert_blocked(
+        self.set_inventory(wrong_stage, "history", [history])
+        self.blocked(
             "reservation-history-dispatch-drift", policy, wrong_stage
         )
 
         failed, _ = self.attempt_two_snapshot(policy, "dispatched")
         history = self.history_record(
             policy,
-            self.operation_key(policy, failed),
+            self.opkey(policy, failed),
             dispatch_state="failed",
         )
-        self.replace_inventory(failed, "history", [history])
-        self.assert_blocked("history-open-dispatch", policy, failed)
+        self.set_inventory(failed, "history", [history])
+        self.blocked("history-open-dispatch", policy, failed)
 
         cross_state, orphan = self.attempt_two_snapshot(policy, "dispatched")
         orphan["materialized_state"]["downstream_state"] = "failed"
         self.seal_reservation(orphan)
-        self.replace_inventory(cross_state, "reservations", [orphan])
-        self.assert_blocked(
+        self.set_inventory(cross_state, "reservations", [orphan])
+        self.blocked(
             "reservation-history-dispatch-drift", policy, cross_state
         )
 
         reserved, _ = self.attempt_two_snapshot(policy, "reserved")
         history = self.history_record(
             policy,
-            self.operation_key(policy, reserved),
+            self.opkey(policy, reserved),
             dispatch_state="pending",
         )
-        self.replace_inventory(reserved, "history", [history])
-        self.assert_blocked(
+        self.set_inventory(reserved, "history", [history])
+        self.blocked(
             "reservation-history-pr-state-drift", policy, reserved
         )
 
         foreign, _ = self.attempt_two_snapshot(policy, "pr-created")
         history = self.history_record(
             policy,
-            self.operation_key(policy, foreign),
+            self.opkey(policy, foreign),
             dispatch_state="pending",
         )
         history["run_id"] = 999
-        self.replace_inventory(foreign, "history", [history])
-        self.assert_blocked("history-owner-run", policy, foreign)
+        self.set_inventory(foreign, "history", [history])
+        self.blocked("history-owner-run", policy, foreign)
 
         replay, _ = self.attempt_two_snapshot(policy, "pr-created")
-        operation_key = self.operation_key(policy, replay)
-        self.replace_inventory(
+        operation_key = self.opkey(policy, replay)
+        self.set_inventory(
             replay,
             "history",
             [
@@ -1572,19 +1558,19 @@ class ReleasePromotionReservationTests(StateFixture):
                 ),
             ],
         )
-        self.assert_blocked("history-operation-key-duplicate", policy, replay)
+        self.blocked("history-operation-key-duplicate", policy, replay)
 
         terminal, orphan = self.attempt_two_snapshot(policy, "dispatched")
         history = self.history_record(
             policy,
-            self.operation_key(policy, terminal),
+            self.opkey(policy, terminal),
             dispatch_state="succeeded",
             state="closed",
         )
         orphan["materialized_state"]["pr_state"] = "closed"
         self.seal_reservation(orphan)
-        self.replace_inventory(terminal, "reservations", [orphan])
-        self.replace_inventory(terminal, "history", [history])
+        self.set_inventory(terminal, "reservations", [orphan])
+        self.set_inventory(terminal, "history", [history])
         result = STATE.classify(policy, terminal)
         self.assertEqual("consumed", result["disposition"])
         self.assertEqual("terminal-history", result["reason"])
@@ -1613,7 +1599,7 @@ class ReleasePromotionReservationTests(StateFixture):
                 self.set_path(snapshot, path, value)
                 if reseal:
                     self.seal_attempt_authorization(snapshot["attempt_authorization"])
-                self.assert_blocked(reason, policy, snapshot)
+                self.blocked(reason, policy, snapshot)
 
     def test_attempt_two_and_terminal_owner_hostile_replays_block(self):
         policy = self.policy()
@@ -1627,7 +1613,7 @@ class ReleasePromotionReservationTests(StateFixture):
         )
         current.update(status="completed", conclusion="cancelled")
         self.refresh_inventory_semantic(completed, "runs")
-        self.assert_blocked("attempt-2-not-running", policy, completed)
+        self.blocked("attempt-2-not-running", policy, completed)
 
         missing, _ = self.attempt_two_snapshot(policy)
         current = next(
@@ -1636,20 +1622,20 @@ class ReleasePromotionReservationTests(StateFixture):
             for record in page["records"]
             if record["attempt"] == 2
         )
-        self.replace_inventory(missing, "runs", [current])
-        self.assert_blocked("attempt-2-predecessor-count", policy, missing)
+        self.set_inventory(missing, "runs", [current])
+        self.blocked("attempt-2-predecessor-count", policy, missing)
 
         foreign, orphan = self.attempt_two_snapshot(policy)
         orphan["materialized_state"]["owner_run_id"] = 999
         self.seal_reservation(orphan)
-        self.replace_inventory(foreign, "reservations", [orphan])
-        self.assert_blocked("reservation-owner-run-count", policy, foreign)
+        self.set_inventory(foreign, "reservations", [orphan])
+        self.blocked("reservation-owner-run-count", policy, foreign)
 
         reclaimed, orphan = self.attempt_two_snapshot(policy)
         orphan["materialized_state"]["owner_run_attempt"] = 2
         self.seal_reservation(orphan)
-        self.replace_inventory(reclaimed, "reservations", [orphan])
-        self.assert_blocked("orphan-owner-not-predecessor", policy, reclaimed)
+        self.set_inventory(reclaimed, "reservations", [orphan])
+        self.blocked("orphan-owner-not-predecessor", policy, reclaimed)
 
         terminal = self.snapshot(policy)
         impossible = self.reservation_record(
@@ -1661,8 +1647,8 @@ class ReleasePromotionReservationTests(StateFixture):
             state="completed",
             terminal_disposition="active",
         )
-        self.replace_inventory(terminal, "reservations", [impossible])
-        self.assert_blocked("completed-terminal-state", policy, terminal)
+        self.set_inventory(terminal, "reservations", [impossible])
+        self.blocked("completed-terminal-state", policy, terminal)
 
         foreign_terminal = self.snapshot(policy)
         impossible = self.reservation_record(
@@ -1673,21 +1659,21 @@ class ReleasePromotionReservationTests(StateFixture):
             state="completed",
             terminal_disposition="active",
         )
-        self.replace_inventory(
+        self.set_inventory(
             foreign_terminal,
             "history",
             [
                 self.history_record(
-                    policy, self.operation_key(policy, foreign_terminal)
+                    policy, self.opkey(policy, foreign_terminal)
                 )
             ],
         )
-        self.replace_inventory(foreign_terminal, "reservations", [impossible])
-        self.assert_blocked("reservation-owner-run-count", policy, foreign_terminal)
+        self.set_inventory(foreign_terminal, "reservations", [impossible])
+        self.blocked("reservation-owner-run-count", policy, foreign_terminal)
 
         attempt_three, _ = self.attempt_two_snapshot(policy)
         attempt_three["event"]["run_attempt"] = 3
-        self.assert_blocked("event-attempt", policy, attempt_three)
+        self.blocked("event-attempt", policy, attempt_three)
 
 
 class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
@@ -1822,8 +1808,8 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
             self.collect(unstable)
 
         duplicate, _ = self.manifest(
-            [[record, copy.deepcopy(record)]],
-            [[record, copy.deepcopy(record)]],
+            [[record, deepcopy(record)]],
+            [[record, deepcopy(record)]],
         )
         with self.assertRaisesRegex(
             INVENTORY.ContractError, "inventory-record-duplicate"
@@ -1883,20 +1869,18 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
             INVENTORY.ContractError, "inventory-cursor-truncated"
         ):
             self.collect(truncated)
-
-    def test_duplicate_cursor_chain_blocks_at_collector_boundary(self):
         records = [self.run_record(run_id) for run_id in range(1, 4)]
-        manifest, _ = self.manifest(
+        duplicate, _ = self.manifest(
             [[record] for record in records],
             [[record] for record in records],
         )
-        for read in manifest["reads"]:
+        for read in duplicate["reads"]:
             read["pages"][1]["next_cursor"] = "cursor-2"
             read["pages"][2]["cursor"] = "cursor-2"
         with self.assertRaisesRegex(
             INVENTORY.ContractError, "inventory-cursor-duplicate"
         ):
-            self.collect(manifest)
+            self.collect(duplicate)
 
 
 class ReleasePromotionHistoryCollectorTests(unittest.TestCase):
@@ -2152,6 +2136,10 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         for script, diagnostic in (
             ("release-promotion-preflight.sh", "requires a GitHub output path"),
             ("release-promotion-preflight-revalidate.sh", "revalidation revision is malformed"),
+            (
+                "release-promotion-preflight-bind.sh",
+                "Runtime-input binding failed closed",
+            ),
         ):
             with self.subTest(script=script):
                 result = subprocess.run(
