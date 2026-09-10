@@ -1,0 +1,7 @@
+{
+  "issue": 564,
+  "lifecycle": "provisional-pre-d1-pre-s0",
+  "mutation_authority": false,
+  "reason": "This local C1-H prebuild is not based on protected post-D1/post-S0 develop and cannot authorize execution.",
+  "schema_version": 1
+}
