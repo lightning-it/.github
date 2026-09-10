@@ -1647,7 +1647,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         result = classify(load_json(arguments.policy), load_json(arguments.snapshot))
-    except (ContractError, OSError) as error:
+    except ContractError as error:
         result = {"disposition": "blocked", "reason": str(error), "schema_version": 2}
         sys.stdout.buffer.write(canonical(result))
         return 1

@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                          maximum_elapsed_ms=arguments.max_elapsed_ms,
                          maximum_pages=arguments.max_pages,
                          maximum_records=arguments.max_records)
-    except (ContractError, OSError) as error:
+    except ContractError as error:
         result = {"disposition": "blocked", "reason": str(error), "schema_version": 1}
         sys.stdout.buffer.write(canonical(result))
         return 1
