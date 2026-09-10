@@ -557,7 +557,7 @@ gh() {
     return 88
   fi
 }
-sleep() { :; }''',
+sleep() { printf 'ORDER:sleep:%s\n' "${1}" >&2; }''',
                 'if [ "${DEADLINE_EXPIRED}" = true ]; then '
                 "OPERATION_DEADLINE=${SECONDS}; else "
                 "OPERATION_DEADLINE=$((SECONDS + 100)); fi",
@@ -566,89 +566,94 @@ sleep() { :; }''',
             )
         )
         cross_run_id = int(cross["id"])
-        temp_dir = tempfile.TemporaryDirectory()
-        producer_state = Path(temp_dir.name) / "producer-state"
-        producer_jobs_state = Path(temp_dir.name) / "producer-jobs-state"
-        producer_state.write_text("0", encoding="utf-8")
-        producer_jobs_state.write_text("0", encoding="utf-8")
-        result = subprocess.run(
-            [self._test_tool("bash"), "-c", script],
-            text=True,
-            capture_output=True,
-            check=False,
-            env={
-                "PATH": TEST_TOOL_PATH,
-                "GITHUB_API_URL": "https://api.github.example",
-                "GITHUB_SERVER_URL": "https://github.example",
-                "REPOSITORY": "lightning-it/.github",
-                "PR_NUMBER": "554",
-                "EXPECTED_BASE": "a" * 40,
-                "EXPECTED_HEAD": "b" * 40,
-                "author": "litroc",
-                "base_ref": "develop",
-                "head_ref": "fix/final",
-                "run_id": "900",
-                "verifier_run_url": (
-                    "https://github.example/lightning-it/.github/"
-                    "actions/runs/900"
-                ),
-                "cross_job_id": "98563887790",
-                "cross_run_id": str(cross_run_id),
-                "cross_created_at": str(cross["created_at"]),
-                "reservation_id": str(frozen_reservation["id"]),
-                "reservation_url": str(frozen_reservation["details_url"]),
-                "reservation_external_id": str(
-                    frozen_reservation["external_id"]
-                ),
-                "neutral_check_id": str(frozen_neutral["id"]),
-                "neutral_head_sha": "b" * 40,
-                "neutral_details_url": str(frozen_neutral["details_url"]),
-                "neutral_external_id": str(frozen_neutral["external_id"]),
-                "neutral_summary_raw": neutral_summary_raw,
-                "evidence_version": "v6",
-                "producer_id": "77",
-                "producer_url": (
-                    "https://github.example/lightning-it/.github/"
-                    "actions/runs/77"
-                ),
-                "expected_review_path": (
-                    "applicable Copilot or governed automation exemption"
-                ),
-                "controller_sha": "c" * 40,
-                "v4_input_sha256": "",
-                "v4_workflow_sha": "",
-                "LIVE_PR": json.dumps(live_pr, separators=(",", ":")),
-                "RESERVATION": json.dumps(
-                    reservation, separators=(",", ":")
-                ),
-                "CROSS": json.dumps(cross, separators=(",", ":")),
-                "PROTECTED": json.dumps(producer, separators=(",", ":")),
-                "PROTECTED_JOBS": json.dumps(
-                    producer_jobs, separators=(",", ":")
-                ),
-                "PROTECTED_SEQUENCE": json.dumps(
-                    producer_sequence, separators=(",", ":")
-                ),
-                "PROTECTED_JOBS_SEQUENCE": json.dumps(
-                    producer_jobs_sequence, separators=(",", ":")
-                ),
-                "PROTECTED_STATE_FILE": str(producer_state),
-                "PROTECTED_JOBS_STATE_FILE": str(producer_jobs_state),
-                "CROSS_JOB": json.dumps(
-                    selected_job, separators=(",", ":")
-                ),
-                "INVENTORY": json.dumps(
-                    inventory, separators=(",", ":")
-                ),
-                "NEUTRAL": json.dumps(neutral, separators=(",", ":")),
-                "NEUTRAL_AUTHORIZED": str(neutral_authorized).lower(),
-                "RESERVATION_PAGES": json.dumps(
-                    inventory_pages, separators=(",", ":")
-                ),
-                "DEADLINE_EXPIRED": str(deadline_expired).lower(),
-            },
-        )
-        temp_dir.cleanup()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            producer_state = Path(temp_dir) / "producer-state"
+            producer_jobs_state = Path(temp_dir) / "producer-jobs-state"
+            producer_state.write_text("0", encoding="utf-8")
+            producer_jobs_state.write_text("0", encoding="utf-8")
+            result = subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "GITHUB_API_URL": "https://api.github.example",
+                    "GITHUB_SERVER_URL": "https://github.example",
+                    "REPOSITORY": "lightning-it/.github",
+                    "PR_NUMBER": "554",
+                    "EXPECTED_BASE": "a" * 40,
+                    "EXPECTED_HEAD": "b" * 40,
+                    "author": "litroc",
+                    "base_ref": "develop",
+                    "head_ref": "fix/final",
+                    "run_id": "900",
+                    "verifier_run_url": (
+                        "https://github.example/lightning-it/.github/"
+                        "actions/runs/900"
+                    ),
+                    "cross_job_id": "98563887790",
+                    "cross_run_id": str(cross_run_id),
+                    "cross_created_at": str(cross["created_at"]),
+                    "reservation_id": str(frozen_reservation["id"]),
+                    "reservation_url": str(frozen_reservation["details_url"]),
+                    "reservation_external_id": str(
+                        frozen_reservation["external_id"]
+                    ),
+                    "neutral_check_id": str(frozen_neutral["id"]),
+                    "neutral_head_sha": "b" * 40,
+                    "neutral_details_url": str(
+                        frozen_neutral["details_url"]
+                    ),
+                    "neutral_external_id": str(
+                        frozen_neutral["external_id"]
+                    ),
+                    "neutral_summary_raw": neutral_summary_raw,
+                    "evidence_version": "v6",
+                    "producer_id": "77",
+                    "producer_url": (
+                        "https://github.example/lightning-it/.github/"
+                        "actions/runs/77"
+                    ),
+                    "expected_review_path": (
+                        "applicable Copilot or governed automation exemption"
+                    ),
+                    "controller_sha": "c" * 40,
+                    "v4_input_sha256": "",
+                    "v4_workflow_sha": "",
+                    "LIVE_PR": json.dumps(live_pr, separators=(",", ":")),
+                    "RESERVATION": json.dumps(
+                        reservation, separators=(",", ":")
+                    ),
+                    "CROSS": json.dumps(cross, separators=(",", ":")),
+                    "PROTECTED": json.dumps(
+                        producer, separators=(",", ":")
+                    ),
+                    "PROTECTED_JOBS": json.dumps(
+                        producer_jobs, separators=(",", ":")
+                    ),
+                    "PROTECTED_SEQUENCE": json.dumps(
+                        producer_sequence, separators=(",", ":")
+                    ),
+                    "PROTECTED_JOBS_SEQUENCE": json.dumps(
+                        producer_jobs_sequence, separators=(",", ":")
+                    ),
+                    "PROTECTED_STATE_FILE": str(producer_state),
+                    "PROTECTED_JOBS_STATE_FILE": str(producer_jobs_state),
+                    "CROSS_JOB": json.dumps(
+                        selected_job, separators=(",", ":")
+                    ),
+                    "INVENTORY": json.dumps(
+                        inventory, separators=(",", ":")
+                    ),
+                    "NEUTRAL": json.dumps(neutral, separators=(",", ":")),
+                    "NEUTRAL_AUTHORIZED": str(neutral_authorized).lower(),
+                    "RESERVATION_PAGES": json.dumps(
+                        inventory_pages, separators=(",", ":")
+                    ),
+                    "DEADLINE_EXPIRED": str(deadline_expired).lower(),
+                },
+            )
         return result
 
     def _run_protected_rerun_authorization(
@@ -2170,6 +2175,42 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         self.assertEqual(
             4, converged.stderr.splitlines().count("ORDER:protected_detail")
         )
+
+        changed_success_jobs = json.loads(json.dumps(producer_jobs))
+        changed_success_jobs["jobs"][0]["id"] = 9900
+        snapshot_converged = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[producer_success],
+            protected_jobs_sequence=[producer_jobs, changed_success_jobs],
+        )
+        self.assertEqual(
+            0, snapshot_converged.returncode, snapshot_converged.stderr
+        )
+        snapshot_lines = snapshot_converged.stderr.splitlines()
+        job_reads = [
+            index
+            for index, line in enumerate(snapshot_lines)
+            if line == "ORDER:protected_jobs"
+        ]
+        sleeps = [
+            index
+            for index, line in enumerate(snapshot_lines)
+            if line == "ORDER:sleep:2"
+        ]
+        self.assertEqual(5, len(job_reads))
+        self.assertEqual(3, len(sleeps))
+        self.assertLess(job_reads[0], sleeps[0])
+        self.assertLess(sleeps[0], job_reads[1])
+        self.assertLess(job_reads[1], sleeps[1])
+        self.assertLess(sleeps[1], job_reads[2])
+        self.assertLess(job_reads[2], sleeps[2])
+        self.assertLess(sleeps[2], job_reads[3])
+        self.assertEqual(1, snapshot_lines.count("ORDER:POST"))
 
         final_drift_jobs = json.loads(json.dumps(producer_jobs))
         final_drift_jobs["jobs"][0]["id"] = 9901

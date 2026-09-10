@@ -157,6 +157,7 @@ jobs:
                 printf '%s\n' "${second}"
                 return 0
               fi
+              bounded_sleep 2 || return 1
             done
             echo 'The reservation producer did not stabilize at success.' >&2
             return 1
