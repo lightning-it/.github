@@ -315,8 +315,9 @@ After D1 is protected on `develop`, S0 is installed by normal protected PRs on
 `develop`. The bridge implementation changes
 `.github/workflows/supplementary-current-revision-required.yml` and its coupled
 `tests/test_supplementary_required_workflow.py`; a separate protected activation
-policy at `.lit/feature-main-prestage-policy.json` starts in canonical state
-`inactive`. Before it can transition to `active`, the S0 implementation must be
+policy is proposed for future path `.lit/feature-main-prestage-policy.json` and
+will start in canonical state `inactive`. Before it can transition to
+`active`, the S0 implementation must be
 merged/read back and C1 must be installed default-off on protected `develop`
 with `RELEASE_RECONCILIATION_ENABLED` absent. C1 is one complete workflow/
 helper/test unit, or newly reviewed semantic workflow/test pairs if its fresh
