@@ -884,6 +884,47 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
 
+    def test_neutral_producer_labels_trusted_renovate_evidence_as_renovate(
+        self,
+    ) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        renovate = publish.split(
+            '          elif [ "${TRUSTED_KIND}" = renovate ]; then\n', 1
+        )[1].split(
+            '          elif [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then\n',
+            1,
+        )[0]
+        for binding in (
+            'test "${author}" = \'renovate[bot]\'',
+            'test "${base_ref}" = develop',
+            'review_path="deterministic policy-bound Renovate exemption"',
+            'external_kind="renovate"',
+            'result_title="Current revision Renovate exemption passed"',
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, renovate)
+        self.assertEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author="renovate[bot]",
+                base_ref="develop",
+                repository="lightning-it/.github",
+                trusted_kind="renovate",
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            self._run_neutral_publisher_routing(
+                author="litroc",
+                base_ref="develop",
+                repository="lightning-it/.github",
+                trusted_kind="renovate",
+            ),
+        )
+
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request_target:", workflow)

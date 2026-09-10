@@ -1101,6 +1101,12 @@ jobs:
             review_path="deterministic provenance-bound managed distribution exemption"
             external_kind="managed-sync"
             result_title="Current revision managed distribution exemption passed"
+          elif [ "${TRUSTED_KIND}" = renovate ]; then
+            test "${author}" = 'renovate[bot]'
+            test "${base_ref}" = develop
+            review_path="deterministic policy-bound Renovate exemption"
+            external_kind="renovate"
+            result_title="Current revision Renovate exemption passed"
           elif [ "${TRUSTED_KIND}" = ancestry-backmerge ]; then
             if [ "${author}" = 'lightning-it-release-automation[bot]' ]; then
               :
@@ -1159,6 +1165,7 @@ jobs:
           else
             test "${TRUSTED_KIND}" != shared-assets
             test "${TRUSTED_KIND}" != repository-quality
+            test "${TRUSTED_KIND}" != renovate
             test "${TRUSTED_KIND}" != ancestry-backmerge
             test "${author}" != 'lightning-it-shared-assets-sync[bot]'
           fi
