@@ -201,9 +201,10 @@ jobs:
             bounded_sleep 5
           done
           producer_attempt="$(jq -er \
-            '.run_attempt | select(type == "number" and . == 1)' \
+            '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
             <<<"${producer}")"
           if [ "${evidence_version}" = v4 ]; then
+            test "${producer_attempt}" -eq 1
             test "${author}" = 'lightning-it-release-automation[bot]'
             expected_title="Exact-Revision Codex PR #${PR_NUMBER} ${EXPECTED_BASE}..${EXPECTED_HEAD}"
             expected_review_path='MLX-90 §7.2 Exact-Revision Codex exception'
@@ -263,6 +264,7 @@ jobs:
               --arg actor "${author}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
+              --argjson attempt "${producer_attempt}" \
               --arg run_url "${producer_url}" '
                 .event == "pull_request_target"
                 and .path == ".github/workflows/copilot-review.yml"
@@ -271,7 +273,8 @@ jobs:
                 and .head_sha == $head_sha
                 and .html_url == $run_url
                 and .actor.login == $actor
-                and .triggering_actor.login == $actor
+                and .triggering_actor.login == (
+                  if $attempt == 1 then $actor else "github-actions[bot]" end)
               ' <<<"${producer}" >/dev/null
           fi
 
@@ -295,22 +298,25 @@ jobs:
               and has("conclusion"))
           ' <<<"${producer_jobs}" >/dev/null
           bound_producer_jobs="$(jq -c \
+            --arg dispatch 'Request protected verifier re-evaluation' \
             --arg head "${producer_job_head_sha}" \
             --arg name "${producer_job_name}" \
             --argjson attempt "${producer_attempt}" \
             --argjson run_id "${producer_id}" '
               [.jobs[] |
-                select(.name == $name) |
                 select(.run_id == $run_id) |
                 select(.run_attempt == $attempt) |
-                select(.head_sha == $head)]
+                select(.head_sha == $head) |
+                select(.name == $name
+                  or ($attempt == 2 and .name == $dispatch))]
             ' <<<"${producer_jobs}")"
-          test "$(jq 'length' <<<"${bound_producer_jobs}")" -eq 1
-          producer_job="$(jq -ce '.[0]' <<<"${bound_producer_jobs}")"
+          test "$(jq 'length' <<<"${bound_producer_jobs}")" -eq "${producer_attempt}"
+          producer_job="$(jq -ce --arg name "${producer_job_name}" '
+            [.[] | select(.name == $name)] | select(length == 1) | .[0]
+          ' <<<"${bound_producer_jobs}")"
           jq -e '
-            .status == "completed"
-            and .conclusion == "success"
-          ' <<<"${producer_job}" >/dev/null
+            all(.[]; .status == "completed" and .conclusion == "success")
+          ' <<<"${bound_producer_jobs}" >/dev/null
           producer_job_id="$(jq -er \
             '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
           producer_binding="$(jq -c '
