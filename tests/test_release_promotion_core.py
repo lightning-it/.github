@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -431,6 +432,23 @@ class ReleasePromotionCanonicalStateTests(StateFixture):
                         STATE.ContractError, "input-not-canonical-json"
                     ):
                         STATE.load_json(str(path))
+
+    def test_missing_input_has_a_stable_contract_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing.json"
+            with self.assertRaises(STATE.ContractError) as caught:
+                STATE.load_json(str(path))
+            self.assertEqual("input-stat-failed", str(caught.exception))
+
+    def test_unreadable_input_does_not_leak_os_details(self):
+        with mock.patch.object(
+            STATE.Path,
+            "lstat",
+            side_effect=PermissionError(13, "OS-SENTINEL", "/private/sentinel"),
+        ):
+            with self.assertRaises(STATE.ContractError) as caught:
+                STATE.load_json("/private/sentinel")
+        self.assertEqual("input-stat-failed", str(caught.exception))
 
     def test_provisional_policy_remains_explicitly_non_authorizing(self):
         policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
@@ -1953,6 +1971,22 @@ class ReleasePromotionInventoryCollectorTests(unittest.TestCase):
                 ):
                     INVENTORY.load_json(str(path), 1024)
 
+    def test_missing_page_has_a_stable_contract_reason(self):
+        path = self.root / "missing-page.json"
+        with self.assertRaises(INVENTORY.ContractError) as caught:
+            INVENTORY.load_json(str(path), 1024)
+        self.assertEqual("page-stat-failed", str(caught.exception))
+
+    def test_unreadable_page_does_not_leak_os_details(self):
+        with mock.patch.object(
+            INVENTORY.Path,
+            "lstat",
+            side_effect=PermissionError(13, "OS-SENTINEL", "/private/sentinel"),
+        ):
+            with self.assertRaises(INVENTORY.ContractError) as caught:
+                INVENTORY.load_json("/private/sentinel", 1024)
+        self.assertEqual("page-stat-failed", str(caught.exception))
+
     def test_exactly_two_reads_and_complete_cursor_chain_are_mandatory(self):
         record = self.run_record(1)
         manifest, _ = self.manifest([[record]], [[record]])
@@ -2196,6 +2230,8 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         self.assertIn("validate_runner_temp", preflight)
         self.assertIn('projection_listing_file=""', preflight)
         self.assertIn('projection_file=""', preflight)
+        self.assertIn('[ -n "${GITHUB_OUTPUT:-}" ]', preflight)
+        self.assertIn('[ -n "${GITHUB_STEP_SUMMARY:-}" ]', preflight)
 
         history = (
             ROOT / "scripts/release-promotion-history.sh"
@@ -2217,6 +2253,46 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
                 .split()
             )
             self.assertEqual(expected_commands, declared_commands)
+
+    def test_shell_guards_fail_closed_with_explicit_diagnostics(self):
+        clean_environment = {"PATH": os.environ["PATH"]}
+        preflight = subprocess.run(
+            ["bash", "scripts/release-promotion-preflight.sh"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=clean_environment,
+        )
+        self.assertNotEqual(0, preflight.returncode)
+        self.assertIn("requires a GitHub output path", preflight.stderr)
+        self.assertNotIn("unbound variable", preflight.stderr)
+
+        revalidator = subprocess.run(
+            ["bash", "scripts/release-promotion-preflight-revalidate.sh"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=clean_environment,
+        )
+        self.assertNotEqual(0, revalidator.returncode)
+        self.assertIn("revalidation revision is malformed", revalidator.stderr)
+        self.assertNotIn("unbound variable", revalidator.stderr)
+
+        revalidator_source = (
+            ROOT / "scripts/release-promotion-preflight-revalidate.sh"
+        ).read_text(encoding="utf-8")
+        for diagnostic in (
+            "admitted controller blob is malformed",
+            "admitted controller tree entry is unreadable",
+            "admitted controller tree binding does not match",
+            "local controller is not a regular non-symlink file",
+            "local controller bytes are unreadable",
+            "local controller bytes do not match the admitted blob",
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                self.assertIn(diagnostic, revalidator_source)
 
 
 if __name__ == "__main__":

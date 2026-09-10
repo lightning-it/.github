@@ -73,7 +73,10 @@ def reject_nonstandard_constant(_: str) -> None:
 
 def load_json(path_text: str, maximum_bytes: int) -> tuple[Any, bytes]:
     path = Path(path_text)
-    metadata = path.lstat()
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ContractError("page-stat-failed") from error
     require(stat.S_ISREG(metadata.st_mode), "page-not-regular")
     require(metadata.st_size <= maximum_bytes, "page-byte-limit")
     try:

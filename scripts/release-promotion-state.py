@@ -125,7 +125,10 @@ def reject_nonstandard_constant(_: str) -> None:
 
 def load_json(path_text: str) -> Any:
     path = Path(path_text)
-    metadata = path.lstat()
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ContractError("input-stat-failed") from error
     require(stat.S_ISREG(metadata.st_mode), "input-not-regular")
     require(metadata.st_size <= 8 * 1024 * 1024, "input-too-large")
     try:

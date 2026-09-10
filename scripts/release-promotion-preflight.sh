@@ -88,7 +88,9 @@ report_disposition() {
         }
       '
   )"
-  printf '%s\n' "${payload}" >>"${GITHUB_STEP_SUMMARY}"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '%s\n' "${payload}" >>"${GITHUB_STEP_SUMMARY}"
+  fi
   {
     printf 'disposition=%s\n' "${disposition}"
     printf 'stage=%s\n' "${stage_id}"
@@ -240,6 +242,9 @@ reject_unsafe_delta() {
     return 1
   fi
 }
+
+[ -n "${GITHUB_OUTPUT:-}" ] \
+  || fail_closed "Release admission requires a GitHub output path."
 
 trap cleanup EXIT
 trap on_error ERR
