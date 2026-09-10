@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -15,6 +17,7 @@ AGENTS = ROOT / "AGENTS.md"
 WORKFLOW = (
     ROOT / ".github" / "workflows" / "supplementary-current-revision-required.yml"
 )
+S0_POLICY = ROOT / ".lit" / "feature-main-prestage-policy.json"
 RERUN_WORKFLOW = (
     ROOT / ".github" / "workflows" / "current-revision-rerun.yml"
 )
@@ -36,6 +39,610 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 f"{name} is required in the deterministic test tool path"
             )
         return executable
+
+    @staticmethod
+    def _s0_workflow() -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        return workflow.split(
+            "  route-protected-current-revision:\n", 1
+        )[1].split(
+            "  verify-protected-current-revision-evidence:\n", 1
+        )[0]
+
+    @classmethod
+    def _s0_job(cls, job: str, following_job: str) -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        return workflow.split(f"  {job}:\n", 1)[1].split(
+            f"  {following_job}:\n", 1
+        )[0]
+
+    @classmethod
+    def _s0_policy_contract(cls) -> str:
+        deep = cls._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        marker = "          # rep120-s0-policy-contract: start\n"
+        contract = deep.split(marker, 1)[1].split(
+            "          # rep120-s0-policy-contract: end\n", 1
+        )[0]
+        return contract.split("cat <<'JQ'\n", 1)[1].split(
+            "\n          JQ\n", 1
+        )[0]
+
+    def _run_s0_policy_contract(self, policy: dict[str, object]) -> int:
+        jq = self._test_tool("jq")
+        result = subprocess.run(
+            [jq, "-e", self._s0_policy_contract()],
+            input=json.dumps(policy),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode
+
+    @classmethod
+    def _active_s0_policy(cls) -> dict[str, object]:
+        policy = json.loads(S0_POLICY.read_text(encoding="utf-8"))
+        policy.update(
+            {
+                "allowed_principals": [
+                    {
+                        "github_app_id": None,
+                        "login": "litroc",
+                        "review_class": "copilot",
+                        "type": "User",
+                        "user_id": 76040632,
+                    }
+                ],
+                "authorization_manifest_sha256": "a" * 64,
+                "expires_at": "2099-12-31T23:59:59Z",
+                "policy_epoch": 1,
+                "series_id": "rep120-main-provisional-test",
+                "state": "active",
+            }
+        )
+        return policy
+
+    @staticmethod
+    def _normalized_s0_policy_bytes(policy: dict[str, object]) -> bytes:
+        normalized = json.loads(json.dumps(policy))
+        normalized["authorization_manifest_sha256"] = "0" * 64
+        return (
+            json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+            + "\n"
+        ).encode()
+
+    @classmethod
+    def _normalized_s0_policy_sha256(cls, policy: dict[str, object]) -> str:
+        return hashlib.sha256(
+            b"rep120-normalized-policy-v1\0"
+            + cls._normalized_s0_policy_bytes(policy)
+        ).hexdigest()
+
+    @staticmethod
+    def _canonical_s0_json(value: object) -> bytes:
+        return (
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+
+    @classmethod
+    def _s0_semantic_sha256(cls, domain: str, value: object) -> str:
+        return hashlib.sha256(
+            domain.encode() + b"\0" + cls._canonical_s0_json(value)
+        ).hexdigest()
+
+    @staticmethod
+    def _s0_git_blob(raw: bytes) -> str:
+        return hashlib.sha1(  # noqa: S324 -- exact Git SHA-1 object identity
+            f"blob {len(raw)}\0".encode() + raw,
+            usedforsecurity=False,
+        ).hexdigest()
+
+    @staticmethod
+    def _s0_absent_ordinary_entry(path: str) -> dict[str, object]:
+        return {
+            "blob": None,
+            "class": "ordinary",
+            "mode": None,
+            "path": path,
+            "presence": "absent",
+        }
+
+    @classmethod
+    def _s0_ordinary_entry(
+        cls, path: str, seed: str, mode: str = "100644"
+    ) -> dict[str, object]:
+        return {
+            "blob": cls._s0_git_blob((seed + "\n").encode()),
+            "class": "ordinary",
+            "mode": mode,
+            "path": path,
+            "presence": "present",
+        }
+
+    @staticmethod
+    def _s0_policy_entry(
+        state: str | None, normalized_sha256: str | None
+    ) -> dict[str, object]:
+        present = state is not None
+        return {
+            "class": "normalized-policy",
+            "mode": "100644" if present else None,
+            "normalization_schema": "rep120-normalized-policy-v1",
+            "normalized_sha256": normalized_sha256,
+            "path": ".lit/feature-main-prestage-policy.json",
+            "presence": "present" if present else "absent",
+            "state": state,
+        }
+
+    @classmethod
+    def _s0_logical_tree(
+        cls, tree_id: str, entries: list[dict[str, object]]
+    ) -> dict[str, object]:
+        ordered = sorted(entries, key=lambda entry: str(entry["path"]))
+        projection = {
+            "entries": ordered,
+            "schema": "lit.rep120.logical-content-tree/v1",
+        }
+        return {
+            "entries": ordered,
+            "id": tree_id,
+            "logical_tree_sha256": cls._s0_semantic_sha256(
+                "rep120-logical-content-tree-v1", projection
+            ),
+        }
+
+    @staticmethod
+    def _s0_full_tree_raw(entries: list[dict[str, object]]) -> bytes:
+        records: list[bytes] = []
+        for entry in entries:
+            if (
+                entry["class"] == "ordinary"
+                and entry["presence"] == "present"
+            ):
+                records.append(
+                    (
+                        f'{entry["mode"]} blob {entry["blob"]}'
+                        f'\t{entry["path"]}\0'
+                    ).encode()
+                )
+        return b"".join(records)
+
+    @classmethod
+    def _s0_core_v2_verifier(cls) -> str:
+        deep = cls._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        start = "          # rep120-s0-core-v2-verifier: start\n"
+        end = "          # rep120-s0-core-v2-verifier: end\n"
+        block = deep.split(start, 1)[1].split(end, 1)[0]
+        source = block.split(
+            "          cat >\"${s0_core_verifier}\" <<'PY'\n", 1
+        )[1].rsplit("\n          PY\n", 1)[0]
+        return textwrap.dedent(source) + "\n"
+
+    @classmethod
+    def _s0_core_v2_fixture(
+        cls,
+        *,
+        expires_at: str = "2099-12-31T23:59:59Z",
+        review_bytes: dict[str, int] | None = None,
+    ) -> tuple[dict[str, object], bytes, dict[str, object]]:
+        policy = cls._active_s0_policy()
+        policy["expires_at"] = expires_at
+        policy["authorization_manifest_sha256"] = "a" * 64
+        consumed_template = json.loads(json.dumps(policy))
+        consumed_template["state"] = "consumed"
+        paths = {
+            "P1": [
+                "docs/adr/"
+                "rep120-promotion-reconciler-path-isolation-20260905.md"
+            ],
+            "P2": sorted(
+                [
+                    ".github/workflows/current-revision-rerun.yml",
+                    "tests/test_copilot_review_refresh.py",
+                ]
+            ),
+            "P3": [".github/workflows/release-reconciler.yml"],
+            "P4": sorted(
+                [
+                    ".github/workflows/"
+                    "supplementary-current-revision-required.yml",
+                    ".lit/feature-main-prestage-policy.json",
+                    "tests/test_supplementary_required_workflow.py",
+                ]
+            ),
+        }
+        normalization: dict[str, str] = {
+            "active_sha256": cls._normalized_s0_policy_sha256(policy),
+            "consumed_sha256": cls._normalized_s0_policy_sha256(
+                consumed_template
+            ),
+            "domain": "rep120-normalized-policy-v1",
+            "path": ".lit/feature-main-prestage-policy.json",
+            "sentinel": "0" * 64,
+        }
+        initial_paths = paths["P2"] + [
+            path
+            for path in paths["P4"]
+            if path != ".lit/feature-main-prestage-policy.json"
+        ]
+        current_entries = {
+            path: cls._s0_ordinary_entry(path, f"fixture-base:{path}")
+            for path in initial_paths
+        }
+        current_entries["README.md"] = cls._s0_ordinary_entry(
+            "README.md", "fixture-unchanged-readme"
+        )
+        current_entries[".lit/feature-main-prestage-policy.json"] = (
+            cls._s0_policy_entry(None, None)
+        )
+        logical_trees = [
+            cls._s0_logical_tree(
+                "starting-main", list(current_entries.values())
+            )
+        ]
+        units: list[dict[str, object]] = []
+        review_bytes = review_bytes or {}
+        tree_ids = ["post-P1", "post-P2", "post-P3", "post-P4-M"]
+        for index, (unit_id, tree_id) in enumerate(
+            zip(("P1", "P2", "P3", "P4"), tree_ids, strict=True),
+            start=1,
+        ):
+            changes: list[dict[str, object]] = []
+            for path in paths[unit_id]:
+                base_main = current_entries.get(
+                    path, cls._s0_absent_ordinary_entry(path)
+                )
+                if path == ".lit/feature-main-prestage-policy.json":
+                    source_develop = cls._s0_policy_entry(
+                        "active", normalization["active_sha256"]
+                    )
+                    candidate_result = cls._s0_policy_entry(
+                        "consumed", normalization["consumed_sha256"]
+                    )
+                else:
+                    candidate_result = cls._s0_ordinary_entry(
+                        path, f"fixture-result:{unit_id}:{path}"
+                    )
+                    source_develop = candidate_result
+                changes.append(
+                    {
+                        "base_main": base_main,
+                        "candidate_result_main": candidate_result,
+                        "path": path,
+                        "source_develop": source_develop,
+                    }
+                )
+                current_entries[path] = candidate_result
+            logical_trees.append(
+                cls._s0_logical_tree(tree_id, list(current_entries.values()))
+            )
+            units.append(
+                {
+                    "changes": changes,
+                    "id": unit_id,
+                    "paths": paths[unit_id],
+                    "predecessor_logical_tree_sha256": logical_trees[-2][
+                        "logical_tree_sha256"
+                    ],
+                    "result_logical_tree_sha256": logical_trees[-1][
+                        "logical_tree_sha256"
+                    ],
+                    "review_bytes": review_bytes.get(unit_id, index * 1000),
+                    "review_sha256": hashlib.sha256(
+                        f"fixture-review:{unit_id}".encode()
+                    ).hexdigest(),
+                }
+            )
+        core: dict[str, object] = {
+            "expires_at": policy["expires_at"],
+            "issue": 564,
+            "logical_trees": logical_trees,
+            "maximum_unit_count": 4,
+            "normalization": normalization,
+            "object_format": {
+                "enumeration": "git-ls-tree-r-z-v1",
+                "maximum_entries": 4096,
+                "maximum_input_bytes": 199999,
+                "object_hash": "sha1",
+                "oid_hex_length": 40,
+                "ordinary_modes": ["100644", "100755"],
+                "record_type": "blob",
+            },
+            "ordered_units": ["P1", "P2", "P3", "P4"],
+            "policy_epoch": policy["policy_epoch"],
+            "repository": {
+                "id": 1112629689,
+                "name": "lightning-it/.github",
+            },
+            "schema": "lit.rep120.authorization-manifest-core/v2",
+            "series_id": policy["series_id"],
+            "starting_main": {
+                "commit": "1" * 40,
+                "logical_tree_sha256": logical_trees[0][
+                    "logical_tree_sha256"
+                ],
+                "tree": "2" * 40,
+            },
+            "terminal_unit_id": "P4",
+            "units": units,
+        }
+        core_sha256 = cls._s0_semantic_sha256(
+            "rep120-authorization-manifest-core-v2", core
+        )
+        policy["authorization_manifest_sha256"] = core_sha256
+        consumed = json.loads(json.dumps(policy))
+        consumed["state"] = "consumed"
+        policy_raw = cls._canonical_s0_json(policy)
+        consumed_raw = cls._canonical_s0_json(consumed)
+        policy_material = {
+            "active_blob": cls._s0_git_blob(policy_raw),
+            "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+            "active_normalized_sha256": cls._normalized_s0_policy_sha256(
+                policy
+            ),
+            "consumed_blob": cls._s0_git_blob(consumed_raw),
+            "consumed_bytes_sha256": hashlib.sha256(consumed_raw).hexdigest(),
+            "consumed_normalized_sha256": cls._normalized_s0_policy_sha256(
+                consumed
+            ),
+        }
+        activation_diff = {
+            "diff_bytes": 777,
+            "diff_sha256": hashlib.sha256(
+                b"fixture-inactive-to-active"
+            ).hexdigest(),
+            "paths": [".lit/feature-main-prestage-policy.json"],
+        }
+        coverage_units = [
+            {
+                "diff_bytes": unit["review_bytes"],
+                "diff_sha256": unit["review_sha256"],
+                "id": unit["id"],
+                "paths": unit["paths"],
+            }
+            for unit in units
+        ]
+        coverage: dict[str, object] = {
+            "activation": activation_diff,
+            "core_sha256": core_sha256,
+            "policy": policy_material,
+            "previous_record_sha256": core_sha256,
+            "repository": core["repository"],
+            "schema": "lit.rep120.post-core-coverage/v1",
+            "series_id": core["series_id"],
+            "units": coverage_units,
+        }
+        coverage_sha256 = cls._s0_semantic_sha256(
+            "rep120-post-core-coverage-v1", coverage
+        )
+        activation: dict[str, object] = {
+            "active_policy_blob": policy_material["active_blob"],
+            "core_sha256": core_sha256,
+            "coverage_sha256": coverage_sha256,
+            "diff": activation_diff,
+            "merge": {
+                "base": "3" * 40,
+                "bypass_used": False,
+                "head": "4" * 40,
+                "parents": ["3" * 40, "4" * 40],
+                "result_tree": "5" * 40,
+                "signature_verified": True,
+            },
+            "previous_record_sha256": coverage_sha256,
+            "schema": "lit.rep120.protected-activation-receipt/v1",
+            "series_id": core["series_id"],
+        }
+        bundle: dict[str, object] = {
+            "records": [
+                {
+                    "domain": "rep120-authorization-manifest-core-v2",
+                    "record": core,
+                },
+                {
+                    "domain": "rep120-post-core-coverage-v1",
+                    "record": coverage,
+                },
+                {
+                    "domain": "rep120-protected-activation-receipt-v1",
+                    "record": activation,
+                },
+            ],
+            "schema": "lit.rep120.s0-core-v2-fixture/v1",
+        }
+        return policy, policy_raw, bundle
+
+    @classmethod
+    def _refresh_s0_logical_tree_commitments(
+        cls, bundle: dict[str, object]
+    ) -> None:
+        core = bundle["records"][0]["record"]
+        logical_trees = core["logical_trees"]
+        for tree in logical_trees:
+            projection = {
+                "entries": tree["entries"],
+                "schema": "lit.rep120.logical-content-tree/v1",
+            }
+            tree["logical_tree_sha256"] = cls._s0_semantic_sha256(
+                "rep120-logical-content-tree-v1", projection
+            )
+        core["starting_main"]["logical_tree_sha256"] = logical_trees[0][
+            "logical_tree_sha256"
+        ]
+        for index, unit in enumerate(core["units"]):
+            unit["predecessor_logical_tree_sha256"] = logical_trees[index][
+                "logical_tree_sha256"
+            ]
+            unit["result_logical_tree_sha256"] = logical_trees[index + 1][
+                "logical_tree_sha256"
+            ]
+
+    @classmethod
+    def _replace_s0_p3_path(
+        cls, bundle: dict[str, object], replacement: object
+    ) -> None:
+        core = bundle["records"][0]["record"]
+        old_path = ".github/workflows/release-reconciler.yml"
+        unit = core["units"][2]
+        unit["paths"] = [replacement]
+        change = unit["changes"][0]
+        change["path"] = replacement
+        for field in ("base_main", "candidate_result_main", "source_develop"):
+            change[field]["path"] = replacement
+        for tree in core["logical_trees"][3:]:
+            for entry in tree["entries"]:
+                if entry["path"] == old_path:
+                    entry["path"] = replacement
+            tree["entries"].sort(key=lambda entry: str(entry["path"]))
+        cls._refresh_s0_logical_tree_commitments(bundle)
+
+    @classmethod
+    def _reseal_s0_core_v2_fixture(
+        cls,
+        policy: dict[str, object],
+        bundle: dict[str, object],
+    ) -> tuple[dict[str, object], bytes, dict[str, object]]:
+        sealed_policy = json.loads(json.dumps(policy))
+        sealed_bundle = json.loads(json.dumps(bundle))
+        core = sealed_bundle["records"][0]["record"]
+        coverage = sealed_bundle["records"][1]["record"]
+        activation = sealed_bundle["records"][2]["record"]
+
+        core_sha256 = cls._s0_semantic_sha256(
+            "rep120-authorization-manifest-core-v2", core
+        )
+        sealed_policy["authorization_manifest_sha256"] = core_sha256
+        consumed = json.loads(json.dumps(sealed_policy))
+        consumed["state"] = "consumed"
+        policy_raw = cls._canonical_s0_json(sealed_policy)
+        consumed_raw = cls._canonical_s0_json(consumed)
+        policy_material = {
+            "active_blob": cls._s0_git_blob(policy_raw),
+            "active_bytes_sha256": hashlib.sha256(policy_raw).hexdigest(),
+            "active_normalized_sha256": cls._normalized_s0_policy_sha256(
+                sealed_policy
+            ),
+            "consumed_blob": cls._s0_git_blob(consumed_raw),
+            "consumed_bytes_sha256": hashlib.sha256(
+                consumed_raw
+            ).hexdigest(),
+            "consumed_normalized_sha256": cls._normalized_s0_policy_sha256(
+                consumed
+            ),
+        }
+        coverage.update(
+            {
+                "core_sha256": core_sha256,
+                "policy": policy_material,
+                "previous_record_sha256": core_sha256,
+                "repository": core["repository"],
+                "series_id": core["series_id"],
+                "units": [
+                    {
+                        "diff_bytes": unit["review_bytes"],
+                        "diff_sha256": unit["review_sha256"],
+                        "id": unit["id"],
+                        "paths": unit["paths"],
+                    }
+                    for unit in core["units"]
+                ],
+            }
+        )
+        coverage_sha256 = cls._s0_semantic_sha256(
+            "rep120-post-core-coverage-v1", coverage
+        )
+        activation.update(
+            {
+                "active_policy_blob": policy_material["active_blob"],
+                "core_sha256": core_sha256,
+                "coverage_sha256": coverage_sha256,
+                "diff": json.loads(json.dumps(coverage["activation"])),
+                "previous_record_sha256": coverage_sha256,
+                "series_id": core["series_id"],
+            }
+        )
+        return sealed_policy, policy_raw, sealed_bundle
+
+    @classmethod
+    def _run_s0_core_v2_verifier(
+        cls,
+        *,
+        policy_raw: bytes | None = None,
+        bundle: dict[str, object] | None = None,
+        bundle_raw: bytes | None = None,
+        starting_tree_raw: bytes | None = None,
+        observed_at: str = "2099-01-01T00:00:00Z",
+    ) -> subprocess.CompletedProcess[str]:
+        if policy_raw is None or bundle is None:
+            _, default_policy_raw, default_bundle = cls._s0_core_v2_fixture()
+            if policy_raw is None:
+                policy_raw = default_policy_raw
+            if bundle is None:
+                bundle = default_bundle
+        if bundle_raw is None:
+            bundle_raw = cls._canonical_s0_json(bundle)
+        if starting_tree_raw is None:
+            starting_tree_raw = cls._s0_full_tree_raw(
+                bundle["records"][0]["record"]["logical_trees"][0][
+                    "entries"
+                ]
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            verifier = root / "verify-core-v2.py"
+            policy_path = root / "policy.json"
+            roots_path = root / "roots.json"
+            starting_tree_path = root / "starting-tree.raw"
+            verifier.write_text(cls._s0_core_v2_verifier(), encoding="utf-8")
+            policy_path.write_bytes(policy_raw)
+            roots_path.write_bytes(bundle_raw)
+            starting_tree_path.write_bytes(starting_tree_raw)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    str(policy_path),
+                    str(roots_path),
+                    str(starting_tree_path),
+                    observed_at,
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    @classmethod
+    def _run_s0_full_tree_parser(
+        cls, raw: bytes
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            verifier = root / "verify-core-v2.py"
+            tree_path = root / "full-tree.raw"
+            verifier.write_text(cls._s0_core_v2_verifier(), encoding="utf-8")
+            tree_path.write_bytes(raw)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    "--parse-full-tree",
+                    str(tree_path),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def _assert_s0_core_v2_controlled_rejection(
+        self, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("S0 Core-v2 rejected:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     @staticmethod
     def _protected_source_binding() -> str:
@@ -3010,7 +3617,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         job_header = workflow.split(
             "  verify-protected-current-revision-evidence:", 1
         )[1].split("    permissions:", 1)[0]
-        self.assertNotIn("if:", job_header)
+        self.assertIn("needs: route-protected-current-revision", job_header)
+        self.assertIn(
+            "if: needs['route-protected-current-revision'].outputs."
+            "s0_candidate != 'true'",
+            job_header,
+        )
         reservation = permanent.index("reservation_external_id=")
         failure_trap = permanent.index("trap finalize_failure ERR")
         draft_rejection = permanent.index('test "${draft}" = false')
@@ -5947,6 +6559,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        required_workflow = WORKFLOW.read_text(encoding="utf-8")
         classifier = workflow.split(
             "\n  classify-main-trust-root-handoff:", 1
         )[1].split("\n  request-current-revision-review:", 1)[0]
@@ -5966,7 +6579,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.head_repository.full_name == $repository)',
             'select(.actor.login == "litroc")',
             '.triggering_actor.login == "github-actions[bot]"',
-            'select(.name == "Required current-revision workflow")',
+            'select(.name == "Legacy protected current-revision verifier")',
             'select(.name == "Classify protected main trust-root bootstrap handoff")',
             'if [ "${run_count}" -gt 1 ]',
             'if [ "${job_count}" -gt 1 ]',
@@ -5979,6 +6592,33 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("required_workflow_url_prefix", classifier)
         self.assertNotIn("contents: read", classifier)
+        self.assertNotIn(
+            'select(.name == "Required current-revision workflow")',
+            classifier,
+        )
+        legacy = required_workflow.split(
+            "  verify-protected-current-revision-evidence:\n", 1
+        )[1].split("  required-current-revision-workflow:\n", 1)[0]
+        aggregate = required_workflow.split(
+            "  required-current-revision-workflow:\n", 1
+        )[1]
+        classification_step = (
+            "- name: Classify protected main trust-root bootstrap handoff"
+        )
+        self.assertEqual(
+            1,
+            required_workflow.count(
+                "    name: Legacy protected current-revision verifier\n"
+            ),
+        )
+        self.assertEqual(
+            1,
+            required_workflow.count(
+                "    name: Required current-revision workflow\n"
+            ),
+        )
+        self.assertEqual(1, legacy.count(classification_step))
+        self.assertNotIn(classification_step, aggregate)
         self.assertIn(
             '" opened " + $head)', classifier
         )
@@ -6022,6 +6662,1206 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             condition,
         )
 
+    def test_s0_inactive_policy_is_canonical_and_has_no_live_authority(
+        self,
+    ) -> None:
+        raw = S0_POLICY.read_text(encoding="utf-8")
+        policy = json.loads(raw)
+        self.assertEqual(
+            json.dumps(policy, sort_keys=True, separators=(",", ":")) + "\n",
+            raw,
+        )
+        self.assertEqual(0, self._run_s0_policy_contract(policy))
+        self.assertEqual("inactive", policy["state"])
+        self.assertEqual(0, policy["policy_epoch"])
+        self.assertEqual([], policy["allowed_principals"])
+        for field in (
+            "authorization_manifest_sha256",
+            "expires_at",
+            "series_id",
+        ):
+            self.assertIsNone(policy[field])
+        self.assertEqual(
+            "lit.rep120.feature-main-prestage-policy/v2",
+            policy["schema"],
+        )
+        for core_field in (
+            "maximum_unit_count",
+            "ordered_units",
+            "starting_main_tree",
+            "terminal_unit_id",
+        ):
+            self.assertNotIn(core_field, policy)
+            self.assertNotIn(core_field, self._s0_policy_contract())
+        self.assertNotIn("pull_request_number", raw)
+        self.assertNotIn("head_sha", raw)
+        self.assertNotIn("run_id", raw)
+        self.assertEqual(
+            [],
+            re.findall(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", raw),
+        )
+
+    def test_s0_policy_accepts_exact_review_unit_byte_boundaries(self) -> None:
+        policy = self._active_s0_policy()
+        self.assertEqual(0, self._run_s0_policy_contract(policy))
+        self.assertEqual(1, policy["canonical_diff"]["minimum_bytes"])
+        self.assertEqual(199999, policy["canonical_diff"]["maximum_bytes"])
+
+        for field, rejected_bytes in (
+            ("minimum_bytes", 0),
+            ("maximum_bytes", 200000),
+        ):
+            rejected = json.loads(json.dumps(policy))
+            rejected["canonical_diff"][field] = rejected_bytes
+            with self.subTest(rejected_bytes=rejected_bytes):
+                self.assertNotEqual(
+                    0,
+                    self._run_s0_policy_contract(rejected),
+                )
+    def test_s0_policy_rejects_malformed_or_ambiguous_authority(self) -> None:
+        policy = self._active_s0_policy()
+        rejected: list[tuple[str, dict[str, object]]] = []
+
+        unknown = json.loads(json.dumps(policy))
+        unknown["unexpected"] = True
+        rejected.append(("unknown-root-key", unknown))
+
+        missing = json.loads(json.dumps(policy))
+        del missing["series_id"]
+        rejected.append(("missing-root-key", missing))
+
+        construction_sentinel = json.loads(json.dumps(policy))
+        construction_sentinel["authorization_manifest_sha256"] = "0" * 64
+        rejected.append(("construction-sentinel-at-runtime", construction_sentinel))
+
+        malformed_digest = json.loads(json.dumps(policy))
+        malformed_digest["authorization_manifest_sha256"] = "A" * 64
+        rejected.append(("malformed-core-digest", malformed_digest))
+
+        malformed_expiry = json.loads(json.dumps(policy))
+        malformed_expiry["expires_at"] = "2099-12-31"
+        rejected.append(("malformed-expiry", malformed_expiry))
+
+        changed_transitions = json.loads(json.dumps(policy))
+        changed_transitions["transitions"].reverse()
+        rejected.append(("changed-transitions", changed_transitions))
+
+        unsafe_prefix = json.loads(json.dumps(policy))
+        unsafe_prefix["target"]["head_prefix"] = "feature/"
+        rejected.append(("changed-head-prefix", unsafe_prefix))
+
+        duplicated_principal = json.loads(json.dumps(policy))
+        duplicated_principal["allowed_principals"].append(
+            dict(duplicated_principal["allowed_principals"][0])
+        )
+        rejected.append(("duplicate-principal", duplicated_principal))
+
+        duplicated_user_id = json.loads(json.dumps(policy))
+        second_principal = dict(duplicated_user_id["allowed_principals"][0])
+        second_principal["login"] = "another-user"
+        duplicated_user_id["allowed_principals"].append(second_principal)
+        rejected.append(("duplicate-user-id", duplicated_user_id))
+
+        raw_self_hash = json.loads(json.dumps(policy))
+        raw_self_hash["raw_policy_blob"] = "b" * 40
+        rejected.append(("raw-policy-self-hash", raw_self_hash))
+
+        mutual_reference = json.loads(json.dumps(policy))
+        mutual_reference["authorization_manifest"] = {
+            "active_policy_blob": "c" * 40
+        }
+        rejected.append(("mutual-reference-envelope", mutual_reference))
+
+        inactive_with_authority = json.loads(S0_POLICY.read_text(encoding="utf-8"))
+        inactive_with_authority["authorization_manifest_sha256"] = "a" * 64
+        rejected.append(("inactive-authority", inactive_with_authority))
+
+        for name, candidate in rejected:
+            with self.subTest(name=name):
+                self.assertNotEqual(
+                    0,
+                    self._run_s0_policy_contract(candidate),
+                )
+
+    def test_s0_duplicate_keys_and_noncanonical_json_fail_before_use(
+        self,
+    ) -> None:
+        canonical = S0_POLICY.read_text(encoding="utf-8")
+        duplicate = canonical.replace(
+            '"state":"inactive"',
+            '"state":"inactive","state":"inactive"',
+            1,
+        )
+        normalized_duplicate = (
+            json.dumps(
+                json.loads(duplicate), sort_keys=True, separators=(",", ":")
+            )
+            + "\n"
+        )
+        self.assertNotEqual(duplicate, normalized_duplicate)
+        noncanonical = (
+            json.dumps(json.loads(canonical), indent=2, sort_keys=True) + "\n"
+        )
+        self.assertNotEqual(canonical, noncanonical)
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        self.assertIn('canonical_policy="$(jq -cS . "${policy_file}")"', deep)
+        self.assertIn('| cmp -s - "${policy_file}"', deep)
+
+    def test_s0_normalized_policy_construction_is_acyclic_and_repeatable(
+        self,
+    ) -> None:
+        active_template = self._active_s0_policy()
+        active_template["authorization_manifest_sha256"] = "0" * 64
+        consumed_template = json.loads(json.dumps(active_template))
+        consumed_template["state"] = "consumed"
+
+        normalized_active = self._normalized_s0_policy_sha256(active_template)
+        normalized_consumed = self._normalized_s0_policy_sha256(
+            consumed_template
+        )
+        self.assertNotEqual(normalized_active, normalized_consumed)
+        self.assertEqual(
+            normalized_active,
+            self._normalized_s0_policy_sha256(active_template),
+        )
+
+        core = {
+            "issue": 564,
+            "normalization_schema": "lit.rep120.policy-normalization/v1",
+            "policy_path_transition": {
+                "destination_state": "consumed",
+                "mode_after": "100644",
+                "mode_before": "100644",
+                "normalization_schema": "lit.rep120.policy-normalization/v1",
+                "normalized_destination_sha256": normalized_consumed,
+                "normalized_source_sha256": normalized_active,
+                "path": ".lit/feature-main-prestage-policy.json",
+                "source_state": "active",
+            },
+            "schema": "lit.rep120.authorization-manifest-core/v1",
+            "series_id": active_template["series_id"],
+        }
+        core_bytes = (
+            json.dumps(core, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        core_sha256 = hashlib.sha256(core_bytes).hexdigest()
+        self.assertNotIn(b"source_blob", core_bytes)
+        self.assertNotIn(b"destination_blob", core_bytes)
+
+        actual_active = json.loads(json.dumps(active_template))
+        actual_consumed = json.loads(json.dumps(consumed_template))
+        actual_active["authorization_manifest_sha256"] = core_sha256
+        actual_consumed["authorization_manifest_sha256"] = core_sha256
+        self.assertEqual(0, self._run_s0_policy_contract(actual_active))
+        self.assertEqual(0, self._run_s0_policy_contract(actual_consumed))
+        self.assertEqual(
+            normalized_active,
+            self._normalized_s0_policy_sha256(actual_active),
+        )
+        self.assertEqual(
+            normalized_consumed,
+            self._normalized_s0_policy_sha256(actual_consumed),
+        )
+        actual_active_bytes = (
+            json.dumps(actual_active, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        actual_consumed_bytes = (
+            json.dumps(actual_consumed, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        active_blob = hashlib.sha1(  # noqa: S324 -- Git object identity
+            f"blob {len(actual_active_bytes)}\0".encode() + actual_active_bytes,
+            usedforsecurity=False,
+        ).hexdigest()
+        consumed_blob = hashlib.sha1(  # noqa: S324 -- Git object identity
+            f"blob {len(actual_consumed_bytes)}\0".encode()
+            + actual_consumed_bytes,
+            usedforsecurity=False,
+        ).hexdigest()
+        self.assertNotEqual(active_blob, consumed_blob)
+        self.assertNotIn(active_blob.encode(), core_bytes)
+        self.assertNotIn(consumed_blob.encode(), core_bytes)
+        self.assertEqual(
+            actual_active_bytes,
+            (
+                json.dumps(
+                    json.loads(actual_active_bytes),
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode(),
+        )
+
+        different_core = json.loads(json.dumps(actual_active))
+        different_core["authorization_manifest_sha256"] = "f" * 64
+        self.assertEqual(
+            normalized_active,
+            self._normalized_s0_policy_sha256(different_core),
+        )
+
+        baseline = self._normalized_s0_policy_sha256(actual_active)
+        changed_values: list[tuple[str, dict[str, object], bool]] = []
+        for name, update in (
+            ("series", {"series_id": "rep120-main-another"}),
+            ("epoch", {"policy_epoch": 2}),
+            ("expiry", {"expires_at": "2099-12-30T23:59:59Z"}),
+            ("state", {"state": "consumed"}),
+        ):
+            changed = json.loads(json.dumps(actual_active))
+            changed.update(update)
+            changed_values.append((name, changed, True))
+        changed_principal = json.loads(json.dumps(actual_active))
+        changed_principal["allowed_principals"][0]["login"] = "another-user"
+        changed_values.append(("principal", changed_principal, True))
+        for name, field, value in (
+            ("schema", "schema", "lit.rep120.feature-main-prestage-policy/v3"),
+            ("issue", "issue", 565),
+            ("transitions", "transitions", ["inactive", "consumed"]),
+        ):
+            changed = json.loads(json.dumps(actual_active))
+            changed[field] = value
+            changed_values.append((name, changed, False))
+        changed_target = json.loads(json.dumps(actual_active))
+        changed_target["target"]["repository_id"] = 1
+        changed_values.append(("target", changed_target, False))
+        changed_diff = json.loads(json.dumps(actual_active))
+        changed_diff["canonical_diff"]["maximum_bytes"] = 200000
+        changed_values.append(("canonical-diff", changed_diff, False))
+        for name, changed, valid in changed_values:
+            with self.subTest(name=name):
+                if valid:
+                    self.assertEqual(0, self._run_s0_policy_contract(changed))
+                else:
+                    self.assertNotEqual(
+                        0,
+                        self._run_s0_policy_contract(changed),
+                    )
+                self.assertNotEqual(
+                    baseline,
+                    self._normalized_s0_policy_sha256(changed),
+                )
+
+    def test_s0_core_v2_accepts_one_closed_acyclic_root_chain(self) -> None:
+        policy, policy_raw, bundle = self._s0_core_v2_fixture()
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw, bundle=bundle
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+        )
+        output = json.loads(result.stdout)
+        core = bundle["records"][0]["record"]
+        coverage = bundle["records"][1]["record"]
+        activation = bundle["records"][2]["record"]
+        self.assertEqual(
+            policy["authorization_manifest_sha256"],
+            output["core_sha256"],
+        )
+        self.assertEqual(
+            self._s0_semantic_sha256(
+                "rep120-post-core-coverage-v1", coverage
+            ),
+            output["coverage_sha256"],
+        )
+        self.assertEqual(
+            self._s0_semantic_sha256(
+                "rep120-protected-activation-receipt-v1", activation
+            ),
+            output["activation_sha256"],
+        )
+        self.assertNotIn(
+            coverage["policy"]["active_blob"],
+            self._canonical_s0_json(core).decode(),
+        )
+        self.assertNotIn(
+            coverage["policy"]["consumed_blob"],
+            self._canonical_s0_json(core).decode(),
+        )
+
+    def test_s0_core_v2_parses_one_bounded_complete_full_tree(self) -> None:
+        _, _, bundle = self._s0_core_v2_fixture()
+        core = bundle["records"][0]["record"]
+        starting_entries = core["logical_trees"][0]["entries"]
+        ordinary_entries = [
+            entry
+            for entry in starting_entries
+            if entry["class"] == "ordinary"
+        ]
+        result = self._run_s0_full_tree_parser(
+            self._s0_full_tree_raw(list(reversed(ordinary_entries)))
+        )
+        self.assertEqual(
+            0,
+            result.returncode,
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+        )
+        parsed = json.loads(result.stdout)
+        self.assertEqual("lit.rep120.full-tree-parse/v1", parsed["schema"])
+        self.assertEqual(core["object_format"], parsed["object_format"])
+        self.assertEqual(ordinary_entries, parsed["entries"])
+        self.assertEqual(
+            [
+                "starting-main",
+                "post-P1",
+                "post-P2",
+                "post-P3",
+                "post-P4-M",
+            ],
+            [tree["id"] for tree in core["logical_trees"]],
+        )
+        for tree in core["logical_trees"]:
+            self.assertEqual(
+                1,
+                sum(
+                    entry["class"] == "normalized-policy"
+                    for entry in tree["entries"]
+                ),
+            )
+            self.assertEqual(
+                1,
+                sum(
+                    entry["path"] == "README.md"
+                    for entry in tree["entries"]
+                ),
+            )
+
+    def test_s0_core_v2_full_tree_parser_rejects_ambiguous_material(
+        self,
+    ) -> None:
+        entry = self._s0_ordinary_entry("safe/file.txt", "fixture-safe")
+        valid = self._s0_full_tree_raw([entry])
+        duplicate = valid + valid
+        cases = {
+            "empty": b"",
+            "truncated": valid[:-1],
+            "double-terminal-NUL": valid + b"\0",
+            "duplicate": duplicate,
+            "multiple-tabs": valid.replace(b"\tsafe/", b"\textra\tsafe/"),
+            "tree-type": valid.replace(b" blob ", b" tree "),
+            "symlink-mode": valid.replace(b"100644", b"120000", 1),
+            "gitlink-mode": valid.replace(b"100644 blob", b"160000 commit", 1),
+            "uppercase-oid": valid.replace(
+                str(entry["blob"]).encode(), b"A" * 40, 1
+            ),
+            "zero-oid": valid.replace(
+                str(entry["blob"]).encode(), b"0" * 40, 1
+            ),
+            "unsafe-path": valid.replace(b"safe/file.txt", b"../file.txt", 1),
+            "logical-policy": valid.replace(
+                b"safe/file.txt",
+                b".lit/feature-main-prestage-policy.json",
+                1,
+            ),
+            "over-byte-bound": b"x" * 199999 + b"\0",
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                self._assert_s0_core_v2_controlled_rejection(
+                    self._run_s0_full_tree_parser(raw)
+                )
+
+    def test_s0_core_v2_complete_tree_and_material_fail_closed(self) -> None:
+        policy, _, baseline = self._s0_core_v2_fixture()
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object], bool]] = []
+
+        missing_unchanged = changed()
+        missing_unchanged["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ] = [
+            entry
+            for entry in missing_unchanged["records"][0]["record"][
+                "logical_trees"
+            ][2]["entries"]
+            if entry["path"] != "README.md"
+        ]
+        candidates.append(("missing-unchanged-leaf", missing_unchanged, True))
+
+        extra_leaf = changed()
+        extra_leaf["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ].append(self._s0_ordinary_entry("extra.txt", "fixture-extra"))
+        extra_leaf["records"][0]["record"]["logical_trees"][2][
+            "entries"
+        ].sort(key=lambda entry: entry["path"])
+        candidates.append(("extra-leaf", extra_leaf, True))
+
+        duplicate_leaf = changed()
+        duplicate_leaf["records"][0]["record"]["logical_trees"][0][
+            "entries"
+        ].append(
+            json.loads(
+                json.dumps(
+                    duplicate_leaf["records"][0]["record"]["logical_trees"][
+                        0
+                    ]["entries"][0]
+                )
+            )
+        )
+        candidates.append(("duplicate-leaf", duplicate_leaf, True))
+
+        path_drift = changed()
+        path_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "candidate_result_main"
+        ]["path"] = "other.txt"
+        candidates.append(("material-path-drift", path_drift, False))
+
+        mode_drift = changed()
+        mode_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "source_develop"
+        ]["mode"] = "100755"
+        candidates.append(("material-mode-drift", mode_drift, False))
+
+        blob_drift = changed()
+        blob_drift["records"][0]["record"]["units"][2]["changes"][0][
+            "source_develop"
+        ]["blob"] = "f" * 40
+        candidates.append(("material-blob-drift", blob_drift, False))
+
+        absent_with_blob = changed()
+        absent_with_blob["records"][0]["record"]["units"][0]["changes"][0][
+            "base_main"
+        ]["blob"] = "e" * 40
+        candidates.append(("ambiguous-absence", absent_with_blob, False))
+
+        required_deletion = changed()
+        required_core = required_deletion["records"][0]["record"]
+        required_change = required_core["units"][1]["changes"][0]
+        required_path = required_change["path"]
+        absent_required = self._s0_absent_ordinary_entry(required_path)
+        required_change["source_develop"] = absent_required
+        required_change["candidate_result_main"] = absent_required
+        for tree in required_core["logical_trees"][2:]:
+            tree["entries"] = [
+                entry
+                for entry in tree["entries"]
+                if entry["path"] != required_path
+            ]
+        candidates.append(("required-result-deletion", required_deletion, True))
+
+        wrong_policy_class = changed()
+        final_entries = wrong_policy_class["records"][0]["record"][
+            "logical_trees"
+        ][4]["entries"]
+        policy_index = next(
+            index
+            for index, entry in enumerate(final_entries)
+            if entry["path"] == ".lit/feature-main-prestage-policy.json"
+        )
+        final_entries[policy_index] = self._s0_absent_ordinary_entry(
+            ".lit/feature-main-prestage-policy.json"
+        )
+        candidates.append(("wrong-policy-class", wrong_policy_class, True))
+
+        second_policy_class = changed()
+        second_policy = self._s0_policy_entry("consumed", "d" * 64)
+        second_policy["path"] = ".lit/another-policy.json"
+        second_policy_class["records"][0]["record"]["logical_trees"][4][
+            "entries"
+        ].append(second_policy)
+        second_policy_class["records"][0]["record"]["logical_trees"][4][
+            "entries"
+        ].sort(key=lambda entry: entry["path"])
+        candidates.append(("second-policy-class", second_policy_class, True))
+
+        substituted_tree = changed()
+        substituted_tree["records"][0]["record"]["logical_trees"][1][
+            "logical_tree_sha256"
+        ] = "c" * 64
+        candidates.append(("logical-tree-substitution", substituted_tree, False))
+
+        object_format_drift = changed()
+        object_format_drift["records"][0]["record"]["object_format"][
+            "ordinary_modes"
+        ].append("120000")
+        candidates.append(("object-format-drift", object_format_drift, False))
+
+        for name, candidate, refresh_trees in candidates:
+            with self.subTest(name=name):
+                if refresh_trees:
+                    self._refresh_s0_logical_tree_commitments(candidate)
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, candidate
+                )
+                self._assert_s0_core_v2_controlled_rejection(
+                    self._run_s0_core_v2_verifier(
+                        policy_raw=policy_raw, bundle=sealed
+                    )
+                )
+
+        baseline_starting_tree = self._s0_full_tree_raw(
+            baseline["records"][0]["record"]["logical_trees"][0]["entries"]
+        )
+        omitted_from_every_tree = changed()
+        for tree in omitted_from_every_tree["records"][0]["record"][
+            "logical_trees"
+        ]:
+            tree["entries"] = [
+                entry
+                for entry in tree["entries"]
+                if entry["path"] != "README.md"
+            ]
+        self._refresh_s0_logical_tree_commitments(omitted_from_every_tree)
+        _, omitted_policy_raw, omitted_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, omitted_from_every_tree)
+        )
+        self._assert_s0_core_v2_controlled_rejection(
+            self._run_s0_core_v2_verifier(
+                policy_raw=omitted_policy_raw,
+                bundle=omitted_sealed,
+                starting_tree_raw=baseline_starting_tree,
+            )
+        )
+
+    def test_s0_core_v2_rejects_unsafe_paths_after_full_reseal(self) -> None:
+        rejected_paths = (
+            "",
+            ".",
+            "..",
+            "foo/.",
+            "foo/..",
+            "foo/./bar",
+            "foo/../bar",
+            "/absolute",
+            "foo//bar",
+            ".git",
+            ".Git",
+            ".GIT",
+            ".git/config",
+            "foo/.git",
+            "foo/.gIt/config",
+        )
+        for path in rejected_paths:
+            with self.subTest(path=path):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                self._replace_s0_p3_path(bundle, path)
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self._assert_s0_core_v2_controlled_rejection(result)
+
+        for path in (
+            "safe/file.txt",
+            "foo/bar",
+            ".github/workflows/safe.yml",
+            ".lit/safe.json",
+            "foo/.gitignore",
+            "foo/git",
+        ):
+            with self.subTest(safe_path=path):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                self._replace_s0_p3_path(bundle, path)
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    f"path={path!r}; stderr={result.stderr!r}",
+                )
+
+    def test_s0_core_v2_rejects_mixed_path_shapes_without_traceback(
+        self,
+    ) -> None:
+        for paths in (
+            ["safe/file.txt", 1],
+            [{"x": "y"}],
+            [["nested"]],
+        ):
+            with self.subTest(paths=paths):
+                policy, _, bundle = self._s0_core_v2_fixture()
+                bundle["records"][0]["record"]["units"][2]["paths"] = paths
+                _, policy_raw, sealed = self._reseal_s0_core_v2_fixture(
+                    policy, bundle
+                )
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=sealed
+                )
+                self._assert_s0_core_v2_controlled_rejection(result)
+
+    def test_s0_core_v2_reserves_zero_digest_for_normalization_only(
+        self,
+    ) -> None:
+        zero64 = "0" * 64
+        policy, policy_raw, baseline = self._s0_core_v2_fixture()
+        self.assertEqual(
+            zero64,
+            baseline["records"][0]["record"]["normalization"]["sentinel"],
+        )
+        accepted = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw, bundle=baseline
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+
+        zero_review = json.loads(json.dumps(baseline))
+        zero_review["records"][0]["record"]["units"][2][
+            "review_sha256"
+        ] = zero64
+        _, zero_review_policy, zero_review_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, zero_review)
+        )
+        review_result = self._run_s0_core_v2_verifier(
+            policy_raw=zero_review_policy, bundle=zero_review_sealed
+        )
+        self._assert_s0_core_v2_controlled_rejection(review_result)
+        self.assertEqual(
+            zero64,
+            zero_review_sealed["records"][1]["record"]["units"][2][
+                "diff_sha256"
+            ],
+        )
+
+        zero_activation = json.loads(json.dumps(baseline))
+        zero_activation["records"][1]["record"]["activation"][
+            "diff_sha256"
+        ] = zero64
+        _, zero_activation_policy, zero_activation_sealed = (
+            self._reseal_s0_core_v2_fixture(policy, zero_activation)
+        )
+        activation_result = self._run_s0_core_v2_verifier(
+            policy_raw=zero_activation_policy, bundle=zero_activation_sealed
+        )
+        self._assert_s0_core_v2_controlled_rejection(activation_result)
+        self.assertEqual(
+            zero64,
+            zero_activation_sealed["records"][2]["record"]["diff"][
+                "diff_sha256"
+            ],
+        )
+        self.assertIn(
+            'return sha256_identity(result, "derived semantic digest")',
+            self._s0_core_v2_verifier(),
+        )
+
+    def test_s0_core_v2_strict_json_and_default_deny_hostile_inputs(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        canonical_bundle = self._canonical_s0_json(bundle)
+        duplicate = canonical_bundle.replace(
+            b'"issue":564', b'"issue":564,"issue":564', 1
+        )
+        pretty = (
+            json.dumps(bundle, indent=2, sort_keys=True) + "\n"
+        ).encode()
+        unknown = json.loads(json.dumps(bundle))
+        unknown["records"][0]["record"]["unexpected"] = True
+        inactive_raw = S0_POLICY.read_bytes()
+        malformed_principal = json.loads(policy_raw)
+        malformed_principal["allowed_principals"][0]["login"] = "-unsafe"
+        cases = (
+            (
+                "recursive-duplicate-key",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw,
+                    bundle=bundle,
+                    bundle_raw=duplicate,
+                ),
+            ),
+            (
+                "noncanonical-root",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw,
+                    bundle=bundle,
+                    bundle_raw=pretty,
+                ),
+            ),
+            (
+                "unknown-Core-key",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=unknown
+                ),
+            ),
+            (
+                "inactive-policy",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=inactive_raw, bundle=bundle
+                ),
+            ),
+            (
+                "malformed-principal",
+                self._run_s0_core_v2_verifier(
+                    policy_raw=self._canonical_s0_json(malformed_principal),
+                    bundle=bundle,
+                ),
+            ),
+        )
+        for name, result in cases:
+            with self.subTest(name=name):
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("rejected", result.stderr)
+
+        _, expired_raw, expired_bundle = self._s0_core_v2_fixture(
+            expires_at="2098-12-31T23:59:59Z"
+        )
+        expired = self._run_s0_core_v2_verifier(
+            policy_raw=expired_raw,
+            bundle=expired_bundle,
+            observed_at="2099-01-01T00:00:00Z",
+        )
+        self.assertNotEqual(0, expired.returncode)
+        self.assertIn("expired", expired.stderr)
+
+    def test_s0_core_v2_rejects_huge_json_integer_without_traceback(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        huge_integer = self._canonical_s0_json(bundle).replace(
+            b'"issue":564', b'"issue":' + (b"9" * 5000), 1
+        )
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw,
+            bundle=bundle,
+            bundle_raw=huge_integer,
+        )
+        self._assert_s0_core_v2_controlled_rejection(result)
+
+    def test_s0_core_v2_rejects_deep_json_nesting_without_traceback(
+        self,
+    ) -> None:
+        _, policy_raw, bundle = self._s0_core_v2_fixture()
+        deeply_nested = (b"[" * 2000) + b"0" + (b"]" * 2000) + b"\n"
+        result = self._run_s0_core_v2_verifier(
+            policy_raw=policy_raw,
+            bundle=bundle,
+            bundle_raw=deeply_nested,
+        )
+        self._assert_s0_core_v2_controlled_rejection(result)
+
+    def test_s0_core_v2_rejects_alternate_or_conflicting_roots(self) -> None:
+        policy, policy_raw, baseline = self._s0_core_v2_fixture()
+        baseline_starting_tree = self._s0_full_tree_raw(
+            baseline["records"][0]["record"]["logical_trees"][0]["entries"]
+        )
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object], bytes]] = []
+        reordered = changed()
+        reordered["records"][0], reordered["records"][1] = (
+            reordered["records"][1],
+            reordered["records"][0],
+        )
+        candidates.append(("reordered-roots", reordered, policy_raw))
+        duplicate = changed()
+        duplicate["records"].append(json.loads(json.dumps(duplicate["records"][1])))
+        candidates.append(("duplicate-Coverage", duplicate, policy_raw))
+        alternate_core = changed()
+        alternate_core["records"][0]["record"]["units"][2][
+            "review_sha256"
+        ] = "f" * 64
+        candidates.append(("alternate-Core", alternate_core, policy_raw))
+        coverage_core = changed()
+        coverage_core["records"][1]["record"]["core_sha256"] = "e" * 64
+        candidates.append(("Coverage-Core-conflict", coverage_core, policy_raw))
+        coverage_predecessor = changed()
+        coverage_predecessor["records"][1]["record"][
+            "previous_record_sha256"
+        ] = "d" * 64
+        candidates.append(
+            ("Coverage-predecessor-conflict", coverage_predecessor, policy_raw)
+        )
+        activation_coverage = changed()
+        activation_coverage["records"][2]["record"][
+            "coverage_sha256"
+        ] = "c" * 64
+        candidates.append(
+            ("Activation-Coverage-conflict", activation_coverage, policy_raw)
+        )
+        activation_predecessor = changed()
+        activation_predecessor["records"][2]["record"][
+            "previous_record_sha256"
+        ] = "b" * 64
+        candidates.append(
+            (
+                "Activation-predecessor-conflict",
+                activation_predecessor,
+                policy_raw,
+            )
+        )
+        different_policy = json.loads(json.dumps(policy))
+        different_policy["authorization_manifest_sha256"] = "9" * 64
+        candidates.append(
+            (
+                "policy-Core-substitution",
+                changed(),
+                self._canonical_s0_json(different_policy),
+            )
+        )
+        for name, candidate, candidate_policy in candidates:
+            with self.subTest(name=name):
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=candidate_policy,
+                    bundle=candidate,
+                    starting_tree_raw=baseline_starting_tree,
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_s0_core_v2_topology_mapping_and_merge_fail_closed(self) -> None:
+        _, policy_raw, baseline = self._s0_core_v2_fixture()
+
+        def changed() -> dict[str, object]:
+            return json.loads(json.dumps(baseline))
+
+        candidates: list[tuple[str, dict[str, object]]] = []
+        gap = changed()
+        gap["records"][1]["record"]["units"][2]["paths"] = []
+        candidates.append(("Coverage-gap", gap))
+        overlap = changed()
+        overlap["records"][0]["record"]["units"][2]["paths"].append(
+            overlap["records"][0]["record"]["units"][0]["paths"][0]
+        )
+        overlap["records"][0]["record"]["units"][2]["paths"].sort()
+        candidates.append(("Core-overlap", overlap))
+        reordered = changed()
+        reordered["records"][0]["record"]["units"].reverse()
+        candidates.append(("unit-reorder", reordered))
+        wrong_p4 = changed()
+        wrong_p4["records"][0]["record"]["units"][3]["paths"].remove(
+            ".lit/feature-main-prestage-policy.json"
+        )
+        candidates.append(("wrong-P4-policy-topology", wrong_p4))
+        extra_activation_path = changed()
+        extra_activation_path["records"][1]["record"]["activation"][
+            "paths"
+        ].append("README.md")
+        candidates.append(("activation-extra-path", extra_activation_path))
+        bypass = changed()
+        bypass["records"][2]["record"]["merge"]["bypass_used"] = True
+        candidates.append(("activation-bypass", bypass))
+        unsigned = changed()
+        unsigned["records"][2]["record"]["merge"][
+            "signature_verified"
+        ] = False
+        candidates.append(("activation-unsigned", unsigned))
+        parent_drift = changed()
+        parent_drift["records"][2]["record"]["merge"]["parents"].reverse()
+        candidates.append(("activation-parent-drift", parent_drift))
+        for name, candidate in candidates:
+            with self.subTest(name=name):
+                result = self._run_s0_core_v2_verifier(
+                    policy_raw=policy_raw, bundle=candidate
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_s0_core_v2_enforces_exact_review_byte_interval(self) -> None:
+        for value, accepted in (
+            (1, True),
+            (199999, True),
+            (0, False),
+            (200000, False),
+        ):
+            _, policy_raw, bundle = self._s0_core_v2_fixture(
+                review_bytes={"P3": value}
+            )
+            result = self._run_s0_core_v2_verifier(
+                policy_raw=policy_raw, bundle=bundle
+            )
+            with self.subTest(value=value):
+                self.assertEqual(accepted, result.returncode == 0)
+
+    def test_s0_inactive_consumed_expired_and_replay_authority_fail_closed(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        consumed = self._active_s0_policy()
+        consumed["state"] = "consumed"
+        self.assertEqual(0, self._run_s0_policy_contract(consumed))
+        self.assertIn(
+            'test "$(jq -er .state "${policy_file}")" = active', deep
+        )
+        self.assertIn('test "${expires_epoch}" -gt "${now_epoch}"', deep)
+        self.assertIn(
+            "normalization_sentinel='" + ("0" * 64) + "'",
+            deep,
+        )
+        self.assertIn(
+            ".authorization_manifest_sha256 = $sentinel",
+            deep,
+        )
+        self.assertIn(
+            "S0 sealed Core-v2 transport is intentionally not configured.",
+            deep,
+        )
+        self.assertIn("rep120-normalized-policy-v1", deep)
+        self.assertNotIn(
+            "S0 Authorization Manifest Core verifier is not materialized.",
+            deep,
+        )
+        self.assertNotIn("inactive -> active", workflow)
+        self.assertNotIn("consumed -> active", workflow)
+
+    def test_s0_route_and_capabilities_are_isolated(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        s0 = self._s0_workflow()
+        route = self._s0_job(
+            "route-protected-current-revision",
+            "reserve-s0-feature-main-prestage",
+        )
+        reserve = self._s0_job(
+            "reserve-s0-feature-main-prestage",
+            "verify-s0-feature-main-prestage",
+        )
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        finalizer = self._s0_job(
+            "finalize-s0-feature-main-prestage",
+            "verify-protected-current-revision-evidence",
+        )
+
+        self.assertIn("permissions: {}", route)
+        self.assertIn("checks: write", reserve)
+        self.assertNotIn("actions: write", reserve)
+        self.assertNotIn("contents: write", reserve)
+        self.assertNotIn("issues: write", reserve)
+        self.assertNotIn("pull-requests: write", reserve)
+        self.assertIn("checks: read", deep)
+        self.assertNotIn("checks: write", deep)
+        self.assertNotIn("actions: write", deep)
+        self.assertNotIn("contents: write", deep)
+        self.assertNotIn("--method POST", deep)
+        self.assertNotIn("--method PATCH", deep)
+        self.assertIn("checks: write", finalizer)
+        self.assertEqual(1, finalizer.count("--method PATCH"))
+        self.assertNotIn("--method POST", finalizer)
+        self.assertNotIn("secrets.", s0)
+        self.assertNotIn("environment:", s0)
+        self.assertNotIn("actions/create-github-app-token", s0)
+        one_off_shas = [
+            value
+            for value in re.findall(
+                r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", s0
+            )
+            if value != "0" * 40
+        ]
+        self.assertEqual([], one_off_shas)
+        self.assertIn(
+            "needs['route-protected-current-revision'].outputs."
+            "s0_candidate != 'true'",
+            workflow,
+        )
+
+    def test_s0_router_has_a_closed_five_event_matrix(self) -> None:
+        route = self._s0_job(
+            "route-protected-current-revision",
+            "reserve-s0-feature-main-prestage",
+        )
+        reserve = self._s0_job(
+            "reserve-s0-feature-main-prestage",
+            "verify-s0-feature-main-prestage",
+        )
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        accepted = '[[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]'
+        self.assertIn("EVENT_ACTION: ${{ github.event.action }}", route)
+        self.assertIn(
+            '[[ "${EVENT_ACTION}" =~ '
+            "^(opened|synchronize|reopened|ready_for_review|edited)$ ]]",
+            route,
+        )
+        self.assertIn(accepted, route)
+        self.assertIn(accepted, reserve)
+        self.assertIn(accepted, deep)
+
+        script = textwrap.dedent(route.split("        run: |\n", 1)[1])
+        bash = self._test_tool("bash")
+
+        def route_result(
+            action: str | None,
+            repository: str = "lightning-it/.github",
+            base_ref: str = "main",
+            head_ref: str = "prestage/p1",
+        ) -> tuple[int, dict[str, str], str]:
+            with tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "github-output"
+                environment = {
+                    "BASE_REF": base_ref,
+                    "GITHUB_OUTPUT": str(output),
+                    "HEAD_REF": head_ref,
+                    "PATH": TEST_TOOL_PATH,
+                    "REPOSITORY": repository,
+                }
+                if action is not None:
+                    environment["EVENT_ACTION"] = action
+                result = subprocess.run(
+                    [bash, "-c", script],
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                values = {}
+                if output.exists():
+                    values = dict(
+                        line.split("=", 1)
+                        for line in output.read_text(encoding="utf-8").splitlines()
+                    )
+                return result.returncode, values, result.stderr
+
+        for action in ("opened", "synchronize", "reopened"):
+            with self.subTest(action=action):
+                returncode, values, _ = route_result(action)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "true", "s0_prestage": "true"},
+                    values,
+                )
+        for action in ("ready_for_review", "edited"):
+            with self.subTest(action=action):
+                returncode, values, _ = route_result(action)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "true", "s0_prestage": "false"},
+                    values,
+                )
+        for candidate in (
+            ("opened", "fork/.github", "main", "prestage/p1"),
+            ("opened", "lightning-it/.github", "develop", "prestage/p1"),
+            ("opened", "lightning-it/.github", "main", "feature/p1"),
+        ):
+            with self.subTest(candidate=candidate):
+                returncode, values, _ = route_result(*candidate)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "false", "s0_prestage": "false"},
+                    values,
+                )
+        for action in (None, "closed", "READY_FOR_REVIEW"):
+            with self.subTest(invalid_action=action):
+                returncode, _, _ = route_result(action)
+                self.assertNotEqual(0, returncode)
+
+    def test_s0_final_gate_has_a_closed_router_truth_table(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        gate = workflow.split(
+            "      - name: Enforce exactly one terminal verification route\n", 1
+        )[1].split("        run: |\n", 1)[1]
+        script = textwrap.dedent(gate)
+        bash = self._test_tool("bash")
+
+        def gate_result(**values: str) -> tuple[int, str]:
+            environment = {"PATH": TEST_TOOL_PATH, **values}
+            result = subprocess.run(
+                [bash, "-c", script],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode, result.stderr
+
+        direct = {
+            "FINALIZE_RESULT": "success",
+            "LEGACY_RESULT": "skipped",
+            "RESERVE_RESULT": "success",
+            "ROUTE_RESULT": "success",
+            "S0_CANDIDATE": "true",
+            "S0_PRESTAGE": "true",
+            "VERIFY_RESULT": "success",
+        }
+        unsupported_candidate = {
+            **direct,
+            "FINALIZE_RESULT": "skipped",
+            "RESERVE_RESULT": "skipped",
+            "S0_PRESTAGE": "false",
+            "VERIFY_RESULT": "skipped",
+        }
+        non_candidate = {
+            **unsupported_candidate,
+            "LEGACY_RESULT": "success",
+            "S0_CANDIDATE": "false",
+        }
+        self.assertEqual(0, gate_result(**direct)[0])
+        unsupported_returncode, unsupported_stderr = gate_result(
+            **unsupported_candidate
+        )
+        self.assertNotEqual(0, unsupported_returncode)
+        self.assertIn(
+            "S0 candidate action requires the separately authorized listener.",
+            unsupported_stderr,
+        )
+        self.assertEqual(0, gate_result(**non_candidate)[0])
+        for contradiction in (
+            {**direct, "S0_CANDIDATE": "false"},
+            {**unsupported_candidate, "LEGACY_RESULT": "success"},
+            {**non_candidate, "LEGACY_RESULT": "skipped"},
+            {**direct, "ROUTE_RESULT": "failure"},
+        ):
+            with self.subTest(contradiction=contradiction):
+                self.assertNotEqual(0, gate_result(**contradiction)[0])
+
+    def test_s0_binds_policy_before_inactive_core_v2_transport_block(
+        self,
+    ) -> None:
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        for fragment in (
+            "@refs/heads/develop",
+            'and .protected == true and .commit.sha == $sha',
+            'contents/${policy_path}?ref=${WORKFLOW_SHA}',
+            'test "$(git hash-object "${policy_file}")" = "${policy_blob}"',
+            'canonical_policy="$(jq -cS . "${policy_file}")"',
+            'test "$(jq -er .state "${policy_file}")" = active',
+            ".authorization_manifest_sha256 = $sentinel",
+            "normalized_policy_sha256=",
+            "rep120-authorization-manifest-core-v2",
+            "rep120-post-core-coverage-v1",
+            "rep120-protected-activation-receipt-v1",
+            "S0 sealed Core-v2 transport is intentionally not configured.",
+        ):
+            self.assertIn(fragment, deep)
+        p0_block = deep.index(
+            "S0 sealed Core-v2 transport is intentionally not configured."
+        )
+        self.assertGreater(p0_block, deep.index("normalized_policy_sha256="))
+        self.assertIn("ordered_units", deep)
+        self.assertIn("starting_main", deep)
+        self.assertNotIn("merge-base --is-ancestor", deep)
+        self.assertNotIn("rep120-s0-prestage-manifest:v1", deep)
+        self.assertNotIn("id-token: write", deep)
+        self.assertNotIn("attestations: write", deep)
+
+    def test_s0_final_gate_requires_one_successful_route(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        gate = workflow.split("  required-current-revision-workflow:\n", 1)[1]
+        self.assertIn("name: Required current-revision workflow", gate)
+        self.assertIn("if: always()", gate)
+        self.assertIn("permissions: {}", gate)
+        self.assertIn('if [ "${S0_PRESTAGE}" = true ]; then', gate)
+        for result in (
+            "RESERVE_RESULT",
+            "VERIFY_RESULT",
+            "FINALIZE_RESULT",
+        ):
+            self.assertIn(f'test "${{{result}}}" = success', gate)
+        self.assertIn('test "${LEGACY_RESULT}" = skipped', gate)
+        self.assertIn('test "${LEGACY_RESULT}" = success', gate)
+
 
     def test_supplementary_catchup_v5_successor_authorization_is_one_exact_tuple(
         self,
@@ -6029,7 +7869,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         authorization = workflow.split(
             "  authorize-supplementary-catchup-v5-successor:\n", 1
-        )[1].split("  verify-protected-current-revision-evidence:\n", 1)[0]
+        )[1].split("  route-protected-current-revision:\n", 1)[0]
         for fragment in (
             "name: Authorize exact Supplementary catch-up v5 successor",
             "github.event.action == 'opened'",
