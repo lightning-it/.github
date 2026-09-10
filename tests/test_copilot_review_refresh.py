@@ -278,6 +278,46 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ],
         }
 
+    @staticmethod
+    def _protected_jobs(
+        *,
+        attempt: int = 1,
+        required_status: str = "completed",
+        required_conclusion: str | None = "success",
+    ) -> dict[str, object]:
+        run_id = 900
+        head = "b" * 40
+        jobs = [
+            {
+                "id": 901,
+                "name": "Route protected current-revision verification",
+                "run_id": run_id,
+                "head_sha": head,
+                "run_attempt": attempt,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "id": 902,
+                "name": "Authorize exact Supplementary catch-up v5 successor",
+                "run_id": run_id,
+                "head_sha": head,
+                "run_attempt": attempt,
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "id": 903,
+                "name": "Required current-revision workflow",
+                "run_id": run_id,
+                "head_sha": head,
+                "run_attempt": attempt,
+                "status": required_status,
+                "conclusion": required_conclusion,
+            },
+        ]
+        return {"total_count": len(jobs), "jobs": jobs}
+
     def _evaluate_cross_inventory(
         self, runs: list[dict[str, object]]
     ) -> subprocess.CompletedProcess[str]:
@@ -400,6 +440,10 @@ printf 'POST_AUTHORIZED\n'
         reservation_pages: list[dict[str, object]] | None = None,
         deadline_expired: bool = False,
         cross_job: dict[str, object] | None = None,
+        protected: dict[str, object] | None = None,
+        protected_jobs: dict[str, object] | None = None,
+        protected_sequence: list[dict[str, object]] | None = None,
+        protected_jobs_sequence: list[dict[str, object]] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         frozen_neutral = expected_neutral or neutral
         frozen_reservation = expected_reservation or reservation
@@ -421,15 +465,34 @@ printf 'POST_AUTHORIZED\n'
                 "conclusion": "failure",
             }
         )
+        producer = protected or self._protected_run(
+            status="completed", conclusion="success"
+        )
+        producer_jobs = protected_jobs or self._protected_jobs(
+            attempt=int(producer["run_attempt"])
+        )
+        producer_sequence = protected_sequence or [producer]
+        producer_jobs_sequence = protected_jobs_sequence or [producer_jobs]
         script = "\n".join(
             (
                 "set -euo pipefail",
                 self._rerun_shell_function("require_deadline"),
                 self._rerun_shell_function("bounded_gh_api"),
+                self._rerun_shell_function("bounded_sleep"),
                 self._rerun_shell_function("validate_live_pr_snapshot"),
                 self._rerun_shell_function("validate_reservation_snapshot"),
                 self._rerun_shell_function(
                     "load_reservation_inventory_snapshot"
+                ),
+                self._rerun_shell_function("validate_protected_run_binding"),
+                self._rerun_shell_function(
+                    "validate_reservation_producer_jobs"
+                ),
+                self._rerun_shell_function(
+                    "capture_reservation_producer_success"
+                ),
+                self._rerun_shell_function(
+                    "wait_for_stable_reservation_producer_success"
                 ),
                 self._rerun_shell_function("validate_neutral_snapshot"),
                 self._rerun_shell_function("validate_cross_run_binding"),
@@ -446,9 +509,21 @@ printf 'POST_AUTHORIZED\n'
   test "${NEUTRAL_AUTHORIZED}" = true || return 1
   printf '%s\n' "${NEUTRAL}"
 }
+sequence_item() {
+  local index state_file="${1}" values="${2}"
+  index="$(cat "${state_file}")"
+  printf '%s' "$((index + 1))" >"${state_file}"
+  jq -ce --argjson index "${index}" '.[$index] // .[-1]' <<<"${values}"
+}
 read_run_with_retry() {
-  printf 'ORDER:cross_detail\n' >&2
-  printf '%s\n' "${CROSS}"
+  if [ "${1}" = "${run_id}" ]; then
+    printf 'ORDER:protected_detail\n' >&2
+    sequence_item "${PROTECTED_STATE_FILE}" "${PROTECTED_SEQUENCE}"
+  else
+    test "${1}" = "${cross_run_id}" || return 88
+    printf 'ORDER:cross_detail\n' >&2
+    printf '%s\n' "${CROSS}"
+  fi
 }
 load_cross_inventory_with_retry() {
   printf 'ORDER:cross_inventory\n' >&2
@@ -474,11 +549,15 @@ gh() {
   elif [ "${endpoint}" = "repos/${REPOSITORY}/check-runs/${reservation_id}" ]; then
     printf 'ORDER:reservation\n' >&2
     printf '%s\n' "${RESERVATION}"
+  elif [[ "${endpoint}" == "repos/${REPOSITORY}/actions/runs/${run_id}/attempts/"*"/jobs?filter=all&per_page=100" ]]; then
+    printf 'ORDER:protected_jobs\n' >&2
+    sequence_item "${PROTECTED_JOBS_STATE_FILE}" "${PROTECTED_JOBS_SEQUENCE}"
   else
     printf 'unexpected fake gh endpoint: %s\n' "${endpoint}" >&2
     return 88
   fi
-}''',
+}
+sleep() { printf 'ORDER:sleep:%s\n' "${1}" >&2; }''',
                 'if [ "${DEADLINE_EXPIRED}" = true ]; then '
                 "OPERATION_DEADLINE=${SECONDS}; else "
                 "OPERATION_DEADLINE=$((SECONDS + 100)); fi",
@@ -487,66 +566,95 @@ gh() {
             )
         )
         cross_run_id = int(cross["id"])
-        return subprocess.run(
-            [self._test_tool("bash"), "-c", script],
-            text=True,
-            capture_output=True,
-            check=False,
-            env={
-                "PATH": TEST_TOOL_PATH,
-                "GITHUB_API_URL": "https://api.github.example",
-                "GITHUB_SERVER_URL": "https://github.example",
-                "REPOSITORY": "lightning-it/.github",
-                "PR_NUMBER": "554",
-                "EXPECTED_BASE": "a" * 40,
-                "EXPECTED_HEAD": "b" * 40,
-                "author": "litroc",
-                "base_ref": "develop",
-                "head_ref": "fix/final",
-                "cross_job_id": "98563887790",
-                "cross_run_id": str(cross_run_id),
-                "cross_created_at": str(cross["created_at"]),
-                "reservation_id": str(frozen_reservation["id"]),
-                "reservation_url": str(frozen_reservation["details_url"]),
-                "reservation_external_id": str(
-                    frozen_reservation["external_id"]
-                ),
-                "neutral_check_id": str(frozen_neutral["id"]),
-                "neutral_head_sha": "b" * 40,
-                "neutral_details_url": str(frozen_neutral["details_url"]),
-                "neutral_external_id": str(frozen_neutral["external_id"]),
-                "neutral_summary_raw": neutral_summary_raw,
-                "evidence_version": "v6",
-                "producer_id": "77",
-                "producer_url": (
-                    "https://github.example/lightning-it/.github/"
-                    "actions/runs/77"
-                ),
-                "expected_review_path": (
-                    "applicable Copilot or governed automation exemption"
-                ),
-                "controller_sha": "c" * 40,
-                "v4_input_sha256": "",
-                "v4_workflow_sha": "",
-                "LIVE_PR": json.dumps(live_pr, separators=(",", ":")),
-                "RESERVATION": json.dumps(
-                    reservation, separators=(",", ":")
-                ),
-                "CROSS": json.dumps(cross, separators=(",", ":")),
-                "CROSS_JOB": json.dumps(
-                    selected_job, separators=(",", ":")
-                ),
-                "INVENTORY": json.dumps(
-                    inventory, separators=(",", ":")
-                ),
-                "NEUTRAL": json.dumps(neutral, separators=(",", ":")),
-                "NEUTRAL_AUTHORIZED": str(neutral_authorized).lower(),
-                "RESERVATION_PAGES": json.dumps(
-                    inventory_pages, separators=(",", ":")
-                ),
-                "DEADLINE_EXPIRED": str(deadline_expired).lower(),
-            },
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            producer_state = Path(temp_dir) / "producer-state"
+            producer_jobs_state = Path(temp_dir) / "producer-jobs-state"
+            producer_state.write_text("0", encoding="utf-8")
+            producer_jobs_state.write_text("0", encoding="utf-8")
+            result = subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "GITHUB_API_URL": "https://api.github.example",
+                    "GITHUB_SERVER_URL": "https://github.example",
+                    "REPOSITORY": "lightning-it/.github",
+                    "PR_NUMBER": "554",
+                    "EXPECTED_BASE": "a" * 40,
+                    "EXPECTED_HEAD": "b" * 40,
+                    "author": "litroc",
+                    "base_ref": "develop",
+                    "head_ref": "fix/final",
+                    "run_id": "900",
+                    "verifier_run_url": (
+                        "https://github.example/lightning-it/.github/"
+                        "actions/runs/900"
+                    ),
+                    "cross_job_id": "98563887790",
+                    "cross_run_id": str(cross_run_id),
+                    "cross_created_at": str(cross["created_at"]),
+                    "reservation_id": str(frozen_reservation["id"]),
+                    "reservation_url": str(frozen_reservation["details_url"]),
+                    "reservation_external_id": str(
+                        frozen_reservation["external_id"]
+                    ),
+                    "neutral_check_id": str(frozen_neutral["id"]),
+                    "neutral_head_sha": "b" * 40,
+                    "neutral_details_url": str(
+                        frozen_neutral["details_url"]
+                    ),
+                    "neutral_external_id": str(
+                        frozen_neutral["external_id"]
+                    ),
+                    "neutral_summary_raw": neutral_summary_raw,
+                    "evidence_version": "v6",
+                    "producer_id": "77",
+                    "producer_url": (
+                        "https://github.example/lightning-it/.github/"
+                        "actions/runs/77"
+                    ),
+                    "expected_review_path": (
+                        "applicable Copilot or governed automation exemption"
+                    ),
+                    "controller_sha": "c" * 40,
+                    "v4_input_sha256": "",
+                    "v4_workflow_sha": "",
+                    "LIVE_PR": json.dumps(live_pr, separators=(",", ":")),
+                    "RESERVATION": json.dumps(
+                        reservation, separators=(",", ":")
+                    ),
+                    "CROSS": json.dumps(cross, separators=(",", ":")),
+                    "PROTECTED": json.dumps(
+                        producer, separators=(",", ":")
+                    ),
+                    "PROTECTED_JOBS": json.dumps(
+                        producer_jobs, separators=(",", ":")
+                    ),
+                    "PROTECTED_SEQUENCE": json.dumps(
+                        producer_sequence, separators=(",", ":")
+                    ),
+                    "PROTECTED_JOBS_SEQUENCE": json.dumps(
+                        producer_jobs_sequence, separators=(",", ":")
+                    ),
+                    "PROTECTED_STATE_FILE": str(producer_state),
+                    "PROTECTED_JOBS_STATE_FILE": str(producer_jobs_state),
+                    "CROSS_JOB": json.dumps(
+                        selected_job, separators=(",", ":")
+                    ),
+                    "INVENTORY": json.dumps(
+                        inventory, separators=(",", ":")
+                    ),
+                    "NEUTRAL": json.dumps(neutral, separators=(",", ":")),
+                    "NEUTRAL_AUTHORIZED": str(neutral_authorized).lower(),
+                    "RESERVATION_PAGES": json.dumps(
+                        inventory_pages, separators=(",", ":")
+                    ),
+                    "DEADLINE_EXPIRED": str(deadline_expired).lower(),
+                },
+            )
+        return result
 
     def _run_protected_rerun_authorization(
         self,
@@ -1994,21 +2102,166 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             neutral=neutral,
             neutral_summary_raw=neutral_summary_raw,
             reservation=reservation,
+            protected=self._protected_run(
+                attempt=2, status="completed", conclusion="success"
+            ),
+            protected_jobs=self._protected_jobs(attempt=2),
         )
         self.assertEqual(0, accepted.returncode, accepted.stderr)
         self.assertEqual("POST_AUTHORIZED\n", accepted.stdout)
         ordered_reads = (
+            "ORDER:reservation_inventory",
+            "ORDER:protected_detail",
+            "ORDER:protected_jobs",
             "ORDER:neutral",
             "ORDER:pr",
             "ORDER:reservation",
             "ORDER:cross_detail",
             "ORDER:cross_job",
-            "ORDER:reservation_inventory",
             "ORDER:cross_inventory",
             "ORDER:POST",
         )
-        observed_order = [accepted.stderr.index(item) for item in ordered_reads]
+        stderr_lines = accepted.stderr.splitlines()
+        observed_order = [stderr_lines.index(item) for item in ordered_reads]
         self.assertEqual(sorted(observed_order), observed_order)
+        self.assertEqual(3, stderr_lines.count("ORDER:protected_detail"))
+        self.assertEqual(3, stderr_lines.count("ORDER:protected_jobs"))
+        self.assertGreater(
+            len(stderr_lines)
+            - 1
+            - stderr_lines[::-1].index("ORDER:protected_detail"),
+            stderr_lines.index("ORDER:cross_inventory"),
+        )
+        self.assertGreater(
+            stderr_lines.index("ORDER:POST"),
+            len(stderr_lines)
+            - 1
+            - stderr_lines[::-1].index("ORDER:protected_jobs"),
+        )
+        last_reservation_inventory = (
+            len(stderr_lines)
+            - 1
+            - stderr_lines[::-1].index("ORDER:reservation_inventory")
+        )
+        self.assertGreater(
+            last_reservation_inventory,
+            stderr_lines.index("ORDER:cross_inventory"),
+        )
+        self.assertLess(
+            last_reservation_inventory, stderr_lines.index("ORDER:POST")
+        )
+
+        producer_success = self._protected_run(
+            status="completed", conclusion="success"
+        )
+        producer_jobs = self._protected_jobs()
+        converged = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[
+                self._protected_run(status="in_progress", conclusion=None),
+                producer_success,
+                producer_success,
+                producer_success,
+            ],
+            protected_jobs_sequence=[producer_jobs] * 3,
+        )
+        self.assertEqual(0, converged.returncode, converged.stderr)
+        self.assertIn("ORDER:POST", converged.stderr)
+        self.assertEqual(
+            4, converged.stderr.splitlines().count("ORDER:protected_detail")
+        )
+
+        def reverse_key_order(value: object) -> object:
+            if isinstance(value, dict):
+                return {
+                    key: reverse_key_order(item)
+                    for key, item in reversed(value.items())
+                }
+            if isinstance(value, list):
+                return [reverse_key_order(item) for item in value]
+            return value
+
+        reordered_producer = reverse_key_order(producer_success)
+        self.assertIsInstance(reordered_producer, dict)
+        key_order_converged = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[producer_success, reordered_producer] * 30,
+            protected_jobs_sequence=[producer_jobs] * 3,
+        )
+        self.assertEqual(
+            0, key_order_converged.returncode, key_order_converged.stderr
+        )
+        key_order_lines = key_order_converged.stderr.splitlines()
+        self.assertEqual(3, key_order_lines.count("ORDER:protected_detail"))
+        self.assertEqual(3, key_order_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(1, key_order_lines.count("ORDER:sleep:2"))
+        self.assertEqual(1, key_order_lines.count("ORDER:POST"))
+        self.assertIn("jq -Scn", RERUN_WORKFLOW.read_text(encoding="utf-8"))
+
+        changed_success_jobs = json.loads(json.dumps(producer_jobs))
+        changed_success_jobs["jobs"][0]["id"] = 9900
+        snapshot_converged = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[producer_success],
+            protected_jobs_sequence=[producer_jobs, changed_success_jobs],
+        )
+        self.assertEqual(
+            0, snapshot_converged.returncode, snapshot_converged.stderr
+        )
+        snapshot_lines = snapshot_converged.stderr.splitlines()
+        job_reads = [
+            index
+            for index, line in enumerate(snapshot_lines)
+            if line == "ORDER:protected_jobs"
+        ]
+        sleeps = [
+            index
+            for index, line in enumerate(snapshot_lines)
+            if line == "ORDER:sleep:2"
+        ]
+        self.assertEqual(5, len(job_reads))
+        self.assertEqual(3, len(sleeps))
+        self.assertLess(job_reads[0], sleeps[0])
+        self.assertLess(sleeps[0], job_reads[1])
+        self.assertLess(job_reads[1], sleeps[1])
+        self.assertLess(sleeps[1], job_reads[2])
+        self.assertLess(job_reads[2], sleeps[2])
+        self.assertLess(sleeps[2], job_reads[3])
+        self.assertEqual(1, snapshot_lines.count("ORDER:POST"))
+
+        final_drift_jobs = json.loads(json.dumps(producer_jobs))
+        final_drift_jobs["jobs"][0]["id"] = 9901
+        final_drift = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[producer_success] * 3,
+            protected_jobs_sequence=[
+                producer_jobs,
+                producer_jobs,
+                final_drift_jobs,
+            ],
+        )
+        self.assertNotEqual(0, final_drift.returncode, final_drift.stdout)
+        self.assertNotIn("ORDER:POST", final_drift.stderr)
 
         cancelled = json.loads(json.dumps(cross))
         cancelled["conclusion"] = "cancelled"
@@ -2042,6 +2295,31 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         }
         wrong_cross_job_run = {**bound_cross_job, "run_id": 203}
         wrong_cross_job_head = {**bound_cross_job, "head_sha": "c" * 40}
+        failed_producer = self._protected_run(
+            status="completed", conclusion="failure"
+        )
+        excess_attempt_producer = self._protected_run(
+            attempt=3, status="completed", conclusion="success"
+        )
+        pending_producer = self._protected_run(
+            status="in_progress", conclusion=None
+        )
+        pending_required_jobs = self._protected_jobs(
+            required_status="in_progress", required_conclusion=None
+        )
+        failed_required_jobs = self._protected_jobs(
+            required_status="completed", required_conclusion="failure"
+        )
+        wrong_run_jobs = self._protected_jobs()
+        wrong_run_jobs["jobs"][0]["run_id"] = 901  # type: ignore[index]
+        duplicate_required_jobs = self._protected_jobs()
+        duplicate_required_jobs["jobs"].append(  # type: ignore[union-attr]
+            {
+                **duplicate_required_jobs["jobs"][2],  # type: ignore[index]
+                "id": 904,
+            }
+        )
+        duplicate_required_jobs["total_count"] = 4
         newer = self._cross_run(
             303,
             "2026-09-05T12:00:00Z",
@@ -2141,6 +2419,62 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 "reservation": reservation,
             },
             {
+                "name": "reservation producer failure",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected": failed_producer,
+            },
+            {
+                "name": "reservation producer exceeds attempt two",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected": excess_attempt_producer,
+            },
+            {
+                "name": "reservation producer remains nonterminal",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected": pending_producer,
+            },
+            {
+                "name": "required producer job remains nonterminal",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected_jobs": pending_required_jobs,
+            },
+            {
+                "name": "required producer job failed",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected_jobs": failed_required_jobs,
+            },
+            {
+                "name": "producer job belongs to another run",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected_jobs": wrong_run_jobs,
+            },
+            {
+                "name": "duplicate required producer job",
+                "cross": cross,
+                "inventory": [cross],
+                "live_pr": live_pr,
+                "reservation": reservation,
+                "protected_jobs": duplicate_required_jobs,
+            },
+            {
                 "name": "deadline expires before POST",
                 "cross": cross,
                 "inventory": [cross],
@@ -2166,6 +2500,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     reservation_pages=case.get("reservation_pages"),
                     deadline_expired=case.get("deadline_expired", False),
                     cross_job=case.get("cross_job"),
+                    protected=case.get("protected"),
+                    protected_jobs=case.get("protected_jobs"),
                 )
                 self.assertNotEqual(0, result.returncode, result.stdout)
                 self.assertNotIn("POST_AUTHORIZED", result.stdout)
