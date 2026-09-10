@@ -117,6 +117,21 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         return workflow[start:end]
 
     @staticmethod
+    def _canonical_producer_identity_filter() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index(
+            '            jq -e \\\n'
+            '              --arg actor "${author}" \\\n'
+            '              --arg head_ref "${head_ref}" \\\n'
+            '              --arg head_sha "${EXPECTED_HEAD}" \\\n'
+            '              --argjson attempt "${producer_attempt}" \\\n'
+        )
+        marker = '              --arg run_url "${producer_url}" \'\n'
+        start = workflow.index(marker, start) + len(marker)
+        end = workflow.index('\n              \' <<<"${producer}" >/dev/null', start)
+        return workflow[start:end]
+
+    @staticmethod
     def _rerun_shell_function(name: str) -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
         marker = f"          {name}() {{\n"
@@ -124,6 +139,24 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index("\n          }\n", start) + len(
             "\n          }\n"
         )
+        return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
+    def _producer_attempt_provenance_guard() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index('          producer_attempt="$(jq -er \\\n')
+        end = workflow.index(
+            '          if [ "${evidence_version}" = v4 ]; then\n'
+            '            test "${producer_attempt}" -eq 1',
+            start,
+        )
+        return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
+    def _canonical_producer_job_binding_checks() -> str:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index('          bound_producer_jobs="$(jq -c \\\n')
+        end = workflow.index('          producer_binding="$(jq -c \'\n', start)
         return textwrap.dedent(workflow[start:end])
 
     @staticmethod
@@ -1605,6 +1638,282 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             wrong_binding = json.loads(json.dumps(valid))
             wrong_binding["jobs"][0][field] = value
             self.assertNotEqual(0, evaluate(wrong_binding).returncode)
+
+    def test_canonical_producer_attempt_two_is_native_and_job_bound(self) -> None:
+        jq = self._test_tool("jq")
+        identity_filter = self._canonical_producer_identity_filter()
+        head = "b" * 40
+        producer = {
+            "event": "pull_request_target",
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "head_branch": "fix/final",
+            "head_sha": head,
+            "html_url": "https://github.example/actions/runs/77",
+            "actor": {"login": "litroc"},
+            "triggering_actor": {"login": "github-actions[bot]"},
+        }
+
+        def evaluate_identity(
+            payload: object, attempt: int
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    "litroc",
+                    "--arg",
+                    "head_ref",
+                    "fix/final",
+                    "--arg",
+                    "head_sha",
+                    head,
+                    "--argjson",
+                    "attempt",
+                    str(attempt),
+                    "--arg",
+                    "run_url",
+                    "https://github.example/actions/runs/77",
+                    identity_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+                env={"PATH": TEST_TOOL_PATH},
+            )
+
+        accepted = evaluate_identity(producer, 2)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        for field, value in (
+            ("triggering_actor", {"login": "litroc"}),
+            ("triggering_actor", {"login": "mallory"}),
+            ("actor", {"login": "github-actions[bot]"}),
+            ("head_sha", "c" * 40),
+        ):
+            with self.subTest(identity_drift=field):
+                drifted = json.loads(json.dumps(producer))
+                drifted[field] = value
+                self.assertNotEqual(
+                    0, evaluate_identity(drifted, 2).returncode
+                )
+
+        attempt_guard = self._producer_attempt_provenance_guard()
+
+        def evaluate_attempt(attempt: object) -> subprocess.CompletedProcess[str]:
+            payload = {**producer, "run_attempt": attempt}
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'producer="${PRODUCER}"',
+                    attempt_guard,
+                    'printf "%s\\n" "${producer_attempt}"',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                },
+            )
+
+        self.assertEqual("1\n", evaluate_attempt(1).stdout)
+        self.assertEqual("2\n", evaluate_attempt(2).stdout)
+        for invalid_attempt in (3, "2", True):
+            self.assertNotEqual(0, evaluate_attempt(invalid_attempt).returncode)
+
+        def evaluate_v4_attempt(attempt: object) -> int:
+            payload = {**producer, "run_attempt": attempt}
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'producer="${PRODUCER}"',
+                    attempt_guard,
+                    'test "${producer_attempt}" -eq 1',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                },
+            ).returncode
+
+        self.assertEqual(0, evaluate_v4_attempt(1))
+        self.assertNotEqual(0, evaluate_v4_attempt(2))
+        for evidence_version in ("v5", "v6"):
+            for attempt, actor in ((1, "litroc"), (2, "github-actions[bot]")):
+                with self.subTest(
+                    evidence_version=evidence_version, attempt=attempt
+                ):
+                    bound = json.loads(json.dumps(producer))
+                    bound["triggering_actor"] = {"login": actor}
+                    self.assertEqual(
+                        0, evaluate_identity(bound, attempt).returncode
+                    )
+
+        reevaluation_job = {
+            "id": 89,
+            "name": "Request protected verifier re-evaluation",
+            "run_id": 77,
+            "run_attempt": 2,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+        }
+
+        primary_job = {
+            "id": 88,
+            "name": "Verify current revision policy",
+            "run_id": 77,
+            "run_attempt": 2,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        producer_binding = {
+            "id": 77,
+            "event": "pull_request_target",
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "display_title": "Current revision review",
+            "head_branch": "fix/final",
+            "head_sha": head,
+            "html_url": "https://github.example/actions/runs/77",
+            "workflow_id": 616,
+            "workflow_url": "https://api.github.example/workflows/616",
+            "run_attempt": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "actor": "litroc",
+            "triggering_actor": "github-actions[bot]",
+            "pull_requests": [],
+        }
+        producer_payload = {
+            **producer_binding,
+            "actor": {"login": producer_binding["actor"]},
+            "triggering_actor": {
+                "login": producer_binding["triggering_actor"]
+            },
+        }
+
+        def evaluate_job_ledger(
+            jobs: list[dict[str, object]],
+        ) -> subprocess.CompletedProcess[str]:
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'producer_jobs="${JOBS}"',
+                    'producer_job_head_sha="${HEAD}"',
+                    "producer_attempt=2",
+                    "producer_id=77",
+                    "producer_job_name='Verify current revision policy'",
+                    self._canonical_producer_job_binding_checks(),
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "HEAD": head,
+                    "JOBS": json.dumps(
+                        {"total_count": len(jobs), "jobs": jobs},
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+
+        accepted = evaluate_job_ledger([primary_job, reevaluation_job])
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertNotEqual(
+            0,
+            evaluate_job_ledger([reevaluation_job]).returncode,
+        )
+        for dispatch in (
+            [],
+            [{**reevaluation_job, "name": "Unexpected dispatch"}],
+            [{**reevaluation_job, "conclusion": "failure"}],
+            [reevaluation_job, {**reevaluation_job, "id": 90}],
+        ):
+            self.assertNotEqual(
+                0,
+                evaluate_job_ledger([primary_job, *dispatch]).returncode,
+            )
+
+        def evaluate_revalidation(
+            jobs: list[dict[str, object]],
+            payload: dict[str, object] = producer_payload,
+        ) -> subprocess.CompletedProcess[str]:
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    self._rerun_shell_function("validate_producer_snapshot"),
+                    'validate_producer_snapshot "${PRODUCER}" "${JOBS}"',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "PRODUCER": json.dumps(
+                        payload, separators=(",", ":")
+                    ),
+                    "JOBS": json.dumps(
+                        {"total_count": len(jobs), "jobs": jobs},
+                        separators=(",", ":"),
+                    ),
+                    "producer_binding": json.dumps(
+                        producer_binding, separators=(",", ":")
+                    ),
+                    "producer_jobs_binding": json.dumps(
+                        [primary_job, reevaluation_job], separators=(",", ":")
+                    ),
+                    "producer_job_id": "88",
+                    "producer_job_binding": json.dumps(
+                        primary_job, separators=(",", ":")
+                    ),
+                },
+            )
+
+        revalidated = evaluate_revalidation([primary_job, reevaluation_job])
+        self.assertEqual(0, revalidated.returncode, revalidated.stderr)
+        drifted_reevaluation = {
+            **reevaluation_job,
+            "conclusion": "failure",
+        }
+        self.assertNotEqual(
+            0,
+            evaluate_revalidation([primary_job, drifted_reevaluation]).returncode,
+        )
+        for field, value in (
+            ("actor", {"login": "mallory"}),
+            ("run_attempt", 1),
+        ):
+            with self.subTest(producer_reread_drift=field):
+                drifted_producer = json.loads(json.dumps(producer_payload))
+                drifted_producer[field] = value
+                self.assertNotEqual(
+                    0,
+                    evaluate_revalidation(
+                        [primary_job, reevaluation_job], drifted_producer
+                    ).returncode,
+                )
 
     def test_cross_pre_post_authorization_rejects_live_mutations(self) -> None:
         base = "a" * 40
