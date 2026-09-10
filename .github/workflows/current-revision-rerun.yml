@@ -125,7 +125,7 @@ jobs:
                 .name == "Required current-revision workflow"
                 and .conclusion == "success")] | length) == 1
             ' <<<"${jobs}" >/dev/null || return 10
-            jq -cn \
+            jq -Scn \
               --argjson jobs "${jobs}" \
               --argjson reservation "${reservation}" \
               --argjson run "${run_snapshot}" '

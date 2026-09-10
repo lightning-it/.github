@@ -2176,6 +2176,38 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             4, converged.stderr.splitlines().count("ORDER:protected_detail")
         )
 
+        def reverse_key_order(value: object) -> object:
+            if isinstance(value, dict):
+                return {
+                    key: reverse_key_order(item)
+                    for key, item in reversed(value.items())
+                }
+            if isinstance(value, list):
+                return [reverse_key_order(item) for item in value]
+            return value
+
+        reordered_producer = reverse_key_order(producer_success)
+        self.assertIsInstance(reordered_producer, dict)
+        key_order_converged = self._run_cross_rerun_authorization(
+            cross=cross,
+            inventory=[cross],
+            live_pr=live_pr,
+            neutral=neutral,
+            neutral_summary_raw=neutral_summary_raw,
+            reservation=reservation,
+            protected_sequence=[producer_success, reordered_producer] * 30,
+            protected_jobs_sequence=[producer_jobs] * 3,
+        )
+        self.assertEqual(
+            0, key_order_converged.returncode, key_order_converged.stderr
+        )
+        key_order_lines = key_order_converged.stderr.splitlines()
+        self.assertEqual(3, key_order_lines.count("ORDER:protected_detail"))
+        self.assertEqual(3, key_order_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(1, key_order_lines.count("ORDER:sleep:2"))
+        self.assertEqual(1, key_order_lines.count("ORDER:POST"))
+        self.assertIn("jq -Scn", RERUN_WORKFLOW.read_text(encoding="utf-8"))
+
         changed_success_jobs = json.loads(json.dumps(producer_jobs))
         changed_success_jobs["jobs"][0]["id"] = 9900
         snapshot_converged = self._run_cross_rerun_authorization(
