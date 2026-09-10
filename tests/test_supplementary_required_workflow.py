@@ -3620,7 +3620,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn("needs: route-protected-current-revision", job_header)
         self.assertIn(
             "if: needs['route-protected-current-revision'].outputs."
-            "s0_prestage != 'true'",
+            "s0_candidate != 'true'",
             job_header,
         )
         reservation = permanent.index("reservation_external_id=")
@@ -7630,9 +7630,160 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual([], one_off_shas)
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
-            "s0_prestage != 'true'",
+            "s0_candidate != 'true'",
             workflow,
         )
+
+    def test_s0_router_has_a_closed_five_event_matrix(self) -> None:
+        route = self._s0_job(
+            "route-protected-current-revision",
+            "reserve-s0-feature-main-prestage",
+        )
+        reserve = self._s0_job(
+            "reserve-s0-feature-main-prestage",
+            "verify-s0-feature-main-prestage",
+        )
+        deep = self._s0_job(
+            "verify-s0-feature-main-prestage",
+            "finalize-s0-feature-main-prestage",
+        )
+        accepted = '[[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]'
+        self.assertIn("EVENT_ACTION: ${{ github.event.action }}", route)
+        self.assertIn(
+            '[[ "${EVENT_ACTION}" =~ '
+            "^(opened|synchronize|reopened|ready_for_review|edited)$ ]]",
+            route,
+        )
+        self.assertIn(accepted, route)
+        self.assertIn(accepted, reserve)
+        self.assertIn(accepted, deep)
+
+        script = textwrap.dedent(route.split("        run: |\n", 1)[1])
+        bash = self._test_tool("bash")
+
+        def route_result(
+            action: str | None,
+            repository: str = "lightning-it/.github",
+            base_ref: str = "main",
+            head_ref: str = "prestage/p1",
+        ) -> tuple[int, dict[str, str], str]:
+            with tempfile.TemporaryDirectory() as temporary:
+                output = Path(temporary) / "github-output"
+                environment = {
+                    "BASE_REF": base_ref,
+                    "GITHUB_OUTPUT": str(output),
+                    "HEAD_REF": head_ref,
+                    "PATH": TEST_TOOL_PATH,
+                    "REPOSITORY": repository,
+                }
+                if action is not None:
+                    environment["EVENT_ACTION"] = action
+                result = subprocess.run(
+                    [bash, "-c", script],
+                    env=environment,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                values = {}
+                if output.exists():
+                    values = dict(
+                        line.split("=", 1)
+                        for line in output.read_text(encoding="utf-8").splitlines()
+                    )
+                return result.returncode, values, result.stderr
+
+        for action in ("opened", "synchronize", "reopened"):
+            with self.subTest(action=action):
+                returncode, values, _ = route_result(action)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "true", "s0_prestage": "true"},
+                    values,
+                )
+        for action in ("ready_for_review", "edited"):
+            with self.subTest(action=action):
+                returncode, values, _ = route_result(action)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "true", "s0_prestage": "false"},
+                    values,
+                )
+        for candidate in (
+            ("opened", "fork/.github", "main", "prestage/p1"),
+            ("opened", "lightning-it/.github", "develop", "prestage/p1"),
+            ("opened", "lightning-it/.github", "main", "feature/p1"),
+        ):
+            with self.subTest(candidate=candidate):
+                returncode, values, _ = route_result(*candidate)
+                self.assertEqual(0, returncode)
+                self.assertEqual(
+                    {"s0_candidate": "false", "s0_prestage": "false"},
+                    values,
+                )
+        for action in (None, "closed", "READY_FOR_REVIEW"):
+            with self.subTest(invalid_action=action):
+                returncode, _, _ = route_result(action)
+                self.assertNotEqual(0, returncode)
+
+    def test_s0_final_gate_has_a_closed_router_truth_table(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        gate = workflow.split(
+            "      - name: Enforce exactly one terminal verification route\n", 1
+        )[1].split("        run: |\n", 1)[1]
+        script = textwrap.dedent(gate)
+        bash = self._test_tool("bash")
+
+        def gate_result(**values: str) -> tuple[int, str]:
+            environment = {"PATH": TEST_TOOL_PATH, **values}
+            result = subprocess.run(
+                [bash, "-c", script],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode, result.stderr
+
+        direct = {
+            "FINALIZE_RESULT": "success",
+            "LEGACY_RESULT": "skipped",
+            "RESERVE_RESULT": "success",
+            "ROUTE_RESULT": "success",
+            "S0_CANDIDATE": "true",
+            "S0_PRESTAGE": "true",
+            "VERIFY_RESULT": "success",
+        }
+        unsupported_candidate = {
+            **direct,
+            "FINALIZE_RESULT": "skipped",
+            "RESERVE_RESULT": "skipped",
+            "S0_PRESTAGE": "false",
+            "VERIFY_RESULT": "skipped",
+        }
+        non_candidate = {
+            **unsupported_candidate,
+            "LEGACY_RESULT": "success",
+            "S0_CANDIDATE": "false",
+        }
+        self.assertEqual(0, gate_result(**direct)[0])
+        unsupported_returncode, unsupported_stderr = gate_result(
+            **unsupported_candidate
+        )
+        self.assertNotEqual(0, unsupported_returncode)
+        self.assertIn(
+            "S0 candidate action requires the separately authorized listener.",
+            unsupported_stderr,
+        )
+        self.assertEqual(0, gate_result(**non_candidate)[0])
+        for contradiction in (
+            {**direct, "S0_CANDIDATE": "false"},
+            {**unsupported_candidate, "LEGACY_RESULT": "success"},
+            {**non_candidate, "LEGACY_RESULT": "skipped"},
+            {**direct, "ROUTE_RESULT": "failure"},
+        ):
+            with self.subTest(contradiction=contradiction):
+                self.assertNotEqual(0, gate_result(**contradiction)[0])
 
     def test_s0_binds_policy_before_inactive_core_v2_transport_block(
         self,

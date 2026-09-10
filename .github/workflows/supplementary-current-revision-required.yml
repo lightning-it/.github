@@ -331,6 +331,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
+      s0_candidate: ${{ steps.route.outputs.s0_candidate }}
       s0_prestage: ${{ steps.route.outputs.s0_prestage }}
 
     steps:
@@ -338,16 +339,23 @@ jobs:
         id: route
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_ACTION: ${{ github.event.action }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
+          s0_candidate=false
           s0_prestage=false
           if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
             && [ "${BASE_REF}" = main ] \
             && [[ "${HEAD_REF}" == prestage/* ]]; then
-            s0_prestage=true
+            s0_candidate=true
+            if [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]; then
+              s0_prestage=true
+            fi
           fi
+          printf 's0_candidate=%s\n' "${s0_candidate}" >>"${GITHUB_OUTPUT}"
           printf 's0_prestage=%s\n' "${s0_prestage}" >>"${GITHUB_OUTPUT}"
 
   reserve-s0-feature-main-prestage:
@@ -2206,7 +2214,7 @@ jobs:
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
     needs: route-protected-current-revision
-    if: needs['route-protected-current-revision'].outputs.s0_prestage != 'true'
+    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
     permissions:
       actions: read
       checks: write
@@ -7108,6 +7116,8 @@ jobs:
             ${{ needs['reserve-s0-feature-main-prestage'].result }}
           ROUTE_RESULT: >-
             ${{ needs['route-protected-current-revision'].result }}
+          S0_CANDIDATE: >-
+            ${{ needs['route-protected-current-revision'].outputs.s0_candidate }}
           S0_PRESTAGE: >-
             ${{ needs['route-protected-current-revision'].outputs.s0_prestage }}
           VERIFY_RESULT: >-
@@ -7116,11 +7126,21 @@ jobs:
           set -euo pipefail
           test "${ROUTE_RESULT}" = success
           if [ "${S0_PRESTAGE}" = true ]; then
+            test "${S0_CANDIDATE}" = true
             test "${RESERVE_RESULT}" = success
             test "${VERIFY_RESULT}" = success
             test "${FINALIZE_RESULT}" = success
             test "${LEGACY_RESULT}" = skipped
+          elif [ "${S0_CANDIDATE}" = true ]; then
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = skipped
+            echo 'S0 candidate action requires the separately authorized listener.' >&2
+            exit 1
           else
+            test "${S0_CANDIDATE}" = false
             test "${S0_PRESTAGE}" = false
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
