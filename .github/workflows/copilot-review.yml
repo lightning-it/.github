@@ -391,6 +391,8 @@ jobs:
             github.event.pull_request.title,
             'chore(governance): record main ancestry before '
           )))
+    outputs:
+      trusted_kind: ${{ steps.trusted-automation.outputs.kind }}
     permissions:
       actions: read
       checks: write
@@ -1345,7 +1347,8 @@ jobs:
     needs: verify-current-revision-policy
     if: >-
       always() &&
-      needs['verify-current-revision-policy'].result == 'success'
+      needs['verify-current-revision-policy'].result == 'success' &&
+      needs['verify-current-revision-policy'].outputs.trusted_kind != 'renovate'
     permissions:
       actions: write
       contents: read
