@@ -1345,7 +1345,18 @@ jobs:
     needs: verify-current-revision-policy
     if: >-
       always() &&
-      needs['verify-current-revision-policy'].result == 'success'
+      needs['verify-current-revision-policy'].result == 'success' &&
+      !(
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.base.ref == 'develop' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login == 'renovate[bot]' &&
+        startsWith(github.event.pull_request.head.ref, 'renovate/') &&
+        contains(github.event.pull_request.labels.*.name, 'renovate') &&
+        contains(github.event.pull_request.labels.*.name, 'dependencies') &&
+        contains(github.event.pull_request.labels.*.name, 'safe-automerge') &&
+        !contains(github.event.pull_request.labels.*.name, 'breaking-update')
+      )
     permissions:
       actions: write
       contents: read

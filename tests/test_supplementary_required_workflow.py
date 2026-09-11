@@ -6734,6 +6734,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             condition,
         )
 
+    def test_protected_reevaluation_skips_trusted_renovate(self) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        request = workflow.split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[1]
+        condition = request.split("    if: >-", 1)[1].split(
+            "    permissions:", 1
+        )[0]
+
+        for binding in (
+            "github.event_name == 'pull_request_target'",
+            "github.event.pull_request.base.ref == 'develop'",
+            "github.event.pull_request.head.repo.full_name == github.repository",
+            "github.event.pull_request.user.login == 'renovate[bot]'",
+            "startsWith(github.event.pull_request.head.ref, 'renovate/')",
+            "contains(github.event.pull_request.labels.*.name, 'renovate')",
+            "contains(github.event.pull_request.labels.*.name, 'dependencies')",
+            "contains(github.event.pull_request.labels.*.name, 'safe-automerge')",
+            "!contains(github.event.pull_request.labels.*.name, 'breaking-update')",
+        ):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, condition)
+
     def test_s0_inactive_policy_is_canonical_and_has_no_live_authority(
         self,
     ) -> None:
