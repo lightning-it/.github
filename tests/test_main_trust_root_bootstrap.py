@@ -1032,6 +1032,40 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             ):
                 MODULE.verify(self.args(api), api)
 
+    def test_auxiliary_evidence_accepts_modified_status_when_present_in_base(self) -> None:
+        api = FakeAPI()
+        self.add_auxiliary_evidence(api)
+        path = "tests/unit/test_rep60_trust_root_contracts.py"
+        api.base_tree["tree"].append(api._tree_entry(path, "c" * 40))
+        next(
+            item for item in api.comparison["files"] if item["filename"] == path
+        )["status"] = "modified"
+
+        evidence = MODULE.verify(self.args(api), api)
+
+        self.assertEqual(api.paths, evidence["source_blobs"])
+
+    def test_auxiliary_evidence_status_binding_fails_closed(self) -> None:
+        path = "tests/unit/test_rep60_trust_root_contracts.py"
+        for base_present, wrong_status in ((False, "modified"), (True, "added")):
+            api = FakeAPI()
+            self.add_auxiliary_evidence(api)
+            if base_present:
+                api.base_tree["tree"].append(api._tree_entry(path, "c" * 40))
+            next(
+                item
+                for item in api.comparison["files"]
+                if item["filename"] == path
+            )["status"] = wrong_status
+            with self.subTest(
+                base_present=base_present,
+                wrong_status=wrong_status,
+            ), self.assertRaisesRegex(
+                MODULE.VerificationError,
+                "unexpected status for auxiliary evidence",
+            ):
+                MODULE.verify(self.args(api), api)
+
     def test_pre_seed_producer_name_is_rejected(self) -> None:
         api = FakeAPI()
         api.run["name"] = "Copilot review gate"
