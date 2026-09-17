@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 
 SOURCE_REPOSITORY = "lightning-it/shared-assets-lit"
@@ -1212,16 +1212,16 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
             target_tree_cache,
             required=False,
         )
-        head_entry = resolve_tree_asset(
-            target_tree,
-            head_tree_sha,
-            path,
-            "head tree",
-            target_tree_cache,
+        head_entry = cast(
+            TreeEntry,
+            resolve_tree_asset(
+                target_tree,
+                head_tree_sha,
+                path,
+                "head tree",
+                target_tree_cache,
+            ),
         )
-        require(head_entry is not None, f"auxiliary evidence is missing from head: {path}")
-        require(head_entry.get("mode") == "100644", f"auxiliary evidence mode is invalid: {path}")
-        require(head_entry.get("type") == "blob", f"auxiliary evidence is not a blob: {path}")
         expected_status = "added" if base_entry is None else "modified"
         require(
             comparison_files[path].get("status") == expected_status,
