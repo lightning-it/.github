@@ -1026,7 +1026,11 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             if mutation == "mode":
                 entry["mode"] = "100755"
             else:
-                api.comparison["files"][-1]["sha"] = "f" * 40
+                next(
+                    item
+                    for item in api.comparison["files"]
+                    if item["filename"] == path
+                )["sha"] = "f" * 40
             with self.subTest(mutation=mutation), self.assertRaises(
                 MODULE.VerificationError
             ):
