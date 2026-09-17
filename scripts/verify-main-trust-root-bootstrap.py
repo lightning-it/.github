@@ -987,6 +987,9 @@ def verify_controller_seed(
         "jobs",
         "current-revision producer jobs",
     )
+    # This is the immutable historical controller-seed proof.  The regular
+    # main-bootstrap classifier is implemented by verify() and returns its
+    # static handoff before reading any producer or review job ledger.
     expected_job_conclusions = {
         "Classify protected main trust-root handoff": "success",
         "Verify current revision policy": "success",

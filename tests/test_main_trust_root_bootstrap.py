@@ -998,9 +998,19 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         ):
             MODULE.verify(self.args(api), api)
 
-    def test_draft_classifier_emits_only_static_protected_handoff(self) -> None:
+    def test_draft_classifier_ignores_controller_seed_and_review_ledgers(
+        self,
+    ) -> None:
         api = FakeAPI()
         api.pull["draft"] = True
+        api.jobs = [
+            {
+                "conclusion": "skipped",
+                "name": "Request protected verifier re-evaluation",
+                "run_attempt": 1,
+                "status": "completed",
+            }
+        ]
         args = self.args(api)
         args.classify_only = True
 
