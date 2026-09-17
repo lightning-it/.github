@@ -2587,14 +2587,18 @@ jobs:
                     and .run_attempt == 1
                     and (.status == "queued"
                       or .status == "in_progress"
-                      or .status == "completed")
-                    and (.name == "Classify protected main trust-root handoff"
-                      or .name == "Request Copilot review for current revision"
-                      or .name == "Verify current revision policy"
-                      or .name == "Request protected verifier re-evaluation"
-                      or .name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
-                      or .name == "Dispatch protected managed-sync finalizer re-evaluation"))
-                  and ([.[].name] | unique | length) == 5
+                      or .status == "completed"))
+                  and ([.[].name |
+                    if . == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
+                    then "Request protected verifier re-evaluation"
+                    else .
+                    end] | sort) == ([
+                      "Classify protected main trust-root handoff",
+                      "Request Copilot review for current revision",
+                      "Verify current revision policy",
+                      "Request protected verifier re-evaluation",
+                      "Dispatch protected managed-sync finalizer re-evaluation"
+                    ] | sort)
                 ' <<<"${producer_jobs}" >/dev/null
               classification_count="$(jq '
                 [.[] |

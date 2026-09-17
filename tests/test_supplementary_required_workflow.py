@@ -6506,7 +6506,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('producer_job_count="$(jq \'length\'', wait)
         self.assertIn('if [ "${producer_job_count}" -gt 5 ]', wait)
         self.assertIn('if [ "${producer_job_count}" -lt 5 ]', wait)
-        self.assertIn("([.[].name] | unique | length) == 5", wait)
+        self.assertIn(
+            'then "Request protected verifier re-evaluation"', wait
+        )
+        self.assertNotIn("([.[].name] | unique | length) == 5", wait)
         self.assertIn("queued:|in_progress:", wait)
         self.assertIn("completed:success|completed:failure", wait)
         self.assertIn(
@@ -6558,7 +6561,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Dispatch protected managed-sync finalizer re-evaluation",
         ]
 
-        def accepted(helper_name: str) -> bool:
+        def accepted(names: list[str]) -> bool:
             jobs = [
                 {
                     "conclusion": "skipped",
@@ -6568,7 +6571,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "run_id": 123,
                     "status": "completed",
                 }
-                for name in [*common_names, helper_name]
+                for name in names
             ]
             return (
                 subprocess.run(
@@ -6591,15 +6594,40 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 == 0
             )
 
-        self.assertTrue(accepted("Request protected verifier re-evaluation"))
         self.assertTrue(
             accepted(
-                "Request protected verifier re-evaluation / "
-                "Re-run the one protected verifier attempt"
+                [
+                    *common_names,
+                    "Request protected verifier re-evaluation",
+                ]
+            )
+        )
+        self.assertTrue(
+            accepted(
+                [
+                    *common_names,
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt",
+                ]
             )
         )
         self.assertFalse(
-            accepted("Request protected verifier re-evaluation / unexpected")
+            accepted(
+                [
+                    *common_names,
+                    "Request protected verifier re-evaluation / unexpected",
+                ]
+            )
+        )
+        self.assertFalse(
+            accepted(
+                [
+                    *common_names[:3],
+                    "Request protected verifier re-evaluation",
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt",
+                ]
+            )
         )
 
     def test_bootstrap_source_blob_schema_covers_the_exact_six_assets(
