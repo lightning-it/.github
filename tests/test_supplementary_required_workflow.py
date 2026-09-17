@@ -6507,7 +6507,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "${producer_job_count}" -gt 5 ]', wait)
         self.assertIn('if [ "${producer_job_count}" -lt 5 ]', wait)
         self.assertIn(
-            'then "Request protected verifier re-evaluation"', wait
+            'then .name = "Request protected verifier re-evaluation"', wait
+        )
+        self.assertNotIn(
+            'select(.name == "Request protected verifier re-evaluation / '
+            'Re-run the one protected verifier attempt")',
+            wait,
         )
         self.assertNotIn("([.[].name] | unique | length) == 5", wait)
         self.assertIn("queued:|in_progress:", wait)
@@ -6573,6 +6578,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 }
                 for name in names
             ]
+            for job in jobs:
+                if job["name"] == (
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt"
+                ):
+                    job["name"] = "Request protected verifier re-evaluation"
             return (
                 subprocess.run(
                     [
@@ -6618,6 +6629,39 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "Request protected verifier re-evaluation / unexpected",
                 ]
             )
+        )
+
+        mixed_status_jobs = [
+            {
+                "conclusion": conclusion,
+                "head_sha": head,
+                "name": name,
+                "run_attempt": 1,
+                "run_id": 123,
+                "status": "completed",
+            }
+            for name, conclusion in (
+                (common_names[0], "success"),
+                (common_names[1], "success"),
+                (common_names[2], "success"),
+                (common_names[3], "skipped"),
+                ("Request protected verifier re-evaluation", "failure"),
+            )
+        ]
+        self.assertEqual(
+            1,
+            sum(
+                job["name"] == "Request protected verifier re-evaluation"
+                and job["status"] == "completed"
+                and job["conclusion"] in {"success", "failure"}
+                for job in mixed_status_jobs
+            ),
+        )
+        self.assertGreaterEqual(
+            wait.count(
+                'select(.name == "Request protected verifier re-evaluation")'
+            ),
+            3,
         )
         self.assertFalse(
             accepted(

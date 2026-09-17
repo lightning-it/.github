@@ -2577,6 +2577,17 @@ jobs:
                 fi
                 continue
               fi
+              # GitHub exposes the skipped parent job by its short name and
+              # the executed reusable job by its expanded name. Normalize
+              # that one real alias before every inventory and status check.
+              producer_jobs="$(jq -c '
+                map(
+                  if .name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
+                  then .name = "Request protected verifier re-evaluation"
+                  else .
+                  end
+                )
+                ' <<<"${producer_jobs}")"
               jq -e \
                 --arg head "${EVENT_HEAD}" \
                 --argjson run_id "${producer_id}" '
@@ -2588,11 +2599,7 @@ jobs:
                     and (.status == "queued"
                       or .status == "in_progress"
                       or .status == "completed"))
-                  and ([.[].name |
-                    if . == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
-                    then "Request protected verifier re-evaluation"
-                    else .
-                    end] | sort) == ([
+                  and ([.[].name] | sort) == ([
                       "Classify protected main trust-root handoff",
                       "Request Copilot review for current revision",
                       "Verify current revision policy",
@@ -2622,7 +2629,7 @@ jobs:
                 ' <<<"${producer_jobs}")"
               helper_count="$(jq '
                 [.[] |
-                  select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                  select(.name == "Request protected verifier re-evaluation") |
                   select(
                     ((.status == "queued" or .status == "in_progress")
                       and .conclusion == null)
@@ -2665,7 +2672,7 @@ jobs:
                   completed:success)
                     test "$(jq '
                       [.[] |
-                        select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                        select(.name == "Request protected verifier re-evaluation") |
                         select(.status == "completed" and .conclusion == "success")]
                       | length
                       ' <<<"${producer_jobs}")" -eq 1
@@ -2678,7 +2685,7 @@ jobs:
                     # exact five-job proof isolates only that helper failure.
                     test "$(jq '
                       [.[] |
-                        select(.name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt") |
+                        select(.name == "Request protected verifier re-evaluation") |
                         select(.status == "completed" and .conclusion == "failure")]
                       | length
                       ' <<<"${producer_jobs}")" -eq 1
