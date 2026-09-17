@@ -6557,6 +6557,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(contract)
         assert contract is not None
         jq_filter = contract.group("jq")
+        normalization_filter = wait.split(
+            'producer_jobs="$(jq -c \'\n', 1
+        )[1].split(
+            '\n                \' <<<"${producer_jobs}")"', 1
+        )[0]
+        helper_count_filter = wait.split(
+            'helper_count="$(jq \'\n', 1
+        )[1].split(
+            '\n                \' <<<"${producer_jobs}")"', 1
+        )[0]
+        success_count_filter = wait.split(
+            'completed:success)\n                    test "$(jq \'\n', 1
+        )[1].split(
+            '\n                      \' <<<"${producer_jobs}")" -eq 1', 1
+        )[0]
+        failure_count_filter = wait.split(
+            'completed:failure)\n', 1
+        )[1].split(
+            'test "$(jq \'\n', 1
+        )[1].split(
+            '\n                      \' <<<"${producer_jobs}")" -eq 1', 1
+        )[0]
         jq = self._test_tool("jq")
         head = "a" * 40
         common_names = [
@@ -6566,24 +6588,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Dispatch protected managed-sync finalizer re-evaluation",
         ]
 
-        def accepted(names: list[str]) -> bool:
-            jobs = [
-                {
-                    "conclusion": "skipped",
-                    "head_sha": head,
-                    "name": name,
-                    "run_attempt": 1,
-                    "run_id": 123,
-                    "status": "completed",
-                }
-                for name in names
-            ]
-            for job in jobs:
-                if job["name"] == (
-                    "Request protected verifier re-evaluation / "
-                    "Re-run the one protected verifier attempt"
-                ):
-                    job["name"] = "Request protected verifier re-evaluation"
+        def normalize(jobs: list[dict[str, object]]) -> list[dict[str, object]]:
+            result = subprocess.run(
+                [jq, "-c", normalization_filter],
+                input=json.dumps(jobs),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        def accepted_jobs(jobs: list[dict[str, object]]) -> bool:
+            normalized_jobs = normalize(jobs)
             return (
                 subprocess.run(
                     [
@@ -6597,13 +6613,26 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         "123",
                         jq_filter,
                     ],
-                    input=json.dumps(jobs),
+                    input=json.dumps(normalized_jobs),
                     text=True,
                     capture_output=True,
                     check=False,
                 ).returncode
                 == 0
             )
+
+        def accepted(names: list[str]) -> bool:
+            return accepted_jobs([
+                {
+                    "conclusion": "skipped",
+                    "head_sha": head,
+                    "name": name,
+                    "run_attempt": 1,
+                    "run_id": 123,
+                    "status": "completed",
+                }
+                for name in names
+            ])
 
         self.assertTrue(
             accepted(
@@ -6645,24 +6674,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 (common_names[1], "success"),
                 (common_names[2], "success"),
                 (common_names[3], "skipped"),
-                ("Request protected verifier re-evaluation", "failure"),
+                (
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt",
+                    "failure",
+                ),
             )
         ]
-        self.assertEqual(
-            1,
-            sum(
-                job["name"] == "Request protected verifier re-evaluation"
-                and job["status"] == "completed"
-                and job["conclusion"] in {"success", "failure"}
-                for job in mixed_status_jobs
-            ),
-        )
-        self.assertGreaterEqual(
-            wait.count(
-                'select(.name == "Request protected verifier re-evaluation")'
-            ),
-            3,
-        )
+        normalized_mixed_status_jobs = normalize(mixed_status_jobs)
+        self.assertTrue(accepted_jobs(mixed_status_jobs))
+
+        def count(jq_program: str) -> int:
+            result = subprocess.run(
+                [jq, "-r", jq_program],
+                input=json.dumps(normalized_mixed_status_jobs),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return int(result.stdout)
+
+        self.assertEqual(1, count(helper_count_filter))
+        self.assertEqual(0, count(success_count_filter))
+        self.assertEqual(1, count(failure_count_filter))
         self.assertFalse(
             accepted(
                 [
