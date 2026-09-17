@@ -677,6 +677,17 @@ def make_controller_seed_api() -> FakeAPI:
 
 
 class MainTrustRootBootstrapTests(unittest.TestCase):
+    @staticmethod
+    def add_auxiliary_evidence(api: FakeAPI) -> None:
+        for path, blob in {
+            "changelogs/fragments/rep60-main-trust-root-bootstrap.yml": "d" * 40,
+            "tests/unit/test_rep60_trust_root_contracts.py": "e" * 40,
+        }.items():
+            api.comparison["files"].append(
+                {"filename": path, "status": "added", "sha": blob}
+            )
+            api.head_tree["tree"].append(api._tree_entry(path, blob))
+
     def args(self, api: FakeAPI) -> Any:
         return MODULE.parse_args(
             [
@@ -988,6 +999,38 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
         self.assertFalse(
             any("recursive=1" in endpoint for endpoint in api.source_endpoints)
         )
+
+    def test_exact_bootstrap_accepts_only_the_bounded_auxiliary_evidence(self) -> None:
+        api = FakeAPI()
+        self.add_auxiliary_evidence(api)
+
+        evidence = MODULE.verify(self.args(api), api)
+
+        self.assertEqual(api.paths, evidence["source_blobs"])
+        self.assertEqual(
+            {
+                "changelogs/fragments/rep60-main-trust-root-bootstrap.yml",
+                "tests/unit/test_rep60_trust_root_contracts.py",
+            },
+            set(MODULE.AUXILIARY_EVIDENCE_FILES),
+        )
+
+    def test_auxiliary_evidence_mode_and_blob_binding_fail_closed(self) -> None:
+        for mutation in ("mode", "blob"):
+            api = FakeAPI()
+            self.add_auxiliary_evidence(api)
+            path = "tests/unit/test_rep60_trust_root_contracts.py"
+            entry = next(
+                item for item in api.head_tree["tree"] if item["path"] == path
+            )
+            if mutation == "mode":
+                entry["mode"] = "100755"
+            else:
+                api.comparison["files"][-1]["sha"] = "f" * 40
+            with self.subTest(mutation=mutation), self.assertRaises(
+                MODULE.VerificationError
+            ):
+                MODULE.verify(self.args(api), api)
 
     def test_pre_seed_producer_name_is_rejected(self) -> None:
         api = FakeAPI()

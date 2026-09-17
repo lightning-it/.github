@@ -55,6 +55,12 @@ EXPECTED_FILES = frozenset(
         "scripts/materialize-exact-revision-review.py",
     }
 )
+AUXILIARY_EVIDENCE_FILES = frozenset(
+    {
+        "changelogs/fragments/rep60-main-trust-root-bootstrap.yml",
+        "tests/unit/test_rep60_trust_root_contracts.py",
+    }
+)
 PREDECESSOR_FILES = frozenset(
     {
         ".github/codex/prompts/review-exact-head.md",
@@ -1139,10 +1145,11 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
         for item in files
     }
     expected_paths = set(EXPECTED_FILES)
+    allowed_paths = expected_paths | AUXILIARY_EVIDENCE_FILES
     if not observed_paths & expected_paths:
         raise NotApplicable("pull request is not an exact trust-root bootstrap")
     require(
-        observed_paths <= expected_paths,
+        observed_paths <= allowed_paths,
         "trust-root bootstrap diff contains an unrelated path",
     )
     require(
@@ -1195,6 +1202,35 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
 
     def target_tree(tree_sha: str) -> Any:
         return api.target(f"repos/{repository}/git/trees/{tree_sha}")
+
+    for path in sorted(observed_paths & AUXILIARY_EVIDENCE_FILES):
+        base_entry = resolve_tree_asset(
+            target_tree,
+            base_tree_sha,
+            path,
+            "base tree",
+            target_tree_cache,
+            required=False,
+        )
+        head_entry = resolve_tree_asset(
+            target_tree,
+            head_tree_sha,
+            path,
+            "head tree",
+            target_tree_cache,
+        )
+        require(head_entry is not None, f"auxiliary evidence is missing from head: {path}")
+        require(head_entry.get("mode") == "100644", f"auxiliary evidence mode is invalid: {path}")
+        require(head_entry.get("type") == "blob", f"auxiliary evidence is not a blob: {path}")
+        expected_status = "added" if base_entry is None else "modified"
+        require(
+            comparison_files[path].get("status") == expected_status,
+            f"unexpected status for auxiliary evidence {path}",
+        )
+        require(
+            comparison_files[path].get("sha") == head_entry.get("sha"),
+            f"comparison blob differs for auxiliary evidence {path}",
+        )
 
     base_copilot = resolve_tree_asset(
         target_tree,
@@ -1289,6 +1325,8 @@ def verify(args: argparse.Namespace, api: GitHubAPI) -> dict[str, Any]:
     for raw_file in files:
         file_object = require_dict(raw_file, "comparison file")
         path = require_string(file_object.get("filename"), "comparison filename")
+        if path in AUXILIARY_EVIDENCE_FILES:
+            continue
         require(file_object.get("sha") == source_blobs[path], f"comparison blob differs for {path}")
 
     classification = {
