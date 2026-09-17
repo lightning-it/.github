@@ -4767,6 +4767,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Classify protected main trust-root handoff",
             "Request Copilot review for current revision",
             "Verify current revision policy",
+            "Request protected verifier re-evaluation",
             "Request protected verifier re-evaluation / Re-run the one "
             "protected verifier attempt",
             "Dispatch protected managed-sync finalizer re-evaluation",
@@ -4775,6 +4776,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('producer_job_count="$(jq \'length\'', wait)
         self.assertIn('if [ "${producer_job_count}" -gt 5 ]', wait)
         self.assertIn('if [ "${producer_job_count}" -lt 5 ]', wait)
+        self.assertIn(
+            'then .name = "Request protected verifier re-evaluation"', wait
+        )
+        self.assertNotIn(
+            'select(.name == "Request protected verifier re-evaluation / '
+            'Re-run the one protected verifier attempt")',
+            wait,
+        )
         self.assertIn("([.[].name] | unique | length) == 5", wait)
         self.assertIn("queued:|in_progress:", wait)
         self.assertIn("completed:success|completed:failure", wait)
@@ -4795,6 +4804,147 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("gh pr edit", wait)
         self.assertNotIn("requested_reviewers", wait)
         self.assertNotIn("openai/", wait.lower())
+
+    def test_bootstrap_helper_alias_is_normalized_before_status_checks(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        wait = workflow.split(
+            "      - name: Wait for one bound bootstrap pipeline review ledger\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        contract = re.search(
+            r"jq -e \\\n"
+            r"\s+--arg head \"\$\{EVENT_HEAD\}\" \\\n"
+            r"\s+--argjson run_id \"\$\{producer_id\}\" '(?P<jq>.*?)\n"
+            r"\s+' <<<\"\$\{producer_jobs\}\" >/dev/null",
+            wait,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(contract)
+        assert contract is not None
+        inventory_filter = contract.group("jq")
+        normalization_filter = wait.split(
+            'producer_jobs="$(jq -c \'\n', 1
+        )[1].split(
+            '\n                \' <<<"${producer_jobs}")"', 1
+        )[0]
+        helper_count_filter = wait.split(
+            'helper_count="$(jq \'\n', 1
+        )[1].split(
+            '\n                \' <<<"${producer_jobs}")"', 1
+        )[0]
+        success_count_filter = wait.split(
+            'completed:success)\n                    test "$(jq \'\n', 1
+        )[1].split(
+            '\n                      \' <<<"${producer_jobs}")" -eq 1', 1
+        )[0]
+        failure_count_filter = wait.split(
+            'completed:failure)\n', 1
+        )[1].split(
+            'test "$(jq \'\n', 1
+        )[1].split(
+            '\n                      \' <<<"${producer_jobs}")" -eq 1', 1
+        )[0]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+
+        def job(name: str, conclusion: str) -> dict[str, object]:
+            return {
+                "conclusion": conclusion,
+                "head_sha": head,
+                "name": name,
+                "run_attempt": 1,
+                "run_id": 123,
+                "status": "completed",
+            }
+
+        raw_jobs = [
+            job("Classify protected main trust-root handoff", "success"),
+            job("Request Copilot review for current revision", "success"),
+            job("Verify current revision policy", "success"),
+            job(
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt",
+                "failure",
+            ),
+            job(
+                "Dispatch protected managed-sync finalizer re-evaluation",
+                "skipped",
+            ),
+        ]
+        normalized = subprocess.run(
+            [jq, "-c", normalization_filter],
+            input=json.dumps(raw_jobs),
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        subprocess.run(
+            [
+                jq,
+                "-e",
+                "--arg",
+                "head",
+                head,
+                "--argjson",
+                "run_id",
+                "123",
+                inventory_filter,
+            ],
+            input=normalized,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+        def count(jq_program: str) -> int:
+            result = subprocess.run(
+                [jq, "-r", jq_program],
+                input=normalized,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return int(result.stdout)
+
+        self.assertEqual(1, count(helper_count_filter))
+        self.assertEqual(0, count(success_count_filter))
+        self.assertEqual(1, count(failure_count_filter))
+
+        duplicate_alias_jobs = [
+            *raw_jobs[:-2],
+            job("Request protected verifier re-evaluation", "failure"),
+            raw_jobs[-2],
+        ]
+        duplicate_normalized = subprocess.run(
+            [jq, "-c", normalization_filter],
+            input=json.dumps(duplicate_alias_jobs),
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        duplicate_result = subprocess.run(
+            [
+                jq,
+                "-e",
+                "--arg",
+                "head",
+                head,
+                "--argjson",
+                "run_id",
+                "123",
+                inventory_filter,
+            ],
+            input=duplicate_normalized,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(0, duplicate_result.returncode)
 
     def test_bootstrap_source_blob_schema_covers_the_exact_six_assets(
         self,
