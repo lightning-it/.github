@@ -2591,6 +2591,7 @@ jobs:
                     and (.name == "Classify protected main trust-root handoff"
                       or .name == "Request Copilot review for current revision"
                       or .name == "Verify current revision policy"
+                      or .name == "Request protected verifier re-evaluation"
                       or .name == "Request protected verifier re-evaluation / Re-run the one protected verifier attempt"
                       or .name == "Dispatch protected managed-sync finalizer re-evaluation"))
                   and ([.[].name] | unique | length) == 5

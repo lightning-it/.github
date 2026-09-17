@@ -6497,6 +6497,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Classify protected main trust-root handoff",
             "Request Copilot review for current revision",
             "Verify current revision policy",
+            "Request protected verifier re-evaluation",
             "Request protected verifier re-evaluation / Re-run the one "
             "protected verifier attempt",
             "Dispatch protected managed-sync finalizer re-evaluation",
@@ -6525,6 +6526,81 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("gh pr edit", wait)
         self.assertNotIn("requested_reviewers", wait)
         self.assertNotIn("openai/", wait.lower())
+
+    def test_bootstrap_job_inventory_accepts_only_the_two_real_helper_names(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        wait = workflow.split(
+            "      - name: Wait for one bound bootstrap pipeline review ledger\n",
+            1,
+        )[1].split(
+            "      - name: Verify one protected result for the exact live revision\n",
+            1,
+        )[0]
+        contract = re.search(
+            r"jq -e \\\n"
+            r"\s+--arg head \"\$\{EVENT_HEAD\}\" \\\n"
+            r"\s+--argjson run_id \"\$\{producer_id\}\" '(?P<jq>.*?)\n"
+            r"\s+' <<<\"\$\{producer_jobs\}\" >/dev/null",
+            wait,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(contract)
+        assert contract is not None
+        jq_filter = contract.group("jq")
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        common_names = [
+            "Classify protected main trust-root handoff",
+            "Request Copilot review for current revision",
+            "Verify current revision policy",
+            "Dispatch protected managed-sync finalizer re-evaluation",
+        ]
+
+        def accepted(helper_name: str) -> bool:
+            jobs = [
+                {
+                    "conclusion": "skipped",
+                    "head_sha": head,
+                    "name": name,
+                    "run_attempt": 1,
+                    "run_id": 123,
+                    "status": "completed",
+                }
+                for name in [*common_names, helper_name]
+            ]
+            return (
+                subprocess.run(
+                    [
+                        jq,
+                        "-e",
+                        "--arg",
+                        "head",
+                        head,
+                        "--argjson",
+                        "run_id",
+                        "123",
+                        jq_filter,
+                    ],
+                    input=json.dumps(jobs),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                == 0
+            )
+
+        self.assertTrue(accepted("Request protected verifier re-evaluation"))
+        self.assertTrue(
+            accepted(
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt"
+            )
+        )
+        self.assertFalse(
+            accepted("Request protected verifier re-evaluation / unexpected")
+        )
 
     def test_bootstrap_source_blob_schema_covers_the_exact_six_assets(
         self,
