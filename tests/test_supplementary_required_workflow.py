@@ -5977,6 +5977,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "steps": [],
             },
             {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": 123,
+                "steps": [],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [{"name": "unexpected executed step"}],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "failure",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": (
                     "Request protected verifier re-evaluation / "
                     "Diagnose Release-App reusable context and fail closed"
@@ -6091,6 +6112,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(
             [job["name"] for job in evaluate("disallowed_terminal_jobs")],
             [
+                "Validate protected main helper pin",
+                "Validate protected main helper pin",
+                "Validate protected main helper pin",
                 "Validate protected main helper pin",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
