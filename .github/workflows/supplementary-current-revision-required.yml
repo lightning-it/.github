@@ -6280,6 +6280,7 @@ jobs:
                   def runnerless: has("runner_id") and .runner_id==null and .steps==[];
                   def allowed: .conclusion=="skipped" and
                     (.name=="Request Copilot review for current revision"
+                    or (.name=="Validate protected main helper pin" and runnerless)
                     or (.name=="Dispatch protected managed-sync finalizer re-evaluation" and runnerless)
                     or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
                     or ((.name|test($d)) and runnerless));
@@ -6290,7 +6291,7 @@ jobs:
                 disallowed_terminal_jobs="$(jq -c .disallowed <<<"${terminal_job_inventory}")"
                 allowed_skipped_terminal_jobs="$(jq -c .allowed <<<"${terminal_job_inventory}")"
                 jq -e 'length == 0 or error(tojson)' <<<"${disallowed_terminal_jobs}" >/dev/null
-                jq -e --arg d "${d}" '((length<=4 and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
+                jq -e --arg d "${d}" '((length<=5 and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
