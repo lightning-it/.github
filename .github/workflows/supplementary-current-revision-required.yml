@@ -325,18 +325,1896 @@ jobs:
             and ([.protection_rules[]? | select(.type == "required_reviewers")][0].reviewers[0].reviewer.id == 15545798)
           ' <<<"${environment}" >/dev/null
 
+  route-protected-current-revision:
+    name: Route protected current-revision verification
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      s0_candidate: ${{ steps.route.outputs.s0_candidate }}
+      s0_prestage: ${{ steps.route.outputs.s0_prestage }}
+
+    steps:
+      - name: Classify the protected S0 feature-to-main route
+        id: route
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_ACTION: ${{ github.event.action }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
+          s0_candidate=false
+          s0_prestage=false
+          if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+            && [ "${BASE_REF}" = main ] \
+            && [[ "${HEAD_REF}" == prestage/* ]]; then
+            s0_candidate=true
+            if [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]; then
+              s0_prestage=true
+            fi
+          fi
+          printf 's0_candidate=%s\n' "${s0_candidate}" >>"${GITHUB_OUTPUT}"
+          printf 's0_prestage=%s\n' "${s0_prestage}" >>"${GITHUB_OUTPUT}"
+
+  reserve-s0-feature-main-prestage:
+    name: Reserve protected S0 feature-to-main verification
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      check_id: ${{ steps.reserve.outputs.check_id }}
+      external_id: ${{ steps.reserve.outputs.external_id }}
+
+    steps:
+      - name: Bind the protected source and reserve one S0 operation
+        id: reserve
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          reservation_id=''
+          finalize_reservation_failure() {
+            local exit_code="$?"
+            trap - EXIT
+            set +e
+            if [[ "${reservation_id}" =~ ^[1-9][0-9]*$ ]]; then
+              gh api --method PATCH \
+                "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+                -f status=completed \
+                -f conclusion=failure \
+                -f 'output[title]=REP-120 S0 reservation failed closed' \
+                -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}." \
+                >/dev/null
+            fi
+            exit "${exit_code}"
+          }
+          trap finalize_reservation_failure EXIT
+
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${WORKFLOW_REF}" = \
+            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop'
+          [[ "${HEAD_REF}" =~ ^prestage/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$ ]]
+          [[ "${HEAD_REF}" != *..* ]]
+          [[ "${HEAD_REF}" != *//* ]]
+          [[ "${HEAD_REF}" != *@\{* ]]
+          [[ "${HEAD_REF}" != *.lock ]]
+
+          repository_json="$(gh api "repos/${REPOSITORY}")"
+          jq -e --arg repository "${REPOSITORY}" --argjson id 1112629689 '
+            .id == $id
+            and .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${repository_json}" >/dev/null
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "${HEAD_REF}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and (.user.id | type) == "number" and .user.id > 0
+              and (.user.login | type) == "string" and (.user.login | length) > 0
+              and (.user.type == "User" or .user.type == "Bot")
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.ref == $head_ref
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+            ' <<<"${pull}" >/dev/null
+
+          repository_id="$(jq -er '.id' <<<"${repository_json}")"
+          reservation_name='REP-120 S0 prestage authorization'
+          reservation_external_id="rep120-s0-prestage:v1:${repository_id}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          read_reservations() {
+            gh api --paginate --slurp \
+              "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=REP-120%20S0%20prestage%20authorization&filter=all&per_page=100"
+          }
+          reservation_pages="$(read_reservations)"
+          s0_reservations="$(jq -c \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg name "${reservation_name}" '
+              [.[].check_runs[]?
+                | select(.name == $name)
+                | select(.app.id == 15368 and .app.slug == "github-actions")
+                | select(.head_sha == $head)]
+              | if length <= 1 then . else error("duplicate S0 reservations") end
+              | if length == 0 or .[0].external_id == $external_id
+                then . else error("conflicting S0 reservation") end
+            ' <<<"${reservation_pages}")"
+
+          if [ "$(jq 'length' <<<"${s0_reservations}")" -eq 0 ]; then
+            reservation="$(gh api --method POST \
+              "repos/${REPOSITORY}/check-runs" \
+              -f name="${reservation_name}" \
+              -f head_sha="${EVENT_HEAD}" \
+              -f status=in_progress \
+              -f external_id="${reservation_external_id}" \
+              -f "details_url=${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              -f 'output[title]=REP-120 S0 verification reserved' \
+              -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}.")"
+          else
+            reservation="$(jq -c '.[0]' <<<"${s0_reservations}")"
+          fi
+          reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' \
+            <<<"${reservation}")"
+          jq -e \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg name "${reservation_name}" \
+            --argjson check_id "${reservation_id}" '
+              .id == $check_id
+              and .name == $name
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and (
+                .status == "in_progress"
+                or (.status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure"))
+              )
+            ' <<<"${reservation}" >/dev/null
+
+          visible="$(read_reservations | jq -c \
+            --arg external_id "${reservation_external_id}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson check_id "${reservation_id}" '
+              [.[].check_runs[]?
+                | select(.id == $check_id)
+                | select(.app.id == 15368 and .app.slug == "github-actions")
+                | select(.head_sha == $head)
+                | select(.external_id == $external_id)]
+            ')"
+          test "$(jq 'length' <<<"${visible}")" -eq 1
+          printf 'check_id=%s\n' "${reservation_id}" >>"${GITHUB_OUTPUT}"
+          printf 'external_id=%s\n' "${reservation_external_id}" \
+            >>"${GITHUB_OUTPUT}"
+          trap - EXIT
+
+  verify-s0-feature-main-prestage:
+    name: Verify protected S0 feature-to-main input
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+    if: >-
+      needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+      && needs['reserve-s0-feature-main-prestage'].result == 'success'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      issues: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      diff_sha256: ${{ steps.verify.outputs.diff_sha256 }}
+      policy_blob: ${{ steps.verify.outputs.policy_blob }}
+      series_id: ${{ steps.verify.outputs.series_id }}
+      unit_id: ${{ steps.verify.outputs.unit_id }}
+
+    steps:
+      - name: Verify the complete policy-bound S0 review unit
+        id: verify
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RESERVATION_EXTERNAL_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.external_id }}
+          RESERVATION_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.check_id }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened)$ ]]
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${WORKFLOW_REF}" = \
+            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop'
+          [[ "${HEAD_REF}" =~ ^prestage/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$ ]]
+          [[ "${HEAD_REF}" != *..* ]]
+          [[ "${HEAD_REF}" != *//* ]]
+          [[ "${HEAD_REF}" != *@\{* ]]
+          [[ "${HEAD_REF}" != *.lock ]]
+
+          repository_json="$(gh api "repos/${REPOSITORY}")"
+          jq -e --arg repository "${REPOSITORY}" --argjson id 1112629689 '
+            .id == $id
+            and .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${repository_json}" >/dev/null
+          repository_id="$(jq -er '.id' <<<"${repository_json}")"
+          expected_reservation_external_id="rep120-s0-prestage:v1:${repository_id}:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          test "${RESERVATION_EXTERNAL_ID}" = \
+            "${expected_reservation_external_id}"
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg head_ref "${HEAD_REF}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and (.user.id | type) == "number" and .user.id > 0
+              and (.user.login | type) == "string" and (.user.login | length) > 0
+              and (.user.type == "User" or .user.type == "Bot")
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.ref == $head_ref
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+            ' <<<"${pull}" >/dev/null
+
+          policy_path='.lit/feature-main-prestage-policy.json'
+          policy_asset="$(gh api \
+            "repos/${REPOSITORY}/contents/${policy_path}?ref=${WORKFLOW_SHA}")"
+          jq -e \
+            --arg path "${policy_path}" \
+            --arg url "${GITHUB_API_URL}/repos/${REPOSITORY}/contents/${policy_path}?ref=${WORKFLOW_SHA}" '
+              .type == "file"
+              and .path == $path
+              and .url == $url
+              and .encoding == "base64"
+              and (.sha | type) == "string"
+              and (.sha | test("^[0-9a-f]{40}$"))
+              and (.size | type) == "number"
+              and .size > 0 and .size < 200000
+              and (.content | type) == "string" and (.content | length) > 0
+            ' <<<"${policy_asset}" >/dev/null
+
+          umask 077
+          s0_directory="$(mktemp -d "${RUNNER_TEMP}/rep120-s0.XXXXXX")"
+          # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
+          cleanup_s0_directory() {
+            rm -rf -- "${s0_directory}"
+          }
+          trap cleanup_s0_directory EXIT
+          policy_file="${s0_directory}/policy.json"
+          jq -er .content <<<"${policy_asset}" | base64 --decode >"${policy_file}"
+          policy_blob="$(jq -er .sha <<<"${policy_asset}")"
+          test "$(git hash-object "${policy_file}")" = "${policy_blob}"
+          canonical_policy="$(jq -cS . "${policy_file}")"
+          printf '%s\n' "${canonical_policy}" \
+            | cmp -s - "${policy_file}"
+
+          # rep120-s0-policy-contract: start
+          s0_policy_contract="$(cat <<'JQ'
+          (keys == [
+            "allowed_principals",
+            "authorization_manifest_sha256",
+            "canonical_diff",
+            "expires_at",
+            "issue",
+            "policy_epoch",
+            "schema",
+            "series_id",
+            "state",
+            "target",
+            "transitions"
+          ])
+          and .schema == "lit.rep120.feature-main-prestage-policy/v2"
+          and .issue == 564
+          and .target == {
+            "base_ref": "refs/heads/main",
+            "head_prefix": "prestage/",
+            "repository": "lightning-it/.github",
+            "repository_id": 1112629689,
+            "source_ref": "refs/heads/develop"
+          }
+          and .canonical_diff == {
+            "format": "git-diff-binary-full-index-no-renames-v1",
+            "maximum_bytes": 199999,
+            "minimum_bytes": 1,
+            "options": [
+              "--binary",
+              "--full-index",
+              "--no-renames",
+              "--no-color",
+              "--no-ext-diff",
+              "--no-textconv"
+            ]
+          }
+          and .transitions == ["inactive", "active", "consumed"]
+          and (.state == "inactive" or .state == "active" or .state == "consumed")
+          and (
+            if .state == "inactive" then
+              .allowed_principals == []
+              and .authorization_manifest_sha256 == null
+              and .expires_at == null
+              and .policy_epoch == 0
+              and .series_id == null
+            else
+              (.authorization_manifest_sha256 | type) == "string"
+              and (.authorization_manifest_sha256 | test("^[0-9a-f]{64}$"))
+              and .authorization_manifest_sha256
+                != "0000000000000000000000000000000000000000000000000000000000000000"
+              and (.expires_at | type) == "string"
+              and (.expires_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+              and (.policy_epoch | type) == "number"
+              and (.policy_epoch | floor) == .policy_epoch
+              and .policy_epoch > 0
+              and (.series_id | type) == "string"
+              and (.series_id | test("^rep120-main-[a-z0-9][a-z0-9-]{0,63}$"))
+              and (.allowed_principals | type) == "array"
+              and (.allowed_principals | length) > 0
+              and (.allowed_principals | length) <= 4
+              and all(.allowed_principals[];
+                keys == [
+                  "github_app_id", "login", "review_class", "type", "user_id"
+                ]
+                and (.login | type) == "string"
+                and (.login | test("^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9]|[A-Za-z0-9])?(?:\\[bot\\])?$"))
+                and (.user_id | type) == "number"
+                and (.user_id | floor) == .user_id
+                and .user_id > 0
+                and (
+                  (.type == "User"
+                    and .github_app_id == null
+                    and .review_class == "copilot")
+                  or
+                  (.type == "Bot"
+                    and (.github_app_id | type) == "number"
+                    and (.github_app_id | floor) == .github_app_id
+                    and .github_app_id > 0
+                    and (.review_class == "managed-sync"
+                      or .review_class == "renovate"
+                      or .review_class == "exact-revision"))
+                ))
+              and ([.allowed_principals[] | [.login, .user_id]] | unique | length)
+                == (.allowed_principals | length)
+              and ([.allowed_principals[].user_id] | unique | length)
+                == (.allowed_principals | length)
+            end
+          )
+          JQ
+          )"
+          # rep120-s0-policy-contract: end
+          jq -e "${s0_policy_contract}" "${policy_file}" >/dev/null
+          test "$(jq -er .state "${policy_file}")" = active
+          now_epoch="$(date -u +%s)"
+          expires_epoch="$(jq -er '.expires_at | fromdateiso8601' \
+            "${policy_file}")"
+          test "${expires_epoch}" -gt "${now_epoch}"
+
+          normalization_sentinel='0000000000000000000000000000000000000000000000000000000000000000'
+          normalized_policy_sha256="$(
+            {
+              printf '%s\0' 'rep120-normalized-policy-v1'
+              jq -Sc \
+                --arg sentinel "${normalization_sentinel}" \
+                '.authorization_manifest_sha256 = $sentinel' \
+                "${policy_file}"
+            } | sha256sum | awk '{print $1}'
+          )"
+          [[ "${normalized_policy_sha256}" =~ ^[0-9a-f]{64}$ ]]
+
+          # rep120-s0-core-v2-verifier: start
+          s0_core_verifier="${s0_directory}/verify-core-v2.py"
+          cat >"${s0_core_verifier}" <<'PY'
+          from __future__ import annotations
+
+          import copy
+          import datetime as dt
+          import hashlib
+          import json
+          import re
+          import sys
+
+
+          ZERO64 = "0" * 64
+          POLICY_PATH = ".lit/feature-main-prestage-policy.json"
+          ADR_PATH = (
+              "docs/adr/"
+              "rep120-promotion-reconciler-path-isolation-20260905.md"
+          )
+          P2_PATHS = [
+              ".github/workflows/current-revision-rerun.yml",
+              "tests/test_copilot_review_refresh.py",
+          ]
+          P4_PATHS = [
+              ".github/workflows/supplementary-current-revision-required.yml",
+              POLICY_PATH,
+              "tests/test_supplementary_required_workflow.py",
+          ]
+          LOGICAL_TREE_IDS = [
+              "starting-main",
+              "post-P1",
+              "post-P2",
+              "post-P3",
+              "post-P4-M",
+          ]
+          FULL_TREE_MAXIMUM_BYTES = 199999
+          FULL_TREE_MAXIMUM_ENTRIES = 4096
+          ORDINARY_MODES = ["100644", "100755"]
+          OBJECT_FORMAT = {
+              "enumeration": "git-ls-tree-r-z-v1",
+              "maximum_entries": FULL_TREE_MAXIMUM_ENTRIES,
+              "maximum_input_bytes": FULL_TREE_MAXIMUM_BYTES,
+              "object_hash": "sha1",
+              "oid_hex_length": 40,
+              "ordinary_modes": ORDINARY_MODES,
+              "record_type": "blob",
+          }
+          DOMAINS = [
+              "rep120-authorization-manifest-core-v2",
+              "rep120-post-core-coverage-v1",
+              "rep120-protected-activation-receipt-v1",
+          ]
+          HEX40 = re.compile(r"^[0-9a-f]{40}$")
+          HEX64 = re.compile(r"^[0-9a-f]{64}$")
+          PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+          class Rejected(Exception):
+              pass
+
+
+          def require(condition: bool, message: str) -> None:
+              if not condition:
+                  raise Rejected(message)
+
+
+          def closed(value: object, keys: set[str], label: str) -> dict:
+              require(type(value) is dict, f"{label}: object required")
+              result = value
+              require(set(result) == keys, f"{label}: closed schema")
+              return result
+
+
+          def bounded_int(
+              value: object, minimum: int, maximum: int, label: str
+          ) -> int:
+              require(type(value) is int, f"{label}: integer required")
+              require(minimum <= value <= maximum, f"{label}: range")
+              return value
+
+
+          def sha256_identity(value: object, label: str) -> str:
+              require(
+                  type(value) is str
+                  and HEX64.fullmatch(value) is not None
+                  and value != ZERO64,
+                  f"{label}: nonzero SHA-256 required",
+              )
+              return value
+
+
+          def git_oid(value: object, label: str) -> str:
+              require(
+                  type(value) is str
+                  and HEX40.fullmatch(value) is not None
+                  and value != "0" * 40,
+                  f"{label}: nonzero Git SHA-1 required",
+              )
+              return value
+
+
+          def repository_path(value: object, label: str) -> str:
+              require(type(value) is str, f"{label}: string required")
+              require(value != "" and not value.startswith("/"),
+                      f"{label}: unsafe path")
+              components = value.split("/")
+              require(
+                  all(
+                      component not in ("", ".", "..")
+                      and component.casefold() != ".git"
+                      and PATH_COMPONENT.fullmatch(component) is not None
+                      for component in components
+                  ),
+                  f"{label}: unsafe path component",
+              )
+              return value
+
+
+          def absent_ordinary(path: str) -> dict:
+              return {
+                  "blob": None,
+                  "class": "ordinary",
+                  "mode": None,
+                  "path": path,
+                  "presence": "absent",
+              }
+
+
+          def validate_material_entry(
+              value: object, label: str, *, allow_absent: bool
+          ) -> dict:
+              require(type(value) is dict, f"{label}: object required")
+              entry_class = value.get("class")
+              if entry_class == "ordinary":
+                  entry = closed(
+                      value,
+                      {"blob", "class", "mode", "path", "presence"},
+                      label,
+                  )
+                  path = repository_path(entry["path"], f"{label} path")
+                  require(path != POLICY_PATH, f"{label}: policy class")
+                  require(
+                      entry["presence"] in ("absent", "present"),
+                      f"{label}: presence",
+                  )
+                  if entry["presence"] == "absent":
+                      require(
+                          allow_absent
+                          and entry["mode"] is None
+                          and entry["blob"] is None,
+                          f"{label}: explicit absence",
+                      )
+                  else:
+                      require(
+                          entry["mode"] in ORDINARY_MODES,
+                          f"{label}: ordinary mode",
+                      )
+                      git_oid(entry["blob"], f"{label} blob")
+                  return entry
+              if entry_class == "normalized-policy":
+                  entry = closed(
+                      value,
+                      {
+                          "class",
+                          "mode",
+                          "normalization_schema",
+                          "normalized_sha256",
+                          "path",
+                          "presence",
+                          "state",
+                      },
+                      label,
+                  )
+                  require(
+                      repository_path(entry["path"], f"{label} path")
+                      == POLICY_PATH
+                      and entry["normalization_schema"]
+                      == "rep120-normalized-policy-v1",
+                      f"{label}: normalized policy identity",
+                  )
+                  require(
+                      entry["presence"] in ("absent", "present"),
+                      f"{label}: presence",
+                  )
+                  if entry["presence"] == "absent":
+                      require(
+                          allow_absent
+                          and entry["mode"] is None
+                          and entry["normalized_sha256"] is None
+                          and entry["state"] is None,
+                          f"{label}: explicit policy absence",
+                      )
+                  else:
+                      require(
+                          entry["mode"] == "100644"
+                          and entry["state"] in ("active", "consumed"),
+                          f"{label}: normalized policy state",
+                      )
+                      sha256_identity(
+                          entry["normalized_sha256"],
+                          f"{label} normalized digest",
+                      )
+                  return entry
+              raise Rejected(f"{label}: unknown material class")
+
+
+          def parse_full_tree(raw: bytes) -> list[dict]:
+              require(type(raw) is bytes, "full tree: bytes required")
+              require(
+                  0 < len(raw) <= FULL_TREE_MAXIMUM_BYTES,
+                  "full tree: byte boundary",
+              )
+              require(raw.endswith(b"\0"), "full tree: terminal NUL")
+              records = raw[:-1].split(b"\0")
+              require(
+                  records
+                  and all(record != b"" for record in records)
+                  and len(records) <= FULL_TREE_MAXIMUM_ENTRIES,
+                  "full tree: record boundary",
+              )
+              entries: list[dict] = []
+              seen: set[str] = set()
+              for record in records:
+                  parts = record.split(b"\t")
+                  require(len(parts) == 2, "full tree: record framing")
+                  header, raw_path = parts
+                  header_parts = header.split(b" ")
+                  require(len(header_parts) == 3, "full tree: header framing")
+                  try:
+                      mode = header_parts[0].decode("ascii")
+                      object_type = header_parts[1].decode("ascii")
+                      oid = header_parts[2].decode("ascii")
+                      path = raw_path.decode("ascii")
+                  except UnicodeDecodeError as error:
+                      raise Rejected("full tree: non-ASCII record") from error
+                  require(
+                      object_type == "blob"
+                      and mode in ORDINARY_MODES,
+                      "full tree: unsupported type or mode",
+                  )
+                  git_oid(oid, "full tree blob")
+                  path = repository_path(path, "full tree path")
+                  require(path != POLICY_PATH, "full tree: policy is logical")
+                  require(path not in seen, "full tree: duplicate path")
+                  seen.add(path)
+                  entries.append(
+                      {
+                          "blob": oid,
+                          "class": "ordinary",
+                          "mode": mode,
+                          "path": path,
+                          "presence": "present",
+                      }
+                  )
+              return sorted(entries, key=lambda entry: entry["path"])
+
+
+          def validate_json_tree(
+              value: object, depth: int = 0, counter: list[int] | None = None
+          ) -> None:
+              if counter is None:
+                  counter = [0]
+              counter[0] += 1
+              require(depth <= 32 and counter[0] <= 20000, "JSON complexity")
+              if value is None or type(value) in (bool, int):
+                  if type(value) is int:
+                      require(abs(value) <= 9007199254740991, "unsafe integer")
+                  return
+              if type(value) is str:
+                  require(value.isascii(), "non-ASCII JSON")
+                  return
+              if type(value) is list:
+                  for item in value:
+                      validate_json_tree(item, depth + 1, counter)
+                  return
+              if type(value) is dict:
+                  for key, item in value.items():
+                      require(type(key) is str and key.isascii(), "invalid key")
+                      validate_json_tree(item, depth + 1, counter)
+                  return
+              raise Rejected("unsupported JSON type")
+
+
+          def canonical(value: object) -> bytes:
+              validate_json_tree(value)
+              return (
+                  json.dumps(
+                      value,
+                      ensure_ascii=False,
+                      sort_keys=True,
+                      separators=(",", ":"),
+                  )
+                  + "\n"
+              ).encode("utf-8")
+
+
+          def strict_json(raw: bytes, label: str) -> object:
+              require(0 < len(raw) < 200000, f"{label}: byte boundary")
+              require(not raw.startswith(b"\xef\xbb\xbf"), f"{label}: BOM")
+              require(b"\r" not in raw, f"{label}: CR")
+              require(
+                  raw.endswith(b"\n") and not raw.endswith(b"\n\n"),
+                  f"{label}: terminal LF",
+              )
+
+              def unique_pairs(items: list[tuple[str, object]]) -> dict:
+                  result: dict[str, object] = {}
+                  for key, value in items:
+                      require(key not in result, f"{label}: duplicate key")
+                      result[key] = value
+                  return result
+
+              def reject_number(_: str) -> object:
+                  raise Rejected(f"{label}: non-integer number")
+
+              try:
+                  value = json.loads(
+                      raw[:-1].decode("utf-8", errors="strict"),
+                      object_pairs_hook=unique_pairs,
+                      parse_float=reject_number,
+                      parse_constant=reject_number,
+                  )
+              except (
+                  UnicodeDecodeError,
+                  json.JSONDecodeError,
+                  ValueError,
+                  RecursionError,
+              ) as error:
+                  raise Rejected(f"{label}: invalid JSON") from error
+              require(canonical(value) == raw, f"{label}: noncanonical JSON")
+              return value
+
+
+          def digest(domain: str, value: object) -> str:
+              require(
+                  domain in DOMAINS
+                  or domain
+                  in (
+                      "rep120-logical-content-tree-v1",
+                      "rep120-normalized-policy-v1",
+                  ),
+                  "digest domain",
+              )
+              result = hashlib.sha256(
+                  domain.encode("ascii") + b"\0" + canonical(value)
+              ).hexdigest()
+              return sha256_identity(result, "derived semantic digest")
+
+
+          def git_blob(raw: bytes) -> str:
+              return hashlib.sha1(
+                  f"blob {len(raw)}\0".encode("ascii") + raw,
+                  usedforsecurity=False,
+              ).hexdigest()
+
+
+          def timestamp(value: object, label: str) -> dt.datetime:
+              require(
+                  type(value) is str
+                  and re.fullmatch(
+                      r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+                      r"[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+                      value,
+                  )
+                  is not None,
+                  f"{label}: timestamp",
+              )
+              try:
+                  return dt.datetime.strptime(
+                      value, "%Y-%m-%dT%H:%M:%SZ"
+                  ).replace(tzinfo=dt.timezone.utc)
+              except ValueError as error:
+                  raise Rejected(f"{label}: timestamp") from error
+
+
+          def validate_policy(value: object) -> dict:
+              policy = closed(
+                  value,
+                  {
+                      "allowed_principals",
+                      "authorization_manifest_sha256",
+                      "canonical_diff",
+                      "expires_at",
+                      "issue",
+                      "policy_epoch",
+                      "schema",
+                      "series_id",
+                      "state",
+                      "target",
+                      "transitions",
+                  },
+                  "policy",
+              )
+              require(
+                  policy["schema"]
+                  == "lit.rep120.feature-main-prestage-policy/v2"
+                  and policy["issue"] == 564,
+                  "policy identity",
+              )
+              require(
+                  policy["target"]
+                  == {
+                      "base_ref": "refs/heads/main",
+                      "head_prefix": "prestage/",
+                      "repository": "lightning-it/.github",
+                      "repository_id": 1112629689,
+                      "source_ref": "refs/heads/develop",
+                  },
+                  "policy target",
+              )
+              require(
+                  policy["canonical_diff"]
+                  == {
+                      "format": "git-diff-binary-full-index-no-renames-v1",
+                      "maximum_bytes": 199999,
+                      "minimum_bytes": 1,
+                      "options": [
+                          "--binary",
+                          "--full-index",
+                          "--no-renames",
+                          "--no-color",
+                          "--no-ext-diff",
+                          "--no-textconv",
+                      ],
+                  }
+                  and policy["transitions"]
+                  == ["inactive", "active", "consumed"],
+                  "policy contract",
+              )
+              require(policy["state"] in ("inactive", "active", "consumed"),
+                      "policy state")
+              if policy["state"] == "inactive":
+                  require(
+                      policy["allowed_principals"] == []
+                      and policy["authorization_manifest_sha256"] is None
+                      and policy["expires_at"] is None
+                      and policy["policy_epoch"] == 0
+                      and policy["series_id"] is None,
+                      "inactive policy authority",
+                  )
+                  return policy
+              sha256_identity(
+                  policy["authorization_manifest_sha256"],
+                  "policy Core digest",
+              )
+              bounded_int(policy["policy_epoch"], 1, 2147483647, "policy epoch")
+              require(
+                  type(policy["series_id"]) is str
+                  and re.fullmatch(
+                      r"rep120-main-[a-z0-9][a-z0-9-]{0,63}",
+                      policy["series_id"],
+                  )
+                  is not None,
+                  "policy series",
+              )
+              timestamp(policy["expires_at"], "policy expiry")
+              principals = policy["allowed_principals"]
+              require(type(principals) is list and 1 <= len(principals) <= 4,
+                      "principals")
+              identities: set[tuple[str, int]] = set()
+              user_ids: set[int] = set()
+              for item in principals:
+                  principal = closed(
+                      item,
+                      {
+                          "github_app_id",
+                          "login",
+                          "review_class",
+                          "type",
+                          "user_id",
+                      },
+                      "principal",
+                  )
+                  require(
+                      type(principal["login"]) is str
+                      and re.fullmatch(
+                          r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}"
+                          r"[A-Za-z0-9]|[A-Za-z0-9])?(?:\[bot\])?",
+                          principal["login"],
+                      )
+                      is not None,
+                      "principal login",
+                  )
+                  user_id = bounded_int(
+                      principal["user_id"], 1, 9007199254740991, "user id"
+                  )
+                  if principal["type"] == "User":
+                      require(
+                          principal["github_app_id"] is None
+                          and principal["review_class"] == "copilot",
+                          "user principal",
+                      )
+                  else:
+                      require(
+                          principal["type"] == "Bot"
+                          and type(principal["github_app_id"]) is int
+                          and principal["github_app_id"] > 0
+                          and principal["review_class"]
+                          in ("managed-sync", "renovate", "exact-revision"),
+                          "bot principal",
+                      )
+                  identity = (principal["login"], user_id)
+                  require(
+                      identity not in identities and user_id not in user_ids,
+                      "duplicate principal",
+                  )
+                  identities.add(identity)
+                  user_ids.add(user_id)
+              return policy
+
+
+          def normalized(policy: dict) -> str:
+              value = copy.deepcopy(policy)
+              value["authorization_manifest_sha256"] = ZERO64
+              return digest("rep120-normalized-policy-v1", value)
+
+
+          def validate_logical_trees(
+              core: dict, normalization: dict
+          ) -> list[tuple[dict[str, dict], str]]:
+              logical_trees = core["logical_trees"]
+              require(
+                  type(logical_trees) is list
+                  and len(logical_trees) == len(LOGICAL_TREE_IDS),
+                  "logical trees",
+              )
+              result: list[tuple[dict[str, dict], str]] = []
+              for expected_id, value in zip(
+                  LOGICAL_TREE_IDS, logical_trees, strict=True
+              ):
+                  tree = closed(
+                      value,
+                      {"entries", "id", "logical_tree_sha256"},
+                      f"logical tree {expected_id}",
+                  )
+                  require(tree["id"] == expected_id, "logical tree order")
+                  entries = tree["entries"]
+                  require(
+                      type(entries) is list
+                      and 1 <= len(entries) <= FULL_TREE_MAXIMUM_ENTRIES + 1,
+                      "logical tree entries",
+                  )
+                  validated = [
+                      validate_material_entry(
+                          entry,
+                          f"logical tree {expected_id} entry",
+                          allow_absent=True,
+                      )
+                      for entry in entries
+                  ]
+                  paths = [entry["path"] for entry in validated]
+                  require(
+                      paths == sorted(paths)
+                      and len(paths) == len(set(paths)),
+                      "logical tree path closure",
+                  )
+                  policies = [
+                      entry
+                      for entry in validated
+                      if entry["class"] == "normalized-policy"
+                  ]
+                  require(len(policies) == 1, "sole normalized policy entry")
+                  require(
+                      all(
+                          entry["presence"] == "present"
+                          for entry in validated
+                          if entry["class"] == "ordinary"
+                      ),
+                      "logical tree ordinary presence",
+                  )
+                  policy_entry = policies[0]
+                  if expected_id == "post-P4-M":
+                      require(
+                          policy_entry["presence"] == "present"
+                          and policy_entry["mode"] == "100644"
+                          and policy_entry["state"] == "consumed"
+                          and policy_entry["normalized_sha256"]
+                          == normalization["consumed_sha256"],
+                          "terminal logical policy",
+                      )
+                  else:
+                      require(
+                          policy_entry["presence"] == "absent",
+                          "pre-P4 logical policy absence",
+                      )
+                  projection = {
+                      "entries": validated,
+                      "schema": "lit.rep120.logical-content-tree/v1",
+                  }
+                  expected_digest = digest(
+                      "rep120-logical-content-tree-v1", projection
+                  )
+                  require(
+                      sha256_identity(
+                          tree["logical_tree_sha256"],
+                          f"logical tree {expected_id} digest",
+                      )
+                      == expected_digest,
+                      "logical tree digest",
+                  )
+                  result.append(
+                      (
+                          {entry["path"]: entry for entry in validated},
+                          expected_digest,
+                      )
+                  )
+              return result
+
+
+          def validate_units(
+              core: dict,
+              logical_trees: list[tuple[dict[str, dict], str]],
+              normalization: dict,
+          ) -> dict[str, list[str]]:
+              require(
+                  core["ordered_units"] == ["P1", "P2", "P3", "P4"]
+                  and core["maximum_unit_count"] == 4
+                  and core["terminal_unit_id"] == "P4"
+                  and type(core["units"]) is list
+                  and len(core["units"]) == 4,
+                  "Core topology",
+              )
+              ownership: set[str] = set()
+              result: dict[str, list[str]] = {}
+              for index, (expected, item) in enumerate(
+                  zip(core["ordered_units"], core["units"], strict=True)
+              ):
+                  unit = closed(
+                      item,
+                      {
+                          "changes",
+                          "id",
+                          "paths",
+                          "predecessor_logical_tree_sha256",
+                          "result_logical_tree_sha256",
+                          "review_bytes",
+                          "review_sha256",
+                      },
+                      f"Core {expected}",
+                  )
+                  require(unit["id"] == expected, "Core order")
+                  predecessor, predecessor_digest = logical_trees[index]
+                  result_tree, result_digest = logical_trees[index + 1]
+                  require(
+                      unit["predecessor_logical_tree_sha256"]
+                      == predecessor_digest
+                      and unit["result_logical_tree_sha256"] == result_digest
+                      and predecessor_digest != result_digest,
+                      "Core logical tree transition",
+                  )
+                  paths = unit["paths"]
+                  require(
+                      type(paths) is list
+                      and len(paths) > 0,
+                      "Core paths",
+                  )
+                  validated_paths = [
+                      repository_path(path, "Core path") for path in paths
+                  ]
+                  require(
+                      paths == sorted(validated_paths)
+                      and len(paths) == len(set(validated_paths)),
+                      "Core paths",
+                  )
+                  require(
+                      ".lit/main-ancestry.json" not in validated_paths,
+                      "unsafe Core path",
+                  )
+                  require(
+                      ownership.isdisjoint(validated_paths),
+                      "overlapping ownership",
+                  )
+                  ownership.update(validated_paths)
+                  bounded_int(unit["review_bytes"], 1, 199999, "review bytes")
+                  sha256_identity(
+                      unit["review_sha256"], "Core unit review digest"
+                  )
+                  changes = unit["changes"]
+                  require(
+                      type(changes) is list and len(changes) == len(paths),
+                      "Core changes",
+                  )
+                  change_paths: list[str] = []
+                  for change_value in changes:
+                      change = closed(
+                          change_value,
+                          {
+                              "base_main",
+                              "candidate_result_main",
+                              "path",
+                              "source_develop",
+                          },
+                          f"Core {expected} change",
+                      )
+                      path = repository_path(
+                          change["path"], f"Core {expected} change path"
+                      )
+                      change_paths.append(path)
+                      base_main = validate_material_entry(
+                          change["base_main"],
+                          f"Core {expected} base material",
+                          allow_absent=True,
+                      )
+                      source_develop = validate_material_entry(
+                          change["source_develop"],
+                          f"Core {expected} source material",
+                          allow_absent=True,
+                      )
+                      candidate_result = validate_material_entry(
+                          change["candidate_result_main"],
+                          f"Core {expected} result material",
+                          allow_absent=True,
+                      )
+                      require(
+                          base_main["path"] == path
+                          and source_develop["path"] == path
+                          and candidate_result["path"] == path,
+                          "Core material path binding",
+                      )
+                      expected_base = predecessor.get(
+                          path, absent_ordinary(path)
+                      )
+                      expected_result = result_tree.get(
+                          path, absent_ordinary(path)
+                      )
+                      require(
+                          base_main == expected_base
+                          and candidate_result == expected_result,
+                          "Core material tree binding",
+                      )
+                      if path == POLICY_PATH:
+                          require(
+                              expected == "P4"
+                              and source_develop
+                              == {
+                                  "class": "normalized-policy",
+                                  "mode": "100644",
+                                  "normalization_schema": (
+                                      "rep120-normalized-policy-v1"
+                                  ),
+                                  "normalized_sha256": normalization[
+                                      "active_sha256"
+                                  ],
+                                  "path": POLICY_PATH,
+                                  "presence": "present",
+                                  "state": "active",
+                              }
+                              and base_main["presence"] == "absent"
+                              and candidate_result["presence"] == "present"
+                              and candidate_result["state"] == "consumed"
+                              and candidate_result["normalized_sha256"]
+                              == normalization["consumed_sha256"],
+                              "Core normalized policy material",
+                          )
+                      else:
+                          require(
+                              source_develop == candidate_result,
+                              "Core ordinary source/result material",
+                          )
+                          if expected in ("P1", "P2", "P4"):
+                              require(
+                                  candidate_result["presence"] == "present",
+                                  "Core required result presence",
+                              )
+                  require(
+                      change_paths == paths,
+                      "Core ordered material",
+                  )
+                  delta_paths = sorted(
+                      path
+                      for path in set(predecessor) | set(result_tree)
+                      if predecessor.get(path, absent_ordinary(path))
+                      != result_tree.get(path, absent_ordinary(path))
+                  )
+                  require(delta_paths == paths, "Core complete tree delta")
+                  result[expected] = validated_paths
+              require(result["P1"] == [ADR_PATH], "P1 ownership")
+              require(result["P2"] == sorted(P2_PATHS), "P2 ownership")
+              require(result["P4"] == sorted(P4_PATHS), "P4 ownership")
+              return result
+
+
+          def validate_core(
+              value: object, policy: dict, starting_tree_raw: bytes
+          ) -> tuple[dict, dict]:
+              core = closed(
+                  value,
+                  {
+                      "expires_at",
+                      "issue",
+                      "logical_trees",
+                      "maximum_unit_count",
+                      "normalization",
+                      "object_format",
+                      "ordered_units",
+                      "policy_epoch",
+                      "repository",
+                      "schema",
+                      "series_id",
+                      "starting_main",
+                      "terminal_unit_id",
+                      "units",
+                  },
+                  "Core",
+              )
+              require(
+                  core["schema"]
+                  == "lit.rep120.authorization-manifest-core/v2"
+                  and core["issue"] == 564
+                  and core["repository"]
+                  == {"id": 1112629689, "name": "lightning-it/.github"},
+                  "Core identity",
+              )
+              require(core["object_format"] == OBJECT_FORMAT,
+                      "Core object format")
+              require(
+                  core["series_id"] == policy["series_id"]
+                  and core["policy_epoch"] == policy["policy_epoch"]
+                  and core["expires_at"] == policy["expires_at"],
+                  "Core policy dependency",
+              )
+              start = closed(
+                  core["starting_main"],
+                  {"commit", "logical_tree_sha256", "tree"},
+                  "starting main",
+              )
+              git_oid(start["commit"], "starting main commit")
+              git_oid(start["tree"], "starting main tree")
+              consumed = copy.deepcopy(policy)
+              consumed["state"] = "consumed"
+              normalization = closed(
+                  core["normalization"],
+                  {
+                      "active_sha256",
+                      "consumed_sha256",
+                      "domain",
+                      "path",
+                      "sentinel",
+                  },
+                  "Core normalization",
+              )
+              sha256_identity(
+                  normalization["active_sha256"],
+                  "active normalized-policy digest",
+              )
+              sha256_identity(
+                  normalization["consumed_sha256"],
+                  "consumed normalized-policy digest",
+              )
+              require(
+                  normalization
+                  == {
+                      "active_sha256": normalized(policy),
+                      "consumed_sha256": normalized(consumed),
+                      "domain": "rep120-normalized-policy-v1",
+                      "path": POLICY_PATH,
+                      "sentinel": ZERO64,
+                  },
+                  "Core normalization",
+              )
+              logical_trees = validate_logical_trees(core, normalization)
+              require(
+                  start["logical_tree_sha256"] == logical_trees[0][1],
+                  "starting main logical tree",
+              )
+              expected_starting_entries = sorted(
+                  (
+                      entry
+                      for entry in logical_trees[0][0].values()
+                      if entry["class"] == "ordinary"
+                  ),
+                  key=lambda entry: entry["path"],
+              )
+              require(
+                  parse_full_tree(starting_tree_raw)
+                  == expected_starting_entries,
+                  "starting main full tree closure",
+              )
+              return core, validate_units(
+                  core, logical_trees, normalization
+              )
+
+
+          def validate_coverage(
+              value: object,
+              core: dict,
+              core_digest: str,
+              paths: dict[str, list[str]],
+              policy: dict,
+              policy_raw: bytes,
+          ) -> tuple[dict, str]:
+              coverage = closed(
+                  value,
+                  {
+                      "activation",
+                      "core_sha256",
+                      "policy",
+                      "previous_record_sha256",
+                      "repository",
+                      "schema",
+                      "series_id",
+                      "units",
+                  },
+                  "Coverage",
+              )
+              sha256_identity(coverage["core_sha256"], "Coverage Core digest")
+              sha256_identity(
+                  coverage["previous_record_sha256"],
+                  "Coverage predecessor digest",
+              )
+              require(
+                  coverage["schema"] == "lit.rep120.post-core-coverage/v1"
+                  and coverage["core_sha256"] == core_digest
+                  and coverage["previous_record_sha256"] == core_digest
+                  and coverage["repository"] == core["repository"]
+                  and coverage["series_id"] == core["series_id"],
+                  "Coverage Core dependency",
+              )
+              consumed = copy.deepcopy(policy)
+              consumed["state"] = "consumed"
+              consumed_raw = canonical(consumed)
+              expected_material = {
+                  "active_blob": git_blob(policy_raw),
+                  "active_bytes_sha256": sha256_identity(
+                      hashlib.sha256(policy_raw).hexdigest(),
+                      "derived active-policy bytes digest",
+                  ),
+                  "active_normalized_sha256": normalized(policy),
+                  "consumed_blob": git_blob(consumed_raw),
+                  "consumed_bytes_sha256": sha256_identity(
+                      hashlib.sha256(consumed_raw).hexdigest(),
+                      "derived consumed-policy bytes digest",
+                  ),
+                  "consumed_normalized_sha256": normalized(consumed),
+              }
+              coverage_policy = closed(
+                  coverage["policy"], set(expected_material), "Coverage policy"
+              )
+              for field in (
+                  "active_bytes_sha256",
+                  "active_normalized_sha256",
+                  "consumed_bytes_sha256",
+                  "consumed_normalized_sha256",
+              ):
+                  sha256_identity(
+                      coverage_policy[field], f"Coverage policy {field}"
+                  )
+              require(coverage_policy == expected_material,
+                      "Coverage policy material")
+              require(
+                  type(coverage["units"]) is list
+                  and len(coverage["units"]) == 4,
+                  "Coverage units",
+              )
+              for expected, covered, core_unit in zip(
+                  core["ordered_units"],
+                  coverage["units"],
+                  core["units"],
+                  strict=True,
+              ):
+                  covered = closed(
+                      covered,
+                      {"diff_bytes", "diff_sha256", "id", "paths"},
+                      f"Coverage {expected}",
+                  )
+                  sha256_identity(
+                      covered["diff_sha256"],
+                      f"Coverage {expected} diff digest",
+                  )
+                  require(
+                      covered
+                      == {
+                          "diff_bytes": core_unit["review_bytes"],
+                          "diff_sha256": core_unit["review_sha256"],
+                          "id": expected,
+                          "paths": paths[expected],
+                      },
+                      "Coverage unit mapping",
+                  )
+              activation = closed(
+                  coverage["activation"],
+                  {"diff_bytes", "diff_sha256", "paths"},
+                  "activation Coverage",
+              )
+              bounded_int(
+                  activation["diff_bytes"], 1, 199999, "activation bytes"
+              )
+              require(
+                  activation["paths"] == [POLICY_PATH]
+                  and sha256_identity(
+                      activation["diff_sha256"],
+                      "Coverage activation diff digest",
+                  )
+                  == activation["diff_sha256"],
+                  "activation Coverage",
+              )
+              core_bytes = canonical(core)
+              for field in (
+                  "active_blob",
+                  "active_bytes_sha256",
+                  "consumed_blob",
+                  "consumed_bytes_sha256",
+              ):
+                  require(
+                      expected_material[field].encode("ascii") not in core_bytes,
+                      "cyclic Core material",
+                  )
+              return coverage, expected_material["active_blob"]
+
+
+          def validate_activation(
+              value: object,
+              core: dict,
+              coverage: dict,
+              core_digest: str,
+              coverage_digest: str,
+              active_blob: str,
+          ) -> None:
+              activation = closed(
+                  value,
+                  {
+                      "active_policy_blob",
+                      "core_sha256",
+                      "coverage_sha256",
+                      "diff",
+                      "merge",
+                      "previous_record_sha256",
+                      "schema",
+                      "series_id",
+                  },
+                  "Activation",
+              )
+              sha256_identity(activation["core_sha256"],
+                              "Activation Core digest")
+              sha256_identity(
+                  activation["coverage_sha256"],
+                  "Activation Coverage digest",
+              )
+              sha256_identity(
+                  activation["previous_record_sha256"],
+                  "Activation predecessor digest",
+              )
+              activation_diff = closed(
+                  activation["diff"],
+                  {"diff_bytes", "diff_sha256", "paths"},
+                  "Activation diff",
+              )
+              sha256_identity(
+                  activation_diff["diff_sha256"],
+                  "Activation diff digest",
+              )
+              require(
+                  activation["schema"]
+                  == "lit.rep120.protected-activation-receipt/v1"
+                  and activation["series_id"] == core["series_id"]
+                  and activation["core_sha256"] == core_digest
+                  and activation["coverage_sha256"] == coverage_digest
+                  and activation["previous_record_sha256"] == coverage_digest
+                  and activation["active_policy_blob"] == active_blob
+                  and activation_diff == coverage["activation"],
+                  "Activation dependencies",
+              )
+              merge = closed(
+                  activation["merge"],
+                  {
+                      "base",
+                      "bypass_used",
+                      "head",
+                      "parents",
+                      "result_tree",
+                      "signature_verified",
+                  },
+                  "Activation merge",
+              )
+              for field in ("base", "head", "result_tree"):
+                  git_oid(merge[field], f"Activation {field}")
+              require(
+                  merge["base"] != merge["head"]
+                  and merge["parents"] == [merge["base"], merge["head"]]
+                  and merge["signature_verified"] is True
+                  and merge["bypass_used"] is False,
+                  "protected Activation merge",
+              )
+
+
+          def run(
+              policy_raw: bytes,
+              bundle_raw: bytes,
+              starting_tree_raw: bytes,
+              observed_at: str,
+          ) -> dict:
+              policy = validate_policy(strict_json(policy_raw, "active policy"))
+              require(policy["state"] == "active", "policy is not active")
+              require(
+                  timestamp(policy["expires_at"], "policy expiry")
+                  > timestamp(observed_at, "observed at"),
+                  "policy expired",
+              )
+              bundle = closed(
+                  strict_json(bundle_raw, "sealed roots"),
+                  {"records", "schema"},
+                  "sealed roots",
+              )
+              require(
+                  bundle["schema"] == "lit.rep120.s0-core-v2-fixture/v1",
+                  "sealed roots schema",
+              )
+              records = bundle["records"]
+              require(type(records) is list and len(records) == 3,
+                      "exact root count")
+              values: list[dict] = []
+              digests: list[str] = []
+              for index, domain in enumerate(DOMAINS):
+                  envelope = closed(
+                      records[index], {"domain", "record"}, f"root {index}"
+                  )
+                  require(envelope["domain"] == domain, "root order")
+                  values.append(envelope["record"])
+                  digests.append(digest(domain, envelope["record"]))
+              core, paths = validate_core(
+                  values[0], policy, starting_tree_raw
+              )
+              require(
+                  policy["authorization_manifest_sha256"] == digests[0],
+                  "policy selected Core",
+              )
+              coverage, active_blob = validate_coverage(
+                  values[1], core, digests[0], paths, policy, policy_raw
+              )
+              validate_activation(
+                  values[2],
+                  core,
+                  coverage,
+                  digests[0],
+                  digests[1],
+                  active_blob,
+              )
+              return {
+                  "activation_sha256": digests[2],
+                  "core_sha256": digests[0],
+                  "coverage_sha256": digests[1],
+                  "series_id": core["series_id"],
+              }
+
+
+          def main() -> int:
+              if len(sys.argv) == 3 and sys.argv[1] == "--parse-full-tree":
+                  try:
+                      with open(sys.argv[2], "rb") as handle:
+                          raw_tree = handle.read(FULL_TREE_MAXIMUM_BYTES + 1)
+                      result = {
+                          "entries": parse_full_tree(raw_tree),
+                          "object_format": OBJECT_FORMAT,
+                          "schema": "lit.rep120.full-tree-parse/v1",
+                      }
+                  except (OSError, Rejected) as error:
+                      print(f"S0 Core-v2 rejected: {error}", file=sys.stderr)
+                      return 1
+                  sys.stdout.buffer.write(canonical(result))
+                  return 0
+              if len(sys.argv) != 5:
+                  print(
+                      "usage: verify-core-v2.py POLICY ROOTS "
+                      "STARTING_TREE OBSERVED_AT",
+                      file=sys.stderr,
+                  )
+                  return 2
+              try:
+                  with open(sys.argv[1], "rb") as handle:
+                      policy_raw = handle.read(200000)
+                  with open(sys.argv[2], "rb") as handle:
+                      bundle_raw = handle.read(200000)
+                  with open(sys.argv[3], "rb") as handle:
+                      starting_tree_raw = handle.read(
+                          FULL_TREE_MAXIMUM_BYTES + 1
+                      )
+                  result = run(
+                      policy_raw,
+                      bundle_raw,
+                      starting_tree_raw,
+                      sys.argv[4],
+                  )
+              except (OSError, Rejected) as error:
+                  print(f"S0 Core-v2 rejected: {error}", file=sys.stderr)
+                  return 1
+              sys.stdout.buffer.write(canonical(result))
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          chmod 0400 "${s0_core_verifier}"
+          # rep120-s0-core-v2-verifier: end
+
+          # This local successor deliberately has no external store, proxy,
+          # OIDC, attestation or digest-pinned runtime transport binding.
+          # Verification fixtures are exercised only by the coupled tests;
+          # the inactive protected policy therefore grants no authority.
+          echo 'S0 sealed Core-v2 transport is intentionally not configured.' >&2
+          exit 1
+
+  finalize-s0-feature-main-prestage:
+    name: Finalize the protected S0 feature-to-main result
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+      - verify-s0-feature-main-prestage
+    if: >-
+      always()
+      && needs['route-protected-current-revision'].outputs.s0_prestage == 'true'
+      && needs['reserve-s0-feature-main-prestage'].result == 'success'
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Rebind and terminally finalize exactly one S0 check
+        env:
+          DEEP_RESULT: ${{ needs['verify-s0-feature-main-prestage'].result }}
+          DIFF_SHA256: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.diff_sha256 }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXTERNAL_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.external_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          RESERVATION_ID: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].outputs.check_id }}
+          SERIES_ID: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.series_id }}
+          UNIT_ID: >-
+            ${{ needs['verify-s0-feature-main-prestage'].outputs.unit_id }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "${REPOSITORY}" = 'lightning-it/.github'
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
+          expected_external_id="rep120-s0-prestage:v1:1112629689:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${WORKFLOW_SHA}"
+          test "${EXTERNAL_ID}" = "${expected_external_id}"
+
+          terminal_patch() {
+            local conclusion="$1"
+            local title="$2"
+            local summary="$3"
+            gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
+              -f status=completed \
+              -f conclusion="${conclusion}" \
+              -f "output[title]=${title}" \
+              -f "output[summary]=${summary}"
+          }
+          failure_summary="$(jq -cn \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --argjson pull_request_number "${PR_NUMBER}" '
+              {
+                base_sha: $base,
+                conclusion: "failure",
+                diff_sha256: null,
+                head_sha: $head,
+                pull_request_number: $pull_request_number,
+                schema: 1,
+                series_id: null,
+                unit_id: null,
+                workflow_sha: $workflow_sha
+              }
+            ')"
+          failure_armed=0
+          terminally_fail() {
+            local exit_code="$?"
+            trap - ERR
+            set +e
+            if [ "${failure_armed}" = 1 ]; then
+              terminal_patch \
+                failure \
+                'REP-120 S0 verification failed closed' \
+                "${failure_summary}" \
+                >/dev/null
+            fi
+            exit "${exit_code}"
+          }
+          trap terminally_fail ERR
+
+          check="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}")"
+          jq -e \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and (
+                .status == "in_progress"
+                or (.status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure"))
+              )
+            ' <<<"${check}" >/dev/null
+          if [ "$(jq -r .status <<<"${check}")" = in_progress ]; then
+            failure_armed=1
+          fi
+
+          protected_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          protected_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_main}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${protected_develop}" >/dev/null
+          pull="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson number "${PR_NUMBER}" '
+              .number == $number
+              and .state == "open"
+              and .draft == false
+              and .base.ref == "main"
+              and .base.sha == $base
+              and .base.repo.full_name == $repository
+              and .head.sha == $head
+              and .head.repo.full_name == $repository
+              and (.head.ref | startswith("prestage/"))
+            ' <<<"${pull}" >/dev/null
+
+          desired_conclusion=failure
+          output_title='REP-120 S0 verification failed closed'
+          if [ "${DEEP_RESULT}" = success ]; then
+            desired_conclusion=success
+            output_title='REP-120 S0 verification passed'
+            [[ "${DIFF_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            [[ "${SERIES_ID}" =~ ^rep120-main-[a-z0-9][a-z0-9-]{0,63}$ ]]
+            [[ "${UNIT_ID}" =~ ^P[1-4]$ ]]
+          else
+            [[ "${DEEP_RESULT}" =~ ^(failure|cancelled|skipped)$ ]]
+            DIFF_SHA256=''
+            SERIES_ID=''
+            UNIT_ID=''
+          fi
+          summary="$(jq -cn \
+            --arg base "${EVENT_BASE}" \
+            --arg conclusion "${desired_conclusion}" \
+            --arg diff_sha256 "${DIFF_SHA256}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg series_id "${SERIES_ID}" \
+            --arg unit_id "${UNIT_ID}" \
+            --arg workflow_sha "${WORKFLOW_SHA}" \
+            --argjson pull_request_number "${PR_NUMBER}" '
+              {
+                base_sha: $base,
+                conclusion: $conclusion,
+                diff_sha256: (if $diff_sha256 == "" then null else $diff_sha256 end),
+                head_sha: $head,
+                pull_request_number: $pull_request_number,
+                schema: 1,
+                series_id: (if $series_id == "" then null else $series_id end),
+                unit_id: (if $unit_id == "" then null else $unit_id end),
+                workflow_sha: $workflow_sha
+              }
+            ')"
+          if [ "$(jq -r .status <<<"${check}")" = in_progress ]; then
+            finalized="$(terminal_patch \
+              "${desired_conclusion}" "${output_title}" "${summary}")"
+          else
+            test "$(jq -r .conclusion <<<"${check}")" = \
+              "${desired_conclusion}"
+            finalized="${check}"
+          fi
+          jq -e \
+            --arg conclusion "${desired_conclusion}" \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg summary "${summary}" \
+            --arg title "${output_title}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == $conclusion
+              and .output.title == $title
+              and .output.summary == $summary
+            ' <<<"${finalized}" >/dev/null
+          readback="$(gh api \
+            "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}")"
+          jq -e \
+            --arg conclusion "${desired_conclusion}" \
+            --arg external_id "${EXTERNAL_ID}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg summary "${summary}" \
+            --arg title "${output_title}" \
+            --argjson check_id "${RESERVATION_ID}" '
+              .id == $check_id
+              and .name == "REP-120 S0 prestage authorization"
+              and .app.id == 15368
+              and .app.slug == "github-actions"
+              and .head_sha == $head
+              and .external_id == $external_id
+              and .status == "completed"
+              and .conclusion == $conclusion
+              and .output.title == $title
+              and .output.summary == $summary
+            ' <<<"${readback}" >/dev/null
+          failure_armed=0
+          trap - ERR
+
   verify-protected-current-revision-evidence:
     # Keep the native Required-Workflow job distinct from the API evidence
     # check it verifies. GitHub Actions check runs share one App identity, so
     # identical names would make the producer target this job instead of its
     # immutable evidence check.
-    name: Required current-revision workflow
+    name: Legacy protected current-revision verifier
     # Required Workflows do not reliably receive ready_for_review after their
     # initial Draft event. The exact trust-root bootstrap therefore classifies
     # its immutable candidate while Draft and keeps this same protected run
     # alive until the one local pipeline review is final. Other paths keep the
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
     permissions:
       actions: read
       checks: write
@@ -720,13 +2598,14 @@ jobs:
                     and .run_attempt == 1
                     and (.status == "queued"
                       or .status == "in_progress"
-                      or .status == "completed")
-                    and (.name == "Classify protected main trust-root handoff"
-                      or .name == "Request Copilot review for current revision"
-                      or .name == "Verify current revision policy"
-                      or .name == "Request protected verifier re-evaluation"
-                      or .name == "Dispatch protected managed-sync finalizer re-evaluation"))
-                  and ([.[].name] | unique | length) == 5
+                      or .status == "completed"))
+                  and ([.[].name] | sort) == ([
+                      "Classify protected main trust-root handoff",
+                      "Request Copilot review for current revision",
+                      "Verify current revision policy",
+                      "Request protected verifier re-evaluation",
+                      "Dispatch protected managed-sync finalizer re-evaluation"
+                    ] | sort)
                 ' <<<"${producer_jobs}" >/dev/null
               classification_count="$(jq '
                 [.[] |
@@ -1886,6 +3765,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          TERMINAL_PRODUCER_RUN_ID: >-
+            ${{ steps.terminal-producer.outputs.producer_run_id }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
@@ -1912,6 +3793,38 @@ jobs:
                 185604152817860a6ac53e2ae191ac51aa423e31 ] \
               && [ "${EVENT_HEAD}" = \
                 85b1372ce0e0bdb9aec2ced452ad01597965d03b ]
+          }
+
+          issue_564_pr568_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 568 ] \
+              && [ "${EVENT_ACTION}" = ready_for_review ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
+              && [ "${EVENT_HEAD}" = \
+                162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
+              && [ "${WORKFLOW_SHA}" = \
+                27a9267b3d79896e8d13f34f160299d4018e53d6 ]
+          }
+
+          issue_564_pr568_recovery_source_tuple() {
+            [ "${REPOSITORY}" = 'lightning-it/.github' ] \
+              && [ "${PR_NUMBER}" = 568 ] \
+              && [ "${EVENT_ACTION}" = ready_for_review ] \
+              && [ "${GITHUB_RUN_ATTEMPT}" = 1 ] \
+              && [ "${EVENT_SENDER_LOGIN}" = litroc ] \
+              && [ "${EVENT_SENDER_ID}" = 76040632 ] \
+              && [ "${EVENT_SENDER_TYPE}" = User ] \
+              && [ "${EVENT_BASE}" = \
+                2edd5190c88bf32e009848d85df664c29fb4eab6 ] \
+              && [ "${EVENT_HEAD}" = \
+                162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 ] \
+              && [ "${WORKFLOW_SHA}" != \
+                27a9267b3d79896e8d13f34f160299d4018e53d6 ]
           }
 
           [[ "${REPOSITORY}" =~ ^lightning-it/[A-Za-z0-9_.-]+$ ]]
@@ -2216,6 +4129,874 @@ jobs:
                 source_sha="${WORKFLOW_SHA}"
                 issue_564_stage_1_authorized=true
                 issue_564_legacy_retirement_authorized=true
+              # issue-564-pr568-source-transition: start
+              elif issue_564_pr568_recovery_source_tuple \
+                || issue_564_pr568_source_tuple; then
+                issue_564_pr568_recovery_authorized=false
+                if issue_564_pr568_recovery_source_tuple; then
+                  issue_564_pr568_recovery_authorized=true
+                  expected_source_anchor='e5c87afae4e664f313c34f27eced96b4d2c59092'
+                  expected_pr_body_prefix_bytes=2046
+                  expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+                  expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
+                else
+                  expected_source_anchor='5c549450321b5c7182ef452977d9587ff1f7f14c'
+                  expected_pr_body_prefix_bytes=1952
+                  expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+                  expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+                fi
+                expected_base_tree='ac5f5aa7eb77737118cd8a7d2f072f3a8735591d'
+                expected_head_tree='0f3ff650c0d8da4ec2606bc32afd365dfc88e15c'
+                expected_diff_bytes=85276
+                expected_diff_sha256='5992a8cb0f955088fb9c93a91d4dc1017e08a0b28b70722bd93de283d024049a'
+                expected_pr_title='fix(rep60): stage bounded controller delta'
+                expected_pr_created_at='2026-09-07T05:43:57Z'
+                expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+
+                [[ "${EVENT_PR_UPDATED_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+                jq -e \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .name == "develop"
+                    and .protected == true
+                    and .commit.sha == $workflow
+                  ' <<<"${protected_develop}" >/dev/null
+                source_compare="$(gh api \
+                  "repos/lightning-it/.github/compare/${expected_source_anchor}...${WORKFLOW_SHA}")"
+                jq -e \
+                  --arg anchor "${expected_source_anchor}" \
+                  --arg workflow "${WORKFLOW_SHA}" '
+                    .base_commit.sha == $anchor
+                    and .merge_base_commit.sha == $anchor
+                    and .status == "ahead"
+                    and .behind_by == 0
+                    and .ahead_by == 2
+                    and .total_commits == 2
+                    and (.commits | length) == 2
+                    and [.commits[0].parents[].sha] == [$anchor]
+                    and [.commits[1].parents[].sha] == [
+                      $anchor, .commits[0].sha
+                    ]
+                    and .commits[1].commit.tree.sha ==
+                      .commits[0].commit.tree.sha
+                    and .commits[1].commit.verification.verified == true
+                    and .commits[-1].sha == $workflow
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${source_compare}" >/dev/null
+
+                if [ "${issue_564_pr568_recovery_authorized}" = true ]; then
+                  failure_stage='issue-564-pr568-recovery-evidence'
+                  prior_producer_id=34092192358
+                  prior_verifier_id=34092192339
+                  prior_policy_job_id=101647871540
+                  prior_required_job_id=101647850846
+                  prior_failure_completed_at='2026-09-07T07:02:17Z'
+                  test "${TERMINAL_PRODUCER_RUN_ID}" != \
+                    "${prior_producer_id}"
+                  [[ "${TERMINAL_PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+
+                  prior_producer="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_producer_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_producer_id}" '
+                      .id == $run_id
+                      and .workflow_id == 314418918
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/314418918")
+                      and .event == "pull_request_target"
+                      and .path == ".github/workflows/copilot-review.yml"
+                      and .name == "Current revision review gate"
+                      and .display_title
+                        == "fix(rep60): stage bounded controller delta"
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_producer}" >/dev/null
+                  prior_producer_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_producer_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_producer_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_producer_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson policy_job "${prior_policy_job_id}" \
+                    --argjson run_id "${prior_producer_id}" '
+                      length == 4
+                      and ([.[].id] | sort) == [
+                        101647850458, 101647871478,
+                        101647871540, 101649855917
+                      ]
+                      and all(.[];
+                        .run_id == $run_id
+                        and .run_attempt == 1
+                        and .head_sha == $head
+                        and .status == "completed")
+                      and any(.[];
+                        .id == 101647850458
+                        and .name == "Classify protected main trust-root handoff"
+                        and .conclusion == "success")
+                      and any(.[];
+                        .id == 101647871478
+                        and .name == "Request Copilot review for current revision"
+                        and .conclusion == "success"
+                        and any(.steps[]?;
+                          .name == "Request Copilot review for the current revision"
+                          and .number == 2
+                          and .status == "completed"
+                          and .conclusion == "success"))
+                      and any(.[];
+                        .id == $policy_job
+                        and .name == "Verify current revision policy"
+                        and .conclusion == "failure"
+                        and .completed_at == "2026-09-07T06:53:38Z"
+                        and any(.steps[]?;
+                          .name == "Verify current Copilot review and resolved findings"
+                          and .number == 5
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T06:53:35Z")
+                        and any(.steps[]?;
+                          .name == "Publish bound neutral result"
+                          and .number == 6
+                          and .conclusion == "skipped"))
+                      and any(.[];
+                        .id == 101649855917
+                        and .name == "Request protected verifier re-evaluation"
+                        and .conclusion == "skipped"
+                        and .steps == [])
+                    ' <<<"${prior_producer_jobs}" >/dev/null
+
+                  prior_verifier="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_verifier_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_verifier_id}" '
+                      .id == $run_id
+                      and .workflow_id == 335885126
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/335885126")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/supplementary-current-revision-required.yml"
+                      and .name == (
+                        "Protected current revision PR #568 ready_for_review "
+                        + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_verifier}" >/dev/null
+                  prior_verifier_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_verifier_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_verifier_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_verifier_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson required_job "${prior_required_job_id}" \
+                    --argjson run_id "${prior_verifier_id}" '
+                      length == 2
+                      and ([.[].id] | sort)
+                        == [101647850846, 101647852037]
+                      and all(.[];
+                        .run_id == $run_id
+                        and .run_attempt == 1
+                        and .head_sha == $head
+                        and .status == "completed")
+                      and any(.[];
+                        .id == $required_job
+                        and .name == "Required current-revision workflow"
+                        and .conclusion == "failure"
+                        and .completed_at == "2026-09-07T07:02:17Z"
+                        and any(.steps[]?;
+                          .name == "Classify the exact live pull request readiness"
+                          and .number == 7
+                          and .conclusion == "success")
+                        and any(.steps[]?;
+                          .name == "Await the exact protected producer run terminal state"
+                          and .number == 8
+                          and .conclusion == "failure"
+                          and .completed_at == "2026-09-07T07:02:15Z")
+                        and any(.steps[]?;
+                          .name == "Bind the protected Required Workflow source"
+                          and .number == 11
+                          and .conclusion == "skipped")
+                        and any(.steps[]?;
+                          .name == "Verify one protected result for the exact live revision"
+                          and .number == 12
+                          and .conclusion == "skipped")
+                        and any(.steps[]?;
+                          .name == "Rebind and finalize the protected result"
+                          and .number == 13
+                          and .conclusion == "skipped"))
+                      and any(.[];
+                        .id == 101647852037
+                        and .name
+                          == "Authorize exact Supplementary catch-up v5 successor"
+                        and .conclusion == "skipped"
+                        and .steps == [])
+                    ' <<<"${prior_verifier_jobs}" >/dev/null
+
+                  prior_cross_id=34087927498
+                  prior_cross="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${prior_cross_id}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${prior_cross_id}" '
+                      .id == $run_id
+                      and .workflow_id == 340250245
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/required_workflows/340250245")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/dot-github-current-revision-required.yml"
+                      and .name == (
+                        "Cross-protect .github PR #568 opened " + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "completed"
+                      and .conclusion == "failure"
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${prior_cross}" >/dev/null
+                  prior_cross_jobs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${prior_cross_id}/attempts/1/jobs?filter=all&per_page=100")"
+                  prior_cross_jobs="$(jq -c '[.[].jobs[]?]' \
+                    <<<"${prior_cross_jobs_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson run_id "${prior_cross_id}" '
+                      length == 1
+                      and .[0].id == 101635454245
+                      and .[0].name
+                        == "Required dot-github current-revision workflow"
+                      and .[0].run_id == $run_id
+                      and .[0].run_attempt == 1
+                      and .[0].head_sha == $head
+                      and .[0].status == "completed"
+                      and .[0].conclusion == "failure"
+                      and .[0].completed_at == "2026-09-07T05:44:08Z"
+                      and any(.[0].steps[]?;
+                        .name
+                          == "Check out the immutable cross-repository verifier only"
+                        and .number == 2
+                        and .conclusion == "success")
+                      and any(.[0].steps[]?;
+                        .name
+                          == "Verify the independently protected current-revision result"
+                        and .number == 3
+                        and .conclusion == "failure")
+                    ' <<<"${prior_cross_jobs}" >/dev/null
+
+                  timeline_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/issues/568/timeline?per_page=100")"
+                  timeline="$(jq -c '[.[][]?]' <<<"${timeline_pages}")"
+                  jq -e \
+                    --arg event_updated_at "${EVENT_PR_UPDATED_AT}" \
+                    --arg prior_failure "${prior_failure_completed_at}" '
+                      ([.[] | select(.event == "ready_for_review")]
+                        | sort_by(.created_at, .id)) as $ready
+                      | ([.[] | select(.event == "convert_to_draft")]
+                        | sort_by(.created_at, .id)) as $draft
+                      | ($ready | length) == 2
+                      and $ready[0].id == 30670969356
+                      and $ready[0].created_at == "2026-09-07T06:44:37Z"
+                      and $ready[0].actor.login == "litroc"
+                      and $ready[0].actor.id == 76040632
+                      and $ready[0].actor.type == "User"
+                      and ($ready[1].id | type) == "number"
+                      and $ready[1].id > 30670969356
+                      and $ready[1].actor.login == "litroc"
+                      and $ready[1].actor.id == 76040632
+                      and $ready[1].actor.type == "User"
+                      and $ready[1].created_at > $prior_failure
+                      and $ready[1].created_at == $event_updated_at
+                      and ($draft | length) == 1
+                      and ($draft[0].id | type) == "number"
+                      and $draft[0].id > 30670969356
+                      and $draft[0].id < $ready[1].id
+                      and $draft[0].actor.login == "litroc"
+                      and $draft[0].actor.id == 76040632
+                      and $draft[0].actor.type == "User"
+                      and $draft[0].created_at > $prior_failure
+                      and $draft[0].created_at < $ready[1].created_at
+                      and ([.[] | select(.event == "reopened")] | length) == 0
+                      and ([.[] |
+                        select(.event == "review_requested") |
+                        select(.requested_reviewer.login == "Copilot")]
+                        | length) == 1
+                      and any(.[];
+                        .id == 30670983046
+                        and .event == "review_requested"
+                        and .created_at == "2026-09-07T06:44:54Z"
+                        and .actor.login == "github-actions[bot]"
+                        and .actor.id == 41898282
+                        and .requested_reviewer.login == "Copilot"
+                        and .requested_reviewer.id == 175728472)
+                    ' <<<"${timeline}" >/dev/null
+                  second_ready_at="$(jq -er '
+                    [.[] | select(.event == "ready_for_review")]
+                    | sort_by(.created_at, .id)
+                    | select(length == 2)
+                    | .[1].created_at
+                    | select(type == "string")
+                    ' <<<"${timeline}")"
+
+                  recovery_run="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --arg workflow "${WORKFLOW_SHA}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${GITHUB_RUN_ID}" '
+                      .id == $run_id
+                      and .workflow_id == 335885126
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/335885126")
+                      and .event == "pull_request_target"
+                      and .path
+                        == ".github/workflows/supplementary-current-revision-required.yml"
+                      and .name == (
+                        "Protected current revision PR #568 ready_for_review "
+                        + $head)
+                      and .display_title == .name
+                      and .run_attempt == 1
+                      and .status == "in_progress"
+                      and .conclusion == null
+                      and .created_at >= $second_ready
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                      and ($workflow | test("^[0-9a-f]{40}$"))
+                    ' <<<"${recovery_run}" >/dev/null
+
+                  recovery_producer="$(gh api \
+                    "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg head_ref "${expected_head_ref}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --argjson actor_id 76040632 \
+                    --argjson number 568 \
+                    --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                      .id == $run_id
+                      and .workflow_id == 314418918
+                      and .workflow_url == (
+                        "https://api.github.com/repos/" + $repository
+                        + "/actions/workflows/314418918")
+                      and .event == "pull_request_target"
+                      and .path == ".github/workflows/copilot-review.yml"
+                      and .name == "Current revision review gate"
+                      and .display_title
+                        == "fix(rep60): stage bounded controller delta"
+                      and .run_attempt == 1
+                      and (
+                        (.status == "in_progress" and .conclusion == null)
+                        or (.status == "completed" and .conclusion == "success")
+                      )
+                      and .created_at >= $second_ready
+                      and .head_branch == $head_ref
+                      and .head_sha == $head
+                      and .html_url == (
+                        "https://github.com/" + $repository
+                        + "/actions/runs/" + ($run_id | tostring))
+                      and .actor.login == "litroc"
+                      and .actor.id == $actor_id
+                      and .actor.type == "User"
+                      and .triggering_actor.login == "litroc"
+                      and .triggering_actor.id == $actor_id
+                      and .triggering_actor.type == "User"
+                      and .repository.full_name == $repository
+                      and .head_repository.full_name == $repository
+                      and (.pull_requests | length) == 1
+                      and .pull_requests[0].number == $number
+                      and .pull_requests[0].base.ref == "main"
+                      and .pull_requests[0].base.sha == $base
+                      and .pull_requests[0].head.ref == $head_ref
+                      and .pull_requests[0].head.sha == $head
+                    ' <<<"${recovery_producer}" >/dev/null
+                  recovery_producer_jobs_ready=false
+                  for producer_jobs_observation in $(seq 1 30); do
+                    recovery_producer_jobs_pages="$(gh api --paginate --slurp \
+                      "repos/${REPOSITORY}/actions/runs/${TERMINAL_PRODUCER_RUN_ID}/attempts/1/jobs?filter=all&per_page=100")"
+                    recovery_producer_jobs="$(jq -c '[.[].jobs[]?]' \
+                      <<<"${recovery_producer_jobs_pages}")"
+                    jq -e \
+                      --arg head "${EVENT_HEAD}" \
+                      --argjson run_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                        ([.[].name] | sort) as $names
+                        | ($names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Verify current revision policy"
+                          ] or $names == [
+                            "Classify protected main trust-root handoff",
+                            "Request Copilot review for current revision",
+                            "Request protected verifier re-evaluation",
+                            "Verify current revision policy"
+                          ])
+                        and ([.[].name] | unique | length) == length
+                        and all(.[];
+                          .run_id == $run_id
+                          and .run_attempt == 1
+                          and .head_sha == $head)
+                        and any(.[];
+                          .name == "Classify protected main trust-root handoff"
+                          and .status == "completed"
+                          and .conclusion == "success")
+                        and ([.[] |
+                          select(.name
+                            == "Request Copilot review for current revision") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Request Copilot review for the current revision"
+                            and .number == 2
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name == "Verify current revision policy") |
+                          select(.status == "completed"
+                            and .conclusion == "success") |
+                          select(any(.steps[]?;
+                            .name
+                              == "Verify current Copilot review and resolved findings"
+                            and .number == 5
+                            and .status == "completed"
+                            and .conclusion == "success")) |
+                          select(any(.steps[]?;
+                            .name == "Publish bound neutral result"
+                            and .number == 6
+                            and .status == "completed"
+                            and .conclusion == "success"))] | length) == 1
+                        and ([.[] |
+                          select(.name
+                            == "Request protected verifier re-evaluation") |
+                          select(
+                            (((.status | IN(
+                              "requested", "waiting", "pending",
+                              "queued", "in_progress")))
+                              and .conclusion == null)
+                            or (.status == "completed"
+                              and .conclusion == "success"))]
+                          | length) == (length - 3)
+                      ' <<<"${recovery_producer_jobs}" >/dev/null
+                    if [ "$(jq 'length' \
+                        <<<"${recovery_producer_jobs}")" -eq 4 ]; then
+                      recovery_producer_jobs_ready=true
+                      break
+                    fi
+                    test "${producer_jobs_observation}" -lt 30
+                    sleep 2
+                  done
+                  test "${recovery_producer_jobs_ready}" = true
+
+                  review_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/pulls/568/reviews?per_page=100")"
+                  copilot_reviews="$(jq -c '[.[][]? |
+                    select(.user.login == "copilot-pull-request-reviewer[bot]")]
+                    ' <<<"${review_pages}")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" '
+                      length == 1
+                      and .[0].id == 5128834710
+                      and .[0].user.type == "Bot"
+                      and .[0].state == "COMMENTED"
+                      and .[0].commit_id == $head
+                      and .[0].submitted_at == "2026-09-07T06:48:29Z"
+                      and (.[0].body | type) == "string"
+                      and ((.[0].body | ascii_downcase |
+                        contains("unable to review this pull request")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("no files to review")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("able to review any files")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("quota exhausted")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("quota exceeded")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("suppressed comments")) | not)
+                      and ((.[0].body | ascii_downcase |
+                        contains("encountered an error")) | not)
+                    ' <<<"${copilot_reviews}" >/dev/null
+
+                  # shellcheck disable=SC2016
+                  thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'
+                  thread_payload="$(gh api graphql \
+                    -f query="${thread_query}" \
+                    -f owner=lightning-it \
+                    -f name=.github \
+                    -F number=568)"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" '
+                      .data.repository.pullRequest as $pr
+                      | $pr.baseRefOid == $base
+                      and $pr.headRefOid == $head
+                      and $pr.reviewThreads.totalCount == 1
+                      and $pr.reviewThreads.pageInfo.hasNextPage == false
+                      and ($pr.reviewThreads.nodes | length) == 1
+                      and $pr.reviewThreads.nodes[0].id
+                        == "PRRT_kwDOQlFhuc6fz6Xy"
+                      and $pr.reviewThreads.nodes[0].isResolved == true
+                      and $pr.reviewThreads.nodes[0].isOutdated == false
+                      and $pr.reviewThreads.nodes[0].path
+                        == ".github/workflows/current-revision-rerun.yml"
+                      and $pr.reviewThreads.nodes[0].line == 132
+                      and $pr.reviewThreads.nodes[0].originalLine == 132
+                      and $pr.reviewThreads.nodes[0].comments.totalCount == 2
+                      and $pr.reviewThreads.nodes[0].comments.pageInfo.hasNextPage
+                        == false
+                      and ($pr.reviewThreads.nodes[0].comments.nodes | length) == 2
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].databaseId
+                        == 3947202975
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].author.login
+                        == "copilot-pull-request-reviewer"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].createdAt
+                        == "2026-09-07T06:48:29Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].updatedAt
+                        == "2026-09-07T06:48:29Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.databaseId
+                        == 5128834710
+                      and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.commit.oid
+                        == $head
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].databaseId
+                        == 3947241014
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].author.login
+                        == "litroc"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].createdAt
+                        == "2026-09-07T06:54:44Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].updatedAt
+                        == "2026-09-07T06:54:44Z"
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.databaseId
+                        == 5128881849
+                      and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.commit.oid
+                        == $head
+                    ' <<<"${thread_payload}" >/dev/null
+
+                  request_comments_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/issues/568/comments?per_page=100")"
+                  request_marker='<!-- mlx90-copilot-request head=162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 -->Copilot review request accepted for finalized head 162fe4ca9ff6a94d3f1f1a8479db047c1fd82453.'
+                  jq -e \
+                    --arg marker "${request_marker}" '
+                      [.[][]? |
+                        select(.body == $marker) |
+                        select(.user.login == "github-actions[bot]") |
+                        select(.user.id == 41898282) |
+                        select(.user.type == "Bot")] as $markers
+                      | ($markers | length) == 1
+                      and $markers[0].id == 5566200461
+                      and $markers[0].created_at == "2026-09-07T06:44:55Z"
+                      and $markers[0].updated_at == "2026-09-07T06:44:55Z"
+                    ' <<<"${request_comments_pages}" >/dev/null
+
+                  ready_runs_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")"
+                  jq -e \
+                    --arg head "${EVENT_HEAD}" \
+                    --argjson current_id "${GITHUB_RUN_ID}" '
+                      [.[].workflow_runs[]? |
+                        select(.path
+                          == ".github/workflows/supplementary-current-revision-required.yml") |
+                        select(.display_title
+                          == ("Protected current revision PR #568 ready_for_review "
+                            + $head)) |
+                        .id] | sort == ([34092192339, $current_id] | sort)
+                    ' <<<"${ready_runs_pages}" >/dev/null
+
+                  neutral_pages="$(gh api --paginate --slurp \
+                    "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+                  jq -e \
+                    --arg base "${EVENT_BASE}" \
+                    --arg head "${EVENT_HEAD}" \
+                    --arg prior_failure "${prior_failure_completed_at}" \
+                    --arg repository "${REPOSITORY}" \
+                    --arg second_ready "${second_ready_at}" \
+                    --arg workflow "${WORKFLOW_SHA}" \
+                    --argjson producer_id "${TERMINAL_PRODUCER_RUN_ID}" '
+                      [.[].check_runs[]? |
+                        select(.name == "Current revision review") |
+                        select(.app.id == 15368
+                          and .app.slug == "github-actions") |
+                        select(.head_sha == $head)] as $checks
+                      | ($checks | length) == 1
+                      and ($checks[0].id | type) == "number"
+                      and $checks[0].id > 0
+                      and $checks[0].status == "completed"
+                      and $checks[0].conclusion == "success"
+                      and $checks[0].details_url == (
+                        "https://github.com/" + $repository
+                        + "/runs/" + ($checks[0].id | tostring))
+                      and $checks[0].output.title
+                        == "Current revision review passed"
+                      and $checks[0].started_at > $prior_failure
+                      and $checks[0].started_at >= $second_ready
+                      and ($checks[0].external_id
+                        == ("mlx90-current-revision:copilot:v6:568:"
+                          + ($producer_id | tostring) + ":" + $base + ":" + $head))
+                      and (($checks[0].output.summary | fromjson) as $summary
+                        | ($summary | keys | sort) == ([
+                            "base_sha", "controller_sha", "head_sha",
+                            "producer_run_id", "pull_request_number",
+                            "review_path", "run_url", "schema"
+                          ] | sort)
+                        and $summary.schema == 4
+                        and $summary.base_sha == $base
+                        and $summary.head_sha == $head
+                        and $summary.controller_sha == $workflow
+                        and $summary.pull_request_number == 568
+                        and $summary.producer_run_id == $producer_id
+                        and $summary.run_url == (
+                          "https://github.com/" + $repository
+                          + "/actions/runs/" + ($producer_id | tostring))
+                        and $summary.review_path
+                          == "applicable Copilot or governed automation exemption")
+                    ' <<<"${neutral_pages}" >/dev/null
+
+                  for absent_check_name in \
+                    'Protected%20current-revision%20verifier' \
+                    'Late%20review%20rerun%20authorization'; do
+                    absent_pages="$(gh api --paginate --slurp \
+                      "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=${absent_check_name}&filter=all&per_page=100")"
+                    jq -e --arg head "${EVENT_HEAD}" '
+                      [.[].check_runs[]? |
+                        select(.app.id == 15368
+                          and .app.slug == "github-actions") |
+                        select(.head_sha == $head)] | length == 0
+                      ' <<<"${absent_pages}" >/dev/null
+                  done
+                fi
+
+                protected_main="$(gh api repos/lightning-it/.github/branches/main)"
+                jq -e \
+                  --arg base "${EVENT_BASE}" '
+                    .name == "main"
+                    and .protected == true
+                    and .commit.sha == $base
+                  ' <<<"${protected_main}" >/dev/null
+                pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg created_at "${expected_pr_created_at}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_ref "${expected_head_ref}" \
+                  --arg repository "${REPOSITORY}" \
+                  --arg title "${expected_pr_title}" \
+                  --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                  --argjson author_id 76040632 \
+                  --argjson number 568 '
+                    .number == $number
+                    and .state == "open"
+                    and .draft == false
+                    and .user.login == "litroc"
+                    and .user.id == $author_id
+                    and .user.type == "User"
+                    and .title == $title
+                    and .base.ref == "main"
+                    and .base.sha == $base
+                    and .base.repo.full_name == $repository
+                    and .head.ref == $head_ref
+                    and .head.sha == $head
+                    and .head.repo.full_name == $repository
+                    and .created_at == $created_at
+                    and .updated_at == $updated_at
+                    and .commits == 1
+                    and .changed_files == 4
+                  ' <<<"${pr}" >/dev/null
+                expected_source_suffix="${expected_source_marker}"$'\n'
+                jq -e \
+                  --arg marker "${expected_source_marker}" \
+                  --arg suffix "${expected_source_suffix}" '
+                    (.body | type) == "string"
+                    and (.body | endswith($suffix))
+                    and ((.body | split($marker) | length) == 2)
+                  ' <<<"${pr}" >/dev/null
+                pr_body_prefix_bytes="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                pr_body_prefix_sha256="$(jq -je \
+                  --arg suffix "${expected_source_suffix}" \
+                  '.body | rtrimstr($suffix)' <<<"${pr}" \
+                  | sha256sum | awk '{ print $1 }')"
+                pr_body_bytes="$(jq -je '.body' <<<"${pr}" \
+                  | wc -c | tr -d '[:space:]')"
+                expected_pr_body_bytes=$((
+                  expected_pr_body_prefix_bytes
+                  + ${#expected_source_suffix}
+                ))
+                test "${pr_body_prefix_bytes}" = \
+                  "${expected_pr_body_prefix_bytes}"
+                test "${pr_body_prefix_sha256}" = \
+                  "${expected_pr_body_prefix_sha256}"
+                test "${pr_body_bytes}" = "${expected_pr_body_bytes}"
+
+                prestage_compare="$(gh api \
+                  "repos/${REPOSITORY}/compare/${EVENT_BASE}...${EVENT_HEAD}")"
+                jq -e \
+                  --arg base "${EVENT_BASE}" \
+                  --arg base_tree "${expected_base_tree}" \
+                  --arg head "${EVENT_HEAD}" \
+                  --arg head_tree "${expected_head_tree}" '
+                    .status == "ahead"
+                    and .ahead_by == 1
+                    and .behind_by == 0
+                    and .total_commits == 1
+                    and .base_commit.sha == $base
+                    and .base_commit.commit.tree.sha == $base_tree
+                    and .merge_base_commit.sha == $base
+                    and .commits[-1].sha == $head
+                    and (.commits | length) == 1
+                    and .commits[0].sha == $head
+                    and [.commits[0].parents[].sha] == [$base]
+                    and .commits[0].commit.tree.sha == $head_tree
+                    and ([.files[].filename] | sort) == [
+                      ".github/workflows/current-revision-rerun.yml",
+                      ".github/workflows/supplementary-current-revision-required.yml",
+                      "tests/test_copilot_review_refresh.py",
+                      "tests/test_supplementary_required_workflow.py"
+                    ]
+                  ' <<<"${prestage_compare}" >/dev/null
+
+                export GIT_CONFIG_GLOBAL=/dev/null
+                export GIT_CONFIG_NOSYSTEM=1
+                export GIT_TERMINAL_PROMPT=0
+                export LC_ALL=C
+                umask 077
+                prestage_directory="$(mktemp -d \
+                  "${RUNNER_TEMP}/issue-564-pr568.XXXXXX")"
+                prestage_git="${prestage_directory}/objects.git"
+                git init --bare --quiet "${prestage_git}"
+                git --git-dir="${prestage_git}" remote add origin \
+                  https://github.com/lightning-it/.github.git
+                git --git-dir="${prestage_git}" fetch --quiet --no-tags \
+                  --no-recurse-submodules origin \
+                  '+refs/heads/main:refs/prestage/base' \
+                  "+refs/heads/${expected_head_ref}:refs/prestage/head"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{commit}')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{commit}')" = "${EVENT_HEAD}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/base^{tree}')" = \
+                  "${expected_base_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^{tree}')" = \
+                  "${expected_head_tree}"
+                test "$(git --git-dir="${prestage_git}" \
+                  rev-parse 'refs/prestage/head^')" = "${EVENT_BASE}"
+                test "$(git --git-dir="${prestage_git}" rev-list --count \
+                  refs/prestage/base..refs/prestage/head)" = 1
+                test "$(git --git-dir="${prestage_git}" merge-base --all \
+                  refs/prestage/base refs/prestage/head)" = "${EVENT_BASE}"
+                integration_tree="$(git --git-dir="${prestage_git}" \
+                  merge-tree --write-tree refs/prestage/base refs/prestage/head)"
+                test "${integration_tree}" = "${expected_head_tree}"
+                patch="${prestage_directory}/change.patch"
+                git --git-dir="${prestage_git}" diff --binary --full-index \
+                  --no-color --no-ext-diff --no-textconv \
+                  'refs/prestage/base^{tree}' "${integration_tree}" >"${patch}"
+                diff_bytes="$(wc -c <"${patch}" | tr -d '[:space:]')"
+                diff_sha256="$(sha256sum "${patch}" | awk '{ print $1 }')"
+                test "${diff_bytes}" = "${expected_diff_bytes}"
+                test "${diff_sha256}" = "${expected_diff_sha256}"
+
+                source_sha="${WORKFLOW_SHA}"
+                issue_564_pr568_authorized=true
+                # issue-564-pr568-source-transition: end
               else
                 test "${WORKFLOW_SHA}" = "${EVENT_HEAD}"
                 pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
@@ -2256,10 +5037,12 @@ jobs:
           failure_stage='event-metadata-binding'
           test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
-          echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}" \
-            >>"${GITHUB_OUTPUT}"
+          {
+            echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}"
+            echo "issue_564_legacy_retirement=${issue_564_legacy_retirement_authorized:-false}"
+            echo "issue_564_pr568=${issue_564_pr568_authorized:-false}"
+            echo "issue_564_pr568_recovery=${issue_564_pr568_recovery_authorized:-false}"
+          } >>"${GITHUB_OUTPUT}"
 
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
@@ -2297,6 +5080,10 @@ jobs:
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           ISSUE_564_LEGACY_RETIREMENT: >-
             ${{ steps.protected-source.outputs.issue_564_legacy_retirement }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
+          ISSUE_564_PR568_RECOVERY_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568_recovery }}
           RELEASE_APP_PRODUCER_EVIDENCE_READY: >-
             ${{ steps.release-app-producer.outputs.ready }}
           RENOVATE_PRODUCER_VERIFIED: >-
@@ -2568,6 +5355,13 @@ jobs:
           fi
           reservation_count="$(jq 'length' <<<"${reservations}")"
           if [ "${ISSUE_564_STAGE_1_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
+            test "${reservation_count}" -eq 0
+          fi
+          if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+            test "${ISSUE_564_PR568_SOURCE}" = true
             test "${reservation_count}" -eq 0
           fi
           if [ "${reservation_count}" -gt 1 ]; then
@@ -3766,6 +6560,10 @@ jobs:
             ${{ steps.renovate-producer.outputs.last_edited_at }}
           ISSUE_564_STAGE_1_SOURCE: >-
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
+          ISSUE_564_PR568_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568 }}
+          ISSUE_564_PR568_RECOVERY_SOURCE: >-
+            ${{ steps.protected-source.outputs.issue_564_pr568_recovery }}
           RESERVATION_ID: ${{ steps.protected-verifier.outputs.reservation_id }}
         run: |
           set -euo pipefail
@@ -3851,6 +6649,407 @@ jobs:
               ' <<<"${protected_main}" >/dev/null
           fi
 
+          if [ "${ISSUE_564_PR568_SOURCE}" = true ]; then
+            if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+              failure_stage='issue-564-pr568-recovery-final-rebind'
+              expected_pr_body_prefix_bytes=2046
+              expected_pr_body_prefix_sha256='d8708b32e9e05c3e83ccea0262e847cd4d6ad0144e5882bb1a516e6ca0520971'
+              expected_source_marker="<!-- rep60-issue564-pr568-recovery-source:v2 workflow_sha=${WORKFLOW_SHA} prior_ready=30670969356 failed_producer=34092192358 failed_verifier=34092192339 failed_cross=34087927498 review=5128834710 -->"
+            else
+              failure_stage='issue-564-pr568-final-rebind'
+              expected_pr_body_prefix_bytes=1952
+              expected_pr_body_prefix_sha256='9a30a873840f28638fc5c6b20d02b16f2ecdd2ea7f2ab8791cdc165949ba8dd9'
+              expected_source_marker="<!-- rep60-issue564-pr568-source:v1 workflow_sha=${WORKFLOW_SHA} -->"
+            fi
+            expected_pr_created_at='2026-09-07T05:43:57Z'
+            expected_head_ref='prestage/dot-github-main-four-paths-v1-20260906'
+            expected_source_suffix="${expected_source_marker}"$'\n'
+            jq -e \
+              --arg base "${EVENT_BASE}" \
+              --arg created_at "${expected_pr_created_at}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${expected_head_ref}" \
+              --arg marker "${expected_source_marker}" \
+              --arg repository "${REPOSITORY}" \
+              --arg suffix "${expected_source_suffix}" \
+              --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+              --argjson author_id 76040632 \
+              --argjson number 568 '
+                .number == $number
+                and .state == "open"
+                and .draft == false
+                and .user.login == "litroc"
+                and .user.id == $author_id
+                and .user.type == "User"
+                and .title == "fix(rep60): stage bounded controller delta"
+                and .base.ref == "main"
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
+                and .created_at == $created_at
+                and .updated_at == $updated_at
+                and .commits == 1
+                and .changed_files == 4
+                and (.body | type) == "string"
+                and (.body | endswith($suffix))
+                and ((.body | split($marker) | length) == 2)
+              ' <<<"${final_pr}" >/dev/null
+            final_pr_body_prefix_bytes="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            final_pr_body_prefix_sha256="$(jq -je \
+              --arg suffix "${expected_source_suffix}" \
+              '.body | rtrimstr($suffix)' <<<"${final_pr}" \
+              | sha256sum | awk '{ print $1 }')"
+            final_pr_body_bytes="$(jq -je '.body' <<<"${final_pr}" \
+              | wc -c | tr -d '[:space:]')"
+            expected_pr_body_bytes=$((
+              expected_pr_body_prefix_bytes
+              + ${#expected_source_suffix}
+            ))
+            test "${final_pr_body_prefix_bytes}" = \
+              "${expected_pr_body_prefix_bytes}"
+            test "${final_pr_body_prefix_sha256}" = \
+              "${expected_pr_body_prefix_sha256}"
+            test "${final_pr_body_bytes}" = "${expected_pr_body_bytes}"
+            protected_develop="$(gh api \
+              repos/lightning-it/.github/branches/develop)"
+            jq -e \
+              --arg workflow "${WORKFLOW_SHA}" '
+                .name == "develop"
+                and .protected == true
+                and .commit.sha == $workflow
+              ' <<<"${protected_develop}" >/dev/null
+            protected_main="$(gh api \
+              repos/lightning-it/.github/branches/main)"
+            jq -e \
+              --arg base "${EVENT_BASE}" '
+                .name == "main"
+                and .protected == true
+                and .commit.sha == $base
+              ' <<<"${protected_main}" >/dev/null
+
+            if [ "${ISSUE_564_PR568_RECOVERY_SOURCE}" = true ]; then
+              failure_stage='issue-564-pr568-recovery-final-mutable-rebind'
+              producer_run_id="${PRODUCER_RUN_URL##*/}"
+              [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
+              test "${PRODUCER_RUN_URL}" = \
+                "https://github.com/${REPOSITORY}/actions/runs/${producer_run_id}"
+
+              final_timeline_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/issues/568/timeline?per_page=100")"
+              final_timeline="$(jq -c '[.[][]?]' \
+                <<<"${final_timeline_pages}")"
+              jq -e \
+                --arg event_updated_at "${EVENT_PR_UPDATED_AT}" '
+                  ([.[] | select(.event == "ready_for_review")]
+                    | sort_by(.created_at, .id)) as $ready
+                  | ([.[] | select(.event == "convert_to_draft")]
+                    | sort_by(.created_at, .id)) as $draft
+                  | ([.[] |
+                      select(.event == "review_requested") |
+                      select(.requested_reviewer.login == "Copilot")]
+                    | sort_by(.created_at, .id)) as $requests
+                  | ($ready | length) == 2
+                  and $ready[0].id == 30670969356
+                  and $ready[0].created_at == "2026-09-07T06:44:37Z"
+                  and $ready[0].actor.login == "litroc"
+                  and $ready[0].actor.id == 76040632
+                  and $ready[0].actor.type == "User"
+                  and ($ready[1].id | type) == "number"
+                  and $ready[1].id > 30670969356
+                  and $ready[1].created_at == $event_updated_at
+                  and $ready[1].actor.login == "litroc"
+                  and $ready[1].actor.id == 76040632
+                  and $ready[1].actor.type == "User"
+                  and ($draft | length) == 1
+                  and $draft[0].id > 30670969356
+                  and $draft[0].id < $ready[1].id
+                  and $draft[0].created_at > $ready[0].created_at
+                  and $draft[0].created_at < $ready[1].created_at
+                  and $draft[0].actor.login == "litroc"
+                  and $draft[0].actor.id == 76040632
+                  and $draft[0].actor.type == "User"
+                  and ([.[] | select(.event == "reopened")] | length) == 0
+                  and ($requests | length) == 1
+                  and $requests[0].id == 30670983046
+                  and $requests[0].created_at == "2026-09-07T06:44:54Z"
+                  and $requests[0].actor.login == "github-actions[bot]"
+                  and $requests[0].actor.id == 41898282
+                  and $requests[0].requested_reviewer.id == 175728472
+                ' <<<"${final_timeline}" >/dev/null
+
+              final_review_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/568/reviews?per_page=100")"
+              final_reviews="$(jq -c '
+                [.[][]? |
+                  select(.user.login
+                    == "copilot-pull-request-reviewer[bot]")]
+                ' <<<"${final_review_pages}")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" '
+                  length == 1
+                  and .[0].id == 5128834710
+                  and .[0].user.type == "Bot"
+                  and .[0].state == "COMMENTED"
+                  and .[0].commit_id == $head
+                  and .[0].submitted_at == "2026-09-07T06:48:29Z"
+                  and (.[0].body | type) == "string"
+                  and ((.[0].body | ascii_downcase |
+                    contains("unable to review this pull request")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("no files to review")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("able to review any files")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("quota exhausted")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("quota exceeded")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("suppressed comments")) | not)
+                  and ((.[0].body | ascii_downcase |
+                    contains("encountered an error")) | not)
+                ' <<<"${final_reviews}" >/dev/null
+
+              # shellcheck disable=SC2016
+              final_thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'
+              final_threads="$(gh api graphql \
+                -f query="${final_thread_query}" \
+                -f owner=lightning-it \
+                -f name=.github \
+                -F number=568)"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" '
+                  .data.repository.pullRequest as $pr
+                  | $pr.baseRefOid == $base
+                  and $pr.headRefOid == $head
+                  and $pr.reviewThreads.totalCount == 1
+                  and $pr.reviewThreads.pageInfo.hasNextPage == false
+                  and ($pr.reviewThreads.nodes | length) == 1
+                  and $pr.reviewThreads.nodes[0].id
+                    == "PRRT_kwDOQlFhuc6fz6Xy"
+                  and $pr.reviewThreads.nodes[0].isResolved == true
+                  and $pr.reviewThreads.nodes[0].isOutdated == false
+                  and $pr.reviewThreads.nodes[0].path
+                    == ".github/workflows/current-revision-rerun.yml"
+                  and $pr.reviewThreads.nodes[0].line == 132
+                  and $pr.reviewThreads.nodes[0].originalLine == 132
+                  and $pr.reviewThreads.nodes[0].comments.totalCount == 2
+                  and $pr.reviewThreads.nodes[0].comments.pageInfo.hasNextPage
+                    == false
+                  and ($pr.reviewThreads.nodes[0].comments.nodes | length) == 2
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].databaseId
+                    == 3947202975
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].author.login
+                    == "copilot-pull-request-reviewer"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].createdAt
+                    == "2026-09-07T06:48:29Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].updatedAt
+                    == "2026-09-07T06:48:29Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.databaseId
+                    == 5128834710
+                  and $pr.reviewThreads.nodes[0].comments.nodes[0].pullRequestReview.commit.oid
+                    == $head
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].databaseId
+                    == 3947241014
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].author.login
+                    == "litroc"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].createdAt
+                    == "2026-09-07T06:54:44Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].updatedAt
+                    == "2026-09-07T06:54:44Z"
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.databaseId
+                    == 5128881849
+                  and $pr.reviewThreads.nodes[0].comments.nodes[1].pullRequestReview.commit.oid
+                    == $head
+                ' <<<"${final_threads}" >/dev/null
+
+              final_comment_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/issues/568/comments?per_page=100")"
+              final_request_marker='<!-- mlx90-copilot-request head=162fe4ca9ff6a94d3f1f1a8479db047c1fd82453 -->Copilot review request accepted for finalized head 162fe4ca9ff6a94d3f1f1a8479db047c1fd82453.'
+              jq -e \
+                --arg marker "${final_request_marker}" '
+                  [.[][]? |
+                    select(.body == $marker) |
+                    select(.user.login == "github-actions[bot]") |
+                    select(.user.id == 41898282) |
+                    select(.user.type == "Bot")] as $markers
+                  | ($markers | length) == 1
+                  and $markers[0].id == 5566200461
+                  and $markers[0].created_at == "2026-09-07T06:44:55Z"
+                  and $markers[0].updated_at == "2026-09-07T06:44:55Z"
+                ' <<<"${final_comment_pages}" >/dev/null
+
+              for final_attempt_one_run_id in \
+                34092192358 34092192339 34087927498; do
+                final_attempt_one_run="$(gh api \
+                  "repos/${REPOSITORY}/actions/runs/${final_attempt_one_run_id}")"
+                jq -e \
+                  --argjson run_id "${final_attempt_one_run_id}" '
+                    .id == $run_id
+                    and .run_attempt == 1
+                    and .status == "completed"
+                    and .conclusion == "failure"
+                  ' <<<"${final_attempt_one_run}" >/dev/null
+              done
+
+              final_neutral_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg ready_at "${EVENT_PR_UPDATED_AT}" \
+                --arg repository "${REPOSITORY}" \
+                --arg workflow "${WORKFLOW_SHA}" \
+                --argjson producer_id "${producer_run_id}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Current revision review") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] as $checks
+                  | ($checks | length) == 1
+                  and ($checks[0].id | type) == "number"
+                  and $checks[0].id > 0
+                  and $checks[0].status == "completed"
+                  and $checks[0].conclusion == "success"
+                  and $checks[0].details_url == (
+                    "https://github.com/" + $repository
+                    + "/runs/" + ($checks[0].id | tostring))
+                  and $checks[0].output.title
+                    == "Current revision review passed"
+                  and $checks[0].started_at >= $ready_at
+                  and $checks[0].external_id == (
+                    "mlx90-current-revision:copilot:v6:568:"
+                    + ($producer_id | tostring) + ":" + $base + ":" + $head)
+                  and (($checks[0].output.summary | fromjson) as $summary
+                    | ($summary | keys | sort) == ([
+                        "base_sha", "controller_sha", "head_sha",
+                        "producer_run_id", "pull_request_number",
+                        "review_path", "run_url", "schema"
+                      ] | sort)
+                    and $summary.schema == 4
+                    and $summary.base_sha == $base
+                    and $summary.head_sha == $head
+                    and $summary.controller_sha == $workflow
+                    and $summary.pull_request_number == 568
+                    and $summary.producer_run_id == $producer_id
+                    and $summary.run_url == (
+                      "https://github.com/" + $repository
+                      + "/actions/runs/" + ($producer_id | tostring))
+                    and $summary.review_path
+                      == "applicable Copilot or governed automation exemption")
+                ' <<<"${final_neutral_pages}" >/dev/null
+
+              final_reservation_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson check_id "${RESERVATION_ID}" \
+                --argjson pr_number "${PR_NUMBER}" \
+                --argjson run_id "${GITHUB_RUN_ID}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Protected current-revision verifier") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] as $checks
+                  | ($checks | length) == 1
+                  and $checks[0].id == $check_id
+                  and $checks[0].status == "in_progress"
+                  and $checks[0].conclusion == null
+                  and $checks[0].external_id == (
+                    "rep60-required-workflow:v3:" + ($run_id | tostring)
+                    + ":" + ($pr_number | tostring) + ":" + $base + ":" + $head)
+                  and $checks[0].details_url == (
+                    "https://github.com/" + $repository
+                    + "/runs/" + ($check_id | tostring))
+                ' <<<"${final_reservation_pages}" >/dev/null
+
+              final_late_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Late%20review%20rerun%20authorization&filter=all&per_page=100")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" '
+                  [.[].check_runs[]? |
+                    select(.name == "Late review rerun authorization") |
+                    select(.app.id == 15368
+                      and .app.slug == "github-actions") |
+                    select(.head_sha == $head)] | length == 0
+                ' <<<"${final_late_pages}" >/dev/null
+
+              failure_stage='issue-564-pr568-recovery-terminal-rebind'
+              terminal_develop="$(gh api \
+                repos/lightning-it/.github/branches/develop)"
+              jq -e \
+                --arg workflow "${WORKFLOW_SHA}" '
+                  .name == "develop"
+                  and .protected == true
+                  and .commit.sha == $workflow
+                ' <<<"${terminal_develop}" >/dev/null
+              terminal_main="$(gh api \
+                repos/lightning-it/.github/branches/main)"
+              jq -e \
+                --arg base "${EVENT_BASE}" '
+                  .name == "main"
+                  and .protected == true
+                  and .commit.sha == $base
+                ' <<<"${terminal_main}" >/dev/null
+              terminal_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+              jq -e \
+                --arg base "${EVENT_BASE}" \
+                --arg created_at "${expected_pr_created_at}" \
+                --arg head "${EVENT_HEAD}" \
+                --arg head_ref "${expected_head_ref}" \
+                --arg marker "${expected_source_marker}" \
+                --arg repository "${REPOSITORY}" \
+                --arg suffix "${expected_source_suffix}" \
+                --arg updated_at "${EVENT_PR_UPDATED_AT}" \
+                --argjson author_id 76040632 \
+                --argjson number 568 '
+                  .number == $number
+                  and .state == "open"
+                  and .draft == false
+                  and .user.login == "litroc"
+                  and .user.id == $author_id
+                  and .user.type == "User"
+                  and .title == "fix(rep60): stage bounded controller delta"
+                  and .base.ref == "main"
+                  and .base.sha == $base
+                  and .base.repo.full_name == $repository
+                  and .head.ref == $head_ref
+                  and .head.sha == $head
+                  and .head.repo.full_name == $repository
+                  and .created_at == $created_at
+                  and .updated_at == $updated_at
+                  and .commits == 1
+                  and .changed_files == 4
+                  and (.body | type) == "string"
+                  and (.body | endswith($suffix))
+                  and ((.body | split($marker) | length) == 2)
+                ' <<<"${terminal_pr}" >/dev/null
+              terminal_prefix_bytes="$(jq -je \
+                --arg suffix "${expected_source_suffix}" \
+                '.body | rtrimstr($suffix)' <<<"${terminal_pr}" \
+                | wc -c | tr -d '[:space:]')"
+              terminal_prefix_sha256="$(jq -je \
+                --arg suffix "${expected_source_suffix}" \
+                '.body | rtrimstr($suffix)' <<<"${terminal_pr}" \
+                | sha256sum | awk '{ print $1 }')"
+              terminal_body_bytes="$(jq -je '.body' <<<"${terminal_pr}" \
+                | wc -c | tr -d '[:space:]')"
+              test "${terminal_prefix_bytes}" = \
+                "${expected_pr_body_prefix_bytes}"
+              test "${terminal_prefix_sha256}" = \
+                "${expected_pr_body_prefix_sha256}"
+              test "${terminal_body_bytes}" = "${expected_pr_body_bytes}"
+            fi
+          fi
+
           if [ "${PRODUCER_KIND}" = renovate ]; then
             failure_stage='renovate-final-rebind'
             jq -e \
@@ -3904,3 +7103,59 @@ jobs:
               and .app.slug == "github-actions"
             ' <<<"${finalized}" >/dev/null
           trap - ERR
+
+  required-current-revision-workflow:
+    name: Required current-revision workflow
+    needs:
+      - route-protected-current-revision
+      - reserve-s0-feature-main-prestage
+      - verify-s0-feature-main-prestage
+      - finalize-s0-feature-main-prestage
+      - verify-protected-current-revision-evidence
+    if: always()
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Enforce exactly one terminal verification route
+        env:
+          FINALIZE_RESULT: >-
+            ${{ needs['finalize-s0-feature-main-prestage'].result }}
+          LEGACY_RESULT: >-
+            ${{ needs['verify-protected-current-revision-evidence'].result }}
+          RESERVE_RESULT: >-
+            ${{ needs['reserve-s0-feature-main-prestage'].result }}
+          ROUTE_RESULT: >-
+            ${{ needs['route-protected-current-revision'].result }}
+          S0_CANDIDATE: >-
+            ${{ needs['route-protected-current-revision'].outputs.s0_candidate }}
+          S0_PRESTAGE: >-
+            ${{ needs['route-protected-current-revision'].outputs.s0_prestage }}
+          VERIFY_RESULT: >-
+            ${{ needs['verify-s0-feature-main-prestage'].result }}
+        run: |
+          set -euo pipefail
+          test "${ROUTE_RESULT}" = success
+          if [ "${S0_PRESTAGE}" = true ]; then
+            test "${S0_CANDIDATE}" = true
+            test "${RESERVE_RESULT}" = success
+            test "${VERIFY_RESULT}" = success
+            test "${FINALIZE_RESULT}" = success
+            test "${LEGACY_RESULT}" = skipped
+          elif [ "${S0_CANDIDATE}" = true ]; then
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = skipped
+            echo 'S0 candidate action requires the separately authorized listener.' >&2
+            exit 1
+          else
+            test "${S0_CANDIDATE}" = false
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = success
+          fi
