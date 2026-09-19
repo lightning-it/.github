@@ -4844,6 +4844,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name=="Request Copilot review for current revision"', permanent
         )
         self.assertIn(
+            '.name=="Validate protected main helper pin" and runnerless',
+            permanent,
+        )
+        self.assertIn(
             '.name=="Dispatch protected managed-sync finalizer re-evaluation" '
             "and runnerless",
             permanent,
@@ -4871,7 +4875,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
         )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=4", permanent)
+        self.assertIn("length<=5", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
@@ -4904,6 +4908,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return result.returncode
 
         review_request = "Request Copilot review for current revision"
+        main_helper_pin = "Validate protected main helper pin"
         legacy_helper = (
             "Request protected verifier re-evaluation / "
             "Diagnose Release-App reusable context and fail closed"
@@ -4932,7 +4937,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            0, evaluate_helper_guard([review_request, current_helper])
+            0,
+            evaluate_helper_guard(
+                [review_request, main_helper_pin, current_helper]
+            ),
         )
         self.assertNotEqual(
             0, evaluate_helper_guard([current_helper, current_helper])
@@ -5926,6 +5934,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "conclusion": "skipped",
             },
             {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
                 "name": (
                     "Dispatch protected managed-sync finalizer re-evaluation"
                 ),
@@ -5952,6 +5967,33 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "name": "Request protected verifier re-evaluation",
                 "status": "completed",
                 "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "steps": [],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": 123,
+                "steps": [],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "skipped",
+                "runner_id": None,
+                "steps": [{"name": "unexpected executed step"}],
+            },
+            {
+                "name": "Validate protected main helper pin",
+                "status": "completed",
+                "conclusion": "failure",
                 "runner_id": None,
                 "steps": [],
             },
@@ -6070,6 +6112,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(
             [job["name"] for job in evaluate("disallowed_terminal_jobs")],
             [
+                "Validate protected main helper pin",
+                "Validate protected main helper pin",
+                "Validate protected main helper pin",
+                "Validate protected main helper pin",
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
@@ -6087,6 +6133,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [job["name"] for job in evaluate("allowed_skipped_terminal_jobs")],
             [
                 "Request Copilot review for current revision",
+                "Validate protected main helper pin",
                 "Dispatch protected managed-sync finalizer re-evaluation",
                 "Classify protected Release-App ancestry backmerge",
                 "Classify protected main trust-root handoff",
@@ -6100,12 +6147,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         allowed = evaluate("allowed_skipped_terminal_jobs")
         request = allowed[0]
-        managed_sync_dispatch = allowed[1]
-        ancestry_classifier = allowed[2]
-        main_classifier = allowed[3]
-        parent_helper = allowed[4]
-        release_helper = allowed[5]
-        current_helper = allowed[6]
+        main_helper_pin = allowed[1]
+        managed_sync_dispatch = allowed[2]
+        ancestry_classifier = allowed[3]
+        main_classifier = allowed[4]
+        parent_helper = allowed[5]
+        release_helper = allowed[6]
+        current_helper = allowed[7]
         for predicate, passing_cases, failing_cases in (
             (
                 "length == 0 or error(tojson)",
@@ -6113,7 +6161,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 [evaluate("disallowed_terminal_jobs")],
             ),
             (
-                "(length <= 4 "
+                "(length <= 5 "
                 "and (map(.name) | unique | length) == length "
                 "and ([.[].name | select(test($d))] "
                 "| length) <= 1) "
@@ -6129,6 +6177,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     [
                         ancestry_classifier,
                         main_classifier,
+                        main_helper_pin,
                         current_helper,
                         managed_sync_dispatch,
                     ],
@@ -6141,6 +6190,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         main_classifier,
                         parent_helper,
                         managed_sync_dispatch,
+                        main_helper_pin,
                     ],
                     [request, ancestry_classifier, ancestry_classifier],
                     [{"name": "duplicate"}, {"name": "duplicate"}],
