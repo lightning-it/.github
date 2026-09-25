@@ -3226,9 +3226,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'requested | waiting | pending | queued | in_progress', recovery
         )
         self.assertIn(
-            "if [ \"${source_path}\" != \\\n"
+            "if [ \"${source_path}\" = \\\n"
             "              '.github/workflows/sync-ee-containers.yml' ]; then",
             recovery,
+        )
+        self.assertLess(
+            recovery.index('.status == "in_progress"'),
+            recovery.index("source_jobs_ready=false"),
         )
         self.assertIn(
             'test "$(jq -r .status <<<"${source_run}")" = completed',
@@ -3241,9 +3245,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .head_branch == "main"', recovery)
         self.assertIn('and .head_sha == $head', recovery)
         self.assertIn('and .path == $path', recovery)
-        self.assertIn('.status == "in_progress" and .conclusion == null', recovery)
-        self.assertIn('and .status == "completed"', recovery)
-        self.assertIn('and .conclusion == "success"', recovery)
+        self.assertIn('.status == "in_progress"', recovery)
+        self.assertIn('and .conclusion == null', recovery)
+        self.assertIn('.status == "completed" and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
         self.assertIn('and .head_repository.full_name == $repository', recovery)
         self.assertIn('and .run_attempt == $current_attempt', recovery)
@@ -3334,7 +3338,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[0]
         marker = '              --argjson run_id "${source_run_id}" \'\n'
         start = recovery.index(marker) + len(marker)
-        end = recovery.index('\n              \' <<<"${source_run}"', start)
+        end = recovery.index('\n                \' <<<"${source_run}"', start)
         source_run_filter = recovery[start:end]
         source_sha = "a" * 40
         source_path = ".github/workflows/sync-ansible-collections.yml"
@@ -3380,9 +3384,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--arg",
                     "run_url",
                     source_run_url,
-                    "--arg",
-                    "container_path",
-                    ".github/workflows/sync-ee-containers.yml",
+                    "--argjson",
+                    "allow_running",
+                    str(path == ".github/workflows/sync-ee-containers.yml").lower(),
                     "--argjson",
                     "current_attempt",
                     str(current_attempt),
@@ -3434,6 +3438,71 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(rejected_event=rejected_event):
                 self.assertFalse(accepts(rejected_event))
+
+    def test_managed_sync_target_job_polling_is_fail_closed(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = (
+            '              source_job_state="$(jq -er \\\n'
+            '                --arg expected "${expected_source_job}" \'\n'
+        )
+        start = recovery.index(marker) + len(marker)
+        end = recovery.index(
+            '\n                \' <<<"${source_jobs}")"', start
+        )
+        job_filter = recovery[start:end]
+        expected = "Sync shared-assets-lit to target"
+        jq = self._test_tool("jq")
+
+        def job(
+            *,
+            name: str = expected,
+            status: str = "completed",
+            conclusion: str | None = "success",
+        ) -> dict[str, object]:
+            return {"name": name, "status": status, "conclusion": conclusion}
+
+        def classify(jobs: list[dict[str, object]]) -> str:
+            result = subprocess.run(
+                [jq, "-er", "--arg", "expected", expected, job_filter],
+                input=json.dumps({"jobs": jobs}),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout.strip()
+
+        def convergence(snapshots: list[list[dict[str, object]]]) -> str:
+            for snapshot in snapshots:
+                state = classify(snapshot)
+                if state != "wait":
+                    return state
+            return "timeout"
+
+        self.assertEqual("wait", classify([]))
+        for status in ("queued", "in_progress"):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    "wait", classify([job(status=status, conclusion=None)])
+                )
+        self.assertEqual("ready", classify([job()]))
+        self.assertEqual(
+            "ready",
+            convergence([[], [job(status="in_progress", conclusion=None)], [job()]]),
+        )
+        self.assertEqual("timeout", convergence([[]] * 42))
+        self.assertEqual("wait", classify([job(name="other")]))
+        for jobs in (
+            [job(status="completed", conclusion="failure")],
+            [job(status="completed", conclusion="cancelled")],
+            [job(status="queued", conclusion="success")],
+            [job(), job()],
+        ):
+            with self.subTest(jobs=jobs):
+                self.assertEqual("reject", convergence([jobs, [job()]]))
 
     def test_managed_sync_current_attempt_is_integer_before_shell_use(
         self,
