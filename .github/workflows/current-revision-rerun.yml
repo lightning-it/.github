@@ -9,6 +9,10 @@ name: Re-evaluate protected current-revision evidence
 on:
   workflow_dispatch:
     inputs:
+      base_ref:
+        description: Protected pull-request base branch
+        required: true
+        type: string
       pr_number:
         description: Pull request whose protected verifier must be re-evaluated
         required: true
@@ -21,6 +25,14 @@ on:
         description: Frozen pull-request head SHA
         required: true
         type: string
+      producer_run_id:
+        description: Exact protected producer run that requested re-evaluation
+        required: true
+        type: number
+
+run-name: >-
+  Protected verifier handoff PR #${{ inputs.pr_number }} producer
+  ${{ inputs.producer_run_id }} head ${{ inputs.expected_head }}
 
 permissions:
   contents: read
@@ -32,7 +44,7 @@ concurrency:
 
 jobs:
   rerun-protected-verifier:
-    name: Re-run the bounded protected verifier attempts
+    name: Re-run the one protected verifier attempt
     permissions:
       actions: write
       checks: read
@@ -49,6 +61,18 @@ jobs:
           guard="${RUNNER_TEMP}/current-revision-rerun-guard.sh"
           install -m 0600 /dev/null "${guard}"
           cat >"${guard}" <<'GUARD'
+          validate_handoff_binding() {
+            [[ "${BASE_REF}" =~ ^(develop|main)$ ]]
+            [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+            test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
+            test "${GITHUB_REF_PROTECTED}" = true
+            live_base="$(bounded_gh_api \
+              "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
+            test "${live_base}" = "${EXPECTED_BASE}"
+          }
           bounded_sleep() {
             local requested="${1}" remaining
             [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -167,17 +191,15 @@ jobs:
 
       - name: Validate the live binding and rerun exactly once
         env:
+          BASE_REF: ${{ inputs.base_ref }}
           EXPECTED_BASE: ${{ inputs.expected_base }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          test "${GITHUB_REF}" = refs/heads/develop
-          [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           OPERATION_DEADLINE=$((SECONDS + 900))
           require_deadline() {
             local remaining=$((OPERATION_DEADLINE - SECONDS))
@@ -207,18 +229,20 @@ jobs:
           }
           # shellcheck disable=SC1091
           source "${RUNNER_TEMP}/current-revision-rerun-guard.sh"
+          validate_handoff_binding
           pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
+            --arg base_ref "${BASE_REF}" \
             --arg head "${EXPECTED_HEAD}" \
             --arg repository "${REPOSITORY}" '
               .state == "open"
               and .draft == false
               and .base.sha == $base
+              and .base.ref == $base_ref
               and .head.sha == $head
               and .base.repo.full_name == $repository
               and .head.repo.full_name == $repository
-              and (.base.ref == "develop" or .base.ref == "main")
             ' <<<"${pr}" >/dev/null
 
           neutral_pages="$(bounded_gh_api --paginate --slurp \
@@ -245,6 +269,7 @@ jobs:
             '.[0].output.summary | fromjson | select(type == "object")' \
             <<<"${neutral}")"
           producer_id="$(jq -er '.producer_run_id | select(type == "number" and . > 0)' <<<"${neutral_summary}")"
+          test "${producer_id}" = "${PRODUCER_RUN_ID}"
           producer_url="$(jq -er '.run_url | select(type == "string" and length > 0)' <<<"${neutral_summary}")"
           producer_prefix="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/"
           test "${producer_url}" = "${producer_prefix}${producer_id}"
