@@ -889,6 +889,15 @@ gh() {
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
+        self.assertEqual(2, workflow.count("github.actor == 'litroc'"))
+        self.assertEqual(
+            1,
+            workflow.count("github.event.review.user.login == 'litroc'"),
+        )
+        self.assertEqual(
+            1,
+            workflow.count("github.event.comment.user.login == 'litroc'"),
+        )
 
     def test_refresh_preserves_every_supported_protected_evidence_version(self) -> None:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")

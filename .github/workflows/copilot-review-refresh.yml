@@ -34,6 +34,10 @@ jobs:
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
               github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
             ) ||
+            (
+              github.actor == 'litroc' &&
+              github.event.review.user.login == 'litroc'
+            ) ||
             contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
           )
         ) ||
@@ -43,6 +47,10 @@ jobs:
             (
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
               github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
+            (
+              github.actor == 'litroc' &&
+              github.event.comment.user.login == 'litroc'
             ) ||
             contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
           )
