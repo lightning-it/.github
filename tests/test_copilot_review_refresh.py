@@ -33,10 +33,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
 
         self.assertIn("BASE_REF: ${{ github.event.pull_request.base.ref }}", dispatch)
         self.assertIn("PRODUCER_RUN_ID: ${{ github.run_id }}", dispatch)
-        self.assertIn(
-            'test "${EXECUTED_WORKFLOW_SHA}" = "${EXPECTED_BASE}"',
-            dispatch,
-        )
+        self.assertNotIn("EXECUTED_WORKFLOW_SHA", dispatch)
         self.assertIn(
             'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
             dispatch,

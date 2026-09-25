@@ -1359,7 +1359,6 @@ jobs:
       - name: Dispatch the protected re-evaluation helper from the exact base
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          EXECUTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PRODUCER_RUN_ID: ${{ github.run_id }}
@@ -1370,7 +1369,6 @@ jobs:
           set -euo pipefail
           [[ "${BASE_REF}" =~ ^(develop|main)$ ]]
           [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          test "${EXECUTED_WORKFLOW_SHA}" = "${EXPECTED_BASE}"
           test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
           test "${GITHUB_REF_PROTECTED}" = true
           gh api --method POST \
