@@ -2104,6 +2104,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         def evaluate_job_ledger(
             jobs: list[dict[str, object]],
+            conclusion: str = "success",
         ) -> subprocess.CompletedProcess[str]:
             script = "\n".join(
                 (
@@ -2112,6 +2113,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     'producer_job_head_sha="${HEAD}"',
                     "producer_attempt=2",
                     "producer_id=77",
+                    f"producer_conclusion={conclusion}",
                     "producer_job_name='Verify current revision policy'",
                     self._canonical_producer_job_binding_checks(),
                 )
@@ -2133,6 +2135,13 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         accepted = evaluate_job_ledger([primary_job, reevaluation_job])
         self.assertEqual(0, accepted.returncode, accepted.stderr)
+        failed_dispatch = {**reevaluation_job, "conclusion": "failure"}
+        accepted_recovery = evaluate_job_ledger(
+            [primary_job, failed_dispatch], "failure"
+        )
+        self.assertEqual(
+            0, accepted_recovery.returncode, accepted_recovery.stderr
+        )
         self.assertNotEqual(
             0,
             evaluate_job_ledger([reevaluation_job]).returncode,

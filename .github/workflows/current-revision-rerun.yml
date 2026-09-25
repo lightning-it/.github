@@ -495,8 +495,13 @@ jobs:
           producer_job="$(jq -ce --arg name "${producer_job_name}" '
             [.[] | select(.name == $name)] | select(length == 1) | .[0]
           ' <<<"${bound_producer_jobs}")"
-          jq -e '
-            all(.[]; .status == "completed" and .conclusion == "success")
+          jq -e \
+            --arg c "${producer_conclusion}" \
+            --arg p "${producer_job_name}" \
+            --argjson a "${producer_attempt}" '
+              all(.[] | select(.name == $p); .conclusion == "success")
+              and ($a == 1
+                or all(.[] | select(.name != $p); .conclusion == $c))
           ' <<<"${bound_producer_jobs}" >/dev/null
           producer_job_id="$(jq -er \
             '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
