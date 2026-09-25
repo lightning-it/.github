@@ -90,34 +90,52 @@ jobs:
                 if $event == "pull_request_review" then
                   (.review | type) == "object"
                   and (.review.user | type) == "object"
+                  and (.sender | type) == "object"
                   and (
-                    (($actor == "Copilot"
-                        or $actor == "copilot-pull-request-reviewer"
-                        or $actor == "copilot-pull-request-reviewer[bot]")
-                      and .review.user.login
-                        == "copilot-pull-request-reviewer[bot]")
-                    or ($actor == "litroc"
-                      and .review.user.login == "litroc")
-                    or ((.review.author_association == "COLLABORATOR"
+                    (.action == "dismissed"
+                      and .sender.login == $actor
+                      and (.review.author_association == "COLLABORATOR"
                         or .review.author_association == "MEMBER"
-                        or .review.author_association == "OWNER")
-                      and .review.user.login == $actor)
+                        or .review.author_association == "OWNER"))
+                    or ((.action == "submitted" or .action == "edited")
+                      and (
+                        (($actor == "Copilot"
+                            or $actor == "copilot-pull-request-reviewer"
+                            or $actor == "copilot-pull-request-reviewer[bot]")
+                          and .review.user.login
+                            == "copilot-pull-request-reviewer[bot]")
+                        or ($actor == "litroc"
+                          and .review.user.login == "litroc")
+                        or ((.review.author_association == "COLLABORATOR"
+                            or .review.author_association == "MEMBER"
+                            or .review.author_association == "OWNER")
+                          and .review.user.login == $actor)
+                      ))
                   )
                 elif $event == "pull_request_review_comment" then
                   (.comment | type) == "object"
                   and (.comment.user | type) == "object"
+                  and (.sender | type) == "object"
                   and (
-                    (($actor == "Copilot"
-                        or $actor == "copilot-pull-request-reviewer"
-                        or $actor == "copilot-pull-request-reviewer[bot]")
-                      and .comment.user.login
-                        == "copilot-pull-request-reviewer[bot]")
-                    or ($actor == "litroc"
-                      and .comment.user.login == "litroc")
-                    or ((.comment.author_association == "COLLABORATOR"
+                    (.action == "deleted"
+                      and .sender.login == $actor
+                      and (.comment.author_association == "COLLABORATOR"
                         or .comment.author_association == "MEMBER"
-                        or .comment.author_association == "OWNER")
-                      and .comment.user.login == $actor)
+                        or .comment.author_association == "OWNER"))
+                    or ((.action == "created" or .action == "edited")
+                      and (
+                        (($actor == "Copilot"
+                            or $actor == "copilot-pull-request-reviewer"
+                            or $actor == "copilot-pull-request-reviewer[bot]")
+                          and .comment.user.login
+                            == "copilot-pull-request-reviewer[bot]")
+                        or ($actor == "litroc"
+                          and .comment.user.login == "litroc")
+                        or ((.comment.author_association == "COLLABORATOR"
+                            or .comment.author_association == "MEMBER"
+                            or .comment.author_association == "OWNER")
+                          and .comment.user.login == $actor)
+                      ))
                   )
                 else false
                 end

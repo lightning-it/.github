@@ -916,16 +916,26 @@ gh() {
             actor: str,
             *,
             login: str,
+            action: str | None = None,
             association: str = "NONE",
             draft: bool = False,
             head_repository: str = repository,
+            sender_login: str | None = None,
         ) -> bool:
             subject = {"user": {"login": login}, "author_association": association}
+            if action is None:
+                action = (
+                    "submitted"
+                    if event == "pull_request_review"
+                    else "created"
+                )
             payload: dict[str, object] = {
+                "action": action,
                 "pull_request": {
                     "draft": draft,
                     "head": {"repo": {"full_name": head_repository}},
-                }
+                },
+                "sender": {"login": sender_login or actor},
             }
             if event == "pull_request_review":
                 payload["review"] = subject
@@ -976,6 +986,42 @@ gh() {
                 self.assertFalse(
                     accepted(event, "other", login="maintainer", association="MEMBER")
                 )
+            destructive_action = (
+                "dismissed"
+                if event == "pull_request_review"
+                else "deleted"
+            )
+            with self.subTest(event=event, action=destructive_action):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                        sender_login="other",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="untrusted",
+                    )
+                )
+            self.assertFalse(
+                accepted(event, "litroc", action="unknown", login="litroc")
+            )
             self.assertFalse(
                 accepted(event, "litroc", login="litroc", draft=True)
             )
