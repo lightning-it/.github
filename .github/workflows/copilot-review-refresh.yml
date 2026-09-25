@@ -69,7 +69,6 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PATH: ${{ github.event_path }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -140,7 +139,7 @@ jobs:
                 else false
                 end
               )
-            ' "${EVENT_PATH}" >/dev/null
+            ' "${GITHUB_EVENT_PATH}" >/dev/null
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]

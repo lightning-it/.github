@@ -50,7 +50,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         marker = '            --arg repository "${REPOSITORY}" \'\n'
         start = workflow.index(marker) + len(marker)
-        end = workflow.index('\n            \' "${EVENT_PATH}" >/dev/null', start)
+        end = workflow.index(
+            '\n            \' "${GITHUB_EVENT_PATH}" >/dev/null', start
+        )
         return workflow[start:end]
 
     @staticmethod
@@ -872,6 +874,8 @@ gh() {
             )
         )
         self.assertNotIn("Do not edit downstream copies directly.", workflow)
+        self.assertNotIn("EVENT_PATH: ${{ github.event_path }}", workflow)
+        self.assertIn("' \"${GITHUB_EVENT_PATH}\" >/dev/null", workflow)
 
         self.assertEqual(
             1,
