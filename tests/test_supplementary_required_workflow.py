@@ -3226,6 +3226,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'requested | waiting | pending | queued | in_progress', recovery
         )
         self.assertIn(
+            "if [ \"${source_path}\" != \\\n"
+            "              '.github/workflows/sync-ee-containers.yml' ]; then",
+            recovery,
+        )
+        self.assertIn(
             'test "$(jq -r .status <<<"${source_run}")" = completed',
             recovery,
         )
@@ -3236,6 +3241,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .head_branch == "main"', recovery)
         self.assertIn('and .head_sha == $head', recovery)
         self.assertIn('and .path == $path', recovery)
+        self.assertIn('.status == "in_progress" and .conclusion == null', recovery)
         self.assertIn('and .status == "completed"', recovery)
         self.assertIn('and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
@@ -3250,10 +3256,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .behind_by == 0', recovery)
         self.assertIn('and (.jobs | length) == .total_count', recovery)
         self.assertIn('select(.name == $expected)', recovery)
+        self.assertIn('.status == "completed"', recovery)
+        self.assertIn('.conclusion == "success"', recovery)
         self.assertIn(
-            'select(.status == "completed" and .conclusion == "success")',
+            'for ((jobs_attempt = 1; jobs_attempt <= 42; jobs_attempt++))',
             recovery,
         )
+        self.assertIn('test "${source_jobs_ready}" = true', recovery)
         self.assertIn('| length) == 1', recovery)
         self.assertIn(
             '<!-- lit-shared-assets-sync-provenance:v1 -->', recovery
@@ -3332,15 +3341,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         source_run_url = "https://github.example/actions/runs/42"
         jq = self._test_tool("jq")
 
-        def accepts(event: str, current_attempt: int = 1) -> bool:
+        def accepts(
+            event: str,
+            current_attempt: int = 1,
+            *,
+            path: str = source_path,
+            status: str = "completed",
+            conclusion: str | None = "success",
+        ) -> bool:
             payload = {
                 "id": 42,
                 "event": event,
                 "head_branch": "main",
                 "head_sha": source_sha,
-                "path": source_path,
-                "status": "completed",
-                "conclusion": "success",
+                "path": path,
+                "status": status,
+                "conclusion": conclusion,
                 "html_url": source_run_url,
                 "repository": {"full_name": "lightning-it/shared-assets-lit"},
                 "head_repository": {
@@ -3357,13 +3373,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     source_sha,
                     "--arg",
                     "path",
-                    source_path,
+                    path,
                     "--arg",
                     "repository",
                     "lightning-it/shared-assets-lit",
                     "--arg",
                     "run_url",
                     source_run_url,
+                    "--arg",
+                    "container_path",
+                    ".github/workflows/sync-ee-containers.yml",
                     "--argjson",
                     "current_attempt",
                     str(current_attempt),
@@ -3385,6 +3404,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for accepted_attempt in (1, 2, 17):
             with self.subTest(accepted_attempt=accepted_attempt):
                 self.assertTrue(accepts("workflow_dispatch", accepted_attempt))
+        container_path = ".github/workflows/sync-ee-containers.yml"
+        self.assertTrue(
+            accepts(
+                "push",
+                path=container_path,
+                status="in_progress",
+                conclusion=None,
+            )
+        )
+        self.assertTrue(accepts("push", path=container_path))
+        self.assertFalse(
+            accepts("push", status="in_progress", conclusion=None)
+        )
+        self.assertFalse(
+            accepts(
+                "push",
+                path=container_path,
+                status="completed",
+                conclusion="failure",
+            )
+        )
         for rejected_event in (
             "",
             "schedule",
@@ -3484,7 +3524,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('test -n "${SOURCE_GH_TOKEN}"', recovery)
         self.assertEqual(
-            6, recovery.count('GH_TOKEN="${SOURCE_GH_TOKEN}" gh api')
+            7, recovery.count('GH_TOKEN="${SOURCE_GH_TOKEN}" gh api')
         )
         for query in (
             '"repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"',
