@@ -8,6 +8,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COPILOT_WORKFLOW = ROOT / ".github/workflows/copilot-review.yml"
 REFRESH_WORKFLOW = ROOT / ".github/workflows/copilot-review-refresh.yml"
 RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
 TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
@@ -21,6 +22,34 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def test_copilot_dispatcher_matches_the_rerun_helper_contract(self) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            "      - name: Dispatch the protected re-evaluation helper "
+            "from the exact base\n"
+        )
+        start = workflow.index(marker)
+        dispatch = workflow[start:]
+
+        self.assertIn("BASE_REF: ${{ github.event.pull_request.base.ref }}", dispatch)
+        self.assertIn("PRODUCER_RUN_ID: ${{ github.run_id }}", dispatch)
+        self.assertIn(
+            'test "${EXECUTED_WORKFLOW_SHA}" = "${EXPECTED_BASE}"',
+            dispatch,
+        )
+        self.assertIn(
+            'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
+            dispatch,
+        )
+        self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', dispatch)
+        self.assertIn('-f "ref=${BASE_REF}"', dispatch)
+        self.assertIn('-f "inputs[base_ref]=${BASE_REF}"', dispatch)
+        self.assertIn(
+            '-f "inputs[producer_run_id]=${PRODUCER_RUN_ID}"',
+            dispatch,
+        )
+        self.assertNotIn("-f ref=develop", dispatch)
+
     def _test_tool(self, name: str) -> str:
         executable = shutil.which(name, path=TEST_TOOL_PATH)
         if executable is None:
