@@ -3223,11 +3223,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'for ((attempt = 1; attempt <= 42; attempt++))', recovery
         )
         self.assertIn(
-            'requested | waiting | pending | queued | in_progress', recovery
+            'IN("requested","waiting","pending","queued")', recovery
         )
         self.assertIn(
-            "if [ \"${source_path}\" = \\\n"
-            "              '.github/workflows/sync-ee-containers.yml' ]; then",
+            "[ \"${source_path}\" = "
+            "'.github/workflows/sync-ee-containers.yml' ]",
             recovery,
         )
         self.assertLess(
@@ -3235,7 +3235,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             recovery.index("source_jobs_ready=false"),
         )
         self.assertIn(
-            'test "$(jq -r .status <<<"${source_run}")" = completed',
+            'test "${src_state}" = terminal',
             recovery,
         )
         self.assertIn('--argjson trailer_attempt "${source_run_attempt}"', recovery)
@@ -3459,6 +3459,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         expected = "Sync shared-assets-lit to target"
         jq = self._test_tool("jq")
 
+        inventory_marker = "              jq -e '\n"
+        inventory_start = recovery.index(
+            inventory_marker,
+            recovery.index('source_jobs="$(GH_TOKEN='),
+        ) + len(inventory_marker)
+        inventory_end = recovery.index(
+            '\n              \' <<<"${source_jobs}" >/dev/null',
+            inventory_start,
+        )
+        inventory_filter = recovery[inventory_start:inventory_end]
+
+        def valid_inventory(payload: object) -> bool:
+            result = subprocess.run(
+                [jq, "-e", inventory_filter],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
         def job(
             *,
             name: str = expected,
@@ -3486,6 +3507,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return "timeout"
 
         self.assertEqual("wait", classify([]))
+        self.assertTrue(valid_inventory({"total_count": 1, "jobs": [job()]}))
+        for malformed in (
+            [],
+            {"total_count": 1, "jobs": {"job": job()}},
+            {"total_count": 1, "jobs": "job"},
+            {"total_count": "1", "jobs": [job()]},
+            {"total_count": 2, "jobs": [job()]},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(valid_inventory(malformed))
         for status in (
             "requested",
             "waiting",
@@ -3512,6 +3543,100 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(jobs=jobs):
                 self.assertEqual("reject", convergence([jobs, [job()]]))
+
+    def test_managed_sync_container_source_waits_for_running_or_terminal(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = '              src_state="$(jq -er '
+        start = recovery.index(marker) + len(marker)
+        filter_marker = (
+            '--argjson allow_running "${allow_live}" \'\n'
+        )
+        self.assertTrue(recovery[start:].startswith(filter_marker))
+        start += len(filter_marker)
+        end = recovery.index('\n                \' <<<"${source_run}")"', start)
+        transition_filter = recovery[start:end]
+        jq = self._test_tool("jq")
+
+        def classify(payload: object, *, allow_running: bool = True) -> str:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-er",
+                    "--argjson",
+                    "allow_running",
+                    str(allow_running).lower(),
+                    transition_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout.strip()
+
+        def convergence(snapshots: list[object]) -> str:
+            for snapshot in snapshots:
+                state = classify(snapshot)
+                if state != "wait":
+                    return state
+            return "timeout"
+
+        for status in ("requested", "waiting", "pending", "queued"):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    "wait", classify({"status": status, "conclusion": None})
+                )
+        self.assertEqual(
+            "running", classify({"status": "in_progress", "conclusion": None})
+        )
+        self.assertEqual(
+            "wait",
+            classify(
+                {"status": "in_progress", "conclusion": None},
+                allow_running=False,
+            ),
+        )
+        for conclusion in ("success", "failure", "cancelled"):
+            with self.subTest(conclusion=conclusion):
+                self.assertEqual(
+                    "terminal",
+                    classify({"status": "completed", "conclusion": conclusion}),
+                )
+        self.assertEqual(
+            "running",
+            convergence(
+                [
+                    {"status": "queued", "conclusion": None},
+                    {"status": "in_progress", "conclusion": None},
+                ]
+            ),
+        )
+        self.assertEqual(
+            "terminal",
+            convergence(
+                [
+                    {"status": "pending", "conclusion": None},
+                    {"status": "completed", "conclusion": "failure"},
+                ]
+            ),
+        )
+        self.assertEqual(
+            "timeout",
+            convergence([{"status": "queued", "conclusion": None}] * 42),
+        )
+        for malformed in (
+            [],
+            {},
+            {"status": "completed", "conclusion": None},
+            {"status": "in_progress", "conclusion": "success"},
+            {"status": "mystery", "conclusion": None},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertEqual("reject", classify(malformed))
 
     def test_managed_sync_running_source_requires_exact_trailer_attempt(
         self,

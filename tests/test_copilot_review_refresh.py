@@ -46,6 +46,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         return workflow[start:end]
 
     @staticmethod
+    def _refresh_event_authorization_filter() -> str:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            --arg repository "${REPOSITORY}" \'\n'
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index('\n            \' "${EVENT_PATH}" >/dev/null', start)
+        return workflow[start:end]
+
+    @staticmethod
     def _rerun_summary_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
         marker = '            --argjson run_id "${producer_id}" \'\n'
@@ -897,6 +905,90 @@ gh() {
         self.assertEqual(
             1,
             workflow.count("github.event.comment.user.login == 'litroc'"),
+        )
+
+    def test_refresh_event_authorization_is_fail_closed(self) -> None:
+        jq = self._test_tool("jq")
+        repository = "lightning-it/.github"
+
+        def accepted(
+            event: str,
+            actor: str,
+            *,
+            login: str,
+            association: str = "NONE",
+            draft: bool = False,
+            head_repository: str = repository,
+        ) -> bool:
+            subject = {"user": {"login": login}, "author_association": association}
+            payload: dict[str, object] = {
+                "pull_request": {
+                    "draft": draft,
+                    "head": {"repo": {"full_name": head_repository}},
+                }
+            }
+            if event == "pull_request_review":
+                payload["review"] = subject
+            elif event == "pull_request_review_comment":
+                payload["comment"] = subject
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    actor,
+                    "--arg",
+                    "event",
+                    event,
+                    "--arg",
+                    "repository",
+                    repository,
+                    self._refresh_event_authorization_filter(),
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for event in ("pull_request_review", "pull_request_review_comment"):
+            with self.subTest(event=event, actor="litroc"):
+                self.assertTrue(accepted(event, "litroc", login="litroc"))
+                self.assertFalse(accepted(event, "litroc", login="other"))
+                self.assertFalse(accepted(event, "other", login="litroc"))
+            with self.subTest(event=event, actor="Copilot"):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "Copilot",
+                        login="copilot-pull-request-reviewer[bot]",
+                    )
+                )
+                self.assertFalse(
+                    accepted(event, "Copilot", login="untrusted-reviewer")
+                )
+            with self.subTest(event=event, association="MEMBER"):
+                self.assertTrue(
+                    accepted(event, "maintainer", login="maintainer", association="MEMBER")
+                )
+                self.assertFalse(
+                    accepted(event, "other", login="maintainer", association="MEMBER")
+                )
+            self.assertFalse(
+                accepted(event, "litroc", login="litroc", draft=True)
+            )
+            self.assertFalse(
+                accepted(
+                    event,
+                    "litroc",
+                    login="litroc",
+                    head_repository="attacker/fork",
+                )
+            )
+        self.assertFalse(
+            accepted("workflow_dispatch", "litroc", login="litroc")
         )
 
     def test_refresh_preserves_every_supported_protected_evidence_version(self) -> None:
