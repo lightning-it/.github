@@ -46,6 +46,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         return workflow[start:end]
 
     @staticmethod
+    def _refresh_event_authorization_filter() -> str:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            --arg repository "${REPOSITORY}" \'\n'
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index(
+            '\n            \' "${GITHUB_EVENT_PATH}" >/dev/null', start
+        )
+        return workflow[start:end]
+
+    @staticmethod
     def _rerun_summary_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
         marker = '            --argjson run_id "${producer_id}" \'\n'
@@ -864,6 +874,8 @@ gh() {
             )
         )
         self.assertNotIn("Do not edit downstream copies directly.", workflow)
+        self.assertNotIn("EVENT_PATH: ${{ github.event_path }}", workflow)
+        self.assertIn("' \"${GITHUB_EVENT_PATH}\" >/dev/null", workflow)
 
         self.assertEqual(
             1,
@@ -888,6 +900,145 @@ gh() {
                 "github.event.comment.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
+        )
+        self.assertEqual(2, workflow.count("github.actor == 'litroc'"))
+        self.assertEqual(
+            1,
+            workflow.count("github.event.review.user.login == 'litroc'"),
+        )
+        self.assertEqual(
+            1,
+            workflow.count("github.event.comment.user.login == 'litroc'"),
+        )
+
+    def test_refresh_event_authorization_is_fail_closed(self) -> None:
+        jq = self._test_tool("jq")
+        repository = "lightning-it/.github"
+
+        def accepted(
+            event: str,
+            actor: str,
+            *,
+            login: str,
+            action: str | None = None,
+            association: str = "NONE",
+            draft: bool = False,
+            head_repository: str = repository,
+            sender_login: str | None = None,
+        ) -> bool:
+            subject = {"user": {"login": login}, "author_association": association}
+            if action is None:
+                action = (
+                    "submitted"
+                    if event == "pull_request_review"
+                    else "created"
+                )
+            payload: dict[str, object] = {
+                "action": action,
+                "pull_request": {
+                    "draft": draft,
+                    "head": {"repo": {"full_name": head_repository}},
+                },
+                "sender": {"login": sender_login or actor},
+            }
+            if event == "pull_request_review":
+                payload["review"] = subject
+            elif event == "pull_request_review_comment":
+                payload["comment"] = subject
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    actor,
+                    "--arg",
+                    "event",
+                    event,
+                    "--arg",
+                    "repository",
+                    repository,
+                    self._refresh_event_authorization_filter(),
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for event in ("pull_request_review", "pull_request_review_comment"):
+            with self.subTest(event=event, actor="litroc"):
+                self.assertTrue(accepted(event, "litroc", login="litroc"))
+                self.assertFalse(accepted(event, "litroc", login="other"))
+                self.assertFalse(accepted(event, "other", login="litroc"))
+            with self.subTest(event=event, actor="Copilot"):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "Copilot",
+                        login="copilot-pull-request-reviewer[bot]",
+                    )
+                )
+                self.assertFalse(
+                    accepted(event, "Copilot", login="untrusted-reviewer")
+                )
+            with self.subTest(event=event, association="MEMBER"):
+                self.assertTrue(
+                    accepted(event, "maintainer", login="maintainer", association="MEMBER")
+                )
+                self.assertFalse(
+                    accepted(event, "other", login="maintainer", association="MEMBER")
+                )
+            destructive_action = (
+                "dismissed"
+                if event == "pull_request_review"
+                else "deleted"
+            )
+            with self.subTest(event=event, action=destructive_action):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                        sender_login="other",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="untrusted",
+                    )
+                )
+            self.assertFalse(
+                accepted(event, "litroc", action="unknown", login="litroc")
+            )
+            self.assertFalse(
+                accepted(event, "litroc", login="litroc", draft=True)
+            )
+            self.assertFalse(
+                accepted(
+                    event,
+                    "litroc",
+                    login="litroc",
+                    head_repository="attacker/fork",
+                )
+            )
+        self.assertFalse(
+            accepted("workflow_dispatch", "litroc", login="litroc")
         )
 
     def test_refresh_preserves_every_supported_protected_evidence_version(self) -> None:

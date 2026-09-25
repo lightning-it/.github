@@ -5820,34 +5820,32 @@ jobs:
             [[ "${source_run_attempt}" =~ ^[1-9][0-9]*$ ]]
             test -n "${SOURCE_GH_TOKEN}"
             source_run_url="${GITHUB_SERVER_URL}/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
-            source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
-              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
+            source_api="repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"
+            source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api "${source_api}")"
+            source_path="$(jq -er '.path | select(type == "string" and length > 0)' \
+              <<<"${source_run}")"
+            allow_live=false
+            [ "${source_path}" = '.github/workflows/sync-ee-containers.yml' ] && allow_live=true
+            src_state=''
             for ((attempt = 1; attempt <= 42; attempt++)); do
-              source_run_status="$(jq -er \
-                '.status | select(type == "string" and length > 0)' \
-                <<<"${source_run}")"
-              if [ "${source_run_status}" = completed ]; then
-                break
-              fi
-              case "${source_run_status}" in
-                requested | waiting | pending | queued | in_progress) ;;
-                *)
-                  echo "The cited source run has an invalid status." >&2
-                  exit 1
-                  ;;
+              src_state="$(jq -er --argjson allow_running "${allow_live}" '
+                  if type!="object" then "reject"
+                  elif .status=="completed" and (.conclusion|type)=="string" then "terminal"
+                  elif $allow_running and .status=="in_progress" and .conclusion==null then "running"
+                  elif .conclusion==null and ((.status|IN("requested","waiting","pending","queued"))
+                    or (.status=="in_progress" and ($allow_running|not))) then "wait"
+                  else "reject" end
+                ' <<<"${source_run}")"
+              case "${src_state}" in
+                terminal | running) break ;;
+                wait) ;;
+                *) exit 1;;
               esac
               test "${attempt}" -lt 42
               sleep 10
-              source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
-                "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
+              source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api "${source_api}")"
             done
-            test "$(jq -r .status <<<"${source_run}")" = completed
-            current_source_run_attempt="$(jq -er \
-              '.run_attempt | select(type == "number" and . >= 1 and floor == .) | floor' \
-              <<<"${source_run}")"
-            test "${current_source_run_attempt}" -ge "${source_run_attempt}"
-            source_path="$(jq -er '.path | select(type == "string" and length > 0)' \
-              <<<"${source_run}")"
+            [ "${allow_live}" = true ] && [[ "${src_state}" =~ ^(running|terminal)$ ]] || test "${src_state}" = terminal
             case "${source_path}" in
               .github/workflows/sync-repository-quality-repos.yml)
                 expected_head_prefix="chore/sync-repository-quality-${target_name}"
@@ -5898,25 +5896,30 @@ jobs:
             test "${head_ref}" = "${expected_head_ref}"
             test "$(jq -r .title <<<"${pr}")" = "${expected_pr_title}"
             test "${first_line}" = "${expected_subject}"
-            jq -e \
-              --arg head "${source_sha}" \
-              --arg path "${source_path}" \
-              --arg repository 'lightning-it/shared-assets-lit' \
-              --arg run_url "${source_run_url}" \
-              --argjson current_attempt "${current_source_run_attempt}" \
-              --argjson run_id "${source_run_id}" '
-                .id == $run_id
-                and (.event == "push" or .event == "workflow_dispatch")
-                and .head_branch == "main"
-                and .head_sha == $head
-                and .path == $path
-                and .status == "completed"
-                and .conclusion == "success"
-                and .html_url == $run_url
-                and .repository.full_name == $repository
-                and .head_repository.full_name == $repository
-                and .run_attempt == $current_attempt
-              ' <<<"${source_run}" >/dev/null
+            validate_source_run() {
+              jq -e \
+                --arg head "${source_sha}" \
+                --arg path "${source_path}" \
+                --arg repository 'lightning-it/shared-assets-lit' \
+                --arg run_url "${source_run_url}" \
+                --argjson allow_running "${allow_live}" \
+                --argjson trailer_attempt "${source_run_attempt}" \
+                --argjson run_id "${source_run_id}" '
+                  .id == $run_id
+                  and (.event == "push" or .event == "workflow_dispatch")
+                  and .head_branch == "main" and .head_sha == $head
+                  and .path == $path and .html_url == $run_url
+                  and .repository.full_name == $repository
+                  and .head_repository.full_name == $repository
+                  and (.run_attempt | type == "number" and . >= 1 and floor == .)
+                  and ((.status == "completed" and .conclusion == "success"
+                      and .run_attempt >= $trailer_attempt)
+                    or ($allow_running and .status == "in_progress"
+                      and .conclusion == null
+                      and .run_attempt == $trailer_attempt))
+                ' <<<"${source_run}" >/dev/null
+            }
+            validate_source_run
             source_commit="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/commits/${source_sha}")"
             test "$(jq -r .sha <<<"${source_commit}")" = "${source_sha}"
@@ -5943,17 +5946,44 @@ jobs:
                     and .head_commit.sha == $current)
                 )
               ' <<<"${source_compare}" >/dev/null
-            source_jobs="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
-              "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/${source_run_attempt}/jobs?per_page=100")"
-            jq -e \
-              --arg expected "${expected_source_job}" '
-                (.total_count | type == "number" and . > 0 and . <= 100)
+            source_jobs_ready=false
+            for ((jobs_attempt = 1; jobs_attempt <= 42; jobs_attempt++)); do
+              source_jobs="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
+                "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}/attempts/${source_run_attempt}/jobs?per_page=100")"
+              jq -e '
+                type == "object"
+                and (.jobs | type) == "array"
+                and (.total_count | type == "number" and . > 0 and . <= 100)
                 and (.jobs | length) == .total_count
-                and ([.jobs[] |
-                  select(.name == $expected)
-                  | select(.status == "completed" and .conclusion == "success")]
-                  | length) == 1
               ' <<<"${source_jobs}" >/dev/null
+              source_job_state="$(jq -er \
+                --arg expected "${expected_source_job}" '
+                  [.jobs[] | select(.name == $expected)] as $matches
+                  | if ($matches | length) == 0 then "wait"
+                    elif ($matches | length) != 1 then "reject"
+                    elif ($matches[0].status == "completed"
+                      and $matches[0].conclusion == "success") then "ready"
+                    elif (($matches[0].status == "requested"
+                      or $matches[0].status == "waiting"
+                      or $matches[0].status == "pending"
+                      or $matches[0].status == "queued"
+                      or $matches[0].status == "in_progress")
+                      and $matches[0].conclusion == null) then "wait"
+                    else "reject"
+                    end
+                ' <<<"${source_jobs}")"
+              case "${source_job_state}" in
+                ready) source_jobs_ready=true; break ;;
+                wait) ;;
+                *) exit 1 ;;
+              esac
+              test "${jobs_attempt}" -lt 42
+              sleep 5
+            done
+            test "${source_jobs_ready}" = true
+            source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api "${source_api}")"
+            test "$(jq -er '.path | select(type == "string" and length > 0)' <<<"${source_run}")" = "${source_path}"
+            validate_source_run
             target_tree_sha="$(jq -er '
               .commit.tree.sha
               | select(type == "string" and test("^[0-9a-f]{40}$"))
