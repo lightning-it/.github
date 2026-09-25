@@ -57,6 +57,7 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
             "expected_base",
             "expected_head",
             "producer_run_id",
+            "producer_run_attempt",
         ):
             with self.subTest(input_name=input_name):
                 self.assertIn(f'-f "inputs[{input_name}]', review)
@@ -75,6 +76,9 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
         self.assertIn('test "${live_base}" = "${EXPECTED_BASE}"', rerun)
         self.assertIn('.base.ref == $base_ref', rerun)
         self.assertIn('test "${producer_id}" = "${PRODUCER_RUN_ID}"', rerun)
+        self.assertIn(
+            'test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"', rerun
+        )
 
     def test_invalid_runner_temp_does_not_create_review_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

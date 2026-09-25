@@ -33,6 +33,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
 
         self.assertIn("BASE_REF: ${{ github.event.pull_request.base.ref }}", dispatch)
         self.assertIn("PRODUCER_RUN_ID: ${{ github.run_id }}", dispatch)
+        self.assertIn("PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}", dispatch)
         self.assertNotIn("EXECUTED_WORKFLOW_SHA", dispatch)
         self.assertIn(
             'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
@@ -43,6 +44,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('-f "inputs[base_ref]=${BASE_REF}"', dispatch)
         self.assertIn(
             '-f "inputs[producer_run_id]=${PRODUCER_RUN_ID}"',
+            dispatch,
+        )
+        self.assertIn(
+            '-f "inputs[producer_run_attempt]=${PRODUCER_RUN_ATTEMPT}"',
             dispatch,
         )
         self.assertNotIn("-f ref=develop", dispatch)

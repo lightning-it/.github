@@ -29,10 +29,15 @@ on:
         description: Exact protected producer run that requested re-evaluation
         required: true
         type: number
+      producer_run_attempt:
+        description: Exact protected producer attempt that requested re-evaluation
+        required: true
+        type: number
 
 run-name: >-
   Protected verifier handoff PR #${{ inputs.pr_number }} producer
-  ${{ inputs.producer_run_id }} head ${{ inputs.expected_head }}
+  ${{ inputs.producer_run_id }} attempt ${{ inputs.producer_run_attempt }}
+  head ${{ inputs.expected_head }}
 
 permissions:
   contents: read
@@ -67,6 +72,7 @@ jobs:
             [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
             [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
             [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${PRODUCER_RUN_ATTEMPT}" =~ ^(1|2)$ ]]
             test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
             test "${GITHUB_REF_PROTECTED}" = true
             live_base="$(bounded_gh_api \
@@ -236,6 +242,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_RUN_ATTEMPT: ${{ inputs.producer_run_attempt }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -380,6 +387,7 @@ jobs:
           producer_attempt="$(jq -er \
             '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
             <<<"${producer}")"
+          test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
           if [ "${evidence_version}" = v4 ]; then
             test "${producer_attempt}" -eq 1
             test "${author}" = 'lightning-it-release-automation[bot]'

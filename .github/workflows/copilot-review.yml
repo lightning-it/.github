@@ -1362,6 +1362,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PRODUCER_RUN_ID: ${{ github.run_id }}
+          PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}
           REPOSITORY: ${{ github.repository }}
           EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -1369,6 +1370,7 @@ jobs:
           set -euo pipefail
           [[ "${BASE_REF}" =~ ^(develop|main)$ ]]
           [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${PRODUCER_RUN_ATTEMPT}" =~ ^(1|2)$ ]]
           test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
           test "${GITHUB_REF_PROTECTED}" = true
           gh api --method POST \
@@ -1378,4 +1380,5 @@ jobs:
             -f "inputs[pr_number]=${PR_NUMBER}" \
             -f "inputs[expected_base]=${EXPECTED_BASE}" \
             -f "inputs[expected_head]=${EXPECTED_HEAD}" \
-            -f "inputs[producer_run_id]=${PRODUCER_RUN_ID}" >/dev/null
+            -f "inputs[producer_run_id]=${PRODUCER_RUN_ID}" \
+            -f "inputs[producer_run_attempt]=${PRODUCER_RUN_ATTEMPT}" >/dev/null

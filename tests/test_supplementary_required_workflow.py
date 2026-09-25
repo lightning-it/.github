@@ -5226,7 +5226,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Re-run the one protected verifier attempt",
             permanent,
         )
-        self.assertIn('def allowed: .conclusion=="skipped"', permanent)
+        self.assertIn('def allowed_skip: .conclusion=="skipped"', permanent)
+        self.assertIn("def allowed_dispatch_failure:", permanent)
+        self.assertIn('.run_id==$run_id', permanent)
+        self.assertIn('.run_attempt==$attempt', permanent)
+        self.assertIn('.head_sha==$head', permanent)
+        self.assertIn(
+            "def allowed: allowed_skip or allowed_dispatch_failure;", permanent
+        )
         self.assertIn(
             "{disallowed:[$terminal[]|select(allowed|not)]", permanent
         )
@@ -5252,11 +5259,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(helper_guard_match)
         helper_guard = helper_guard_match.group(1)
         jq = self._test_tool("jq")
-        helper_pattern_match = re.search(
-            r"\n\s+d='([^']+)'\n"
-            r'\s+terminal_job_inventory="\$\(jq -c --arg d',
-            permanent,
-        )
+        helper_pattern_match = re.search(r"\n\s+d='([^']+)'\n", permanent)
         self.assertIsNotNone(helper_pattern_match)
         helper_pattern = helper_pattern_match.group(1)
 
@@ -5380,6 +5383,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
+        self.assertIn('producer_recovery_dispatch_failed=false', permanent)
+        self.assertIn(
+            '.name=="Request protected verifier re-evaluation"\n'
+            '                    and .conclusion=="failure"',
+            permanent,
+        )
         producer_attempt_guard = (
             'if [ "${producer_run_attempt}" -eq 1 ]; then'
         )
@@ -5394,6 +5403,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             '--argjson evidence_ready "${producer_evidence_ready}"', permanent
         )
+        self.assertIn('--argjson recovery_dispatch_failed', permanent)
+        self.assertIn(
+            '($evidence_ready and $recovery_dispatch_failed\n'
+            '                      and .status == "completed"\n'
+            '                      and .conclusion == "failure")',
+            permanent,
+        )
         self.assertIn(
             '($evidence_ready\n                      and .status == "in_progress"',
             permanent,
@@ -5401,6 +5417,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertLess(
             permanent.index("for evidence_observation in $(seq 1 450)"),
             permanent.index("producer_evidence_ready=false"),
+        )
+        self.assertLess(
+            producer_loop.index('producer_evidence_ready=true'),
+            producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
@@ -6447,6 +6467,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         source = json.dumps([{"jobs": jobs}])
         jq = self._test_tool("jq")
+        producer_head = "a" * 40
+        producer_attempt = 1
+        producer_run_id = 123
         helper_pattern = (
             "^Request protected verifier re-evaluation( / "
             "(Diagnose Release-App reusable context and fail closed|"
@@ -6461,6 +6484,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--arg",
                     "d",
                     helper_pattern,
+                    "--arg",
+                    "head",
+                    producer_head,
+                    "--argjson",
+                    "attempt",
+                    str(producer_attempt),
+                    "--argjson",
+                    "run_id",
+                    str(producer_run_id),
                     inventory_filter(),
                 ],
                 input=source,
@@ -6598,6 +6630,76 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     json.dumps(failing, separators=(",", ":")),
                     failure.stderr,
                 )
+
+    def test_permanent_verifier_accepts_only_exact_bound_dispatch_failure(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+        marker = 'terminal_job_inventory="$(jq -c'
+        start = permanent.index(marker) + len(marker)
+        start = permanent.index("'\n", start) + 2
+        end = permanent.index(
+            '\n                  \' <<<"${producer_jobs_pages}")"', start
+        )
+        inventory_filter = permanent[start:end]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        exact = {
+            "name": "Request protected verifier re-evaluation",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_id": 123,
+            "run_attempt": 1,
+            "head_sha": head,
+        }
+
+        def classify(job: dict[str, object]) -> dict[str, list[object]]:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-c",
+                    "--arg",
+                    "d",
+                    (
+                        "^Request protected verifier re-evaluation( / "
+                        "(Diagnose Release-App reusable context and fail closed|"
+                        "Re-run the one protected verifier attempt))?$"
+                    ),
+                    "--arg",
+                    "head",
+                    head,
+                    "--argjson",
+                    "attempt",
+                    "1",
+                    "--argjson",
+                    "run_id",
+                    "123",
+                    inventory_filter,
+                ],
+                input=json.dumps([{"jobs": [job]}]),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        accepted = classify(exact)
+        self.assertEqual([], accepted["disallowed"])
+        self.assertEqual([exact], accepted["allowed"])
+        for mutation in (
+            {**exact, "run_id": 124},
+            {**exact, "run_attempt": 2},
+            {**exact, "head_sha": "b" * 40},
+            {**exact, "name": "Request Copilot review for current revision"},
+            {**exact, "conclusion": "cancelled"},
+        ):
+            with self.subTest(mutation=mutation):
+                rejected = classify(mutation)
+                self.assertEqual([mutation], rejected["disallowed"])
+                self.assertEqual([], rejected["allowed"])
 
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
