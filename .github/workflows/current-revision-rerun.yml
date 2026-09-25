@@ -73,6 +73,45 @@ jobs:
               "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
             test "${live_base}" = "${EXPECTED_BASE}"
           }
+          validate_producer_terminal_shape() {
+            local conclusion="${1}" jobs="${2}"
+            jq -e \
+              --arg conclusion "${conclusion}" \
+              --arg dispatch 'Request protected verifier re-evaluation' \
+              --arg head "${producer_job_head_sha}" \
+              --argjson attempt "${producer_attempt}" \
+              --argjson run_id "${producer_id}" '
+                type == "object"
+                and (.jobs | type) == "array"
+                and (
+                  if $conclusion == "success" then
+                    all(.jobs[];
+                      .status == "completed"
+                      and (.conclusion == "success"
+                        or .conclusion == "skipped"))
+                  elif $conclusion == "failure" then
+                    ([.jobs[] |
+                      select(.status == "completed"
+                        and .conclusion == "failure")] | length) == 1
+                    and ([.jobs[] |
+                      select(.status == "completed"
+                        and .conclusion == "failure")][0] |
+                      .name == $dispatch
+                      and .run_id == $run_id
+                      and .run_attempt == $attempt
+                      and .head_sha == $head)
+                    and all(.jobs[];
+                      .status == "completed"
+                      and (.conclusion == "success"
+                        or .conclusion == "skipped"
+                        or (.name == $dispatch
+                          and .conclusion == "failure")))
+                  else
+                    false
+                  end
+                )
+              ' <<<"${jobs}" >/dev/null
+          }
           bounded_sleep() {
             local requested="${1}" remaining
             [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -333,7 +372,6 @@ jobs:
             producer="$(bounded_gh_api \
               "repos/${REPOSITORY}/actions/runs/${producer_id}")"
             if [ "$(jq -r .status <<<"${producer}")" = completed ]; then
-              test "$(jq -r .conclusion <<<"${producer}")" = success
               break
             fi
             test "${attempt}" -lt 40
@@ -436,6 +474,10 @@ jobs:
               and (.status | type) == "string"
               and has("conclusion"))
           ' <<<"${producer_jobs}" >/dev/null
+          producer_conclusion="$(jq -er \
+            '.conclusion | select(type == "string")' <<<"${producer}")"
+          validate_producer_terminal_shape \
+            "${producer_conclusion}" "${producer_jobs}"
           bound_producer_jobs="$(jq -c \
             --arg dispatch 'Request protected verifier re-evaluation' \
             --arg head "${producer_job_head_sha}" \
