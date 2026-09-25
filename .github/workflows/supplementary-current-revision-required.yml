@@ -5850,10 +5850,6 @@ jobs:
               done
               test "$(jq -r .status <<<"${source_run}")" = completed
             fi
-            current_source_run_attempt="$(jq -er \
-              '.run_attempt | select(type == "number" and . >= 1 and floor == .) | floor' \
-              <<<"${source_run}")"
-            test "${current_source_run_attempt}" -ge "${source_run_attempt}"
             case "${source_path}" in
               .github/workflows/sync-repository-quality-repos.yml)
                 expected_head_prefix="chore/sync-repository-quality-${target_name}"
@@ -5911,7 +5907,7 @@ jobs:
                 --arg repository 'lightning-it/shared-assets-lit' \
                 --arg run_url "${source_run_url}" \
                 --argjson allow_running "${allow_running_source}" \
-                --argjson current_attempt "${current_source_run_attempt}" \
+                --argjson trailer_attempt "${source_run_attempt}" \
                 --argjson run_id "${source_run_id}" '
                   .id == $run_id
                   and (.event == "push" or .event == "workflow_dispatch")
@@ -5919,10 +5915,12 @@ jobs:
                   and .path == $path and .html_url == $run_url
                   and .repository.full_name == $repository
                   and .head_repository.full_name == $repository
-                  and .run_attempt == $current_attempt
-                  and ((.status == "completed" and .conclusion == "success")
+                  and (.run_attempt | type == "number" and . >= 1 and floor == .)
+                  and ((.status == "completed" and .conclusion == "success"
+                      and .run_attempt >= $trailer_attempt)
                     or ($allow_running and .status == "in_progress"
-                      and .conclusion == null))
+                      and .conclusion == null
+                      and .run_attempt == $trailer_attempt))
                 ' <<<"${source_run}" >/dev/null
             }
             validate_source_run
@@ -5984,10 +5982,6 @@ jobs:
             test "${source_jobs_ready}" = true
             source_run="$(GH_TOKEN="${SOURCE_GH_TOKEN}" gh api \
               "repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}")"
-            current_source_run_attempt="$(jq -er \
-              '.run_attempt | select(type == "number" and . >= 1 and floor == .) | floor' \
-              <<<"${source_run}")"
-            test "${current_source_run_attempt}" -ge "${source_run_attempt}"
             test "$(jq -er '.path | select(type == "string" and length > 0)' <<<"${source_run}")" = "${source_path}"
             validate_source_run
             target_tree_sha="$(jq -er '

@@ -3238,10 +3238,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'test "$(jq -r .status <<<"${source_run}")" = completed',
             recovery,
         )
-        self.assertIn(
-            'test "${current_source_run_attempt}" -ge "${source_run_attempt}"',
-            recovery,
-        )
+        self.assertIn('--argjson trailer_attempt "${source_run_attempt}"', recovery)
         self.assertIn('and .head_branch == "main"', recovery)
         self.assertIn('and .head_sha == $head', recovery)
         self.assertIn('and .path == $path', recovery)
@@ -3250,7 +3247,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.status == "completed" and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
         self.assertIn('and .head_repository.full_name == $repository', recovery)
-        self.assertIn('and .run_attempt == $current_attempt', recovery)
+        self.assertIn(
+            'and (.run_attempt | type == "number" and . >= 1 and floor == .)',
+            recovery,
+        )
+        self.assertIn('and .run_attempt >= $trailer_attempt', recovery)
+        self.assertIn('and .run_attempt == $trailer_attempt', recovery)
         self.assertIn(
             'attempts/${source_run_attempt}/jobs?per_page=100',
             recovery,
@@ -3352,6 +3354,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             path: str = source_path,
             status: str = "completed",
             conclusion: str | None = "success",
+            trailer_attempt: int = 1,
         ) -> bool:
             payload = {
                 "id": 42,
@@ -3388,8 +3391,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "allow_running",
                     str(path == ".github/workflows/sync-ee-containers.yml").lower(),
                     "--argjson",
-                    "current_attempt",
-                    str(current_attempt),
+                    "trailer_attempt",
+                    str(trailer_attempt),
                     "--argjson",
                     "run_id",
                     "42",
@@ -3504,34 +3507,154 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(jobs=jobs):
                 self.assertEqual("reject", convergence([jobs, [job()]]))
 
-    def test_managed_sync_current_attempt_is_integer_before_shell_use(
+    def test_managed_sync_running_source_requires_exact_trailer_attempt(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        selector = (
-            '.run_attempt | select(type == "number" and . >= 1 '
-            "and floor == .) | floor"
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = '                --argjson run_id "${source_run_id}" \'\n'
+        start = recovery.index(marker) + len(marker)
+        end = recovery.index(
+            '\n                \' <<<"${source_run}" >/dev/null', start
         )
-        self.assertIn(selector, workflow)
+        source_filter = recovery[start:end]
         jq = self._test_tool("jq")
+        source_sha = "a" * 40
+        source_path = ".github/workflows/sync-ee-containers.yml"
+        source_url = (
+            "https://github.com/lightning-it/shared-assets-lit/actions/runs/123"
+        )
 
-        def select_attempt(value: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [jq, "-er", selector],
-                input=json.dumps({"run_attempt": value}),
+        def accepts(
+            *,
+            status: str,
+            conclusion: str | None,
+            current_attempt: int,
+            trailer_attempt: int,
+            allow_running: bool = True,
+            payload_attempt: object | None = None,
+        ) -> bool:
+            payload = {
+                "id": 123,
+                "event": "push",
+                "head_branch": "main",
+                "head_sha": source_sha,
+                "path": source_path,
+                "html_url": source_url,
+                "repository": {"full_name": "lightning-it/shared-assets-lit"},
+                "head_repository": {
+                    "full_name": "lightning-it/shared-assets-lit"
+                },
+                "run_attempt": (
+                    current_attempt if payload_attempt is None else payload_attempt
+                ),
+                "status": status,
+                "conclusion": conclusion,
+            }
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "head",
+                    source_sha,
+                    "--arg",
+                    "path",
+                    source_path,
+                    "--arg",
+                    "repository",
+                    "lightning-it/shared-assets-lit",
+                    "--arg",
+                    "run_url",
+                    source_url,
+                    "--argjson",
+                    "allow_running",
+                    json.dumps(allow_running),
+                    "--argjson",
+                    "trailer_attempt",
+                    str(trailer_attempt),
+                    "--argjson",
+                    "run_id",
+                    "123",
+                    source_filter,
+                ],
+                input=json.dumps(payload),
                 text=True,
                 capture_output=True,
                 check=False,
             )
+            return result.returncode == 0
 
-        for accepted in (1, 2, 17, 1.0):
-            with self.subTest(accepted=accepted):
-                result = select_attempt(accepted)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertRegex(result.stdout.strip(), r"^[1-9][0-9]*$")
-        for rejected in (1.5, 0, -1, "1", None, True):
+        self.assertTrue(
+            accepts(
+                status="in_progress",
+                conclusion=None,
+                current_attempt=1,
+                trailer_attempt=1,
+            )
+        )
+        self.assertFalse(
+            accepts(
+                status="in_progress",
+                conclusion=None,
+                current_attempt=2,
+                trailer_attempt=1,
+            )
+        )
+        self.assertTrue(
+            accepts(
+                status="completed",
+                conclusion="success",
+                current_attempt=2,
+                trailer_attempt=1,
+            )
+        )
+        for rejected in (
+            {
+                "status": "completed",
+                "conclusion": "success",
+                "current_attempt": 1,
+                "trailer_attempt": 2,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "allow_running": False,
+            },
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": 2,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": 1.5,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": "1",
+            },
+        ):
             with self.subTest(rejected=rejected):
-                self.assertNotEqual(select_attempt(rejected).returncode, 0)
+                self.assertFalse(accepts(**rejected))
 
     def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
