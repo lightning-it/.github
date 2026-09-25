@@ -3486,7 +3486,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return "timeout"
 
         self.assertEqual("wait", classify([]))
-        for status in ("queued", "in_progress"):
+        for status in (
+            "requested",
+            "waiting",
+            "pending",
+            "queued",
+            "in_progress",
+        ):
             with self.subTest(status=status):
                 self.assertEqual(
                     "wait", classify([job(status=status, conclusion=None)])

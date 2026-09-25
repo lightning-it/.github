@@ -5965,7 +5965,10 @@ jobs:
                     elif ($matches | length) != 1 then "reject"
                     elif ($matches[0].status == "completed"
                       and $matches[0].conclusion == "success") then "ready"
-                    elif (($matches[0].status == "queued"
+                    elif (($matches[0].status == "requested"
+                      or $matches[0].status == "waiting"
+                      or $matches[0].status == "pending"
+                      or $matches[0].status == "queued"
                       or $matches[0].status == "in_progress")
                       and $matches[0].conclusion == null) then "wait"
                     else "reject"
