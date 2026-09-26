@@ -5044,6 +5044,38 @@ jobs:
             echo "issue_564_pr568_recovery=${issue_564_pr568_recovery_authorized:-false}"
           } >>"${GITHUB_OUTPUT}"
 
+      - name: Materialize the terminal producer inventory classifier
+        run: |
+          set -euo pipefail
+          umask 077
+          classifier="${RUNNER_TEMP}/terminal-producer-inventory.jq"
+          install -m 0600 /dev/null "${classifier}"
+          cat >"${classifier}" <<'JQ'
+          def runnerless:
+            has("runner_id") and .runner_id==null and .steps==[];
+          def allowed_skip:
+            .conclusion=="skipped" and
+            (.name=="Request Copilot review for current revision"
+            or (.name=="Validate protected main helper pin" and runnerless)
+            or (.name=="Dispatch protected managed-sync finalizer re-evaluation" and runnerless)
+            or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
+            or ((.name|test($d)) and runnerless));
+          def allowed_dispatch_failure:
+            .name=="Request protected verifier re-evaluation"
+            and .conclusion=="failure"
+            and .run_id==$run_id
+            and .run_attempt==$attempt
+            and .head_sha==$head;
+          def allowed:
+            allowed_skip or allowed_dispatch_failure;
+          [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
+          {disallowed:[$terminal[]|select(allowed|not)],
+           allowed:[$terminal[]|select(allowed)]} |
+          . + {dispatch_failed:any(.allowed[];
+            .name=="Request protected verifier re-evaluation"
+            and .conclusion=="failure")}
+          JQ
+
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
         if: >-
@@ -6311,36 +6343,16 @@ jobs:
                   --arg d "${d}" \
                   --arg head "${EVENT_HEAD}" \
                   --argjson attempt "${producer_run_attempt}" \
-                  --argjson run_id "${producer_run_id}" '
-                  def runnerless: has("runner_id") and .runner_id==null and .steps==[];
-                  def allowed_skip: .conclusion=="skipped" and
-                    (.name=="Request Copilot review for current revision"
-                    or (.name=="Validate protected main helper pin" and runnerless)
-                    or (.name=="Dispatch protected managed-sync finalizer re-evaluation" and runnerless)
-                    or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
-                    or ((.name|test($d)) and runnerless));
-                  def allowed_dispatch_failure:
-                    .name=="Request protected verifier re-evaluation"
-                    and .conclusion=="failure"
-                    and .run_id==$run_id
-                    and .run_attempt==$attempt
-                    and .head_sha==$head;
-                  def allowed: allowed_skip or allowed_dispatch_failure;
-                  [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
-                  {disallowed:[$terminal[]|select(allowed|not)],
-                   allowed:[$terminal[]|select(allowed)]}
-                  ' <<<"${producer_jobs_pages}")"
+                  --argjson run_id "${producer_run_id}" \
+                  -f "${RUNNER_TEMP}/terminal-producer-inventory.jq" \
+                  <<<"${producer_jobs_pages}")"
                 disallowed_terminal_jobs="$(jq -c .disallowed <<<"${terminal_job_inventory}")"
                 allowed_skipped_terminal_jobs="$(jq -c .allowed <<<"${terminal_job_inventory}")"
+                producer_recovery_dispatch_failed="$(jq -r \
+                  '.dispatch_failed | select(type == "boolean")' \
+                  <<<"${terminal_job_inventory}")"
                 jq -e 'length == 0 or error(tojson)' <<<"${disallowed_terminal_jobs}" >/dev/null
                 jq -e --arg d "${d}" '((length<=5 and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
-                producer_recovery_dispatch_failed=false
-                if jq -e 'any(.;
-                    .name=="Request protected verifier re-evaluation"
-                    and .conclusion=="failure")' \
-                    <<<"${allowed_skipped_terminal_jobs}" >/dev/null; then
-                  producer_recovery_dispatch_failed=true
-                fi
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
                   critical_steps="$(jq -c \
                     --arg policy_step "${INLINE_POLICY_STEP}" '

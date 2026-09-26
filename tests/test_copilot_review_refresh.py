@@ -1998,6 +1998,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 )
 
         attempt_guard = self._producer_attempt_provenance_guard()
+        attempt_binding_guard = self._rerun_shell_function(
+            "validate_producer_attempt_binding"
+        )
 
         def evaluate_attempt(attempt: object) -> subprocess.CompletedProcess[str]:
             payload = {**producer, "run_attempt": attempt}
@@ -2005,6 +2008,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 (
                     "set -euo pipefail",
                     'producer="${PRODUCER}"',
+                    attempt_binding_guard,
                     attempt_guard,
                     'printf "%s\\n" "${producer_attempt}"',
                 )
@@ -2017,6 +2021,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 env={
                     "PATH": TEST_TOOL_PATH,
                     "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                    "PRODUCER_RUN_ATTEMPT": str(attempt),
                 },
             )
 
@@ -2031,6 +2036,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 (
                     "set -euo pipefail",
                     'producer="${PRODUCER}"',
+                    attempt_binding_guard,
                     attempt_guard,
                     'test "${producer_attempt}" -eq 1',
                 )
@@ -2043,6 +2049,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 env={
                     "PATH": TEST_TOOL_PATH,
                     "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                    "PRODUCER_RUN_ATTEMPT": str(attempt),
                 },
             ).returncode
 

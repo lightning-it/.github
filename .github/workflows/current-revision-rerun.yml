@@ -79,6 +79,9 @@ jobs:
               "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
             test "${live_base}" = "${EXPECTED_BASE}"
           }
+          validate_producer_attempt_binding() {
+            test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
+          }
           validate_producer_terminal_shape() {
             local conclusion="${1}" jobs="${2}"
             jq -e \
@@ -290,7 +293,6 @@ jobs:
               and .base.repo.full_name == $repository
               and .head.repo.full_name == $repository
             ' <<<"${pr}" >/dev/null
-
           neutral_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
           neutral="$(jq -c '
@@ -387,7 +389,7 @@ jobs:
           producer_attempt="$(jq -er \
             '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
             <<<"${producer}")"
-          test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
+          validate_producer_attempt_binding
           if [ "${evidence_version}" = v4 ]; then
             test "${producer_attempt}" -eq 1
             test "${author}" = 'lightning-it-release-automation[bot]'
@@ -462,7 +464,6 @@ jobs:
                   if $attempt == 1 then $actor else "github-actions[bot]" end)
               ' <<<"${producer}" >/dev/null
           fi
-
           producer_jobs="$(bounded_gh_api \
             "repos/${REPOSITORY}/actions/runs/${producer_id}/attempts/${producer_attempt}/jobs?filter=all&per_page=100")"
           jq -e '
@@ -527,7 +528,6 @@ jobs:
               {id,name,run_id,run_attempt,head_sha,status,conclusion}]
             | sort_by(.id)
           ' <<<"${producer_jobs}")"
-
           reservation_ready=false
           observed_reservation_id=''
           for reservation_observation in $(seq 1 90); do
