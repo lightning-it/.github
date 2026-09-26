@@ -6383,6 +6383,7 @@ jobs:
                     <<<"${critical_steps}")" -eq 2
                   producer_evidence_ready=true
                 fi
+                [ "${producer_evidence_ready}" != true ] || break
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
