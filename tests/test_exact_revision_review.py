@@ -47,6 +47,39 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", rerun)
         self.assertIn("rerun-protected-verifier:", rerun)
 
+    def test_rerun_helper_matches_the_exact_review_handoff_contract(self) -> None:
+        review = REVIEW_WORKFLOW.read_text(encoding="utf-8")
+        rerun = RERUN_WORKFLOW.read_text(encoding="utf-8")
+
+        for input_name in (
+            "base_ref",
+            "pr_number",
+            "expected_base",
+            "expected_head",
+            "producer_run_id",
+            "producer_run_attempt",
+        ):
+            with self.subTest(input_name=input_name):
+                self.assertIn(f'-f "inputs[{input_name}]', review)
+                self.assertIn(f"      {input_name}:\n", rerun)
+        self.assertIn(
+            "Protected verifier handoff PR #${{ inputs.pr_number }} producer",
+            rerun,
+        )
+        self.assertIn("Re-run the one protected verifier attempt", rerun)
+        self.assertIn('[[ "${BASE_REF}" =~ ^(develop|main)$ ]]', rerun)
+        self.assertIn(
+            'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
+            rerun,
+        )
+        self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', rerun)
+        self.assertIn('test "${live_base}" = "${EXPECTED_BASE}"', rerun)
+        self.assertIn('.base.ref == $base_ref', rerun)
+        self.assertIn('test "${producer_id}" = "${PRODUCER_RUN_ID}"', rerun)
+        self.assertIn(
+            'test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"', rerun
+        )
+
     def test_invalid_runner_temp_does_not_create_review_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

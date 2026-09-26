@@ -9,6 +9,10 @@ name: Re-evaluate protected current-revision evidence
 on:
   workflow_dispatch:
     inputs:
+      base_ref:
+        description: Protected pull-request base branch
+        required: true
+        type: string
       pr_number:
         description: Pull request whose protected verifier must be re-evaluated
         required: true
@@ -21,6 +25,19 @@ on:
         description: Frozen pull-request head SHA
         required: true
         type: string
+      producer_run_id:
+        description: Exact protected producer run that requested re-evaluation
+        required: true
+        type: number
+      producer_run_attempt:
+        description: Exact protected producer attempt that requested re-evaluation
+        required: true
+        type: number
+
+run-name: >-
+  Protected verifier handoff PR #${{ inputs.pr_number }} producer
+  ${{ inputs.producer_run_id }} attempt ${{ inputs.producer_run_attempt }}
+  head ${{ inputs.expected_head }}
 
 permissions:
   contents: read
@@ -32,7 +49,7 @@ concurrency:
 
 jobs:
   rerun-protected-verifier:
-    name: Re-run the bounded protected verifier attempts
+    name: Re-run the one protected verifier attempt
     permissions:
       actions: write
       checks: read
@@ -49,6 +66,61 @@ jobs:
           guard="${RUNNER_TEMP}/current-revision-rerun-guard.sh"
           install -m 0600 /dev/null "${guard}"
           cat >"${guard}" <<'GUARD'
+          validate_handoff_binding() {
+            [[ "${BASE_REF}" =~ ^(develop|main)$ ]]
+            [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+            [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+            [[ "${PRODUCER_RUN_ATTEMPT}" =~ ^(1|2)$ ]]
+            test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
+            test "${GITHUB_REF_PROTECTED}" = true
+            live_base="$(bounded_gh_api \
+              "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
+            test "${live_base}" = "${EXPECTED_BASE}"
+          }
+          validate_producer_attempt_binding() {
+            test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
+          }
+          validate_producer_terminal_shape() {
+            local conclusion="${1}" jobs="${2}"
+            jq -e \
+              --arg conclusion "${conclusion}" \
+              --arg dispatch 'Request protected verifier re-evaluation' \
+              --arg head "${producer_job_head_sha}" \
+              --argjson attempt "${producer_attempt}" \
+              --argjson run_id "${producer_id}" '
+                type == "object"
+                and (.jobs | type) == "array"
+                and (
+                  if $conclusion == "success" then
+                    all(.jobs[];
+                      .status == "completed"
+                      and (.conclusion == "success"
+                        or .conclusion == "skipped"))
+                  elif $conclusion == "failure" then
+                    ([.jobs[] |
+                      select(.status == "completed"
+                        and .conclusion == "failure")] | length) == 1
+                    and ([.jobs[] |
+                      select(.status == "completed"
+                        and .conclusion == "failure")][0] |
+                      .name == $dispatch
+                      and .run_id == $run_id
+                      and .run_attempt == $attempt
+                      and .head_sha == $head)
+                    and all(.jobs[];
+                      .status == "completed"
+                      and (.conclusion == "success"
+                        or .conclusion == "skipped"
+                        or (.name == $dispatch
+                          and .conclusion == "failure")))
+                  else
+                    false
+                  end
+                )
+              ' <<<"${jobs}" >/dev/null
+          }
           bounded_sleep() {
             local requested="${1}" remaining
             [[ "${requested}" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -167,17 +239,16 @@ jobs:
 
       - name: Validate the live binding and rerun exactly once
         env:
+          BASE_REF: ${{ inputs.base_ref }}
           EXPECTED_BASE: ${{ inputs.expected_base }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_RUN_ATTEMPT: ${{ inputs.producer_run_attempt }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          test "${GITHUB_REF}" = refs/heads/develop
-          [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           OPERATION_DEADLINE=$((SECONDS + 900))
           require_deadline() {
             local remaining=$((OPERATION_DEADLINE - SECONDS))
@@ -207,20 +278,21 @@ jobs:
           }
           # shellcheck disable=SC1091
           source "${RUNNER_TEMP}/current-revision-rerun-guard.sh"
+          validate_handoff_binding
           pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
+            --arg base_ref "${BASE_REF}" \
             --arg head "${EXPECTED_HEAD}" \
             --arg repository "${REPOSITORY}" '
               .state == "open"
               and .draft == false
               and .base.sha == $base
+              and .base.ref == $base_ref
               and .head.sha == $head
               and .base.repo.full_name == $repository
               and .head.repo.full_name == $repository
-              and (.base.ref == "develop" or .base.ref == "main")
             ' <<<"${pr}" >/dev/null
-
           neutral_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
           neutral="$(jq -c '
@@ -245,6 +317,7 @@ jobs:
             '.[0].output.summary | fromjson | select(type == "object")' \
             <<<"${neutral}")"
           producer_id="$(jq -er '.producer_run_id | select(type == "number" and . > 0)' <<<"${neutral_summary}")"
+          test "${producer_id}" = "${PRODUCER_RUN_ID}"
           producer_url="$(jq -er '.run_url | select(type == "string" and length > 0)' <<<"${neutral_summary}")"
           producer_prefix="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/"
           test "${producer_url}" = "${producer_prefix}${producer_id}"
@@ -308,7 +381,6 @@ jobs:
             producer="$(bounded_gh_api \
               "repos/${REPOSITORY}/actions/runs/${producer_id}")"
             if [ "$(jq -r .status <<<"${producer}")" = completed ]; then
-              test "$(jq -r .conclusion <<<"${producer}")" = success
               break
             fi
             test "${attempt}" -lt 40
@@ -317,6 +389,7 @@ jobs:
           producer_attempt="$(jq -er \
             '.run_attempt | select(type == "number" and (. == 1 or . == 2))' \
             <<<"${producer}")"
+          validate_producer_attempt_binding
           if [ "${evidence_version}" = v4 ]; then
             test "${producer_attempt}" -eq 1
             test "${author}" = 'lightning-it-release-automation[bot]'
@@ -391,7 +464,6 @@ jobs:
                   if $attempt == 1 then $actor else "github-actions[bot]" end)
               ' <<<"${producer}" >/dev/null
           fi
-
           producer_jobs="$(bounded_gh_api \
             "repos/${REPOSITORY}/actions/runs/${producer_id}/attempts/${producer_attempt}/jobs?filter=all&per_page=100")"
           jq -e '
@@ -411,6 +483,10 @@ jobs:
               and (.status | type) == "string"
               and has("conclusion"))
           ' <<<"${producer_jobs}" >/dev/null
+          producer_conclusion="$(jq -er \
+            '.conclusion | select(type == "string")' <<<"${producer}")"
+          validate_producer_terminal_shape \
+            "${producer_conclusion}" "${producer_jobs}"
           bound_producer_jobs="$(jq -c \
             --arg dispatch 'Request protected verifier re-evaluation' \
             --arg head "${producer_job_head_sha}" \
@@ -428,8 +504,13 @@ jobs:
           producer_job="$(jq -ce --arg name "${producer_job_name}" '
             [.[] | select(.name == $name)] | select(length == 1) | .[0]
           ' <<<"${bound_producer_jobs}")"
-          jq -e '
-            all(.[]; .status == "completed" and .conclusion == "success")
+          jq -e \
+            --arg c "${producer_conclusion}" \
+            --arg p "${producer_job_name}" \
+            --argjson a "${producer_attempt}" '
+              all(.[] | select(.name == $p); .conclusion == "success")
+              and ($a == 1
+                or all(.[] | select(.name != $p); .conclusion == $c))
           ' <<<"${bound_producer_jobs}" >/dev/null
           producer_job_id="$(jq -er \
             '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
@@ -447,7 +528,6 @@ jobs:
               {id,name,run_id,run_attempt,head_sha,status,conclusion}]
             | sort_by(.id)
           ' <<<"${producer_jobs}")"
-
           reservation_ready=false
           observed_reservation_id=''
           for reservation_observation in $(seq 1 90); do

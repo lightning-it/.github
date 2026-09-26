@@ -41,6 +41,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         return executable
 
     @staticmethod
+    def _terminal_job_inventory_filter() -> str:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        marker = 'cat >"${classifier}" <<\'JQ\'\n'
+        return workflow.split(marker, 1)[1].split("\n          JQ\n", 1)[0]
+
+    @staticmethod
     def _s0_workflow() -> str:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         return workflow.split(
@@ -2647,7 +2653,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.name == "Request protected verifier re-evaluation")',
             'name == "Run protected history-free Exact-Revision Codex review"',
             'name == "Re-prove exact revision and enforce the Codex verdict"',
-            'name: "Dispatch the protected re-evaluation helper from develop"',
+            'name: "Dispatch the protected re-evaluation helper from the exact base"',
         ):
             with self.subTest(exact_binding=exact_binding):
                 self.assertIn(exact_binding, transition)
@@ -2896,7 +2902,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                                 "conclusion": "success",
                             },
                             {
-                                "name": "Dispatch the protected re-evaluation helper from develop",
+                                "name": "Dispatch the protected re-evaluation helper from the exact base",
                                 "status": "completed",
                                 "conclusion": "failure",
                             },
@@ -3223,24 +3229,36 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'for ((attempt = 1; attempt <= 42; attempt++))', recovery
         )
         self.assertIn(
-            'requested | waiting | pending | queued | in_progress', recovery
+            'IN("requested","waiting","pending","queued")', recovery
         )
         self.assertIn(
-            'test "$(jq -r .status <<<"${source_run}")" = completed',
+            "[ \"${source_path}\" = "
+            "'.github/workflows/sync-ee-containers.yml' ]",
             recovery,
+        )
+        self.assertLess(
+            recovery.index('.status == "in_progress"'),
+            recovery.index("source_jobs_ready=false"),
         )
         self.assertIn(
-            'test "${current_source_run_attempt}" -ge "${source_run_attempt}"',
+            'test "${src_state}" = terminal',
             recovery,
         )
+        self.assertIn('--argjson trailer_attempt "${source_run_attempt}"', recovery)
         self.assertIn('and .head_branch == "main"', recovery)
         self.assertIn('and .head_sha == $head', recovery)
         self.assertIn('and .path == $path', recovery)
-        self.assertIn('and .status == "completed"', recovery)
-        self.assertIn('and .conclusion == "success"', recovery)
+        self.assertIn('.status == "in_progress"', recovery)
+        self.assertIn('and .conclusion == null', recovery)
+        self.assertIn('.status == "completed" and .conclusion == "success"', recovery)
         self.assertIn('and .repository.full_name == $repository', recovery)
         self.assertIn('and .head_repository.full_name == $repository', recovery)
-        self.assertIn('and .run_attempt == $current_attempt', recovery)
+        self.assertIn(
+            'and (.run_attempt | type == "number" and . >= 1 and floor == .)',
+            recovery,
+        )
+        self.assertIn('and .run_attempt >= $trailer_attempt', recovery)
+        self.assertIn('and .run_attempt == $trailer_attempt', recovery)
         self.assertIn(
             'attempts/${source_run_attempt}/jobs?per_page=100',
             recovery,
@@ -3250,10 +3268,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('and .behind_by == 0', recovery)
         self.assertIn('and (.jobs | length) == .total_count', recovery)
         self.assertIn('select(.name == $expected)', recovery)
+        self.assertIn('.status == "completed"', recovery)
+        self.assertIn('.conclusion == "success"', recovery)
         self.assertIn(
-            'select(.status == "completed" and .conclusion == "success")',
+            'for ((jobs_attempt = 1; jobs_attempt <= 42; jobs_attempt++))',
             recovery,
         )
+        self.assertIn('test "${source_jobs_ready}" = true', recovery)
         self.assertIn('| length) == 1', recovery)
         self.assertIn(
             '<!-- lit-shared-assets-sync-provenance:v1 -->', recovery
@@ -3325,22 +3346,30 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[0]
         marker = '              --argjson run_id "${source_run_id}" \'\n'
         start = recovery.index(marker) + len(marker)
-        end = recovery.index('\n              \' <<<"${source_run}"', start)
+        end = recovery.index('\n                \' <<<"${source_run}"', start)
         source_run_filter = recovery[start:end]
         source_sha = "a" * 40
         source_path = ".github/workflows/sync-ansible-collections.yml"
         source_run_url = "https://github.example/actions/runs/42"
         jq = self._test_tool("jq")
 
-        def accepts(event: str, current_attempt: int = 1) -> bool:
+        def accepts(
+            event: str,
+            current_attempt: int = 1,
+            *,
+            path: str = source_path,
+            status: str = "completed",
+            conclusion: str | None = "success",
+            trailer_attempt: int = 1,
+        ) -> bool:
             payload = {
                 "id": 42,
                 "event": event,
                 "head_branch": "main",
                 "head_sha": source_sha,
-                "path": source_path,
-                "status": "completed",
-                "conclusion": "success",
+                "path": path,
+                "status": status,
+                "conclusion": conclusion,
                 "html_url": source_run_url,
                 "repository": {"full_name": "lightning-it/shared-assets-lit"},
                 "head_repository": {
@@ -3357,7 +3386,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     source_sha,
                     "--arg",
                     "path",
-                    source_path,
+                    path,
                     "--arg",
                     "repository",
                     "lightning-it/shared-assets-lit",
@@ -3365,8 +3394,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "run_url",
                     source_run_url,
                     "--argjson",
-                    "current_attempt",
-                    str(current_attempt),
+                    "allow_running",
+                    str(path == ".github/workflows/sync-ee-containers.yml").lower(),
+                    "--argjson",
+                    "trailer_attempt",
+                    str(trailer_attempt),
                     "--argjson",
                     "run_id",
                     "42",
@@ -3385,6 +3417,27 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for accepted_attempt in (1, 2, 17):
             with self.subTest(accepted_attempt=accepted_attempt):
                 self.assertTrue(accepts("workflow_dispatch", accepted_attempt))
+        container_path = ".github/workflows/sync-ee-containers.yml"
+        self.assertTrue(
+            accepts(
+                "push",
+                path=container_path,
+                status="in_progress",
+                conclusion=None,
+            )
+        )
+        self.assertTrue(accepts("push", path=container_path))
+        self.assertFalse(
+            accepts("push", status="in_progress", conclusion=None)
+        )
+        self.assertFalse(
+            accepts(
+                "push",
+                path=container_path,
+                status="completed",
+                conclusion="failure",
+            )
+        )
         for rejected_event in (
             "",
             "schedule",
@@ -3395,34 +3448,350 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(rejected_event=rejected_event):
                 self.assertFalse(accepts(rejected_event))
 
-    def test_managed_sync_current_attempt_is_integer_before_shell_use(
-        self,
-    ) -> None:
+    def test_managed_sync_target_job_polling_is_fail_closed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        selector = (
-            '.run_attempt | select(type == "number" and . >= 1 '
-            "and floor == .) | floor"
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = (
+            '              source_job_state="$(jq -er \\\n'
+            '                --arg expected "${expected_source_job}" \'\n'
         )
-        self.assertIn(selector, workflow)
+        start = recovery.index(marker) + len(marker)
+        end = recovery.index(
+            '\n                \' <<<"${source_jobs}")"', start
+        )
+        job_filter = recovery[start:end]
+        expected = "Sync shared-assets-lit to target"
         jq = self._test_tool("jq")
 
-        def select_attempt(value: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [jq, "-er", selector],
-                input=json.dumps({"run_attempt": value}),
+        inventory_marker = "              jq -e '\n"
+        inventory_start = recovery.index(
+            inventory_marker,
+            recovery.index('source_jobs="$(GH_TOKEN='),
+        ) + len(inventory_marker)
+        inventory_end = recovery.index(
+            '\n              \' <<<"${source_jobs}" >/dev/null',
+            inventory_start,
+        )
+        inventory_filter = recovery[inventory_start:inventory_end]
+
+        def valid_inventory(payload: object) -> bool:
+            result = subprocess.run(
+                [jq, "-e", inventory_filter],
+                input=json.dumps(payload),
                 text=True,
                 capture_output=True,
                 check=False,
             )
+            return result.returncode == 0
 
-        for accepted in (1, 2, 17, 1.0):
-            with self.subTest(accepted=accepted):
-                result = select_attempt(accepted)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertRegex(result.stdout.strip(), r"^[1-9][0-9]*$")
-        for rejected in (1.5, 0, -1, "1", None, True):
+        def job(
+            *,
+            name: str = expected,
+            status: str = "completed",
+            conclusion: str | None = "success",
+        ) -> dict[str, object]:
+            return {"name": name, "status": status, "conclusion": conclusion}
+
+        def classify(jobs: list[dict[str, object]]) -> str:
+            result = subprocess.run(
+                [jq, "-er", "--arg", "expected", expected, job_filter],
+                input=json.dumps({"jobs": jobs}),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout.strip()
+
+        def convergence(snapshots: list[list[dict[str, object]]]) -> str:
+            for snapshot in snapshots:
+                state = classify(snapshot)
+                if state != "wait":
+                    return state
+            return "timeout"
+
+        self.assertEqual("wait", classify([]))
+        self.assertTrue(valid_inventory({"total_count": 1, "jobs": [job()]}))
+        for malformed in (
+            [],
+            {"total_count": 1, "jobs": {"job": job()}},
+            {"total_count": 1, "jobs": "job"},
+            {"total_count": "1", "jobs": [job()]},
+            {"total_count": 2, "jobs": [job()]},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(valid_inventory(malformed))
+        for status in (
+            "requested",
+            "waiting",
+            "pending",
+            "queued",
+            "in_progress",
+        ):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    "wait", classify([job(status=status, conclusion=None)])
+                )
+        self.assertEqual("ready", classify([job()]))
+        self.assertEqual(
+            "ready",
+            convergence([[], [job(status="in_progress", conclusion=None)], [job()]]),
+        )
+        self.assertEqual("timeout", convergence([[]] * 42))
+        self.assertEqual("wait", classify([job(name="other")]))
+        for jobs in (
+            [job(status="completed", conclusion="failure")],
+            [job(status="completed", conclusion="cancelled")],
+            [job(status="queued", conclusion="success")],
+            [job(), job()],
+        ):
+            with self.subTest(jobs=jobs):
+                self.assertEqual("reject", convergence([jobs, [job()]]))
+
+    def test_managed_sync_container_source_waits_for_running_or_terminal(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = '              src_state="$(jq -er '
+        start = recovery.index(marker) + len(marker)
+        filter_marker = (
+            '--argjson allow_running "${allow_live}" \'\n'
+        )
+        self.assertTrue(recovery[start:].startswith(filter_marker))
+        start += len(filter_marker)
+        end = recovery.index('\n                \' <<<"${source_run}")"', start)
+        transition_filter = recovery[start:end]
+        jq = self._test_tool("jq")
+
+        def classify(payload: object, *, allow_running: bool = True) -> str:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-er",
+                    "--argjson",
+                    "allow_running",
+                    str(allow_running).lower(),
+                    transition_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout.strip()
+
+        def convergence(snapshots: list[object]) -> str:
+            for snapshot in snapshots:
+                state = classify(snapshot)
+                if state != "wait":
+                    return state
+            return "timeout"
+
+        for status in ("requested", "waiting", "pending", "queued"):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    "wait", classify({"status": status, "conclusion": None})
+                )
+        self.assertEqual(
+            "running", classify({"status": "in_progress", "conclusion": None})
+        )
+        self.assertEqual(
+            "wait",
+            classify(
+                {"status": "in_progress", "conclusion": None},
+                allow_running=False,
+            ),
+        )
+        for conclusion in ("success", "failure", "cancelled"):
+            with self.subTest(conclusion=conclusion):
+                self.assertEqual(
+                    "terminal",
+                    classify({"status": "completed", "conclusion": conclusion}),
+                )
+        self.assertEqual(
+            "running",
+            convergence(
+                [
+                    {"status": "queued", "conclusion": None},
+                    {"status": "in_progress", "conclusion": None},
+                ]
+            ),
+        )
+        self.assertEqual(
+            "terminal",
+            convergence(
+                [
+                    {"status": "pending", "conclusion": None},
+                    {"status": "completed", "conclusion": "failure"},
+                ]
+            ),
+        )
+        self.assertEqual(
+            "timeout",
+            convergence([{"status": "queued", "conclusion": None}] * 42),
+        )
+        for malformed in (
+            [],
+            {},
+            {"status": "completed", "conclusion": None},
+            {"status": "in_progress", "conclusion": "success"},
+            {"status": "mystery", "conclusion": None},
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertEqual("reject", classify(malformed))
+
+    def test_managed_sync_running_source_requires_exact_trailer_attempt(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        recovery = workflow.split("managed_sync_verified=false", 1)[1].split(
+            'if [ "${managed_sync_verified}" = false ]', 1
+        )[0]
+        marker = '                --argjson run_id "${source_run_id}" \'\n'
+        start = recovery.index(marker) + len(marker)
+        end = recovery.index(
+            '\n                \' <<<"${source_run}" >/dev/null', start
+        )
+        source_filter = recovery[start:end]
+        jq = self._test_tool("jq")
+        source_sha = "a" * 40
+        source_path = ".github/workflows/sync-ee-containers.yml"
+        source_url = (
+            "https://github.com/lightning-it/shared-assets-lit/actions/runs/123"
+        )
+
+        def accepts(
+            *,
+            status: str,
+            conclusion: str | None,
+            current_attempt: int,
+            trailer_attempt: int,
+            allow_running: bool = True,
+            payload_attempt: object | None = None,
+        ) -> bool:
+            payload = {
+                "id": 123,
+                "event": "push",
+                "head_branch": "main",
+                "head_sha": source_sha,
+                "path": source_path,
+                "html_url": source_url,
+                "repository": {"full_name": "lightning-it/shared-assets-lit"},
+                "head_repository": {
+                    "full_name": "lightning-it/shared-assets-lit"
+                },
+                "run_attempt": (
+                    current_attempt if payload_attempt is None else payload_attempt
+                ),
+                "status": status,
+                "conclusion": conclusion,
+            }
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "head",
+                    source_sha,
+                    "--arg",
+                    "path",
+                    source_path,
+                    "--arg",
+                    "repository",
+                    "lightning-it/shared-assets-lit",
+                    "--arg",
+                    "run_url",
+                    source_url,
+                    "--argjson",
+                    "allow_running",
+                    json.dumps(allow_running),
+                    "--argjson",
+                    "trailer_attempt",
+                    str(trailer_attempt),
+                    "--argjson",
+                    "run_id",
+                    "123",
+                    source_filter,
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(
+            accepts(
+                status="in_progress",
+                conclusion=None,
+                current_attempt=1,
+                trailer_attempt=1,
+            )
+        )
+        self.assertFalse(
+            accepts(
+                status="in_progress",
+                conclusion=None,
+                current_attempt=2,
+                trailer_attempt=1,
+            )
+        )
+        self.assertTrue(
+            accepts(
+                status="completed",
+                conclusion="success",
+                current_attempt=2,
+                trailer_attempt=1,
+            )
+        )
+        for rejected in (
+            {
+                "status": "completed",
+                "conclusion": "success",
+                "current_attempt": 1,
+                "trailer_attempt": 2,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "allow_running": False,
+            },
+            {
+                "status": "completed",
+                "conclusion": "failure",
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": 2,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": 1.5,
+            },
+            {
+                "status": "in_progress",
+                "conclusion": None,
+                "current_attempt": 1,
+                "trailer_attempt": 1,
+                "payload_attempt": "1",
+            },
+        ):
             with self.subTest(rejected=rejected):
-                self.assertNotEqual(select_attempt(rejected).returncode, 0)
+                self.assertFalse(accepts(**rejected))
 
     def test_managed_sync_uses_a_source_repository_scoped_app_token(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -3484,7 +3853,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('test -n "${SOURCE_GH_TOKEN}"', recovery)
         self.assertEqual(
-            6, recovery.count('GH_TOKEN="${SOURCE_GH_TOKEN}" gh api')
+            7, recovery.count('GH_TOKEN="${SOURCE_GH_TOKEN}" gh api')
         )
         for query in (
             '"repos/lightning-it/shared-assets-lit/actions/runs/${source_run_id}"',
@@ -4833,27 +5202,29 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent.index(inline_policy_guard),
             permanent.index('critical_steps="$(jq -c'),
         )
+        classifier = self._terminal_job_inventory_filter()
         self.assertIn('disallowed_terminal_jobs="$(jq -c', permanent)
-        self.assertIn('and .conclusion!="success"', permanent)
+        self.assertIn('and .conclusion!="success"', classifier)
         self.assertIn('terminal_job_inventory="$(jq -c', permanent)
+        self.assertIn("def runnerless:", classifier)
         self.assertIn(
-            'def runnerless: has("runner_id") and .runner_id==null and .steps==[];',
-            permanent,
+            'has("runner_id") and .runner_id==null and .steps==[];',
+            classifier,
         )
         self.assertIn(
-            '.name=="Request Copilot review for current revision"', permanent
+            '.name=="Request Copilot review for current revision"', classifier
         )
         self.assertIn(
             '.name=="Validate protected main helper pin" and runnerless',
-            permanent,
+            classifier,
         )
         self.assertIn(
             '.name=="Dispatch protected managed-sync finalizer re-evaluation" '
             "and runnerless",
-            permanent,
+            classifier,
         )
         self.assertIn(
-            "Release-App ancestry backmerge|main trust-root handoff", permanent
+            "Release-App ancestry backmerge|main trust-root handoff", classifier
         )
         self.assertIn(
             "Diagnose Release-App reusable context and fail closed",
@@ -4863,11 +5234,19 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "Re-run the one protected verifier attempt",
             permanent,
         )
-        self.assertIn('def allowed: .conclusion=="skipped"', permanent)
+        self.assertIn("def allowed_skip:", classifier)
+        self.assertIn('.conclusion=="skipped"', classifier)
+        self.assertIn("def allowed_dispatch_failure:", classifier)
+        self.assertIn(".run_id==$run_id", classifier)
+        self.assertIn(".run_attempt==$attempt", classifier)
+        self.assertIn(".head_sha==$head", classifier)
         self.assertIn(
-            "{disallowed:[$terminal[]|select(allowed|not)]", permanent
+            "allowed_skip or allowed_dispatch_failure;", classifier
         )
-        self.assertIn("allowed:[$terminal[]|select(allowed)]}", permanent)
+        self.assertIn(
+            "{disallowed:[$terminal[]|select(allowed|not)]", classifier
+        )
+        self.assertIn("allowed:[$terminal[]|select(allowed)]}", classifier)
         self.assertIn(
             'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
         )
@@ -4889,11 +5268,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(helper_guard_match)
         helper_guard = helper_guard_match.group(1)
         jq = self._test_tool("jq")
-        helper_pattern_match = re.search(
-            r"\n\s+d='([^']+)'\n"
-            r'\s+terminal_job_inventory="\$\(jq -c --arg d',
-            permanent,
-        )
+        helper_pattern_match = re.search(r"\n\s+d='([^']+)'\n", permanent)
         self.assertIsNotNone(helper_pattern_match)
         helper_pattern = helper_pattern_match.group(1)
 
@@ -5017,6 +5392,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
+        self.assertIn(
+            "producer_recovery_dispatch_failed=\"$(jq -r", permanent
+        )
+        self.assertRegex(
+            classifier,
+            r'\.name=="Request protected verifier re-evaluation"\n'
+            r'\s+and \.conclusion=="failure"',
+        )
         producer_attempt_guard = (
             'if [ "${producer_run_attempt}" -eq 1 ]; then'
         )
@@ -5031,6 +5414,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             '--argjson evidence_ready "${producer_evidence_ready}"', permanent
         )
+        self.assertIn('--argjson recovery_dispatch_failed', permanent)
+        self.assertIn(
+            '($evidence_ready and $recovery_dispatch_failed\n'
+            '                      and .status == "completed"\n'
+            '                      and .conclusion == "failure")',
+            permanent,
+        )
         self.assertIn(
             '($evidence_ready\n                      and .status == "in_progress"',
             permanent,
@@ -5038,6 +5428,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertLess(
             permanent.index("for evidence_observation in $(seq 1 450)"),
             permanent.index("producer_evidence_ready=false"),
+        )
+        self.assertLess(
+            producer_loop.index('producer_evidence_ready=true'),
+            producer_loop.index('if [ "${producer_status}" = completed ]'),
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
@@ -5079,12 +5473,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.status == "waiting"',
             '.status == "pending"',
             'and .conclusion == null)',
+            '--argjson terminal_helper_handoff',
+            '"${terminal_helper_handoff}"',
+            '$terminal_helper_handoff',
+            '.name\n'
+            '                            == "Request protected verifier re-evaluation"',
+            '.status == "completed"',
+            '.conclusion == "failure"',
             'review_job_count="$(jq',
             'test "${review_job_count}" -le 1',
             'test "${helper_job_count}" -le 1',
             'rejection_job_count="$(jq',
             '"Reject unauthorized Exact-Revision dispatch"',
             'test "${rejection_job_count}" -le 1',
+            'as $helpers',
+            '($helpers | length) <= 1',
+            '1 + ($helpers | length)',
             '.runner_id == null',
             '(.steps | length) == 0',
             'select(.name == "Current revision review")',
@@ -5254,7 +5658,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         inventory_filter = validator.split(
             '            jq -e \\\n'
             '              --arg base "${EVENT_BASE}" \\\n'
-            '              --argjson run_id "${PRODUCER_RUN_ID}" \'\n',
+            '              --argjson run_id "${PRODUCER_RUN_ID}" \\\n'
+            '              --argjson terminal_helper_handoff \\\n'
+            '                "${terminal_helper_handoff}" \'\n',
             1,
         )[1].split(
             '\n              \' <<<"${jobs_pages}" >/dev/null',
@@ -5286,6 +5692,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             helper_name: str = "Request protected verifier re-evaluation",
             include_rejection: bool = True,
             rejection: dict[str, object] | None = None,
+            terminal_failure: bool = False,
         ) -> bool:
             helper_job = {
                 "run_id": run_id,
@@ -5308,6 +5715,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--argjson",
                     "run_id",
                     str(run_id),
+                    "--argjson",
+                    "terminal_helper_handoff",
+                    str(terminal_failure).lower(),
                     inventory_filter,
                 ],
                 input=json.dumps([{"jobs": jobs}]),
@@ -5339,6 +5749,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
         )
         self.assertFalse(validates_inventory("completed", "failure"))
+        self.assertTrue(
+            validates_inventory(
+                "completed", "failure", terminal_failure=True
+            )
+        )
         self.assertFalse(validates_inventory("waiting", "success"))
         self.assertFalse(validates_inventory("unknown"))
         self.assertFalse(
@@ -5387,6 +5802,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 },
             ],
         }
+
         def validates(
             jobs: list[dict[str, object]],
             *,
@@ -5419,6 +5835,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "conclusion": "success",
             "steps": [],
         }
+        failed_helper = {
+            "name": "Request protected verifier re-evaluation",
+            "status": "completed",
+            "conclusion": "failure",
+            "steps": [],
+        }
         rejection_job = {
             "name": "Reject unauthorized Exact-Revision dispatch",
             "status": "completed",
@@ -5426,6 +5848,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "runner_id": None,
             "steps": [],
         }
+        self.assertTrue(validates([valid_job, failed_helper]))
+        self.assertTrue(validates([valid_job, failed_helper, rejection_job]))
         self.assertTrue(
             validates(
                 [valid_job, successful_helper],
@@ -5914,13 +6338,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
         def inventory_filter() -> str:
-            marker = 'terminal_job_inventory="$(jq -c'
-            start = permanent.index(marker) + len(marker)
-            start = permanent.index("'\n", start) + 2
-            end = permanent.index(
-                '\n                  \' <<<"${producer_jobs_pages}")"', start
-            )
-            return permanent[start:end]
+            return self._terminal_job_inventory_filter()
 
         jobs = [
             {
@@ -6084,6 +6502,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ]
         source = json.dumps([{"jobs": jobs}])
         jq = self._test_tool("jq")
+        producer_head = "a" * 40
+        producer_attempt = 1
+        producer_run_id = 123
         helper_pattern = (
             "^Request protected verifier re-evaluation( / "
             "(Diagnose Release-App reusable context and fail closed|"
@@ -6098,6 +6519,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--arg",
                     "d",
                     helper_pattern,
+                    "--arg",
+                    "head",
+                    producer_head,
+                    "--argjson",
+                    "attempt",
+                    str(producer_attempt),
+                    "--argjson",
+                    "run_id",
+                    str(producer_run_id),
                     inventory_filter(),
                 ],
                 input=source,
@@ -6235,6 +6665,66 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     json.dumps(failing, separators=(",", ":")),
                     failure.stderr,
                 )
+
+    def test_permanent_verifier_accepts_only_exact_bound_dispatch_failure(
+        self,
+    ) -> None:
+        inventory_filter = self._terminal_job_inventory_filter()
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        exact = {
+            "name": "Request protected verifier re-evaluation",
+            "status": "completed",
+            "conclusion": "failure",
+            "run_id": 123,
+            "run_attempt": 1,
+            "head_sha": head,
+        }
+
+        def classify(job: dict[str, object]) -> dict[str, list[object]]:
+            result = subprocess.run(
+                [
+                    jq,
+                    "-c",
+                    "--arg",
+                    "d",
+                    (
+                        "^Request protected verifier re-evaluation( / "
+                        "(Diagnose Release-App reusable context and fail closed|"
+                        "Re-run the one protected verifier attempt))?$"
+                    ),
+                    "--arg",
+                    "head",
+                    head,
+                    "--argjson",
+                    "attempt",
+                    "1",
+                    "--argjson",
+                    "run_id",
+                    "123",
+                    inventory_filter,
+                ],
+                input=json.dumps([{"jobs": [job]}]),
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        accepted = classify(exact)
+        self.assertEqual([], accepted["disallowed"])
+        self.assertEqual([exact], accepted["allowed"])
+        for mutation in (
+            {**exact, "run_id": 124},
+            {**exact, "run_attempt": 2},
+            {**exact, "head_sha": "b" * 40},
+            {**exact, "name": "Request Copilot review for current revision"},
+            {**exact, "conclusion": "cancelled"},
+        ):
+            with self.subTest(mutation=mutation):
+                rejected = classify(mutation)
+                self.assertEqual([mutation], rejected["disallowed"])
+                self.assertEqual([], rejected["allowed"])
 
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,

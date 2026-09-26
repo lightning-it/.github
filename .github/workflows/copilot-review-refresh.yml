@@ -34,6 +34,10 @@ jobs:
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
               github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
             ) ||
+            (
+              github.actor == 'litroc' &&
+              github.event.review.user.login == 'litroc'
+            ) ||
             contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
           )
         ) ||
@@ -43,6 +47,10 @@ jobs:
             (
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
               github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
+            (
+              github.actor == 'litroc' &&
+              github.event.comment.user.login == 'litroc'
             ) ||
             contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
           )
@@ -60,13 +68,78 @@ jobs:
       - name: Rerun the canonical protected gate when needed
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          TRIGGER_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
+          jq -e \
+            --arg actor "${TRIGGER_ACTOR}" \
+            --arg event "${EVENT_NAME}" \
+            --arg repository "${REPOSITORY}" '
+              type == "object"
+              and (.pull_request | type) == "object"
+              and .pull_request.draft == false
+              and .pull_request.head.repo.full_name == $repository
+              and (
+                if $event == "pull_request_review" then
+                  (.review | type) == "object"
+                  and (.review.user | type) == "object"
+                  and (.sender | type) == "object"
+                  and (
+                    (.action == "dismissed"
+                      and .sender.login == $actor
+                      and (.review.author_association == "COLLABORATOR"
+                        or .review.author_association == "MEMBER"
+                        or .review.author_association == "OWNER"))
+                    or ((.action == "submitted" or .action == "edited")
+                      and (
+                        (($actor == "Copilot"
+                            or $actor == "copilot-pull-request-reviewer"
+                            or $actor == "copilot-pull-request-reviewer[bot]")
+                          and .review.user.login
+                            == "copilot-pull-request-reviewer[bot]")
+                        or ($actor == "litroc"
+                          and .review.user.login == "litroc")
+                        or ((.review.author_association == "COLLABORATOR"
+                            or .review.author_association == "MEMBER"
+                            or .review.author_association == "OWNER")
+                          and .review.user.login == $actor)
+                      ))
+                  )
+                elif $event == "pull_request_review_comment" then
+                  (.comment | type) == "object"
+                  and (.comment.user | type) == "object"
+                  and (.sender | type) == "object"
+                  and (
+                    (.action == "deleted"
+                      and .sender.login == $actor
+                      and (.comment.author_association == "COLLABORATOR"
+                        or .comment.author_association == "MEMBER"
+                        or .comment.author_association == "OWNER"))
+                    or ((.action == "created" or .action == "edited")
+                      and (
+                        (($actor == "Copilot"
+                            or $actor == "copilot-pull-request-reviewer"
+                            or $actor == "copilot-pull-request-reviewer[bot]")
+                          and .comment.user.login
+                            == "copilot-pull-request-reviewer[bot]")
+                        or ($actor == "litroc"
+                          and .comment.user.login == "litroc")
+                        or ((.comment.author_association == "COLLABORATOR"
+                            or .comment.author_association == "MEMBER"
+                            or .comment.author_association == "OWNER")
+                          and .comment.user.login == $actor)
+                      ))
+                  )
+                else false
+                end
+              )
+            ' "${GITHUB_EVENT_PATH}" >/dev/null
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]

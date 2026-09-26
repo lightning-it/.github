@@ -8,6 +8,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+COPILOT_WORKFLOW = ROOT / ".github/workflows/copilot-review.yml"
 REFRESH_WORKFLOW = ROOT / ".github/workflows/copilot-review-refresh.yml"
 RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
 TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
@@ -21,6 +22,36 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def test_copilot_dispatcher_matches_the_rerun_helper_contract(self) -> None:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            "      - name: Dispatch the protected re-evaluation helper "
+            "from the exact base\n"
+        )
+        start = workflow.index(marker)
+        dispatch = workflow[start:]
+
+        self.assertIn("BASE_REF: ${{ github.event.pull_request.base.ref }}", dispatch)
+        self.assertIn("PRODUCER_RUN_ID: ${{ github.run_id }}", dispatch)
+        self.assertIn("PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}", dispatch)
+        self.assertNotIn("EXECUTED_WORKFLOW_SHA", dispatch)
+        self.assertIn(
+            'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
+            dispatch,
+        )
+        self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', dispatch)
+        self.assertIn('-f "ref=${BASE_REF}"', dispatch)
+        self.assertIn('-f "inputs[base_ref]=${BASE_REF}"', dispatch)
+        self.assertIn(
+            '-f "inputs[producer_run_id]=${PRODUCER_RUN_ID}"',
+            dispatch,
+        )
+        self.assertIn(
+            '-f "inputs[producer_run_attempt]=${PRODUCER_RUN_ATTEMPT}"',
+            dispatch,
+        )
+        self.assertNotIn("-f ref=develop", dispatch)
+
     def _test_tool(self, name: str) -> str:
         executable = shutil.which(name, path=TEST_TOOL_PATH)
         if executable is None:
@@ -46,10 +77,21 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         return workflow[start:end]
 
     @staticmethod
+    def _refresh_event_authorization_filter() -> str:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = '            --arg repository "${REPOSITORY}" \'\n'
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index(
+            '\n            \' "${GITHUB_EVENT_PATH}" >/dev/null', start
+        )
+        return workflow[start:end]
+
+    @staticmethod
     def _rerun_summary_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        summary = workflow.index('          neutral_summary="$(jq -cer \\\n')
         marker = '            --argjson run_id "${producer_id}" \'\n'
-        start = workflow.index(marker) + len(marker)
+        start = workflow.index(marker, summary) + len(marker)
         end = workflow.index('\n            \' <<<"${neutral_summary}"', start)
         return workflow[start:end]
 
@@ -151,6 +193,12 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             start,
         )
         return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
+    def _producer_terminal_shape_guard() -> str:
+        return CopilotReviewRefreshTests._rerun_shell_function(
+            "validate_producer_terminal_shape"
+        )
 
     @staticmethod
     def _canonical_producer_job_binding_checks() -> str:
@@ -864,6 +912,8 @@ gh() {
             )
         )
         self.assertNotIn("Do not edit downstream copies directly.", workflow)
+        self.assertNotIn("EVENT_PATH: ${{ github.event_path }}", workflow)
+        self.assertIn("' \"${GITHUB_EVENT_PATH}\" >/dev/null", workflow)
 
         self.assertEqual(
             1,
@@ -888,6 +938,145 @@ gh() {
                 "github.event.comment.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
+        )
+        self.assertEqual(2, workflow.count("github.actor == 'litroc'"))
+        self.assertEqual(
+            1,
+            workflow.count("github.event.review.user.login == 'litroc'"),
+        )
+        self.assertEqual(
+            1,
+            workflow.count("github.event.comment.user.login == 'litroc'"),
+        )
+
+    def test_refresh_event_authorization_is_fail_closed(self) -> None:
+        jq = self._test_tool("jq")
+        repository = "lightning-it/.github"
+
+        def accepted(
+            event: str,
+            actor: str,
+            *,
+            login: str,
+            action: str | None = None,
+            association: str = "NONE",
+            draft: bool = False,
+            head_repository: str = repository,
+            sender_login: str | None = None,
+        ) -> bool:
+            subject = {"user": {"login": login}, "author_association": association}
+            if action is None:
+                action = (
+                    "submitted"
+                    if event == "pull_request_review"
+                    else "created"
+                )
+            payload: dict[str, object] = {
+                "action": action,
+                "pull_request": {
+                    "draft": draft,
+                    "head": {"repo": {"full_name": head_repository}},
+                },
+                "sender": {"login": sender_login or actor},
+            }
+            if event == "pull_request_review":
+                payload["review"] = subject
+            elif event == "pull_request_review_comment":
+                payload["comment"] = subject
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    actor,
+                    "--arg",
+                    "event",
+                    event,
+                    "--arg",
+                    "repository",
+                    repository,
+                    self._refresh_event_authorization_filter(),
+                ],
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for event in ("pull_request_review", "pull_request_review_comment"):
+            with self.subTest(event=event, actor="litroc"):
+                self.assertTrue(accepted(event, "litroc", login="litroc"))
+                self.assertFalse(accepted(event, "litroc", login="other"))
+                self.assertFalse(accepted(event, "other", login="litroc"))
+            with self.subTest(event=event, actor="Copilot"):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "Copilot",
+                        login="copilot-pull-request-reviewer[bot]",
+                    )
+                )
+                self.assertFalse(
+                    accepted(event, "Copilot", login="untrusted-reviewer")
+                )
+            with self.subTest(event=event, association="MEMBER"):
+                self.assertTrue(
+                    accepted(event, "maintainer", login="maintainer", association="MEMBER")
+                )
+                self.assertFalse(
+                    accepted(event, "other", login="maintainer", association="MEMBER")
+                )
+            destructive_action = (
+                "dismissed"
+                if event == "pull_request_review"
+                else "deleted"
+            )
+            with self.subTest(event=event, action=destructive_action):
+                self.assertTrue(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="maintainer",
+                        association="MEMBER",
+                        sender_login="other",
+                    )
+                )
+                self.assertFalse(
+                    accepted(
+                        event,
+                        "dismisser",
+                        action=destructive_action,
+                        login="untrusted",
+                    )
+                )
+            self.assertFalse(
+                accepted(event, "litroc", action="unknown", login="litroc")
+            )
+            self.assertFalse(
+                accepted(event, "litroc", login="litroc", draft=True)
+            )
+            self.assertFalse(
+                accepted(
+                    event,
+                    "litroc",
+                    login="litroc",
+                    head_repository="attacker/fork",
+                )
+            )
+        self.assertFalse(
+            accepted("workflow_dispatch", "litroc", login="litroc")
         )
 
     def test_refresh_preserves_every_supported_protected_evidence_version(self) -> None:
@@ -1809,6 +1998,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 )
 
         attempt_guard = self._producer_attempt_provenance_guard()
+        attempt_binding_guard = self._rerun_shell_function(
+            "validate_producer_attempt_binding"
+        )
 
         def evaluate_attempt(attempt: object) -> subprocess.CompletedProcess[str]:
             payload = {**producer, "run_attempt": attempt}
@@ -1816,6 +2008,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 (
                     "set -euo pipefail",
                     'producer="${PRODUCER}"',
+                    attempt_binding_guard,
                     attempt_guard,
                     'printf "%s\\n" "${producer_attempt}"',
                 )
@@ -1828,6 +2021,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 env={
                     "PATH": TEST_TOOL_PATH,
                     "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                    "PRODUCER_RUN_ATTEMPT": str(attempt),
                 },
             )
 
@@ -1842,6 +2036,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 (
                     "set -euo pipefail",
                     'producer="${PRODUCER}"',
+                    attempt_binding_guard,
                     attempt_guard,
                     'test "${producer_attempt}" -eq 1',
                 )
@@ -1854,6 +2049,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 env={
                     "PATH": TEST_TOOL_PATH,
                     "PRODUCER": json.dumps(payload, separators=(",", ":")),
+                    "PRODUCER_RUN_ATTEMPT": str(attempt),
                 },
             ).returncode
 
@@ -1917,6 +2113,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         def evaluate_job_ledger(
             jobs: list[dict[str, object]],
+            conclusion: str = "success",
         ) -> subprocess.CompletedProcess[str]:
             script = "\n".join(
                 (
@@ -1925,6 +2122,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     'producer_job_head_sha="${HEAD}"',
                     "producer_attempt=2",
                     "producer_id=77",
+                    f"producer_conclusion={conclusion}",
                     "producer_job_name='Verify current revision policy'",
                     self._canonical_producer_job_binding_checks(),
                 )
@@ -1946,6 +2144,13 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         accepted = evaluate_job_ledger([primary_job, reevaluation_job])
         self.assertEqual(0, accepted.returncode, accepted.stderr)
+        failed_dispatch = {**reevaluation_job, "conclusion": "failure"}
+        accepted_recovery = evaluate_job_ledger(
+            [primary_job, failed_dispatch], "failure"
+        )
+        self.assertEqual(
+            0, accepted_recovery.returncode, accepted_recovery.stderr
+        )
         self.assertNotEqual(
             0,
             evaluate_job_ledger([reevaluation_job]).returncode,
@@ -2022,6 +2227,97 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                         [primary_job, reevaluation_job], drifted_producer
                     ).returncode,
                 )
+
+    def test_producer_failure_is_only_the_bound_helper_dispatch(self) -> None:
+        head = "b" * 40
+        primary = {
+            "id": 88,
+            "name": "Current revision review",
+            "run_id": 77,
+            "run_attempt": 1,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        rejected = {
+            "id": 89,
+            "name": "Reject unauthorized Exact-Revision dispatch",
+            "run_id": 77,
+            "run_attempt": 1,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "skipped",
+        }
+        dispatch = {
+            "id": 90,
+            "name": "Request protected verifier re-evaluation",
+            "run_id": 77,
+            "run_attempt": 1,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "failure",
+        }
+
+        def evaluate(
+            conclusion: str, jobs: list[dict[str, object]]
+        ) -> subprocess.CompletedProcess[str]:
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    "producer_id=77",
+                    "producer_attempt=1",
+                    'producer_job_head_sha="${HEAD}"',
+                    self._producer_terminal_shape_guard(),
+                    'validate_producer_terminal_shape "${CONCLUSION}" "${JOBS}"',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "HEAD": head,
+                    "CONCLUSION": conclusion,
+                    "JOBS": json.dumps(
+                        {"total_count": len(jobs), "jobs": jobs},
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+
+        accepted = evaluate("failure", [primary, rejected, dispatch])
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        accepted = evaluate("success", [primary, rejected])
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+
+        invalid_ledgers = (
+            ("failure", [primary, rejected]),
+            ("failure", [primary, rejected, {**dispatch, "name": "Other"}]),
+            ("failure", [primary, dispatch, {**dispatch, "id": 91}]),
+            ("failure", [{**primary, "conclusion": "failure"}, dispatch]),
+            ("failure", [primary, {**dispatch, "run_id": 78}]),
+            ("failure", [primary, {**dispatch, "run_attempt": 2}]),
+            ("failure", [primary, {**dispatch, "head_sha": "c" * 40}]),
+            ("success", [primary, dispatch]),
+            ("cancelled", [primary, rejected]),
+            (
+                "failure",
+                [
+                    primary,
+                    {
+                        **dispatch,
+                        "status": "in_progress",
+                        "conclusion": None,
+                    },
+                ],
+            ),
+        )
+        for conclusion, jobs in invalid_ledgers:
+            with self.subTest(conclusion=conclusion, jobs=jobs):
+                self.assertNotEqual(0, evaluate(conclusion, jobs).returncode)
+
 
     def test_cross_pre_post_authorization_rejects_live_mutations(self) -> None:
         base = "a" * 40
