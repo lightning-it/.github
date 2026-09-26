@@ -5102,7 +5102,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(nonterminal_handoff_guard, terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
         self.assertIn('^(queued|in_progress)$', terminal_wait)
-        self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
+        self.assertIn(
+            '^(requested|waiting|pending|queued|in_progress|completed)$',
+            terminal_wait,
+        )
         nonterminal_handoff = terminal_wait.split(nonterminal_handoff_guard, 1)[
             1
         ].split("          else\n", 1)[0]
@@ -5167,7 +5170,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "The protected producer run did not start in time.", permanent
         )
         self.assertIn("continue", permanent)
-        self.assertIn('^(in_progress|completed)$', permanent)
+        self.assertIn(
+            '^(requested|waiting|pending|in_progress|completed)$', permanent
+        )
         self.assertIn(
             "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
             permanent,
@@ -5422,8 +5427,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn(
-            '($evidence_ready\n                      and .status == "in_progress"',
+            '($evidence_ready\n'
+            '                      and (.status|IN("requested","waiting",'
+            '"pending","in_progress"))',
             permanent,
+        )
+        self.assertIn(
+            '^(requested|waiting|pending|in_progress|completed)$',
+            producer_loop,
         )
         self.assertLess(
             permanent.index("for evidence_observation in $(seq 1 450)"),

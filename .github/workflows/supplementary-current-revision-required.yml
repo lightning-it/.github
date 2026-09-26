@@ -3271,7 +3271,7 @@ jobs:
             # permanent verifier below independently binds the producer, its
             # exact evidence job, and all critical steps before accepting an
             # in-progress run.
-            [[ "${producer_status}" =~ ^(queued|in_progress|completed)$ ]]
+            [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]]
           else
             for observation in $(seq 1 120); do
               producer="$(gh api \
@@ -6322,7 +6322,7 @@ jobs:
                   sleep 1
                   continue
                 fi
-                [[ "${producer_status}" =~ ^(in_progress|completed)$ ]]
+                [[ "${producer_status}" =~ ^(requested|waiting|pending|in_progress|completed)$ ]]
                 producer_jobs_pages="$(gh api --paginate --slurp \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}/jobs?filter=all&per_page=100")"
                 jq -e '
@@ -6410,7 +6410,7 @@ jobs:
                       and .status == "completed"
                       and .conclusion == "failure")
                     or ($evidence_ready
-                      and .status == "in_progress"
+                      and (.status|IN("requested","waiting","pending","in_progress"))
                       and .conclusion == null)
                   )
                   and .path == ".github/workflows/copilot-review.yml"
