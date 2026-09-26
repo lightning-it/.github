@@ -2662,13 +2662,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'and .conclusion == "success"',
             release_path,
         )
-        self.assertEqual(1, release_path.count('.conclusion == "failure"'))
+        self.assertEqual(1, release_path.count('.conclusion=="failure"'))
         self.assertIn(
-            'or ($evidence_ready and (\n'
-            '                    ((.status | IN("queued", "in_progress"))\n'
-            '                      and .conclusion == null)\n'
-            '                    or (.status == "completed"'
-            ' and .conclusion == "failure")))',
+            'or ($evidence_ready and (((.status|IN("requested","waiting",'
+            '"pending","queued","in_progress")) and has("conclusion") '
+            'and .conclusion==null) or (.status=="completed" '
+            'and .conclusion=="failure")))',
             release_path,
         )
         self.assertNotIn(
@@ -3044,6 +3043,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(2, renovate.count('.conclusion == "skipped"'))
         self.assertIn("producer_ledger_ready=false", renovate)
         self.assertIn("for observation in $(seq 1 60); do", renovate)
+        self.assertIn(
+            '^(requested|waiting|pending|queued|in_progress)$', renovate
+        )
         self.assertIn(
             "The terminal Renovate producer ledger did not converge.",
             renovate,
@@ -5101,8 +5103,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(nonterminal_handoff_guard, terminal_wait)
         self.assertIn(".id == $run_id", terminal_wait)
-        self.assertIn('^(queued|in_progress)$', terminal_wait)
-        self.assertIn('^(queued|in_progress|completed)$', terminal_wait)
+        self.assertIn(
+            '^(requested|waiting|pending|queued|in_progress)$', terminal_wait
+        )
+        self.assertIn(
+            '^(requested|waiting|pending|queued|in_progress|completed)$',
+            terminal_wait,
+        )
         nonterminal_handoff = terminal_wait.split(nonterminal_handoff_guard, 1)[
             1
         ].split("          else\n", 1)[0]
@@ -5167,7 +5174,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "The protected producer run did not start in time.", permanent
         )
         self.assertIn("continue", permanent)
-        self.assertIn('^(in_progress|completed)$', permanent)
+        self.assertIn(
+            '^(requested|waiting|pending|in_progress|completed)$', permanent
+        )
         self.assertIn(
             "actions/runs/${producer_run_id}/jobs?filter=all&per_page=100",
             permanent,
@@ -5416,15 +5425,56 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('--argjson recovery_dispatch_failed', permanent)
         self.assertIn(
-            '($evidence_ready and $recovery_dispatch_failed\n'
-            '                      and .status == "completed"\n'
-            '                      and .conclusion == "failure")',
+            '($evidence_ready and $recovery_dispatch_failed '
+            'and .status=="completed" and .conclusion=="failure")',
             permanent,
         )
         self.assertIn(
-            '($evidence_ready\n                      and .status == "in_progress"',
+            '($evidence_ready and .status=="completed" '
+            'and .conclusion=="success")',
             permanent,
         )
+        self.assertIn(
+            '($evidence_ready and (.status|IN("requested","waiting",'
+            '"pending","in_progress")) and has("conclusion") '
+            'and .conclusion==null)',
+            permanent,
+        )
+        self.assertIn(
+            '^(requested|waiting|pending|in_progress|completed)$',
+            producer_loop,
+        )
+        producer_jobs_filter = producer_loop.split(
+            "                jq -e '\n", 1
+        )[1].split(
+            '\n                  \' <<<"${producer_jobs_pages}" >/dev/null',
+            1,
+        )[0]
+        jq = self._test_tool("jq")
+        for empty_ledger in ([], [{"jobs": []}]):
+            with self.subTest(empty_ledger=empty_ledger):
+                result = subprocess.run(
+                    [jq, "-e", producer_jobs_filter],
+                    input=json.dumps(empty_ledger),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+        for malformed_ledger in (
+            [{}],
+            [{"jobs": {}}],
+            [{"jobs": [{"id": "not-a-number"}]}],
+        ):
+            with self.subTest(malformed_ledger=malformed_ledger):
+                result = subprocess.run(
+                    [jq, "-e", producer_jobs_filter],
+                    input=json.dumps(malformed_ledger),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(0, result.returncode)
         self.assertLess(
             permanent.index("for evidence_observation in $(seq 1 450)"),
             permanent.index("producer_evidence_ready=false"),
@@ -5450,6 +5500,103 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
 
+    def test_permanent_producer_predicate_requires_exact_evidence_for_pending_states(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+        producer_filter = permanent.split(
+            '--argjson recovery_dispatch_failed \\\n'
+            '                  "${producer_recovery_dispatch_failed}" \'\n',
+            1,
+        )[1].split(
+            '\n                \' <<<"${producer}" >/dev/null',
+            1,
+        )[0]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        payload = {
+            "event": "pull_request_target",
+            "run_attempt": 1,
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "head_branch": "feature/li139",
+            "head_sha": head,
+            "actor": {"login": "litroc"},
+            "triggering_actor": {"login": "litroc"},
+        }
+
+        def accepts(
+            status: str,
+            conclusion: object,
+            *,
+            evidence_ready: bool,
+            include_conclusion: bool = True,
+        ) -> bool:
+            candidate = dict(payload)
+            candidate.update(status=status, conclusion=conclusion)
+            if not include_conclusion:
+                candidate.pop("conclusion")
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    "litroc",
+                    "--arg",
+                    "head_ref",
+                    "feature/li139",
+                    "--arg",
+                    "head_sha",
+                    head,
+                    "--argjson",
+                    "evidence_ready",
+                    str(evidence_ready).lower(),
+                    "--argjson",
+                    "recovery_dispatch_failed",
+                    "false",
+                    producer_filter,
+                ],
+                input=json.dumps(candidate),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for status in ("requested", "waiting", "pending", "in_progress"):
+            with self.subTest(status=status, evidence_ready=True):
+                self.assertTrue(
+                    accepts(status, None, evidence_ready=True)
+                )
+            with self.subTest(status=status, evidence_ready=False):
+                self.assertFalse(
+                    accepts(status, None, evidence_ready=False)
+                )
+            for conclusion in ("success", "failure"):
+                with self.subTest(status=status, conclusion=conclusion):
+                    self.assertFalse(
+                        accepts(status, conclusion, evidence_ready=True)
+                    )
+            with self.subTest(status=status, conclusion="missing"):
+                self.assertFalse(
+                    accepts(
+                        status,
+                        None,
+                        evidence_ready=True,
+                        include_conclusion=False,
+                    )
+                )
+        self.assertTrue(
+            accepts("completed", "success", evidence_ready=True)
+        )
+        self.assertFalse(
+            accepts("completed", "success", evidence_ready=False)
+        )
+
     def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
         self,
     ) -> None:
@@ -5464,6 +5611,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "steps.terminal-producer.outputs.producer_kind == 'release-app'",
             validator,
+        )
+        self.assertIn(
+            '^(requested|waiting|pending|queued|in_progress)$', validator
         )
         for binding in (
             "producer_status",
@@ -5612,9 +5762,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             *,
             terminal_failure: bool = False,
             terminal_success: bool = False,
+            include_conclusion: bool = True,
         ) -> bool:
             payload = dict(producer_payload)
             payload.update(status=status, conclusion=conclusion)
+            if not include_conclusion:
+                payload.pop("conclusion")
             result = subprocess.run(
                 [
                     jq,
@@ -5652,8 +5805,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             return result.returncode == 0
 
-        self.assertTrue(validates_producer("queued", None))
-        self.assertTrue(validates_producer("in_progress", None))
+        for nonterminal in (
+            "requested",
+            "waiting",
+            "pending",
+            "queued",
+            "in_progress",
+        ):
+            with self.subTest(nonterminal=nonterminal):
+                self.assertTrue(validates_producer(nonterminal, None))
+                self.assertFalse(validates_producer(nonterminal, "success"))
+                self.assertFalse(
+                    validates_producer(
+                        nonterminal, None, include_conclusion=False
+                    )
+                )
         self.assertTrue(
             validates_producer(
                 "completed", "success", terminal_success=True
@@ -5664,10 +5830,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "completed", "failure", terminal_failure=True
             )
         )
-        self.assertFalse(validates_producer("queued", "success"))
         self.assertFalse(validates_producer("completed", "success"))
         self.assertFalse(validates_producer("completed", "failure"))
-        self.assertFalse(validates_producer("waiting", None))
 
         inventory_filter = validator.split(
             '            jq -e \\\n'
@@ -5975,11 +6139,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             final_verifier,
         )
         self.assertIn(
-            '($evidence_ready and (\n'
-            '                    ((.status | IN("queued", "in_progress"))\n'
-            '                      and .conclusion == null)\n'
-            '                    or (.status == "completed"'
-            ' and .conclusion == "failure")))',
+            '($evidence_ready and (((.status|IN("requested","waiting",'
+            '"pending","queued","in_progress")) and has("conclusion") '
+            'and .conclusion==null) or (.status=="completed" '
+            'and .conclusion=="failure")))',
             final_verifier,
         )
 
@@ -7069,7 +7232,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             wait,
         )
         self.assertNotIn("([.[].name] | unique | length) == 5", wait)
-        self.assertIn("queued:|in_progress:", wait)
+        self.assertIn(
+            "requested:|waiting:|pending:|queued:|in_progress:", wait
+        )
         self.assertIn("completed:success|completed:failure", wait)
         self.assertIn(
             "Controllers deployed before this deadlock correction", wait
