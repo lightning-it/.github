@@ -5425,9 +5425,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('--argjson recovery_dispatch_failed', permanent)
         self.assertIn(
-            '($evidence_ready and $recovery_dispatch_failed\n'
-            '                      and .status == "completed"\n'
-            '                      and .conclusion == "failure")',
+            '($evidence_ready and $recovery_dispatch_failed '
+            'and .status=="completed" and .conclusion=="failure")',
+            permanent,
+        )
+        self.assertIn(
+            '($evidence_ready and .status=="completed" '
+            'and .conclusion=="success")',
             permanent,
         )
         self.assertIn(
@@ -5586,6 +5590,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         include_conclusion=False,
                     )
                 )
+        self.assertTrue(
+            accepts("completed", "success", evidence_ready=True)
+        )
+        self.assertFalse(
+            accepts("completed", "success", evidence_ready=False)
+        )
 
     def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
         self,

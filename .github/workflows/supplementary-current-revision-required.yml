@@ -6401,10 +6401,8 @@ jobs:
                   .event == "pull_request_target"
                   and .run_attempt == 1
                   and (
-                    (.status == "completed" and .conclusion == "success")
-                    or ($evidence_ready and $recovery_dispatch_failed
-                      and .status == "completed"
-                      and .conclusion == "failure")
+                    ($evidence_ready and .status=="completed" and .conclusion=="success")
+                    or ($evidence_ready and $recovery_dispatch_failed and .status=="completed" and .conclusion=="failure")
                     or ($evidence_ready and (.status|IN("requested","waiting","pending","in_progress")) and has("conclusion") and .conclusion==null)
                   )
                   and .path == ".github/workflows/copilot-review.yml"
