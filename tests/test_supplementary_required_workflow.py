@@ -5461,6 +5461,82 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
 
+    def test_permanent_producer_predicate_requires_exact_evidence_for_pending_states(
+        self,
+    ) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        permanent = workflow.split(
+            "failure_stage='permanent-producer-inventory'", 1
+        )[1].split("failure_stage='permanent-finalization'", 1)[0]
+        producer_filter = permanent.split(
+            '--argjson recovery_dispatch_failed \\\n'
+            '                  "${producer_recovery_dispatch_failed}" \'\n',
+            1,
+        )[1].split(
+            '\n                \' <<<"${producer}" >/dev/null',
+            1,
+        )[0]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        payload = {
+            "event": "pull_request_target",
+            "run_attempt": 1,
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "head_branch": "feature/li139",
+            "head_sha": head,
+            "actor": {"login": "litroc"},
+            "triggering_actor": {"login": "litroc"},
+        }
+
+        def accepts(
+            status: str, conclusion: object, *, evidence_ready: bool
+        ) -> bool:
+            candidate = dict(payload)
+            candidate.update(status=status, conclusion=conclusion)
+            result = subprocess.run(
+                [
+                    jq,
+                    "-e",
+                    "--arg",
+                    "actor",
+                    "litroc",
+                    "--arg",
+                    "head_ref",
+                    "feature/li139",
+                    "--arg",
+                    "head_sha",
+                    head,
+                    "--argjson",
+                    "evidence_ready",
+                    str(evidence_ready).lower(),
+                    "--argjson",
+                    "recovery_dispatch_failed",
+                    "false",
+                    producer_filter,
+                ],
+                input=json.dumps(candidate),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            return result.returncode == 0
+
+        for status in ("requested", "waiting", "pending", "in_progress"):
+            with self.subTest(status=status, evidence_ready=True):
+                self.assertTrue(
+                    accepts(status, None, evidence_ready=True)
+                )
+            with self.subTest(status=status, evidence_ready=False):
+                self.assertFalse(
+                    accepts(status, None, evidence_ready=False)
+                )
+            for conclusion in ("success", "failure"):
+                with self.subTest(status=status, conclusion=conclusion):
+                    self.assertFalse(
+                        accepts(status, conclusion, evidence_ready=True)
+                    )
+
     def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
         self,
     ) -> None:
