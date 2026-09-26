@@ -1083,7 +1083,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           PRODUCER_RUN_ID: ${{ github.run_id }}
-          PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -1092,7 +1091,6 @@ jobs:
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${PRODUCER_RUN_ATTEMPT}" =~ ^(1|2)$ ]]
           [[ "${EXECUTED_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
           test "${EXECUTED_WORKFLOW_SHA}" = "${EXPECTED_BASE}"
           test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
@@ -1107,9 +1105,8 @@ jobs:
             -f "inputs[pr_number]=${PR_NUMBER}" \
             -f "inputs[expected_base]=${EXPECTED_BASE}" \
             -f "inputs[expected_head]=${EXPECTED_HEAD}" \
-            -f "inputs[producer_run_id]=${PRODUCER_RUN_ID}" \
-            -f "inputs[producer_run_attempt]=${PRODUCER_RUN_ATTEMPT}" >/dev/null
-          expected_title="Protected verifier handoff PR #${PR_NUMBER} producer ${PRODUCER_RUN_ID} attempt ${PRODUCER_RUN_ATTEMPT} head ${EXPECTED_HEAD}"
+            -f "inputs[producer_run_id]=${PRODUCER_RUN_ID}" >/dev/null
+          expected_title="Protected verifier handoff PR #${PR_NUMBER} producer ${PRODUCER_RUN_ID} head ${EXPECTED_HEAD}"
           handoff=''
           for observation_attempt in $(seq 1 20); do
             runs="$(gh api \
