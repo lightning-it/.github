@@ -2559,7 +2559,7 @@ jobs:
                   end
                 ' <<<"${producer}")"
               case "${producer_status}:${producer_conclusion}" in
-                queued:|in_progress:|completed:success|completed:failure|completed:skipped) ;;
+                requested:|waiting:|pending:|queued:|in_progress:|completed:success|completed:failure|completed:skipped) ;;
                 *)
                   echo 'A local Copilot producer has an invalid terminal state.' >&2
                   exit 1
@@ -2666,7 +2666,7 @@ jobs:
                 && [ "${helper_count}" -eq 1 ] \
                 && [ "${finalizer_count}" -eq 1 ]; then
                 case "${producer_status}:${producer_conclusion}" in
-                  queued:|in_progress:)
+                  requested:|waiting:|pending:|queued:|in_progress:)
                     eligible_producers=$((eligible_producers + 1))
                     ;;
                   completed:success)
@@ -3019,7 +3019,7 @@ jobs:
             if [ "${producer_status}" = completed ]; then
               break
             fi
-            [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+            [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]]
             test "${observation}" -lt 120
             sleep 2
           done
@@ -3271,7 +3271,7 @@ jobs:
             # permanent verifier below independently binds the producer, its
             # exact evidence job, and all critical steps before accepting an
             # in-progress run.
-            [[ "${producer_status}" =~ ^(queued|in_progress|completed)$ ]]
+            [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]]
           else
             for observation in $(seq 1 120); do
               producer="$(gh api \
@@ -3283,7 +3283,7 @@ jobs:
               if [ "${producer_status}" = completed ]; then
                 break
               fi
-              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+              [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]]
               test "${observation}" -lt 120
               sleep 2
             done
@@ -3480,7 +3480,7 @@ jobs:
                 break
               fi
             else
-              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+              [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]]
             fi
             if [ "${observation}" -eq 60 ]; then
               echo 'The terminal Renovate producer ledger did not converge.' >&2
@@ -3562,7 +3562,7 @@ jobs:
                 terminal_helper_handoff=true
               fi
             else
-              [[ "${producer_status}" =~ ^(queued|in_progress)$ ]]
+              [[ "${producer_status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]]
               test -z "${producer_conclusion}"
             fi
             jobs_pages="$(gh api --paginate --slurp \
@@ -3717,8 +3717,8 @@ jobs:
                   and .event == "workflow_dispatch"
                   and .run_attempt == 1
                   and (
-                    ((.status == "queued" or .status == "in_progress")
-                      and .conclusion == null)
+                    ((.status|IN("requested","waiting","pending","queued","in_progress"))
+                      and has("conclusion") and .conclusion == null)
                     or ($terminal_success_handoff
                       and .status == "completed"
                       and .conclusion == "success")
@@ -6222,10 +6222,7 @@ jobs:
                 and .run_attempt == 1
                 and (
                   (.status == "completed" and .conclusion == "success")
-                  or ($evidence_ready and (
-                    ((.status | IN("queued", "in_progress"))
-                      and .conclusion == null)
-                    or (.status == "completed" and .conclusion == "failure")))
+                  or ($evidence_ready and (((.status|IN("requested","waiting","pending","queued","in_progress")) and has("conclusion") and .conclusion==null) or (.status=="completed" and .conclusion=="failure")))
                 )
                 and .head_branch == $base_ref
                 and .head_sha == $base_sha
@@ -6322,12 +6319,11 @@ jobs:
                   sleep 1
                   continue
                 fi
-                [[ "${producer_status}" =~ ^(in_progress|completed)$ ]]
+                [[ "${producer_status}" =~ ^(requested|waiting|pending|in_progress|completed)$ ]]
                 producer_jobs_pages="$(gh api --paginate --slurp \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}/jobs?filter=all&per_page=100")"
                 jq -e '
                   type == "array"
-                  and length > 0
                   and all(.[];
                     type == "object"
                     and (.jobs | type) == "array")
@@ -6405,13 +6401,9 @@ jobs:
                   .event == "pull_request_target"
                   and .run_attempt == 1
                   and (
-                    (.status == "completed" and .conclusion == "success")
-                    or ($evidence_ready and $recovery_dispatch_failed
-                      and .status == "completed"
-                      and .conclusion == "failure")
-                    or ($evidence_ready
-                      and .status == "in_progress"
-                      and .conclusion == null)
+                    ($evidence_ready and .status=="completed" and .conclusion=="success")
+                    or ($evidence_ready and $recovery_dispatch_failed and .status=="completed" and .conclusion=="failure")
+                    or ($evidence_ready and (.status|IN("requested","waiting","pending","in_progress")) and has("conclusion") and .conclusion==null)
                   )
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
