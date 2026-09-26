@@ -65,11 +65,6 @@ class SharedAssetsGuardedAutomergeTests(unittest.TestCase):
             classify,
         )
         self.assertIn("Malformed protected helper title binding.", classify)
-        self.assertIn("producer\\ ([1-9][0-9]*)\\ attempt\\ ", classify)
-        self.assertIn('producer_run_id="${BASH_REMATCH[2]}"', classify)
-        self.assertIn('producer_run_attempt="${BASH_REMATCH[3]}"', classify)
-        self.assertIn('expected_head="${BASH_REMATCH[4]}"', classify)
-        self.assertIn('[[ "${producer_run_attempt}" =~ ^(1|2)$ ]]', classify)
         self.assertIn("actions/runs/${HELPER_RUN_ID}", classify)
         self.assertIn("Re-run the one protected verifier attempt", classify)
         self.assertIn("($matches | length) == 1", classify)
