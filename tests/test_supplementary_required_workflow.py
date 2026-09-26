@@ -5431,7 +5431,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertLess(
             producer_loop.index('producer_evidence_ready=true'),
+            producer_loop.index(
+                '[ "${producer_evidence_ready}" != true ] || break'
+            ),
+        )
+        self.assertLess(
+            producer_loop.index(
+                '[ "${producer_evidence_ready}" != true ] || break'
+            ),
             producer_loop.index('if [ "${producer_status}" = completed ]'),
+        )
+        self.assertEqual(
+            1,
+            producer_loop.count(
+                '[ "${producer_evidence_ready}" != true ] || break'
+            ),
         )
         self.assertNotIn("actions/runs/${run_id}/rerun", permanent)
         self.assertNotIn("actions/jobs/${required_job_id}/rerun", permanent)
