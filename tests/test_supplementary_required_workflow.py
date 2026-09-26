@@ -2653,7 +2653,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'select(.name == "Request protected verifier re-evaluation")',
             'name == "Run protected history-free Exact-Revision Codex review"',
             'name == "Re-prove exact revision and enforce the Codex verdict"',
-            'name: "Dispatch the protected re-evaluation helper from develop"',
+            'name: "Dispatch the protected re-evaluation helper from the exact base"',
         ):
             with self.subTest(exact_binding=exact_binding):
                 self.assertIn(exact_binding, transition)
@@ -2902,7 +2902,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                                 "conclusion": "success",
                             },
                             {
-                                "name": "Dispatch the protected re-evaluation helper from develop",
+                                "name": "Dispatch the protected re-evaluation helper from the exact base",
                                 "status": "completed",
                                 "conclusion": "failure",
                             },
@@ -5473,12 +5473,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.status == "waiting"',
             '.status == "pending"',
             'and .conclusion == null)',
+            '--argjson terminal_helper_handoff',
+            '"${terminal_helper_handoff}"',
+            '$terminal_helper_handoff',
+            '.name\n'
+            '                            == "Request protected verifier re-evaluation"',
+            '.status == "completed"',
+            '.conclusion == "failure"',
             'review_job_count="$(jq',
             'test "${review_job_count}" -le 1',
             'test "${helper_job_count}" -le 1',
             'rejection_job_count="$(jq',
             '"Reject unauthorized Exact-Revision dispatch"',
             'test "${rejection_job_count}" -le 1',
+            'as $helpers',
+            '($helpers | length) <= 1',
+            '1 + ($helpers | length)',
             '.runner_id == null',
             '(.steps | length) == 0',
             'select(.name == "Current revision review")',
@@ -5648,7 +5658,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         inventory_filter = validator.split(
             '            jq -e \\\n'
             '              --arg base "${EVENT_BASE}" \\\n'
-            '              --argjson run_id "${PRODUCER_RUN_ID}" \'\n',
+            '              --argjson run_id "${PRODUCER_RUN_ID}" \\\n'
+            '              --argjson terminal_helper_handoff \\\n'
+            '                "${terminal_helper_handoff}" \'\n',
             1,
         )[1].split(
             '\n              \' <<<"${jobs_pages}" >/dev/null',
@@ -5680,6 +5692,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             helper_name: str = "Request protected verifier re-evaluation",
             include_rejection: bool = True,
             rejection: dict[str, object] | None = None,
+            terminal_failure: bool = False,
         ) -> bool:
             helper_job = {
                 "run_id": run_id,
@@ -5702,6 +5715,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "--argjson",
                     "run_id",
                     str(run_id),
+                    "--argjson",
+                    "terminal_helper_handoff",
+                    str(terminal_failure).lower(),
                     inventory_filter,
                 ],
                 input=json.dumps([{"jobs": jobs}]),
@@ -5733,6 +5749,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
         )
         self.assertFalse(validates_inventory("completed", "failure"))
+        self.assertTrue(
+            validates_inventory(
+                "completed", "failure", terminal_failure=True
+            )
+        )
         self.assertFalse(validates_inventory("waiting", "success"))
         self.assertFalse(validates_inventory("unknown"))
         self.assertFalse(
@@ -5781,6 +5802,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 },
             ],
         }
+
         def validates(
             jobs: list[dict[str, object]],
             *,
@@ -5813,6 +5835,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "conclusion": "success",
             "steps": [],
         }
+        failed_helper = {
+            "name": "Request protected verifier re-evaluation",
+            "status": "completed",
+            "conclusion": "failure",
+            "steps": [],
+        }
         rejection_job = {
             "name": "Reject unauthorized Exact-Revision dispatch",
             "status": "completed",
@@ -5820,6 +5848,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "runner_id": None,
             "steps": [],
         }
+        self.assertTrue(validates([valid_job, failed_helper]))
+        self.assertTrue(validates([valid_job, failed_helper, rejection_job]))
         self.assertTrue(
             validates(
                 [valid_job, successful_helper],

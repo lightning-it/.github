@@ -3100,7 +3100,7 @@ jobs:
                       conclusion: "success"
                     },
                     {
-                      name: "Dispatch the protected re-evaluation helper from develop",
+                      name: "Dispatch the protected re-evaluation helper from the exact base",
                       status: "completed",
                       conclusion: "failure"
                     },
@@ -3576,7 +3576,9 @@ jobs:
             # part of the protected fail-closed controller shape.
             jq -e \
               --arg base "${EVENT_BASE}" \
-              --argjson run_id "${PRODUCER_RUN_ID}" '
+              --argjson run_id "${PRODUCER_RUN_ID}" \
+              --argjson terminal_helper_handoff \
+                "${terminal_helper_handoff}" '
                 type == "array" and length > 0
                 and all(.[]; type == "object" and (.jobs | type) == "array")
                 and all(.[].jobs[]?;
@@ -3596,6 +3598,11 @@ jobs:
                           "Request protected verifier re-evaluation")))
                       and (
                         (.status == "completed" and .conclusion == "success")
+                        or ($terminal_helper_handoff
+                          and .name
+                            == "Request protected verifier re-evaluation"
+                          and .status == "completed"
+                          and .conclusion == "failure")
                         or ((.status == "requested"
                             or .status == "waiting"
                             or .status == "pending"
@@ -3645,10 +3652,18 @@ jobs:
                         == "Reject unauthorized Exact-Revision dispatch")]
                       | length) <= 1
                   and (if $terminal_helper_handoff
-                    then ($jobs | length) == (
-                      1 + ([$jobs[] | select(.name
-                        == "Reject unauthorized Exact-Revision dispatch")]
-                        | length))
+                    then ([$jobs[] |
+                      select(.name
+                        == "Request protected verifier re-evaluation")]
+                      as $helpers
+                    | ($helpers | length) <= 1
+                    and all($helpers[];
+                      .status == "completed" and .conclusion == "failure")
+                    and ($jobs | length) == (
+                      1 + ($helpers | length)
+                      + ([$jobs[] | select(.name
+                          == "Reject unauthorized Exact-Revision dispatch")]
+                        | length)))
                     else true end)
                   and (if $terminal_success_handoff
                     then all($jobs[];

@@ -160,13 +160,17 @@ jobs:
               test "${HELPER_RUN_ATTEMPT}" = 1
               [[ "${HELPER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
               test "${HELPER_RUN_ID}" != "${GITHUB_RUN_ID}"
-              if [[ "${HELPER_DISPLAY_TITLE}" =~ ^Protected\ verifier\ handoff\ PR\ \#([1-9][0-9]*)\ producer\ ([1-9][0-9]*)\ head\ ([0-9a-f]{40})$ ]]; then
+              if [[ "${HELPER_DISPLAY_TITLE}" =~ ^Protected\ verifier\ handoff\ PR\ \#([1-9][0-9]*)\ producer\ ([1-9][0-9]*)\ attempt\ ([1-9][0-9]*)\ head\ ([0-9a-f]{40})$ ]]; then
                 pr_number="${BASH_REMATCH[1]}"
-                expected_head="${BASH_REMATCH[3]}"
+                producer_run_id="${BASH_REMATCH[2]}"
+                producer_run_attempt="${BASH_REMATCH[3]}"
+                expected_head="${BASH_REMATCH[4]}"
               else
                 echo "Malformed protected helper title binding." >&2
                 exit 1
               fi
+              [[ "${producer_run_id}" =~ ^[1-9][0-9]*$ ]]
+              [[ "${producer_run_attempt}" =~ ^(1|2)$ ]]
               expected_base="${HELPER_HEAD_SHA}"
               base_ref=develop
               helper="$(gh api "repos/${REPO}/actions/runs/${HELPER_RUN_ID}")"
