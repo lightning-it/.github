@@ -119,6 +119,31 @@ def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, o
         "head_sha": HEAD,
         "status": "completed",
         "conclusion": "success",
+        "pull_requests": [
+            {
+                "id": 1700,
+                "number": 17,
+                "url": "https://api.github.com/repos/lightning-it/example/pulls/17",
+                "base": {
+                    "ref": "develop",
+                    "sha": BASE,
+                    "repo": {
+                        "id": 700,
+                        "name": "example",
+                        "url": "https://api.github.com/repos/lightning-it/example",
+                    },
+                },
+                "head": {
+                    "ref": "fix/exact-ingress",
+                    "sha": HEAD,
+                    "repo": {
+                        "id": 700,
+                        "name": "example",
+                        "url": "https://api.github.com/repos/lightning-it/example",
+                    },
+                },
+            }
+        ],
     }
 
 
@@ -156,7 +181,12 @@ def evidence_api(run: dict[str, object]):
     def dispatch(arguments: list[str]) -> dict[str, object]:
         endpoint = arguments[-1]
         if endpoint == "repos/lightning-it/example":
-            return {"default_branch": "develop"}
+            return {
+                "id": 700,
+                "name": "example",
+                "url": "https://api.github.com/repos/lightning-it/example",
+                "default_branch": "develop",
+            }
         if endpoint == "repos/lightning-it/example/branches/develop":
             return {"commit": {"sha": "6" * 40}}
         if endpoint == f"repos/lightning-it/example/compare/{'5' * 40}...{'6' * 40}":
@@ -369,6 +399,41 @@ class PromotionEvidenceTests(unittest.TestCase):
                     base_sha=BASE,
                     head_sha=HEAD,
                 )
+
+    def test_producer_run_requires_exact_pull_request_association(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        for mutate, reason in (
+            (
+                lambda run: run["pull_requests"].append(
+                    dict(run["pull_requests"][0])
+                ),
+                "producer-run-pull-request-count",
+            ),
+            (
+                lambda run: run["pull_requests"][0].update({"number": 18}),
+                "producer-run-pull-request-binding",
+            ),
+            (
+                lambda run: run["pull_requests"][0]["head"].update(
+                    {"sha": "f" * 40}
+                ),
+                "producer-run-pull-request-head-binding",
+            ),
+        ):
+            run = producer_run()
+            mutate(run)
+            with mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run)
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
 
     def test_bound_review_digest_detects_valid_v5_summary_mutation(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}"
@@ -1032,9 +1097,30 @@ class PromotionEvidenceTests(unittest.TestCase):
     def test_verify_aggregates_ingress_and_rejects_final_promotion_mutation(
         self,
     ) -> None:
+        pre_boundary_head = "6" * 40
+        pre_boundary_merge = "d" * 40
         boundary_head = "7" * 40
         boundary_merge = "8" * 40
         feature_merge = "9" * 40
+        pre_boundary = ingress_pull()
+        pre_boundary.update(
+            {
+                "number": 16,
+                "state": "closed",
+                "merged_at": "2026-09-26T23:00:00Z",
+                "merge_commit_sha": pre_boundary_merge,
+            }
+        )
+        pre_boundary["base"].update(
+            {"ref": "develop", "repo": {"full_name": "lightning-it/example"}}
+        )
+        pre_boundary["head"].update(
+            {
+                "ref": "fix/pre-boundary",
+                "sha": pre_boundary_head,
+                "repo": {"full_name": "lightning-it/example"},
+            }
+        )
         boundary = ingress_pull(
             login="lightning-it-release-automation[bot]",
             user_id=307565056,
@@ -1072,6 +1158,11 @@ class PromotionEvidenceTests(unittest.TestCase):
         merges = [
             {
                 "base_sha": "a" * 40,
+                "head_sha": pre_boundary_head,
+                "merge_sha": pre_boundary_merge,
+            },
+            {
+                "base_sha": pre_boundary_merge,
                 "head_sha": boundary_head,
                 "merge_sha": boundary_merge,
             },
@@ -1111,10 +1202,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                     }
                 if endpoint.endswith(f"commits/{boundary_merge}/pulls?per_page=100"):
                     return [[boundary]]
+                if endpoint.endswith(
+                    f"commits/{pre_boundary_merge}/pulls?per_page=100"
+                ):
+                    return [[pre_boundary]]
                 if endpoint.endswith(f"commits/{feature_merge}/pulls?per_page=100"):
                     return [[feature]]
                 if endpoint == "repos/lightning-it/example/pulls/10":
                     return boundary
+                if endpoint == "repos/lightning-it/example/pulls/16":
+                    return pre_boundary
                 if endpoint == "repos/lightning-it/example/pulls/17":
                     return feature
                 if endpoint == "repos/lightning-it/example/branches/main":
@@ -1178,16 +1275,17 @@ class PromotionEvidenceTests(unittest.TestCase):
                     ):
                         value = MODULE.verify(arguments)
                         MODULE.write_output(output, value)
-                    self.assertEqual(2, value["ingress_count"])
+                    self.assertEqual(3, value["ingress_count"])
                     self.assertEqual(1, value["post_baseline_ingress_count"])
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(
                         [
+                            "repos/lightning-it/example/pulls/16",
                             "repos/lightning-it/example/pulls/10",
                             "repos/lightning-it/example/pulls/17",
                         ],
-                        api_calls[-2:],
+                        api_calls[-3:],
                     )
                     return value
                 finally:

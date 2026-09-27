@@ -723,6 +723,7 @@ def validate_producer_run(
         "review-summary-producer",
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
+    repository_state: JSON | None = None
     if evidence_kind != "release-app":
         expected_paths = {
             "copilot": "applicable Copilot or governed automation exemption",
@@ -920,6 +921,52 @@ def validate_producer_run(
         require(run.get("name") == "Current revision review gate", "producer-name")
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
+        require(repository_state is not None, "producer-repository-state")
+        repository_id = integer(
+            repository_state.get("id"), "producer-repository-id"
+        )
+        repository_name = repository.split("/", 1)[1]
+        repository_url = f"https://api.github.com/repos/{repository}"
+        associations = exact_array(
+            run.get("pull_requests"), "producer-run-pull-requests"
+        )
+        require(len(associations) == 1, "producer-run-pull-request-count")
+        association = exact_object(
+            associations[0], "producer-run-pull-request"
+        )
+        association_base = exact_object(
+            association.get("base"), "producer-run-pull-request-base"
+        )
+        association_head = exact_object(
+            association.get("head"), "producer-run-pull-request-head"
+        )
+        for label, value, expected_ref, expected_sha in (
+            ("base", association_base, base_ref, base_sha),
+            ("head", association_head, head_ref, head_sha),
+        ):
+            association_repository = exact_object(
+                value.get("repo"),
+                f"producer-run-pull-request-{label}-repository",
+            )
+            require(
+                value.get("ref") == expected_ref
+                and value.get("sha") == expected_sha
+                and integer(
+                    association_repository.get("id"),
+                    f"producer-run-pull-request-{label}-repository-id",
+                )
+                == repository_id
+                and association_repository.get("name") == repository_name
+                and association_repository.get("url") == repository_url,
+                f"producer-run-pull-request-{label}-binding",
+            )
+        require(
+            integer(association.get("number"), "producer-run-pull-request-number")
+            == pull_number
+            and association.get("url")
+            == f"{repository_url}/pulls/{pull_number}",
+            "producer-run-pull-request-binding",
+        )
     return summary
 
 
@@ -1388,7 +1435,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
             )
         review: JSON | None = None
         threads: JSON | None = None
-        if post_baseline:
+        if not ancestry_boundary:
             try:
                 bound = collect_bound_ingress_evidence(
                     repository=arguments.repository,
@@ -1448,8 +1495,6 @@ def verify(arguments: argparse.Namespace) -> JSON:
     # comparisons retain the earlier observation as a race detector.
     for item in ingress:
         ancestry_boundary = item.get("ancestry_boundary") is True
-        if item["post_baseline"] is not True and not ancestry_boundary:
-            continue
         number = integer(item.get("pull_request"), "revalidation-pull-number")
         try:
             live_ingress = gh_json(
