@@ -218,6 +218,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                 expected_base=BASE,
                 expected_head=HEAD,
             )
+        candidate = promotion()
+        candidate["user"]["id"] = float(307565056)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "promotion-author-id"):
+            MODULE.validate_live_promotion(
+                candidate,
+                repository="lightning-it/example",
+                pull_number=41,
+                expected_base=BASE,
+                expected_head=HEAD,
+            )
 
     def test_only_exact_merge_pull_is_selected(self) -> None:
         candidate = {
@@ -246,6 +256,14 @@ class PromotionEvidenceTests(unittest.TestCase):
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.select_ingress_pull(
                 [candidate, dict(candidate)],
+                repository="lightning-it/example",
+                merge_sha=MERGE,
+                head_sha=HEAD,
+            )
+        flattened = MODULE.flatten_pull_pages([[candidate], [dict(candidate)]])
+        with self.assertRaisesRegex(MODULE.EvidenceError, "associated-pull-not-unique"):
+            MODULE.select_ingress_pull(
+                flattened,
                 repository="lightning-it/example",
                 merge_sha=MERGE,
                 head_sha=HEAD,
@@ -332,6 +350,36 @@ class PromotionEvidenceTests(unittest.TestCase):
                     base_sha=BASE,
                     head_sha=HEAD,
                 )
+
+    def test_bound_review_digest_detects_valid_v5_summary_mutation(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}"
+        first = json.loads(v6_summary())
+        first.pop("pull_request_number")
+        second = {**first, "pull_request_number": 17}
+        records = []
+        for summary in (first, second):
+            with mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(producer_run())
+            ):
+                records.append(
+                    MODULE.bound_review_check(
+                        [
+                            {
+                                "check_runs": [
+                                    check_run(external_id, json.dumps(summary))
+                                ]
+                            }
+                        ],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+                )
+        self.assertNotEqual(
+            records[0]["summary_sha256"], records[1]["summary_sha256"]
+        )
 
     def test_v4_release_review_requires_exact_json_evidence(self) -> None:
         summary = json.dumps(
@@ -421,6 +469,49 @@ class PromotionEvidenceTests(unittest.TestCase):
                     base_sha=BASE,
                     head_sha=HEAD,
                 )
+
+    def test_promotion_review_requires_bound_v4_evidence(self) -> None:
+        summary = json.dumps(
+            {
+                "schema": 4,
+                "base_sha": BASE,
+                "head_sha": HEAD,
+                "merge_base_sha": BASE,
+                "integration_tree_sha": "3" * 40,
+                "diff_sha256": "6" * 64,
+                "input_sha256": INPUT,
+                "pull_request_number": 17,
+                "producer_run_id": 88,
+                "run_url": "https://github.com/lightning-it/example/actions/runs/88",
+                "workflow_sha": BASE,
+            }
+        )
+        pages = [
+            {
+                "check_runs": [
+                    check_run(f"mlx90-current-revision:v4:88:{INPUT}", summary)
+                ]
+            }
+        ]
+        release_pull = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        run = producer_run(
+            login="lightning-it-release-automation[bot]", release=True
+        )
+        with mock.patch.object(MODULE, "gh_json", side_effect=[pages, run]):
+            evidence = MODULE.collect_bound_promotion_review(
+                repository="lightning-it/example",
+                pull=release_pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+                wait=False,
+            )
+        self.assertEqual("v4", evidence["evidence_version"])
+        self.assertRegex(evidence["summary_sha256"], r"^[0-9a-f]{64}$")
 
     def test_ancestry_exemption_requires_exact_ref_and_author_scope(self) -> None:
         release = ingress_pull(
@@ -576,6 +667,54 @@ class PromotionEvidenceTests(unittest.TestCase):
                     expected_main=BASE,
                 )
             )
+
+    def test_ancestry_boundary_content_is_exact(self) -> None:
+        evidence = json.dumps(
+            {
+                "schema_version": 1,
+                "repository": "lightning-it/example",
+                "main_sha": BASE,
+                "develop_parent_sha": MERGE,
+                "purpose": "Bind the reviewed main ancestry backmerge.",
+            }
+        )
+
+        def boundary_git(arguments: list[str], _: Path) -> str:
+            if arguments[:2] == ["diff", "--name-only"]:
+                return ".lit/main-ancestry.json"
+            if arguments == ["show", "-s", "--format=%s", HEAD]:
+                return "merge: preserve develop tree and main ancestry"
+            if arguments == ["show", f"{HEAD}:.lit/main-ancestry.json"]:
+                return evidence
+            if arguments == ["ls-tree", HEAD, "--", ".lit/main-ancestry.json"]:
+                return f"100644 blob {'9' * 40}\t.lit/main-ancestry.json"
+            raise AssertionError(arguments)
+
+        with mock.patch.object(MODULE, "git", side_effect=boundary_git):
+            MODULE.validate_ancestry_boundary_content(
+                ROOT,
+                repository="lightning-it/example",
+                head_sha=HEAD,
+                previous_develop=MERGE,
+                expected_main=BASE,
+            )
+
+        def extra_file(arguments: list[str], path: Path) -> str:
+            if arguments[:2] == ["diff", "--name-only"]:
+                return ".lit/main-ancestry.json\nextra"
+            return boundary_git(arguments, path)
+
+        with mock.patch.object(MODULE, "git", side_effect=extra_file):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "ancestry-boundary-content-scope"
+            ):
+                MODULE.validate_ancestry_boundary_content(
+                    ROOT,
+                    repository="lightning-it/example",
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                    expected_main=BASE,
+                )
 
     def test_managed_sync_requires_exact_numeric_identity(self) -> None:
         managed = ingress_pull(
@@ -979,6 +1118,9 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("lit-promotion-dispatch-succeeded", promotion_job)
         self.assertIn("--expected-body-sha256", promotion_job)
         self.assertIn('.owner.login == "lightning-it"', promotion_job)
+        self.assertIn("controller_ref=main", promotion_job)
+        self.assertIn("controller_ref=develop", promotion_job)
+        self.assertIn('.promotion_review.evidence_version == "v4"', promotion_job)
         self.assertGreaterEqual(
             SCRIPT.read_text(encoding="utf-8").count(
                 "collect_bound_ingress_evidence("

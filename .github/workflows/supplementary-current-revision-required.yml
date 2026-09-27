@@ -2312,11 +2312,23 @@ jobs:
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
-          test "${WORKFLOW_REF}" = \
-            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
+          case "${WORKFLOW_REF}" in
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
+              controller_ref=main
+              ;;
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
+              test "${REPOSITORY}" = lightning-it/.github
+              controller_ref=develop
+              ;;
+            *)
+              echo '::error::Unsupported protected controller ref.'
+              exit 1
+              ;;
+          esac
 
           controller_repository="$(gh api repos/lightning-it/.github)"
-          controller_main="$(gh api repos/lightning-it/.github/branches/main)"
+          controller_branch="$(gh api \
+            "repos/lightning-it/.github/branches/${controller_ref}")"
           jq -e --argjson id 1112629689 '
             .id == $id
             and .full_name == "lightning-it/.github"
@@ -2325,9 +2337,11 @@ jobs:
             and .archived == false
             and .disabled == false
           ' <<<"${controller_repository}" >/dev/null
-          jq -e --arg sha "${WORKFLOW_SHA}" '
-            .name == "main" and .protected == true and .commit.sha == $sha
-          ' <<<"${controller_main}" >/dev/null
+          jq -e \
+            --arg ref "${controller_ref}" \
+            --arg sha "${WORKFLOW_SHA}" '
+              .name == $ref and .protected == true and .commit.sha == $sha
+            ' <<<"${controller_branch}" >/dev/null
 
           target_repository="$(gh api "repos/${REPOSITORY}")"
           target_main="$(gh api "repos/${REPOSITORY}/branches/main")"
@@ -2479,6 +2493,10 @@ jobs:
               and .base_sha == $base
               and .head_sha == $head
               and .controller_sha == $controller
+              and .promotion_review.evidence_kind == "release-app"
+              and .promotion_review.evidence_version == "v4"
+              and (.promotion_review.summary_sha256 |
+                test("^[0-9a-f]{64}$"))
               and (.ingress_count | type == "number" and . > 0)
               and (.ingress | length) == .ingress_count
               and (.post_baseline_ingress_count | type == "number" and . > 0)

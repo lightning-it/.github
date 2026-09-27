@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from collections.abc import Iterable
 from pathlib import Path
@@ -223,7 +224,10 @@ def validate_live_promotion(
         "promotion-title",
     )
     require(author.get("login") == RELEASE_APP_LOGIN, "promotion-author-login")
-    require(author.get("id") == RELEASE_APP_ID, "promotion-author-id")
+    require(
+        integer(author.get("id"), "promotion-author-id") == RELEASE_APP_ID,
+        "promotion-author-id",
+    )
     require(author.get("type") == "Bot", "promotion-author-type")
     require(base.get("ref") == "main", "promotion-base-ref")
     require(base.get("sha") == expected_base, "promotion-base-sha")
@@ -379,6 +383,18 @@ def select_ingress_pull(
     return candidate
 
 
+def flatten_pull_pages(value: Any) -> list[JSON]:
+    pages = exact_array(value, "associated-pull-pages")
+    pulls: list[JSON] = []
+    for page in pages:
+        pulls.extend(
+            exact_object(item, "associated-pull")
+            for item in exact_array(page, "associated-pull-page")
+        )
+    require(len(pulls) <= 1000, "associated-pull-inventory-too-large")
+    return pulls
+
+
 def check_pages(value: Any) -> list[JSON]:
     pages = exact_array(value, "check-pages")
     runs: list[JSON] = []
@@ -473,9 +489,10 @@ def is_authorized_ancestry_boundary(
             f"backmerge/{branch_component}-{expected_main[:12]}-"
             f"{previous_develop[:12]}-main"
         )
+        user_id = integer(user.get("id"), "ancestry-boundary-user-id")
         identity = (
             user.get("login"),
-            user.get("id"),
+            user_id,
             user.get("type"),
         )
         allowed_identities = {(RELEASE_APP_LOGIN, RELEASE_APP_ID, "Bot")}
@@ -505,6 +522,83 @@ def has_exact_ancestry_merge_parents(
         ["show", "-s", "--format=%P", head_sha], repository_path
     ).split()
     return parents == [previous_develop, expected_main]
+
+
+def validate_ancestry_boundary_content(
+    repository_path: Path,
+    *,
+    repository: str,
+    head_sha: str,
+    previous_develop: str,
+    expected_main: str,
+) -> None:
+    evidence_path = ".lit/main-ancestry.json"
+    changed = git(
+        ["diff", "--name-only", previous_develop, head_sha, "--"], repository_path
+    ).splitlines()
+    require(changed == [evidence_path], "ancestry-boundary-content-scope")
+    require(
+        git(["show", "-s", "--format=%s", head_sha], repository_path)
+        == "merge: preserve develop tree and main ancestry",
+        "ancestry-boundary-subject",
+    )
+    raw = git(["show", f"{head_sha}:{evidence_path}"], repository_path)
+    try:
+        evidence = exact_object(
+            json.loads(
+                raw,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_nonstandard_constant,
+            ),
+            "ancestry-boundary-evidence",
+        )
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise EvidenceError("ancestry-boundary-evidence-not-json") from error
+    require(
+        set(evidence)
+        == {
+            "develop_parent_sha",
+            "main_sha",
+            "purpose",
+            "repository",
+            "schema_version",
+        },
+        "ancestry-boundary-evidence",
+    )
+    require(
+        integer(evidence.get("schema_version"), "ancestry-boundary-schema") == 1,
+        "ancestry-boundary-schema",
+    )
+    require(
+        sha(evidence.get("main_sha"), "ancestry-boundary-main") == expected_main,
+        "ancestry-boundary-main",
+    )
+    require(
+        sha(evidence.get("develop_parent_sha"), "ancestry-boundary-develop")
+        == previous_develop,
+        "ancestry-boundary-develop",
+    )
+    require(
+        text(evidence.get("repository"), "ancestry-boundary-repository")
+        == repository,
+        "ancestry-boundary-repository",
+    )
+    require(
+        text(evidence.get("purpose"), "ancestry-boundary-purpose")
+        == "Bind the reviewed main ancestry backmerge.",
+        "ancestry-boundary-purpose",
+    )
+    tree_entry = git(
+        ["ls-tree", head_sha, "--", evidence_path], repository_path
+    ).split()
+    require(
+        len(tree_entry) == 4
+        and tree_entry[0] == "100644"
+        and tree_entry[1] == "blob"
+        and SHA.fullmatch(tree_entry[2]) is not None
+        and tree_entry[3] == evidence_path,
+        "ancestry-boundary-evidence-mode",
+    )
 
 
 def classify_ingress_position(index: int, baseline_boundary: int) -> tuple[bool, bool]:
@@ -583,7 +677,7 @@ def validate_producer_run(
     evidence_kind: str,
     evidence_version: str,
     producer_run_id: int,
-) -> None:
+) -> JSON:
     check_id = integer(check.get("id"), "check-id")
     require(
         check.get("details_url")
@@ -810,6 +904,7 @@ def validate_producer_run(
         require(run.get("name") == "Current revision review gate", "producer-name")
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
+    return summary
 
 
 def bound_review_check(
@@ -827,7 +922,7 @@ def bound_review_check(
         app = exact_object(check.get("app"), "check-app")
         if not (
             check.get("name") == "Current revision review"
-            and app.get("id") == 15368
+            and integer(app.get("id"), "check-app-id") == 15368
             and app.get("slug") == "github-actions"
             and check.get("head_sha") == head_sha
             and check.get("status") == "completed"
@@ -843,13 +938,7 @@ def bound_review_check(
                 and v6.group("base") == base_sha
                 and v6.group("head") == head_sha
             ):
-                match = {
-                    "check_id": integer(check.get("id"), "check-id"),
-                    "evidence_kind": v6.group("kind"),
-                    "external_id": external_id,
-                    "producer_run_id": int(v6.group("run")),
-                }
-                validate_producer_run(
+                summary = validate_producer_run(
                     check,
                     repository=repository,
                     pull=pull,
@@ -860,6 +949,14 @@ def bound_review_check(
                     evidence_version="v6",
                     producer_run_id=int(v6.group("run")),
                 )
+                match = {
+                    "check_id": integer(check.get("id"), "check-id"),
+                    "evidence_kind": v6.group("kind"),
+                    "evidence_version": "v6",
+                    "external_id": external_id,
+                    "producer_run_id": int(v6.group("run")),
+                    "summary_sha256": digest(summary),
+                }
                 matches.append(match)
             continue
         v5 = V5_EXTERNAL_ID.fullmatch(external_id)
@@ -869,14 +966,7 @@ def bound_review_check(
                 and v5.group("base") == base_sha
                 and v5.group("head") == head_sha
             ):
-                match = {
-                    "check_id": integer(check.get("id"), "check-id"),
-                    "evidence_kind": v5.group("kind"),
-                    "evidence_version": "v5",
-                    "external_id": external_id,
-                    "producer_run_id": int(v5.group("run")),
-                }
-                validate_producer_run(
+                summary = validate_producer_run(
                     check,
                     repository=repository,
                     pull=pull,
@@ -887,6 +977,14 @@ def bound_review_check(
                     evidence_version="v5",
                     producer_run_id=int(v5.group("run")),
                 )
+                match = {
+                    "check_id": integer(check.get("id"), "check-id"),
+                    "evidence_kind": v5.group("kind"),
+                    "evidence_version": "v5",
+                    "external_id": external_id,
+                    "producer_run_id": int(v5.group("run")),
+                    "summary_sha256": digest(summary),
+                }
                 matches.append(match)
             continue
         v4 = V4_EXTERNAL_ID.fullmatch(external_id)
@@ -931,13 +1029,7 @@ def bound_review_check(
             )
             is not None
         ):
-            match = {
-                "check_id": integer(check.get("id"), "check-id"),
-                "evidence_kind": "release-app",
-                "external_id": external_id,
-                "producer_run_id": int(v4.group("run")),
-            }
-            validate_producer_run(
+            summary = validate_producer_run(
                 check,
                 repository=repository,
                 pull=pull,
@@ -948,6 +1040,14 @@ def bound_review_check(
                 evidence_version="v4",
                 producer_run_id=int(v4.group("run")),
             )
+            match = {
+                "check_id": integer(check.get("id"), "check-id"),
+                "evidence_kind": "release-app",
+                "evidence_version": "v4",
+                "external_id": external_id,
+                "producer_run_id": int(v4.group("run")),
+                "summary_sha256": digest(summary),
+            }
             matches.append(match)
     require(len(matches) == 1, "bound-current-revision-check-not-unique")
     return matches[0]
@@ -1071,6 +1171,73 @@ def collect_bound_ingress_evidence(
     }
 
 
+def collect_bound_promotion_review(
+    *,
+    repository: str,
+    pull: JSON,
+    pull_number: int,
+    base_sha: str,
+    head_sha: str,
+    wait: bool,
+) -> JSON:
+    observations = 450 if wait else 1
+    for observation in range(observations):
+        pages = gh_json(
+            [
+                "api",
+                "--paginate",
+                "--slurp",
+                (
+                    f"repos/{repository}/commits/{head_sha}/check-runs"
+                    "?check_name=Current%20revision%20review&filter=all&per_page=100"
+                ),
+            ]
+        )
+        candidates = [
+            check
+            for check in check_pages(pages)
+            if check.get("name") == "Current revision review"
+            and integer(
+                exact_object(check.get("app"), "promotion-review-app").get("id"),
+                "promotion-review-app-id",
+            )
+            == 15368
+            and check.get("head_sha") == head_sha
+            and V4_EXTERNAL_ID.fullmatch(
+                text(check.get("external_id"), "promotion-review-external-id")
+            )
+            is not None
+        ]
+        if candidates and wait and any(
+            check.get("status") != "completed" for check in candidates
+        ):
+            require(observation + 1 < observations, "promotion-review-timeout")
+            time.sleep(2)
+            continue
+        if candidates or not wait:
+            try:
+                return bound_review_check(
+                    pages,
+                    repository=repository,
+                    pull=pull,
+                    pull_number=pull_number,
+                    base_sha=base_sha,
+                    head_sha=head_sha,
+                )
+            except EvidenceError as error:
+                if (
+                    wait
+                    and str(error) == "producer-run-status"
+                    and observation + 1 < observations
+                ):
+                    time.sleep(2)
+                    continue
+                raise
+        require(observation + 1 < observations, "promotion-review-timeout")
+        time.sleep(2)
+    raise EvidenceError("promotion-review-timeout")
+
+
 def private_runtime_directory() -> Path:
     runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
     require(runner_temp.is_absolute(), "runner-temp-not-absolute")
@@ -1166,6 +1333,14 @@ def verify(arguments: argparse.Namespace) -> JSON:
         promotion_body_sha256(live_pull) == expected_body_sha256,
         "promotion-event-body-mismatch",
     )
+    promotion_review = collect_bound_promotion_review(
+        repository=arguments.repository,
+        pull=live_pull,
+        pull_number=pull_number,
+        base_sha=expected_base,
+        head_sha=expected_head,
+        wait=True,
+    )
     baseline_commit = exact_object(
         gh_json(["api", f"repos/{arguments.repository}/commits/{expected_base}"]),
         "baseline-commit",
@@ -1195,16 +1370,18 @@ def verify(arguments: argparse.Namespace) -> JSON:
     diff = compute_diff(repository_path, expected_base, expected_head)
     ingress_inventory: list[tuple[JSON, JSON]] = []
     for merge in merges:
-        associated = gh_json(
+        associated_pages = gh_json(
             [
                 "api",
+                "--paginate",
+                "--slurp",
                 "-H",
                 "Accept: application/vnd.github+json",
                 f"repos/{arguments.repository}/commits/{merge['merge_sha']}/pulls?per_page=100",
             ]
         )
         pull = select_ingress_pull(
-            associated,
+            flatten_pull_pages(associated_pages),
             repository=arguments.repository,
             merge_sha=merge["merge_sha"],
             head_sha=merge["head_sha"],
@@ -1230,6 +1407,14 @@ def verify(arguments: argparse.Namespace) -> JSON:
     ]
     require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
     baseline_boundary = baseline_candidates[0]
+    boundary_merge, _ = ingress_inventory[baseline_boundary]
+    validate_ancestry_boundary_content(
+        repository_path,
+        repository=arguments.repository,
+        head_sha=boundary_merge["head_sha"],
+        previous_develop=boundary_merge["base_sha"],
+        expected_main=expected_base,
+    )
 
     ingress: list[JSON] = []
     for index, (merge, pull) in enumerate(ingress_inventory):
@@ -1346,6 +1531,18 @@ def verify(arguments: argparse.Namespace) -> JSON:
         == canonical(promotion_binding(live_pull)),
         "promotion-mutated-during-verification",
     )
+    promotion_review_after = collect_bound_promotion_review(
+        repository=arguments.repository,
+        pull=live_pull_after,
+        pull_number=pull_number,
+        base_sha=expected_base,
+        head_sha=expected_head,
+        wait=False,
+    )
+    require(
+        canonical(promotion_review_after) == canonical(promotion_review),
+        "promotion-review-mutated-during-verification",
+    )
     validate_protected_ref_tips(
         arguments.repository,
         expected_base=expected_base,
@@ -1366,6 +1563,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
         "integration_tree_sha": integration_tree,
         "diff": diff,
         "controller_sha": controller_sha,
+        "promotion_review": promotion_review,
         "ingress_count": len(ingress),
         "post_baseline_ingress_count": post_baseline_count,
         "ingress": ingress,
