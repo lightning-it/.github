@@ -6453,7 +6453,7 @@ jobs:
                 --arg producer_created_at "$(jq -er '.created_at | strings' \
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
-                  [.[].[]? |
+                  [.[][]? |
                     select(.user.login == "copilot-pull-request-reviewer[bot]") |
                     select(.user.type == "Bot") |
                     select(.commit_id == $head) |
@@ -6494,6 +6494,8 @@ jobs:
                     select(.path == ".github/workflows/copilot-review-refresh.yml") |
                     select(.name == "Refresh Copilot review gate") |
                     select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                    select((.created_at | type) == "string") |
+                    select((.updated_at | type) == "string") |
                     select(.created_at > $first_verifier_completed_at) |
                     select(.created_at >= $review_submitted_at) |
                     select(.updated_at <= $producer_updated_at) |
