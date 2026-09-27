@@ -407,8 +407,11 @@ def expected_evidence_kind(pull: JSON, *, repository: str) -> str:
             "release-app-identity",
         )
         return "release-app"
-    if login == "lightning-it-shared-assets-sync[bot]":
-        require(user_type == "Bot", "managed-sync-identity")
+    if login == SYNC_APP_LOGIN:
+        require(
+            user.get("id") == SYNC_APP_ID and user_type == "Bot",
+            "managed-sync-identity",
+        )
         return "managed-sync"
     if login == "renovate[bot]":
         require(user_type == "Bot", "renovate-identity")
@@ -466,6 +469,19 @@ def is_authorized_ancestry_boundary(
         )
     except (EvidenceError, IndexError):
         return False
+
+
+def has_exact_ancestry_merge_parents(
+    repository_path: Path,
+    *,
+    head_sha: str,
+    previous_develop: str,
+    expected_main: str,
+) -> bool:
+    parents = git(
+        ["show", "-s", "--format=%P", head_sha], repository_path
+    ).split()
+    return parents == [previous_develop, expected_main]
 
 
 def review_summary(check: JSON) -> JSON:
@@ -1047,6 +1063,12 @@ def verify(arguments: argparse.Namespace) -> JSON:
         index
         for index, (merge, pull) in enumerate(ingress_inventory)
         if is_ancestor(repository_path, expected_base, merge["head_sha"])
+        and has_exact_ancestry_merge_parents(
+            repository_path,
+            head_sha=merge["head_sha"],
+            previous_develop=merge["base_sha"],
+            expected_main=expected_base,
+        )
         and is_authorized_ancestry_boundary(
             pull,
             repository=arguments.repository,

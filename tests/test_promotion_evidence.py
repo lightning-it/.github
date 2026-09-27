@@ -477,6 +477,48 @@ class PromotionEvidenceTests(unittest.TestCase):
                     "lightning-it/example", expected_base=BASE, expected_head=HEAD
                 )
 
+    def test_ancestry_boundary_requires_exact_merge_parents(self) -> None:
+        with mock.patch.object(
+            MODULE, "git", return_value=f"{MERGE} {BASE}"
+        ):
+            self.assertTrue(
+                MODULE.has_exact_ancestry_merge_parents(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                    expected_main=BASE,
+                )
+            )
+        with mock.patch.object(
+            MODULE, "git", return_value=f"{MERGE} {'9' * 40}"
+        ):
+            self.assertFalse(
+                MODULE.has_exact_ancestry_merge_parents(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                    expected_main=BASE,
+                )
+            )
+
+    def test_managed_sync_requires_exact_numeric_identity(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        self.assertEqual(
+            "managed-sync",
+            MODULE.expected_evidence_kind(
+                managed, repository="lightning-it/example"
+            ),
+        )
+        managed["user"]["id"] = 1
+        with self.assertRaisesRegex(MODULE.EvidenceError, "managed-sync-identity"):
+            MODULE.expected_evidence_kind(
+                managed, repository="lightning-it/example"
+            )
+
     def test_graphql_errors_fail_closed_before_partial_thread_data(self) -> None:
         partial = {
             "errors": [{"message": "partial result"}],
