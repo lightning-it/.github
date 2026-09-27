@@ -331,6 +331,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
+      promotion_candidate: ${{ steps.route.outputs.promotion_candidate }}
       s0_candidate: ${{ steps.route.outputs.s0_candidate }}
       s0_prestage: ${{ steps.route.outputs.s0_prestage }}
 
@@ -338,15 +339,35 @@ jobs:
       - name: Classify the protected S0 feature-to-main route
         id: route
         env:
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DRAFT: ${{ github.event.pull_request.draft }}
           EVENT_ACTION: ${{ github.event.action }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
+          TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
+          if ! [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]; then
+            echo 'Unsupported protected workflow event.' >&2
+            exit 1
+          fi
+          promotion_candidate=false
           s0_candidate=false
           s0_prestage=false
+          if [ "${AUTHOR_LOGIN:-}" = 'lightning-it-release-automation[bot]' ] \
+            && [ "${AUTHOR_ID:-}" = 307565056 ] \
+            && [ "${AUTHOR_TYPE:-}" = Bot ] \
+            && [ "${BASE_REF}" = main ] \
+            && [ "${HEAD_REF}" = develop ] \
+            && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ] \
+            && [ "${DRAFT:-}" = false ] \
+            && [ "${TITLE:-}" = 'chore(release): promote develop to main' ]; then
+            promotion_candidate=true
+          fi
           if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
             && [ "${BASE_REF}" = main ] \
             && [[ "${HEAD_REF}" == prestage/* ]]; then
@@ -355,8 +376,11 @@ jobs:
               s0_prestage=true
             fi
           fi
-          printf 's0_candidate=%s\n' "${s0_candidate}" >>"${GITHUB_OUTPUT}"
-          printf 's0_prestage=%s\n' "${s0_prestage}" >>"${GITHUB_OUTPUT}"
+          {
+            printf 'promotion_candidate=%s\n' "${promotion_candidate}"
+            printf 's0_candidate=%s\n' "${s0_candidate}"
+            printf 's0_prestage=%s\n' "${s0_prestage}"
+          } >>"${GITHUB_OUTPUT}"
 
   reserve-s0-feature-main-prestage:
     name: Reserve protected S0 feature-to-main verification
@@ -2201,6 +2225,153 @@ jobs:
           failure_armed=0
           trap - ERR
 
+  verify-develop-main-promotion-evidence:
+    name: Verify aggregated develop-to-main promotion evidence
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.promotion_candidate == 'true'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Bind protected controller and target refs
+        id: bind
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${WORKFLOW_REF}" = \
+            'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main'
+
+          controller_repository="$(gh api repos/lightning-it/.github)"
+          controller_main="$(gh api repos/lightning-it/.github/branches/main)"
+          jq -e --argjson id 1112629689 '
+            .id == $id
+            and .full_name == "lightning-it/.github"
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${controller_repository}" >/dev/null
+          jq -e --arg sha "${WORKFLOW_SHA}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${controller_main}" >/dev/null
+
+          target_repository="$(gh api "repos/${REPOSITORY}")"
+          target_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          target_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg repository "${REPOSITORY}" '
+            .full_name == $repository and .archived == false and .disabled == false
+          ' <<<"${target_repository}" >/dev/null
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${target_main}" >/dev/null
+          jq -e --arg sha "${EVENT_HEAD}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${target_develop}" >/dev/null
+
+          controller="${RUNNER_TEMP}/verify-promotion-evidence.py"
+          controller_json="$(gh api \
+            "repos/lightning-it/.github/contents/scripts/verify-promotion-evidence.py?ref=${WORKFLOW_SHA}")"
+          jq -e '
+            .type == "file"
+            and .path == "scripts/verify-promotion-evidence.py"
+            and .encoding == "base64"
+            and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            and (.size | type == "number" and . > 0 and . <= 1048576)
+            and (.content | type == "string" and length > 0)
+          ' <<<"${controller_json}" >/dev/null
+          jq -er '.content' <<<"${controller_json}" \
+            | tr -d '\n' | base64 --decode >"${controller}"
+          test "$(git hash-object --no-filters "${controller}")" = \
+            "$(jq -er .sha <<<"${controller_json}")"
+          chmod 0500 "${controller}"
+
+          target="${RUNNER_TEMP}/target"
+          auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          git init --quiet "${target}"
+          git -C "${target}" remote add origin \
+            "${GITHUB_SERVER_URL}/${REPOSITORY}.git"
+          git -C "${target}" -c \
+            "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --quiet --no-tags origin \
+            "refs/heads/main:refs/remotes/origin/main" \
+            "refs/heads/develop:refs/remotes/origin/develop"
+          test "$(git -C "${target}" rev-parse refs/remotes/origin/main)" = \
+            "${EVENT_BASE}"
+          test "$(git -C "${target}" rev-parse refs/remotes/origin/develop)" = \
+            "${EVENT_HEAD}"
+          printf 'controller=%s\n' "${controller}" >>"${GITHUB_OUTPUT}"
+          printf 'target=%s\n' "${target}" >>"${GITHUB_OUTPUT}"
+
+      - name: Aggregate exact protected ingress evidence
+        env:
+          CONTROLLER: ${{ steps.bind.outputs.controller }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          TARGET: ${{ steps.bind.outputs.target }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          output="${RUNNER_TEMP}/promotion-evidence.json"
+          "${CONTROLLER}" \
+            --repository "${REPOSITORY}" \
+            --pull-request "${PR_NUMBER}" \
+            --base-ref main \
+            --head-ref develop \
+            --expected-base "${EVENT_BASE}" \
+            --expected-head "${EVENT_HEAD}" \
+            --controller-sha "${WORKFLOW_SHA}" \
+            --repository-path "${TARGET}" \
+            --output "${output}" >/dev/null
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg controller "${WORKFLOW_SHA}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson pull_request "${PR_NUMBER}" '
+              .schema_version == 1
+              and .repository == $repository
+              and .pull_request == $pull_request
+              and .base_sha == $base
+              and .head_sha == $head
+              and .controller_sha == $controller
+              and (.ingress_count | type == "number" and . > 0)
+              and (.ingress | length) == .ingress_count
+              and (.post_baseline_ingress_count | type == "number" and . > 0)
+              and .post_baseline_ingress_count <= .ingress_count
+              and (.diff.bytes | type == "number" and . > 0)
+              and (.diff.sha256 | test("^[0-9a-f]{64}$"))
+              and (.evidence_sha256 | test("^[0-9a-f]{64}$"))
+            ' "${output}" >/dev/null
+          jq -r '
+            "### Protected promotion evidence\n\n"
+            + "- Ingress PRs: \(.ingress_count)\n"
+            + "- Post-baseline reviewed PRs: \(.post_baseline_ingress_count)\n"
+            + "- Promotion bytes: \(.diff.bytes)\n"
+            + "- Promotion SHA-256: `\(.diff.sha256)`\n"
+            + "- Evidence SHA-256: `\(.evidence_sha256)`"
+          ' "${output}" >>"${GITHUB_STEP_SUMMARY}"
+
   verify-protected-current-revision-evidence:
     # Keep the native Required-Workflow job distinct from the API evidence
     # check it verifies. GitHub Actions check runs share one App identity, so
@@ -2214,7 +2385,7 @@ jobs:
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
     needs: route-protected-current-revision
-    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
+    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true' && needs['route-protected-current-revision'].outputs.promotion_candidate != 'true'
     permissions:
       actions: read
       checks: write
@@ -7185,6 +7356,7 @@ jobs:
       - reserve-s0-feature-main-prestage
       - verify-s0-feature-main-prestage
       - finalize-s0-feature-main-prestage
+      - verify-develop-main-promotion-evidence
       - verify-protected-current-revision-evidence
     if: always()
     permissions: {}
@@ -7198,6 +7370,10 @@ jobs:
             ${{ needs['finalize-s0-feature-main-prestage'].result }}
           LEGACY_RESULT: >-
             ${{ needs['verify-protected-current-revision-evidence'].result }}
+          PROMOTION_CANDIDATE: >-
+            ${{ needs['route-protected-current-revision'].outputs.promotion_candidate }}
+          PROMOTION_RESULT: >-
+            ${{ needs['verify-develop-main-promotion-evidence'].result }}
           RESERVE_RESULT: >-
             ${{ needs['reserve-s0-feature-main-prestage'].result }}
           ROUTE_RESULT: >-
@@ -7210,26 +7386,42 @@ jobs:
             ${{ needs['verify-s0-feature-main-prestage'].result }}
         run: |
           set -euo pipefail
+          PROMOTION_CANDIDATE="${PROMOTION_CANDIDATE:-false}"
+          PROMOTION_RESULT="${PROMOTION_RESULT:-skipped}"
           test "${ROUTE_RESULT}" = success
           if [ "${S0_PRESTAGE}" = true ]; then
             test "${S0_CANDIDATE}" = true
             test "${RESERVE_RESULT}" = success
             test "${VERIFY_RESULT}" = success
             test "${FINALIZE_RESULT}" = success
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
           elif [ "${S0_CANDIDATE}" = true ]; then
             test "${S0_PRESTAGE}" = false
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
             echo 'S0 candidate action requires the separately authorized listener.' >&2
             exit 1
+          elif [ "${PROMOTION_CANDIDATE}" = true ]; then
+            test "${S0_CANDIDATE}" = false
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_RESULT}" = success
+            test "${LEGACY_RESULT}" = skipped
           else
             test "${S0_CANDIDATE}" = false
             test "${S0_PRESTAGE}" = false
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = success
           fi

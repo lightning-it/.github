@@ -8722,7 +8722,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 returncode, values, _ = route_result(action)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "true", "s0_prestage": "true"},
+                    {
+                        "promotion_candidate": "false",
+                        "s0_candidate": "true",
+                        "s0_prestage": "true",
+                    },
                     values,
                 )
         for action in ("ready_for_review", "edited"):
@@ -8730,7 +8734,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 returncode, values, _ = route_result(action)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "true", "s0_prestage": "false"},
+                    {
+                        "promotion_candidate": "false",
+                        "s0_candidate": "true",
+                        "s0_prestage": "false",
+                    },
                     values,
                 )
         for candidate in (
@@ -8742,7 +8750,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 returncode, values, _ = route_result(*candidate)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "false", "s0_prestage": "false"},
+                    {
+                        "promotion_candidate": "false",
+                        "s0_candidate": "false",
+                        "s0_prestage": "false",
+                    },
                     values,
                 )
         for action in (None, "closed", "READY_FOR_REVIEW"):
