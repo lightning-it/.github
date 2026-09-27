@@ -3113,16 +3113,32 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.user.login == "copilot-pull-request-reviewer[bot]"',
             late,
         )
-        self.assertIn('select(.submitted_at >= $producer_created_at)', late)
+        self.assertIn(
+            'select((.submitted_at | fromdateiso8601?)\n'
+            '                      >= ($producer_created_at | fromdateiso8601))',
+            late,
+        )
         self.assertIn(
             'actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}',
             late,
         )
-        self.assertIn('.created_at >= $review_submitted_at', late)
-        self.assertIn('.created_at > $first_verifier_completed_at', late)
+        self.assertIn(
+            '(.created_at | fromdateiso8601?)\n'
+            '                      >= ($review_submitted_at | fromdateiso8601)',
+            late,
+        )
+        self.assertIn(
+            '(.created_at | fromdateiso8601?)\n'
+            '                      > ($first_verifier_completed_at | fromdateiso8601)',
+            late,
+        )
         self.assertIn('select((.created_at | type) == "string")', late)
         self.assertIn('select((.updated_at | type) == "string")', late)
-        self.assertIn('.updated_at <= $producer_updated_at', late)
+        self.assertIn(
+            '(.updated_at | fromdateiso8601?)\n'
+            '                      <= ($producer_updated_at | fromdateiso8601)',
+            late,
+        )
         self.assertIn('.actor.login == $author', late)
         self.assertIn('.triggering_actor.login == $author', late)
         self.assertIn('test "$(jq \'length\' <<<"${refresh_runs}")" -eq 1', late)
@@ -3221,6 +3237,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {**valid_review, "id": "5332705089"},
             {**valid_review, "submitted_at": None},
             {key: value for key, value in valid_review.items() if key != "submitted_at"},
+            {**valid_review, "submitted_at": "not-a-date"},
             {**valid_review, "submitted_at": "2026-09-27T23:42:19Z"},
             {**valid_review, "body": "Unable to review this pull request."},
         )
@@ -3309,6 +3326,30 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return json.loads(result.stdout)
 
         self.assertEqual([valid_refresh], selected_refreshes([valid_refresh]))
+        for copilot_actor in (
+            "Copilot",
+            "copilot-pull-request-reviewer",
+            "copilot-pull-request-reviewer[bot]",
+        ):
+            with self.subTest(copilot_actor=copilot_actor):
+                self.assertEqual(
+                    [
+                        {
+                            **valid_refresh,
+                            "actor": {"login": copilot_actor},
+                            "triggering_actor": {"login": copilot_actor},
+                        }
+                    ],
+                    selected_refreshes(
+                        [
+                            {
+                                **valid_refresh,
+                                "actor": {"login": copilot_actor},
+                                "triggering_actor": {"login": copilot_actor},
+                            }
+                        ]
+                    ),
+                )
         missing_created = {
             key: value for key, value in valid_refresh.items() if key != "created_at"
         }
@@ -3318,8 +3359,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         rejected_refreshes = (
             {**valid_refresh, "created_at": None},
             missing_created,
+            {**valid_refresh, "created_at": "not-a-date"},
             {**valid_refresh, "updated_at": None},
             missing_updated,
+            {**valid_refresh, "updated_at": "not-a-date"},
             {**valid_refresh, "created_at": verifier_completed_at},
             {**valid_refresh, "created_at": "2026-09-27T23:45:55Z"},
             {**valid_refresh, "updated_at": "2026-09-27T23:46:31Z"},
