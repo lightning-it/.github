@@ -426,6 +426,61 @@ class PromotionEvidenceTests(unittest.TestCase):
             ):
                 MODULE.collect_review_threads("lightning-it/example", 17)
 
+    def test_review_summary_rejects_duplicate_keys_and_numeric_hashes(self) -> None:
+        for raw in (
+            '{"schema":4,"schema":4}',
+            '{"schema":NaN}',
+        ):
+            with self.subTest(raw=raw), self.assertRaises(MODULE.EvidenceError):
+                MODULE.review_summary(check_run("external", raw))
+
+        summary = {
+            "schema": 4,
+            "base_sha": BASE,
+            "head_sha": HEAD,
+            "merge_base_sha": int("1" * 40),
+            "integration_tree_sha": "3" * 40,
+            "diff_sha256": "6" * 64,
+            "input_sha256": INPUT,
+            "pull_request_number": 17,
+            "producer_run_id": 88,
+            "run_url": "https://github.com/lightning-it/example/actions/runs/88",
+            "workflow_sha": BASE,
+        }
+        release_pull = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        pages = [
+            {
+                "check_runs": [
+                    check_run(
+                        f"mlx90-current-revision:v4:88:{INPUT}",
+                        json.dumps(summary),
+                    )
+                ]
+            }
+        ]
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            return_value=producer_run(
+                login="lightning-it-release-automation[bot]", release=True
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "review-summary-merge-base"
+            ):
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
     def test_review_kind_and_producer_identity_are_bound_to_pull_author(self) -> None:
         managed = (
             f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"

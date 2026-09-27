@@ -332,6 +332,7 @@ jobs:
     timeout-minutes: 2
     outputs:
       promotion_candidate: ${{ steps.route.outputs.promotion_candidate }}
+      promotion_pending: ${{ steps.route.outputs.promotion_pending }}
       s0_candidate: ${{ steps.route.outputs.s0_candidate }}
       s0_prestage: ${{ steps.route.outputs.s0_prestage }}
 
@@ -343,10 +344,17 @@ jobs:
           AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
           EVENT_ACTION: ${{ github.event.action }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PREVIOUS_BODY: ${{ github.event.changes.body.from }}
           REPOSITORY: ${{ github.repository }}
+          SENDER_ID: ${{ github.event.sender.id }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -euo pipefail
           if ! [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]; then
@@ -354,6 +362,7 @@ jobs:
             exit 1
           fi
           promotion_candidate=false
+          promotion_pending=false
           s0_candidate=false
           s0_prestage=false
           if [ "${AUTHOR_LOGIN:-}" = 'lightning-it-release-automation[bot]' ] \
@@ -362,7 +371,47 @@ jobs:
             && [ "${BASE_REF}" = main ] \
             && [ "${HEAD_REF}" = develop ] \
             && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ]; then
-            promotion_candidate=true
+            if [ "${EVENT_ACTION}" != edited ]; then
+              promotion_pending=true
+            else
+              test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
+              test "${SENDER_ID:-}" = 307565056
+              test "${SENDER_TYPE:-}" = Bot
+              [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+              [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
+              head_marker="<!-- lit-promotion-head:${HEAD_SHA} -->"
+              pending_marker="<!-- lit-promotion-dispatch-pending:${BASE_SHA}:${HEAD_SHA} -->"
+              success_marker="<!-- lit-promotion-dispatch-succeeded:${BASE_SHA}:${HEAD_SHA} -->"
+              jq -en \
+                --arg before "${PREVIOUS_BODY}" \
+                --arg current "${EVENT_BODY}" \
+                --arg head_marker "${head_marker}" \
+                --arg pending "${pending_marker}" \
+                --arg success "${success_marker}" '
+                  ($before | split("\n")) as $before_lines
+                  | ($current | split("\n")) as $current_lines
+                  | ([$before_lines[] |
+                    select(startswith("<!-- lit-promotion-run:"))]) as $before_run
+                  | ([$current_lines[] |
+                    select(startswith("<!-- lit-promotion-run:"))]) as $current_run
+                  | [$before_lines[] | select(. == $head_marker)] == [$head_marker]
+                  and [$current_lines[] | select(. == $head_marker)] == [$head_marker]
+                  and ($before_run | length) == 1
+                  and $current_run == $before_run
+                  and ($before_run[0] | test(
+                    "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
+                  ))
+                  and [$before_lines[] | select(. == $pending)] == [$pending]
+                  and [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == [$pending]
+                  and [$current_lines[] | select(. == $success)] == [$success]
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == [$success]
+                  and ($before_lines
+                    | map(if . == $pending then $success else . end)) == $current_lines
+                ' >/dev/null
+              promotion_candidate=true
+            fi
           fi
           if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
             && [ "${BASE_REF}" = main ] \
@@ -374,6 +423,7 @@ jobs:
           fi
           {
             printf 'promotion_candidate=%s\n' "${promotion_candidate}"
+            printf 'promotion_pending=%s\n' "${promotion_pending}"
             printf 's0_candidate=%s\n' "${s0_candidate}"
             printf 's0_prestage=%s\n' "${s0_prestage}"
           } >>"${GITHUB_OUTPUT}"
@@ -2341,6 +2391,9 @@ jobs:
           PREVIOUS_BODY: ${{ github.event.changes.body.from }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
+          SENDER_ID: ${{ github.event.sender.id }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
           TARGET: ${{ steps.bind.outputs.target }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
@@ -2348,16 +2401,32 @@ jobs:
           output="${RUNNER_TEMP}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
           test "${EVENT_ACTION}" = edited
+          test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
+          test "${SENDER_ID}" = 307565056
+          test "${SENDER_TYPE}" = Bot
+          head_marker="<!-- lit-promotion-head:${EVENT_HEAD} -->"
           pending_marker="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
           success_marker="<!-- lit-promotion-dispatch-succeeded:${EVENT_BASE}:${EVENT_HEAD} -->"
           jq -en \
             --arg before "${PREVIOUS_BODY}" \
             --arg current "${EVENT_BODY}" \
+            --arg head_marker "${head_marker}" \
             --arg pending "${pending_marker}" \
             --arg success "${success_marker}" '
               ($before | split("\n")) as $before_lines
               | ($current | split("\n")) as $current_lines
-              | [$before_lines[] | select(. == $pending)] == [$pending]
+              | ([$before_lines[] |
+                select(startswith("<!-- lit-promotion-run:"))]) as $before_run
+              | ([$current_lines[] |
+                select(startswith("<!-- lit-promotion-run:"))]) as $current_run
+              | [$before_lines[] | select(. == $head_marker)] == [$head_marker]
+              and [$current_lines[] | select(. == $head_marker)] == [$head_marker]
+              and ($before_run | length) == 1
+              and $current_run == $before_run
+              and ($before_run[0] | test(
+                "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
+              ))
+              and [$before_lines[] | select(. == $pending)] == [$pending]
               and [$before_lines[] | select(startswith("<!-- lit-promotion-dispatch-"))]
                 == [$pending]
               and [$current_lines[] | select(. == $success)] == [$success]
@@ -2476,7 +2545,10 @@ jobs:
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
     needs: route-protected-current-revision
-    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true' && needs['route-protected-current-revision'].outputs.promotion_candidate != 'true'
+    if: >-
+      needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
+      && needs['route-protected-current-revision'].outputs.promotion_candidate != 'true'
+      && needs['route-protected-current-revision'].outputs.promotion_pending != 'true'
     permissions:
       actions: read
       checks: write
@@ -7463,6 +7535,8 @@ jobs:
             ${{ needs['verify-protected-current-revision-evidence'].result }}
           PROMOTION_CANDIDATE: >-
             ${{ needs['route-protected-current-revision'].outputs.promotion_candidate }}
+          PROMOTION_PENDING: >-
+            ${{ needs['route-protected-current-revision'].outputs.promotion_pending }}
           PROMOTION_RESULT: >-
             ${{ needs['verify-develop-main-promotion-evidence'].result }}
           RESERVE_RESULT: >-
@@ -7478,6 +7552,7 @@ jobs:
         run: |
           set -euo pipefail
           PROMOTION_CANDIDATE="${PROMOTION_CANDIDATE:-false}"
+          PROMOTION_PENDING="${PROMOTION_PENDING:-false}"
           PROMOTION_RESULT="${PROMOTION_RESULT:-skipped}"
           test "${ROUTE_RESULT}" = success
           if [ "${S0_PRESTAGE}" = true ]; then
@@ -7486,6 +7561,7 @@ jobs:
             test "${VERIFY_RESULT}" = success
             test "${FINALIZE_RESULT}" = success
             test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
             test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
           elif [ "${S0_CANDIDATE}" = true ]; then
@@ -7494,9 +7570,21 @@ jobs:
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
             test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
             test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
             echo 'S0 candidate action requires the separately authorized listener.' >&2
+            exit 1
+          elif [ "${PROMOTION_PENDING}" = true ]; then
+            test "${S0_CANDIDATE}" = false
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = skipped
+            echo 'Release-App promotion is pending its authenticated finalization event.' >&2
             exit 1
           elif [ "${PROMOTION_CANDIDATE}" = true ]; then
             test "${S0_CANDIDATE}" = false
@@ -7504,6 +7592,7 @@ jobs:
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_PENDING}" = false
             test "${PROMOTION_RESULT}" = success
             test "${LEGACY_RESULT}" = skipped
           else
@@ -7513,6 +7602,7 @@ jobs:
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
             test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
             test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = success
           fi

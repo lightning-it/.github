@@ -64,6 +64,18 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> JSON:
+    value: JSON = {}
+    for key, item in pairs:
+        require(key not in value, "check-summary-duplicate-key")
+        value[key] = item
+    return value
+
+
+def reject_nonstandard_constant(_: str) -> None:
+    raise EvidenceError("check-summary-nonstandard-constant")
+
+
 def exact_object(value: Any, label: str) -> JSON:
     require(type(value) is dict, f"{label}-not-object")
     return value
@@ -392,8 +404,15 @@ def review_summary(check: JSON) -> JSON:
     output = exact_object(check.get("output"), "check-output")
     raw = text(output.get("summary"), "check-summary")
     try:
-        return exact_object(json.loads(raw), "check-summary-json")
-    except json.JSONDecodeError as error:
+        return exact_object(
+            json.loads(
+                raw,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_nonstandard_constant,
+            ),
+            "check-summary-json",
+        )
+    except (json.JSONDecodeError, RecursionError) as error:
         raise EvidenceError("check-summary-not-json") from error
 
 
@@ -668,9 +687,21 @@ def bound_review_check(
             and evidence.get("producer_run_id") == int(v4.group("run"))
             and evidence.get("input_sha256") == v4.group("input")
             and evidence.get("workflow_sha") == base_sha
-            and SHA.fullmatch(str(evidence.get("merge_base_sha"))) is not None
-            and SHA.fullmatch(str(evidence.get("integration_tree_sha"))) is not None
-            and SHA256.fullmatch(str(evidence.get("diff_sha256"))) is not None
+            and SHA.fullmatch(
+                text(evidence.get("merge_base_sha"), "review-summary-merge-base")
+            )
+            is not None
+            and SHA.fullmatch(
+                text(
+                    evidence.get("integration_tree_sha"),
+                    "review-summary-integration-tree",
+                )
+            )
+            is not None
+            and SHA256.fullmatch(
+                text(evidence.get("diff_sha256"), "review-summary-diff-sha256")
+            )
+            is not None
         ):
             match = {
                 "check_id": integer(check.get("id"), "check-id"),
