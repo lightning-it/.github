@@ -3089,43 +3089,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             with self.subTest(final_binding=binding):
                 self.assertIn(binding, finalizer)
 
-    def test_late_review_rerun_requires_protected_single_request_evidence(
+    def test_late_review_rerun_binds_review_refresh_and_single_request(
         self,
     ) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         late_authorization_marker = (
             '              test "${producer_kind}" = copilot\n'
-            '              authorization_pages="$(gh api --paginate --slurp \\\n'
+            '              attempt_one="$(gh api \\\n'
         )
         self.assertEqual(1, workflow.count(late_authorization_marker))
         late = workflow.split(late_authorization_marker, 1)[1]
 
         self.assertIn(
-            "check_name=Late%20review%20rerun%20authorization",
-            late,
-        )
-        self.assertIn(
-            "^rep60-late-review-rerun:v1:[1-9][0-9]*:",
-            late,
-        )
-        self.assertIn(
-            '.schema == "rep60-late-review-rerun/v1"',
-            late,
-        )
-        self.assertIn(
             '.path == ".github/workflows/copilot-review-refresh.yml"',
             late,
         )
         self.assertIn('.event == "pull_request_review"', late)
-        self.assertIn('.actor.login == "Copilot"', late)
         self.assertIn(
-            'pulls/${PR_NUMBER}/reviews/${review_id}',
+            'pulls/${PR_NUMBER}/reviews?per_page=100',
             late,
         )
         self.assertIn(
             '.user.login == "copilot-pull-request-reviewer[bot]"',
             late,
         )
+        self.assertIn('select(.submitted_at >= $producer_created_at)', late)
+        self.assertIn(
+            'actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}',
+            late,
+        )
+        self.assertIn('.created_at >= $review_submitted_at', late)
+        self.assertIn('.created_at > $first_verifier_completed_at', late)
+        self.assertIn('.updated_at <= $producer_updated_at', late)
+        self.assertIn('.actor.login == $author', late)
+        self.assertIn('.triggering_actor.login == $author', late)
+        self.assertIn('test "$(jq \'length\' <<<"${refresh_runs}")" -eq 1', late)
         self.assertIn(
             'actions/runs/${producer_run_id}/attempts/1/jobs',
             late,
@@ -3152,10 +3150,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn('| length == 1', late)
-        self.assertIn(
-            'test "$(date -u -d "${review_submitted_at}" +%s)" -gt',
-            late,
-        )
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
         self.assertNotIn('requested_reviewers', late)
