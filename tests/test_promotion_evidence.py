@@ -477,6 +477,20 @@ class PromotionEvidenceTests(unittest.TestCase):
                     "lightning-it/example", expected_base=BASE, expected_head=HEAD
                 )
 
+    def test_repository_path_rejects_symlink_before_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            target.mkdir()
+            link = Path(directory) / "repository"
+            link.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(MODULE.EvidenceError, "repository-path-symlink"):
+                MODULE.validate_repository_path(link)
+
+    def test_baseline_boundary_is_not_post_baseline_ingress(self) -> None:
+        self.assertEqual((False, False), MODULE.classify_ingress_position(0, 1))
+        self.assertEqual((True, False), MODULE.classify_ingress_position(1, 1))
+        self.assertEqual((False, True), MODULE.classify_ingress_position(2, 1))
+
     def test_ancestry_boundary_requires_exact_merge_parents(self) -> None:
         with mock.patch.object(
             MODULE, "git", return_value=f"{MERGE} {BASE}"
@@ -517,6 +531,38 @@ class PromotionEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.EvidenceError, "managed-sync-identity"):
             MODULE.expected_evidence_kind(
                 managed, repository="lightning-it/example"
+            )
+
+    def test_renovate_policy_rebinds_labels_head_and_edit_time(self) -> None:
+        renovate = ingress_pull(
+            login="renovate[bot]", user_id=29139614, user_type="Bot"
+        )
+        renovate["base"] = {"ref": "develop"}
+        renovate["head"]["ref"] = "renovate/dependency"
+        renovate["labels"] = [
+            {"name": "safe-automerge"},
+            {"name": "dependencies"},
+            {"name": "renovate"},
+        ]
+        renovate["last_edited_at"] = None
+        labels_json = b'["dependencies","renovate","safe-automerge"]'
+        summary = {
+            "pull_request_labels_sha256": hashlib.sha256(labels_json).hexdigest(),
+            "pull_request_last_edited_at": None,
+        }
+        MODULE.validate_renovate_policy(
+            renovate, summary, repository="lightning-it/example"
+        )
+        renovate["labels"].append({"name": "breaking-update"})
+        with self.assertRaisesRegex(MODULE.EvidenceError, "renovate-breaking-label"):
+            MODULE.validate_renovate_policy(
+                renovate, summary, repository="lightning-it/example"
+            )
+        renovate["labels"].pop()
+        renovate["user"]["id"] = 1
+        with self.assertRaisesRegex(MODULE.EvidenceError, "renovate-identity"):
+            MODULE.expected_evidence_kind(
+                renovate, repository="lightning-it/example"
             )
 
     def test_graphql_errors_fail_closed_before_partial_thread_data(self) -> None:
@@ -748,7 +794,29 @@ class PromotionEvidenceTests(unittest.TestCase):
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.validate_review_threads(
                 {
-                    "nodes": [{"isResolved": False}],
+                    "nodes": [{"id": "PRRT_1", "isResolved": False}],
+                    "pageInfo": {"hasNextPage": False},
+                }
+            )
+
+    def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
+        accepted = MODULE.validate_review_threads(
+            {
+                "nodes": [
+                    {"id": "PRRT_2", "isResolved": True},
+                    {"id": "PRRT_1", "isResolved": True},
+                ],
+                "pageInfo": {"hasNextPage": False},
+            }
+        )
+        self.assertEqual(["PRRT_1", "PRRT_2"], accepted["resolved_thread_ids"])
+        with self.assertRaisesRegex(MODULE.EvidenceError, "review-thread-id-duplicate"):
+            MODULE.validate_review_threads(
+                {
+                    "nodes": [
+                        {"id": "PRRT_1", "isResolved": True},
+                        {"id": "PRRT_1", "isResolved": True},
+                    ],
                     "pageInfo": {"hasNextPage": False},
                 }
             )
@@ -848,9 +916,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("lit-promotion-dispatch-pending", promotion_job)
         self.assertIn("lit-promotion-dispatch-succeeded", promotion_job)
         self.assertIn("--expected-body-sha256", promotion_job)
+        self.assertIn('.owner.login == "lightning-it"', promotion_job)
         self.assertGreaterEqual(
             SCRIPT.read_text(encoding="utf-8").count(
                 "collect_bound_ingress_evidence("
+            ),
+            3,
+        )
+        self.assertGreaterEqual(
+            SCRIPT.read_text(encoding="utf-8").count(
+                "is_authorized_ancestry_boundary("
             ),
             3,
         )

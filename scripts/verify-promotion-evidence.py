@@ -41,6 +41,8 @@ RELEASE_APP_LOGIN = "lightning-it-release-automation[bot]"
 RELEASE_APP_ID = 307565056
 SYNC_APP_LOGIN = "lightning-it-shared-assets-sync[bot]"
 SYNC_APP_ID = 307342877
+RENOVATE_APP_LOGIN = "renovate[bot]"
+RENOVATE_APP_ID = 29139614
 MAX_API_BYTES = 16 * 1024 * 1024
 MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
@@ -238,6 +240,16 @@ def validate_protected_ref_tips(
         require(commit.get("sha") == expected_sha, f"final-{ref}-moved")
 
 
+def validate_repository_path(value: Path) -> Path:
+    require(value.is_absolute(), "repository-path-not-absolute")
+    metadata = value.lstat()
+    require(not value.is_symlink(), "repository-path-symlink")
+    require(stat.S_ISDIR(metadata.st_mode), "repository-path-not-directory")
+    resolved = value.resolve(strict=True)
+    require(resolved == value, "repository-path-not-canonical")
+    return resolved
+
+
 def promotion_body_sha256(value: JSON) -> str:
     body = text(value.get("body"), "promotion-body")
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -413,8 +425,11 @@ def expected_evidence_kind(pull: JSON, *, repository: str) -> str:
             "managed-sync-identity",
         )
         return "managed-sync"
-    if login == "renovate[bot]":
-        require(user_type == "Bot", "renovate-identity")
+    if login == RENOVATE_APP_LOGIN:
+        require(
+            user.get("id") == RENOVATE_APP_ID and user_type == "Bot",
+            "renovate-identity",
+        )
         return "renovate"
     require(user_type == "User", "copilot-ingress-author-type")
     return "copilot"
@@ -484,6 +499,15 @@ def has_exact_ancestry_merge_parents(
     return parents == [previous_develop, expected_main]
 
 
+def classify_ingress_position(index: int, baseline_boundary: int) -> tuple[bool, bool]:
+    require(type(index) is int and index >= 0, "ingress-index")
+    require(
+        type(baseline_boundary) is int and baseline_boundary >= 0,
+        "baseline-boundary-index",
+    )
+    return index == baseline_boundary, index > baseline_boundary
+
+
 def review_summary(check: JSON) -> JSON:
     output = exact_object(check.get("output"), "check-output")
     raw = text(output.get("summary"), "check-summary")
@@ -498,6 +522,46 @@ def review_summary(check: JSON) -> JSON:
         )
     except (json.JSONDecodeError, RecursionError) as error:
         raise EvidenceError("check-summary-not-json") from error
+
+
+def validate_renovate_policy(pull: JSON, summary: JSON, *, repository: str) -> None:
+    base = exact_object(pull.get("base"), "renovate-base")
+    head = exact_object(pull.get("head"), "renovate-head")
+    head_repo = exact_object(head.get("repo"), "renovate-head-repository")
+    labels = exact_array(pull.get("labels"), "renovate-labels")
+    names = [
+        text(exact_object(item, "renovate-label").get("name"), "renovate-label-name")
+        for item in labels
+    ]
+    require(len(names) == len(set(names)), "renovate-label-duplicate")
+    require(base.get("ref") == "develop", "renovate-base-ref")
+    require(
+        text(head.get("ref"), "renovate-head-ref").startswith("renovate/"),
+        "renovate-head-ref",
+    )
+    require(head_repo.get("full_name") == repository, "renovate-head-repository")
+    require(
+        {"renovate", "dependencies", "safe-automerge"}.issubset(names),
+        "renovate-required-labels",
+    )
+    require("breaking-update" not in names, "renovate-breaking-label")
+    labels_json = json.dumps(
+        sorted(names), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    require(
+        hashlib.sha256(labels_json).hexdigest()
+        == summary.get("pull_request_labels_sha256"),
+        "renovate-labels-mutated",
+    )
+    last_edited_at = pull.get("last_edited_at")
+    require(
+        last_edited_at is None or type(last_edited_at) is str,
+        "renovate-live-last-edited-at",
+    )
+    require(
+        last_edited_at == summary.get("pull_request_last_edited_at"),
+        "renovate-last-edited-at-mutated",
+    )
 
 
 def validate_producer_run(
@@ -591,6 +655,7 @@ def validate_producer_run(
                 or type(summary.get("pull_request_last_edited_at")) is str,
                 "renovate-last-edited-at",
             )
+            validate_renovate_policy(pull, summary, repository=repository)
         else:
             require(
                 set(summary)
@@ -818,13 +883,21 @@ def validate_review_threads(connection: Any) -> JSON:
         page_info.get("hasNextPage") is False, "review-thread-pagination-incomplete"
     )
     unresolved = 0
+    thread_ids: list[str] = []
     for item in nodes:
         thread = exact_object(item, "review-thread")
+        thread_id = text(thread.get("id"), "review-thread-id")
+        require(len(thread_id) <= 256, "review-thread-id-too-long")
+        thread_ids.append(thread_id)
         require(type(thread.get("isResolved")) is bool, "review-thread-resolution")
         if thread["isResolved"] is False:
             unresolved += 1
     require(unresolved == 0, "unresolved-review-thread")
-    return {"resolved_threads": len(nodes), "unresolved_threads": unresolved}
+    require(len(thread_ids) == len(set(thread_ids)), "review-thread-id-duplicate")
+    return {
+        "resolved_thread_ids": sorted(thread_ids),
+        "unresolved_threads": unresolved,
+    }
 
 
 THREAD_QUERY = """
@@ -833,7 +906,7 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
     pullRequest(number:$number){
       number
       reviewThreads(first:100,after:$after){
-        nodes{isResolved}
+        nodes{id isResolved}
         pageInfo{hasNextPage endCursor}
       }
     }
@@ -987,6 +1060,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
         is not None,
         "repository",
     )
+    require(arguments.repository.startswith("lightning-it/"), "repository-owner")
     require(arguments.base_ref == "main", "base-ref")
     require(arguments.head_ref == "develop", "head-ref")
     expected_base = sha(arguments.expected_base, "expected-base")
@@ -1000,7 +1074,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
         "expected-body-sha256",
     )
     pull_number = integer(arguments.pull_request, "pull-request")
-    repository_path = arguments.repository_path.resolve()
+    repository_path = validate_repository_path(arguments.repository_path)
 
     live_pull = gh_json(["api", f"repos/{arguments.repository}/pulls/{pull_number}"])
     validate_live_promotion(
@@ -1084,7 +1158,9 @@ def verify(arguments: argparse.Namespace) -> JSON:
         number = integer(pull.get("number"), "ingress-pull-number")
         merged_at = text(pull.get("merged_at"), "ingress-merged-at")
         timestamp(merged_at, "ingress-merged-at")
-        post_baseline = index >= baseline_boundary
+        ancestry_boundary, post_baseline = classify_ingress_position(
+            index, baseline_boundary
+        )
         if post_baseline:
             require(
                 is_ancestor(repository_path, expected_base, merge["head_sha"]),
@@ -1110,6 +1186,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 **merge,
                 "pull_request": number,
                 "merged_at": merged_at,
+                "ancestry_boundary": ancestry_boundary,
                 "post_baseline": post_baseline,
                 "review": review,
                 "threads": threads,
@@ -1123,7 +1200,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
     # a concurrent mutation and fails closed instead of entering a stale
     # promotion package.
     for item in ingress:
-        if item["post_baseline"] is not True:
+        ancestry_boundary = item.get("ancestry_boundary") is True
+        if item["post_baseline"] is not True and not ancestry_boundary:
             continue
         number = integer(item.get("pull_request"), "revalidation-pull-number")
         try:
@@ -1141,6 +1219,19 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 == item["merged_at"],
                 "ingress-merge-mutated-during-verification",
             )
+            if ancestry_boundary:
+                require(
+                    is_authorized_ancestry_boundary(
+                        refreshed_pull,
+                        repository=arguments.repository,
+                        expected_main=expected_base,
+                        previous_develop=sha(
+                            item.get("base_sha"), "revalidation-base-sha"
+                        ),
+                    ),
+                    "ancestry-boundary-mutated-during-verification",
+                )
+                continue
             refreshed = collect_bound_ingress_evidence(
                 repository=arguments.repository,
                 pull=refreshed_pull,

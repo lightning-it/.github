@@ -2333,7 +2333,10 @@ jobs:
           target_main="$(gh api "repos/${REPOSITORY}/branches/main")"
           target_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
           jq -e --arg repository "${REPOSITORY}" '
-            .full_name == $repository and .archived == false and .disabled == false
+            .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .archived == false
+            and .disabled == false
           ' <<<"${target_repository}" >/dev/null
           jq -e --arg sha "${EVENT_BASE}" '
             .name == "main" and .protected == true and .commit.sha == $sha
