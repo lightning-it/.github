@@ -354,6 +354,7 @@ def first_parent_merges(
             {"base_sha": parents[0], "head_sha": parents[1], "merge_sha": commit}
         )
         previous = commit
+    require(history_anchor == expected_base, "first-parent-history-anchor-drift")
     require(previous == expected_head, "first-parent-tip-drift")
     return history_anchor, integration_tree, merges
 
@@ -1241,6 +1242,11 @@ def collect_bound_ingress_evidence(
     base_sha: str,
     head_sha: str,
 ) -> JSON:
+    require(
+        expected_evidence_kind(pull, repository=repository)
+        != "ancestry-backmerge",
+        "ancestry-backmerge-not-structural-boundary",
+    )
     checks = gh_json(
         [
             "api",

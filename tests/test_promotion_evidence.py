@@ -339,6 +339,37 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+    def test_first_parent_history_must_start_at_expected_base(self) -> None:
+        def history_git(arguments: list[str], _: Path) -> str:
+            if arguments == ["status", "--porcelain=v1", "--untracked-files=no"]:
+                return ""
+            if arguments[:2] == ["cat-file", "-t"]:
+                return "commit"
+            if arguments == ["merge-base", "--all", BASE, HEAD]:
+                return BASE
+            if arguments == ["rev-parse", f"{HEAD}^{{tree}}"]:
+                return "4" * 40
+            if arguments == [
+                "rev-list",
+                "--first-parent",
+                "--reverse",
+                f"{BASE}..{HEAD}",
+            ]:
+                return HEAD
+            if arguments == ["show", "-s", "--format=%P", HEAD]:
+                return f"{MERGE} {BASE}"
+            raise AssertionError(arguments)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(MODULE, "git", side_effect=history_git),
+                mock.patch.object(MODULE, "run", return_value=""),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "first-parent-history-anchor-drift"
+                ):
+                    MODULE.first_parent_merges(Path(directory), BASE, HEAD)
+
     def test_v6_review_check_binds_pr_base_and_head(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         pages = [{"check_runs": [check_run(external_id, v6_summary())]}]
@@ -665,6 +696,23 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE.expected_evidence_kind(
                 managed, repository="lightning-it/example"
             )
+
+        release["head"]["ref"] = "backmerge/release-main"
+        with (
+            mock.patch.object(MODULE, "gh_json") as api,
+            self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                "ancestry-backmerge-not-structural-boundary",
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=release,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        api.assert_not_called()
 
     def test_ancestry_boundary_requires_exact_controller_contract(self) -> None:
         boundary = ingress_pull(
