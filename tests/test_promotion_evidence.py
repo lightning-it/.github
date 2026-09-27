@@ -260,10 +260,14 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "schema": 4,
                 "base_sha": BASE,
                 "head_sha": HEAD,
+                "merge_base_sha": BASE,
+                "integration_tree_sha": "3" * 40,
+                "diff_sha256": "6" * 64,
                 "input_sha256": INPUT,
                 "pull_request_number": 17,
                 "producer_run_id": 88,
                 "run_url": "https://github.com/lightning-it/example/actions/runs/88",
+                "workflow_sha": BASE,
             }
         )
         pages = [
@@ -299,6 +303,94 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )["evidence_kind"],
                 "release-app",
             )
+
+        untrusted = json.loads(summary)
+        untrusted["workflow_sha"] = "9" * 40
+        pages[0]["check_runs"][0]["output"]["summary"] = json.dumps(untrusted)
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            return_value=producer_run(
+                login="lightning-it-release-automation[bot]", release=True
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+            ):
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+    def test_ancestry_exemption_requires_exact_ref_and_author_scope(self) -> None:
+        release = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        release["title"] = "chore(governance): record main ancestry before abc"
+        release["head"]["ref"] = "backmerge/release-main"
+        self.assertEqual(
+            "ancestry-backmerge",
+            MODULE.expected_evidence_kind(
+                release, repository="lightning-it/example"
+            ),
+        )
+        release["head"]["ref"] = "backmerge/release"
+        self.assertEqual(
+            "release-app",
+            MODULE.expected_evidence_kind(
+                release, repository="lightning-it/example"
+            ),
+        )
+
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=9,
+            user_type="Bot",
+        )
+        managed["title"] = "chore(governance): record main ancestry before abc"
+        managed["head"]["ref"] = "backmerge/sync-main"
+        self.assertEqual(
+            "ancestry-backmerge",
+            MODULE.expected_evidence_kind(
+                managed, repository="lightning-it/.github"
+            ),
+        )
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "ancestry-backmerge-author"
+        ):
+            MODULE.expected_evidence_kind(
+                managed, repository="lightning-it/example"
+            )
+
+    def test_graphql_errors_fail_closed_before_partial_thread_data(self) -> None:
+        partial = {
+            "errors": [{"message": "partial result"}],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 17,
+                        "reviewThreads": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            },
+        }
+        with mock.patch.object(MODULE, "gh_json", return_value=partial):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "thread-response-errors"
+            ):
+                MODULE.collect_review_threads("lightning-it/example", 17)
 
     def test_review_kind_and_producer_identity_are_bound_to_pull_author(self) -> None:
         managed = (
@@ -515,6 +607,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         ):
             self.assertIn(binding, promotion_job)
         self.assertIn("scripts/verify-promotion-evidence.py", workflow)
+        self.assertIn("ee-wunder-devtools-ubi9:v1.16.1@sha256:", promotion_job)
+        self.assertIn("docker run --rm", promotion_job)
+        self.assertIn("actions/upload-artifact@043fb46d", promotion_job)
+        self.assertIn("Persisted archive SHA-256", promotion_job)
         self.assertIn("PROMOTION_RESULT", workflow)
         self.assertNotIn("MAX_REVIEW_BYTES", SCRIPT.read_text(encoding="utf-8"))
         self.assertNotIn("199999", SCRIPT.read_text(encoding="utf-8"))

@@ -8651,7 +8651,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             if value != "0" * 40
         ]
-        self.assertEqual([], one_off_shas)
+        self.assertEqual(
+            ["043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"], one_off_shas
+        )
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",
@@ -8747,9 +8749,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("AUTHOR_ID", "307565057"),
             ("AUTHOR_LOGIN", "litroc"),
             ("AUTHOR_TYPE", "User"),
-            ("DRAFT", "true"),
             ("HEAD_REPOSITORY", "fork/example"),
-            ("TITLE", "release"),
         ):
             with self.subTest(promotion_near_miss=field):
                 near_miss = {**exact_promotion, field: value}
@@ -8762,6 +8762,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(0, returncode)
                 self.assertEqual("false", values["promotion_candidate"])
+
+        # Title and draft are mutable validation inputs, not routing inputs.
+        # Release-App identity must remain on the aggregate verifier route so
+        # validate_live_promotion can reject either mutation fail-closed.
+        for field, value in (("DRAFT", "true"), ("TITLE", "release")):
+            with self.subTest(promotion_validation_miss=field):
+                malformed = {**exact_promotion, field: value}
+                returncode, values, _ = route_result(
+                    "opened",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **malformed,
+                )
+                self.assertEqual(0, returncode)
+                self.assertEqual("true", values["promotion_candidate"])
 
         for action in ("opened", "synchronize", "reopened"):
             with self.subTest(action=action):

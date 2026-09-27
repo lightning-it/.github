@@ -336,7 +336,7 @@ def check_pages(value: Any) -> list[JSON]:
     return runs
 
 
-def expected_evidence_kind(pull: JSON) -> str:
+def expected_evidence_kind(pull: JSON, *, repository: str) -> str:
     user = exact_object(pull.get("user"), "associated-pull-user")
     login = text(user.get("login"), "associated-pull-user-login")
     integer(user.get("id"), "associated-pull-user-id")
@@ -344,17 +344,23 @@ def expected_evidence_kind(pull: JSON) -> str:
     head = exact_object(pull.get("head"), "associated-pull-head")
     head_ref = text(head.get("ref"), "associated-pull-head-ref")
     title = text(pull.get("title"), "associated-pull-title")
-    ancestry = head_ref.startswith("backmerge/") and title.startswith(
-        "chore(governance): record main ancestry before "
+    ancestry = (
+        head_ref.startswith("backmerge/")
+        and head_ref.endswith("-main")
+        and title.startswith("chore(governance): record main ancestry before ")
     )
     if ancestry:
         require(
-            login
-            in {
-                RELEASE_APP_LOGIN,
-                "lightning-it-shared-assets-sync[bot]",
-            }
-            and user_type == "Bot",
+            (
+                login == RELEASE_APP_LOGIN
+                and user.get("id") == RELEASE_APP_ID
+                and user_type == "Bot"
+            )
+            or (
+                repository == "lightning-it/.github"
+                and login == "lightning-it-shared-assets-sync[bot]"
+                and user_type == "Bot"
+            ),
             "ancestry-backmerge-author",
         )
         return "ancestry-backmerge"
@@ -588,7 +594,7 @@ def bound_review_check(
     base_sha: str,
     head_sha: str,
 ) -> JSON:
-    expected_kind = expected_evidence_kind(pull)
+    expected_kind = expected_evidence_kind(pull, repository=repository)
     matches: list[JSON] = []
     for check in check_pages(pages):
         app = exact_object(check.get("app"), "check-app")
@@ -632,13 +638,31 @@ def bound_review_check(
         if v4 is None or expected_kind != "release-app":
             continue
         evidence = review_summary(check)
+        expected_v4_keys = {
+            "base_sha",
+            "diff_sha256",
+            "head_sha",
+            "input_sha256",
+            "integration_tree_sha",
+            "merge_base_sha",
+            "producer_run_id",
+            "pull_request_number",
+            "run_url",
+            "schema",
+            "workflow_sha",
+        }
         if (
-            evidence.get("schema") == 4
+            set(evidence) == expected_v4_keys
+            and evidence.get("schema") == 4
             and evidence.get("pull_request_number") == pull_number
             and evidence.get("base_sha") == base_sha
             and evidence.get("head_sha") == head_sha
             and evidence.get("producer_run_id") == int(v4.group("run"))
             and evidence.get("input_sha256") == v4.group("input")
+            and evidence.get("workflow_sha") == base_sha
+            and SHA.fullmatch(str(evidence.get("merge_base_sha"))) is not None
+            and SHA.fullmatch(str(evidence.get("integration_tree_sha"))) is not None
+            and SHA256.fullmatch(str(evidence.get("diff_sha256"))) is not None
         ):
             match = {
                 "check_id": integer(check.get("id"), "check-id"),
@@ -713,6 +737,8 @@ def collect_review_threads(repository: str, pull_number: int) -> JSON:
         if after is not None:
             arguments.extend(["-F", f"after={after}"])
         payload = exact_object(gh_json(arguments), "thread-response")
+        errors = payload.get("errors")
+        require(errors is None or errors == [], "thread-response-errors")
         data = exact_object(payload.get("data"), "thread-data")
         repo = exact_object(data.get("repository"), "thread-repository")
         pull = exact_object(repo.get("pullRequest"), "thread-pull")
