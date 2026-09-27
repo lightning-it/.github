@@ -33,6 +33,12 @@ V6_EXTERNAL_ID = re.compile(
     r"(?P<pr>[1-9][0-9]*):(?P<run>[1-9][0-9]*):"
     r"(?P<base>[0-9a-f]{40}):(?P<head>[0-9a-f]{40})$"
 )
+V5_EXTERNAL_ID = re.compile(
+    r"^mlx90-current-revision:"
+    r"(?P<kind>copilot|ancestry-backmerge):v5:"
+    r"(?P<run>[1-9][0-9]*):"
+    r"(?P<base>[0-9a-f]{40}):(?P<head>[0-9a-f]{40})$"
+)
 V4_EXTERNAL_ID = re.compile(
     r"^mlx90-current-revision:v4:(?P<run>[1-9][0-9]*):"
     r"(?P<input>[0-9a-f]{64})$"
@@ -43,6 +49,8 @@ SYNC_APP_LOGIN = "lightning-it-shared-assets-sync[bot]"
 SYNC_APP_ID = 307342877
 RENOVATE_APP_LOGIN = "renovate[bot]"
 RENOVATE_APP_ID = 29139614
+GITHUB_ACTIONS_LOGIN = "github-actions[bot]"
+GITHUB_ACTIONS_ID = 41898282
 MAX_API_BYTES = 16 * 1024 * 1024
 MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
@@ -573,6 +581,7 @@ def validate_producer_run(
     base_sha: str,
     head_sha: str,
     evidence_kind: str,
+    evidence_version: str,
     producer_run_id: int,
 ) -> None:
     check_id = integer(check.get("id"), "check-id")
@@ -592,11 +601,25 @@ def validate_producer_run(
     require(summary.get("schema") == 4, "review-summary-schema")
     require(summary.get("base_sha") == base_sha, "review-summary-base")
     require(summary.get("head_sha") == head_sha, "review-summary-head")
-    require(
-        integer(summary.get("pull_request_number"), "review-summary-pull-request")
-        == pull_number,
-        "review-summary-pull-request",
-    )
+    if evidence_version == "v5":
+        require(
+            "pull_request_number" not in summary
+            or integer(
+                summary.get("pull_request_number"),
+                "review-summary-pull-request",
+            )
+            == pull_number,
+            "review-summary-pull-request",
+        )
+    else:
+        require(
+            integer(
+                summary.get("pull_request_number"),
+                "review-summary-pull-request",
+            )
+            == pull_number,
+            "review-summary-pull-request",
+        )
     require(
         integer(summary.get("producer_run_id"), "review-summary-producer")
         == producer_run_id,
@@ -656,7 +679,7 @@ def validate_producer_run(
                 "renovate-last-edited-at",
             )
             validate_renovate_policy(pull, summary, repository=repository)
-        else:
+        elif evidence_version == "v6":
             require(
                 set(summary)
                 == {
@@ -669,6 +692,24 @@ def validate_producer_run(
                     "run_url",
                     "schema",
                 },
+                "review-summary-schema",
+            )
+        else:
+            require(evidence_version == "v5", "review-summary-version")
+            expected_v5_keys = {
+                "base_sha",
+                "controller_sha",
+                "head_sha",
+                "producer_run_id",
+                "review_path",
+                "run_url",
+                "schema",
+            }
+            require(
+                set(summary) in (
+                    expected_v5_keys,
+                    expected_v5_keys | {"pull_request_number"},
+                ),
                 "review-summary-schema",
             )
 
@@ -725,12 +766,20 @@ def validate_producer_run(
     triggering = exact_object(
         run.get("triggering_actor"), "producer-run-triggering-actor"
     )
-    require(actor.get("login") == author, "producer-run-actor-login")
-    require(
-        triggering.get("login") == author,
-        "producer-run-triggering-actor-login",
-    )
     attempt = integer(run.get("run_attempt"), "producer-run-attempt")
+    require(actor.get("login") == author, "producer-run-actor-login")
+    if evidence_kind == "copilot" and attempt == 2:
+        require(
+            triggering.get("login") == GITHUB_ACTIONS_LOGIN
+            and triggering.get("id") == GITHUB_ACTIONS_ID
+            and triggering.get("type") == "Bot",
+            "producer-run-triggering-actor-login",
+        )
+    else:
+        require(
+            triggering.get("login") == author,
+            "producer-run-triggering-actor-login",
+        )
     require(run.get("status") == "completed", "producer-run-status")
     require(run.get("conclusion") == "success", "producer-run-conclusion")
     if evidence_kind == "release-app":
@@ -808,7 +857,35 @@ def bound_review_check(
                     base_sha=base_sha,
                     head_sha=head_sha,
                     evidence_kind=v6.group("kind"),
+                    evidence_version="v6",
                     producer_run_id=int(v6.group("run")),
+                )
+                matches.append(match)
+            continue
+        v5 = V5_EXTERNAL_ID.fullmatch(external_id)
+        if v5 is not None:
+            if (
+                expected_kind == v5.group("kind")
+                and v5.group("base") == base_sha
+                and v5.group("head") == head_sha
+            ):
+                match = {
+                    "check_id": integer(check.get("id"), "check-id"),
+                    "evidence_kind": v5.group("kind"),
+                    "evidence_version": "v5",
+                    "external_id": external_id,
+                    "producer_run_id": int(v5.group("run")),
+                }
+                validate_producer_run(
+                    check,
+                    repository=repository,
+                    pull=pull,
+                    pull_number=pull_number,
+                    base_sha=base_sha,
+                    head_sha=head_sha,
+                    evidence_kind=v5.group("kind"),
+                    evidence_version="v5",
+                    producer_run_id=int(v5.group("run")),
                 )
                 matches.append(match)
             continue
@@ -868,6 +945,7 @@ def bound_review_check(
                 base_sha=base_sha,
                 head_sha=head_sha,
                 evidence_kind="release-app",
+                evidence_version="v4",
                 producer_run_id=int(v4.group("run")),
             )
             matches.append(match)

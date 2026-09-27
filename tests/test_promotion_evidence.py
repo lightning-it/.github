@@ -82,12 +82,17 @@ def ingress_pull(
 
 
 def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, object]:
+    identity = {
+        "login": login,
+        "id": 307565056 if login == "lightning-it-release-automation[bot]" else 1,
+        "type": "Bot" if login.endswith("[bot]") else "User",
+    }
     if release:
         return {
             "id": 88,
             "html_url": "https://github.com/lightning-it/example/actions/runs/88",
-            "actor": {"login": login},
-            "triggering_actor": {"login": login},
+            "actor": identity,
+            "triggering_actor": identity,
             "run_attempt": 1,
             "event": "workflow_dispatch",
             "path": ".github/workflows/release-bot-exact-head-review.yml",
@@ -100,8 +105,8 @@ def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, o
     return {
         "id": 88,
         "html_url": "https://github.com/lightning-it/example/actions/runs/88",
-        "actor": {"login": login},
-        "triggering_actor": {"login": login},
+        "actor": identity,
+        "triggering_actor": identity,
         "run_attempt": 1,
         "event": "pull_request_target",
         "path": ".github/workflows/copilot-review.yml",
@@ -270,6 +275,63 @@ class PromotionEvidenceTests(unittest.TestCase):
                 base_sha=BASE,
                 head_sha=HEAD,
             )
+
+    def test_v5_copilot_evidence_remains_compatible(self) -> None:
+        summary = json.loads(v6_summary())
+        summary.pop("pull_request_number")
+        external_id = f"mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(producer_run())
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v5", evidence["evidence_version"])
+
+    def test_copilot_attempt_two_requires_github_actions_trigger(self) -> None:
+        run = producer_run()
+        run["run_attempt"] = 2
+        run["triggering_actor"] = {
+            "login": "github-actions[bot]",
+            "id": 41898282,
+            "type": "Bot",
+        }
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        run["triggering_actor"] = {
+            "login": "litroc",
+            "id": 1,
+            "type": "User",
+        }
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-run-triggering-actor-login"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
     def test_v4_release_review_requires_exact_json_evidence(self) -> None:
         summary = json.dumps(
