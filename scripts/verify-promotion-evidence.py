@@ -188,7 +188,10 @@ def validate_live_promotion(
     author = exact_object(value.get("user"), "promotion-author")
     base_repo = exact_object(base.get("repo"), "promotion-base-repository")
     head_repo = exact_object(head.get("repo"), "promotion-head-repository")
-    require(value.get("number") == pull_number, "promotion-number")
+    require(
+        integer(value.get("number"), "promotion-number") == pull_number,
+        "promotion-number",
+    )
     require(value.get("state") == "open", "promotion-not-open")
     require(value.get("draft") is False, "promotion-not-ready")
     require(
@@ -205,6 +208,11 @@ def validate_live_promotion(
     require(head.get("sha") == expected_head, "promotion-head-sha")
     require(head_repo.get("full_name") == repository, "promotion-head-repository")
     return value
+
+
+def promotion_body_sha256(value: JSON) -> str:
+    body = text(value.get("body"), "promotion-body")
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def promotion_binding(value: JSON) -> JSON:
@@ -553,6 +561,8 @@ def validate_producer_run(
         "producer-run-triggering-actor-login",
     )
     attempt = integer(run.get("run_attempt"), "producer-run-attempt")
+    require(run.get("status") == "completed", "producer-run-status")
+    require(run.get("conclusion") == "success", "producer-run-conclusion")
     if evidence_kind == "release-app":
         require(attempt == 1, "release-producer-run-attempt")
         require(run.get("event") == "workflow_dispatch", "release-producer-event")
@@ -568,8 +578,6 @@ def validate_producer_run(
             "release-producer-title",
         )
     else:
-        require(run.get("status") == "completed", "producer-run-status")
-        require(run.get("conclusion") == "success", "producer-run-conclusion")
         require(attempt in {1, 2}, "producer-run-attempt")
         require(
             attempt == 1 or evidence_kind == "copilot",
@@ -742,7 +750,10 @@ def collect_review_threads(repository: str, pull_number: int) -> JSON:
         data = exact_object(payload.get("data"), "thread-data")
         repo = exact_object(data.get("repository"), "thread-repository")
         pull = exact_object(repo.get("pullRequest"), "thread-pull")
-        require(pull.get("number") == pull_number, "thread-pull-number")
+        require(
+            integer(pull.get("number"), "thread-pull-number") == pull_number,
+            "thread-pull-number",
+        )
         connection = exact_object(pull.get("reviewThreads"), "thread-connection")
         page_nodes = exact_array(connection.get("nodes"), "thread-page-nodes")
         nodes.extend(exact_object(node, "thread-node") for node in page_nodes)
@@ -756,6 +767,40 @@ def collect_review_threads(repository: str, pull_number: int) -> JSON:
         require(type(cursor) is str and 0 < len(cursor) <= 512, "thread-cursor")
         require(cursor != after, "thread-cursor-cycle")
         after = cursor
+
+
+def collect_bound_ingress_evidence(
+    *,
+    repository: str,
+    pull: JSON,
+    pull_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> JSON:
+    checks = gh_json(
+        [
+            "api",
+            "--paginate",
+            "--slurp",
+            (
+                f"repos/{repository}/commits/{head_sha}/check-runs"
+                "?check_name=Current%20revision%20review&filter=all&per_page=100"
+            ),
+        ]
+    )
+    return {
+        "review": bound_review_check(
+            checks,
+            repository=repository,
+            pull=pull,
+            pull_number=pull_number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+        ),
+        "threads": validate_review_threads(
+            collect_review_threads(repository, pull_number)
+        ),
+    }
 
 
 def private_runtime_directory() -> Path:
@@ -830,6 +875,13 @@ def verify(arguments: argparse.Namespace) -> JSON:
     expected_base = sha(arguments.expected_base, "expected-base")
     expected_head = sha(arguments.expected_head, "expected-head")
     controller_sha = sha(arguments.controller_sha, "controller-sha")
+    expected_body_sha256 = text(
+        arguments.expected_body_sha256, "expected-body-sha256"
+    )
+    require(
+        SHA256.fullmatch(expected_body_sha256) is not None,
+        "expected-body-sha256",
+    )
     pull_number = integer(arguments.pull_request, "pull-request")
     repository_path = arguments.repository_path.resolve()
 
@@ -840,6 +892,10 @@ def verify(arguments: argparse.Namespace) -> JSON:
         pull_number=pull_number,
         expected_base=expected_base,
         expected_head=expected_head,
+    )
+    require(
+        promotion_body_sha256(live_pull) == expected_body_sha256,
+        "promotion-event-body-mismatch",
     )
     baseline_commit = exact_object(
         gh_json(["api", f"repos/{arguments.repository}/commits/{expected_base}"]),
@@ -902,29 +958,16 @@ def verify(arguments: argparse.Namespace) -> JSON:
         review: JSON | None = None
         threads: JSON | None = None
         if post_baseline:
-            checks = gh_json(
-                [
-                    "api",
-                    "--paginate",
-                    "--slurp",
-                    (
-                        f"repos/{arguments.repository}/commits/{merge['head_sha']}/check-runs"
-                        "?check_name=Current%20revision%20review&filter=all&per_page=100"
-                    ),
-                ]
-            )
             try:
-                review = bound_review_check(
-                    checks,
+                bound = collect_bound_ingress_evidence(
                     repository=arguments.repository,
                     pull=pull,
                     pull_number=number,
                     base_sha=merge["base_sha"],
                     head_sha=merge["head_sha"],
                 )
-                threads = validate_review_threads(
-                    collect_review_threads(arguments.repository, number)
-                )
+                review = bound["review"]
+                threads = bound["threads"]
             except EvidenceError as error:
                 raise EvidenceError(f"ingress-pr-{number}:{error}") from error
         ingress.append(
@@ -940,6 +983,45 @@ def verify(arguments: argparse.Namespace) -> JSON:
     post_baseline_count = sum(item["post_baseline"] is True for item in ingress)
     require(post_baseline_count > 0, "no-post-baseline-ingress")
 
+    # Re-read every mutable ingress acceptance binding only after the complete
+    # inventory exists. Any changed check selection, producer, or thread set is
+    # a concurrent mutation and fails closed instead of entering a stale
+    # promotion package.
+    for item in ingress:
+        if item["post_baseline"] is not True:
+            continue
+        number = integer(item.get("pull_request"), "revalidation-pull-number")
+        try:
+            live_ingress = gh_json(
+                ["api", f"repos/{arguments.repository}/pulls/{number}"]
+            )
+            refreshed_pull = select_ingress_pull(
+                [live_ingress],
+                repository=arguments.repository,
+                merge_sha=sha(item.get("merge_sha"), "revalidation-merge-sha"),
+                head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+            )
+            require(
+                text(refreshed_pull.get("merged_at"), "revalidation-merged-at")
+                == item["merged_at"],
+                "ingress-merge-mutated-during-verification",
+            )
+            refreshed = collect_bound_ingress_evidence(
+                repository=arguments.repository,
+                pull=refreshed_pull,
+                pull_number=number,
+                base_sha=sha(item.get("base_sha"), "revalidation-base-sha"),
+                head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+            )
+            require(
+                canonical(refreshed["review"]) == canonical(item["review"])
+                and canonical(refreshed["threads"])
+                == canonical(item["threads"]),
+                "ingress-evidence-mutated-during-verification",
+            )
+        except EvidenceError as error:
+            raise EvidenceError(f"ingress-pr-{number}:{error}") from error
+
     # Mutable bindings are deliberately read again after the complete inventory.
     live_pull_after = gh_json(
         ["api", f"repos/{arguments.repository}/pulls/{pull_number}"]
@@ -950,6 +1032,10 @@ def verify(arguments: argparse.Namespace) -> JSON:
         pull_number=pull_number,
         expected_base=expected_base,
         expected_head=expected_head,
+    )
+    require(
+        promotion_body_sha256(live_pull_after) == expected_body_sha256,
+        "promotion-event-body-mismatch",
     )
     require(
         canonical(promotion_binding(live_pull_after))
@@ -1006,6 +1092,7 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--expected-base", required=True)
     parser.add_argument("--expected-head", required=True)
     parser.add_argument("--controller-sha", required=True)
+    parser.add_argument("--expected-body-sha256", required=True)
     parser.add_argument("--repository-path", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     return parser.parse_args(argv)

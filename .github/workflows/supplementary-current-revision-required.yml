@@ -2333,9 +2333,12 @@ jobs:
           CONTROLLER: ${{ steps.bind.outputs.controller }}
           DEVTOOLS_IMAGE: >-
             quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08
+          EVENT_ACTION: ${{ github.event.action }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
+          PREVIOUS_BODY: ${{ github.event.changes.body.from }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           TARGET: ${{ steps.bind.outputs.target }}
@@ -2344,6 +2347,28 @@ jobs:
           set -euo pipefail
           output="${RUNNER_TEMP}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
+          test "${EVENT_ACTION}" = edited
+          pending_marker="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
+          success_marker="<!-- lit-promotion-dispatch-succeeded:${EVENT_BASE}:${EVENT_HEAD} -->"
+          jq -en \
+            --arg before "${PREVIOUS_BODY}" \
+            --arg current "${EVENT_BODY}" \
+            --arg pending "${pending_marker}" \
+            --arg success "${success_marker}" '
+              ($before | split("\n")) as $before_lines
+              | ($current | split("\n")) as $current_lines
+              | [$before_lines[] | select(. == $pending)] == [$pending]
+              and [$before_lines[] | select(startswith("<!-- lit-promotion-dispatch-"))]
+                == [$pending]
+              and [$current_lines[] | select(. == $success)] == [$success]
+              and [$current_lines[] | select(startswith("<!-- lit-promotion-dispatch-"))]
+                == [$success]
+              and ($before_lines
+                | map(if . == $pending then $success else . end)) == $current_lines
+            ' >/dev/null
+          event_body_sha256="$(printf '%s' "${EVENT_BODY}" \
+            | sha256sum --binary | awk '{print $1}')"
+          [[ "${event_body_sha256}" =~ ^[0-9a-f]{64}$ ]]
           docker run --rm \
             --read-only \
             --network bridge \
@@ -2366,6 +2391,7 @@ jobs:
             --head-ref develop \
             --expected-base "${EVENT_BASE}" \
             --expected-head "${EVENT_HEAD}" \
+            --expected-body-sha256 "${event_body_sha256}" \
             --controller-sha "${WORKFLOW_SHA}" \
             --repository-path "${TARGET}" \
             --output "${output}" >/dev/null

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -93,6 +94,8 @@ def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, o
             "head_branch": "develop",
             "head_sha": BASE,
             "display_title": f"Exact-Revision Codex PR #17 {BASE}..{HEAD}",
+            "status": "completed",
+            "conclusion": "success",
         }
     return {
         "id": 88,
@@ -173,6 +176,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             ),
             value,
         )
+        self.assertEqual(
+            hashlib.sha256(b"release").hexdigest(),
+            MODULE.promotion_body_sha256(value),
+        )
 
     def test_mutated_or_human_promotion_fails_closed(self) -> None:
         for field, value in (("draft", True), ("title", "release")):
@@ -193,6 +200,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                 candidate,
                 repository="lightning-it/example",
                 pull_number=41,
+                expected_base=BASE,
+                expected_head=HEAD,
+            )
+        candidate = promotion()
+        candidate["number"] = True
+        with self.assertRaisesRegex(MODULE.EvidenceError, "promotion-number"):
+            MODULE.validate_live_promotion(
+                candidate,
+                repository="lightning-it/example",
+                pull_number=1,
                 expected_base=BASE,
                 expected_head=HEAD,
             )
@@ -303,6 +320,23 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )["evidence_kind"],
                 "release-app",
             )
+
+        failed_run = producer_run(
+            login="lightning-it-release-automation[bot]", release=True
+        )
+        failed_run["conclusion"] = "failure"
+        with mock.patch.object(MODULE, "gh_json", return_value=failed_run):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-run-conclusion"
+            ):
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
         untrusted = json.loads(summary)
         untrusted["workflow_sha"] = "9" * 40
@@ -611,6 +645,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("docker run --rm", promotion_job)
         self.assertIn("actions/upload-artifact@043fb46d", promotion_job)
         self.assertIn("Persisted archive SHA-256", promotion_job)
+        self.assertIn('test "${EVENT_ACTION}" = edited', promotion_job)
+        self.assertIn("lit-promotion-dispatch-pending", promotion_job)
+        self.assertIn("lit-promotion-dispatch-succeeded", promotion_job)
+        self.assertIn("--expected-body-sha256", promotion_job)
+        self.assertGreaterEqual(
+            SCRIPT.read_text(encoding="utf-8").count(
+                "collect_bound_ingress_evidence("
+            ),
+            3,
+        )
         self.assertIn("PROMOTION_RESULT", workflow)
         self.assertNotIn("MAX_REVIEW_BYTES", SCRIPT.read_text(encoding="utf-8"))
         self.assertNotIn("199999", SCRIPT.read_text(encoding="utf-8"))
