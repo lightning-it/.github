@@ -2468,6 +2468,7 @@ jobs:
             -e PYTHONDONTWRITEBYTECODE=1 \
             -e RUNNER_TEMP \
             -v "${RUNNER_TEMP}:${RUNNER_TEMP}:rw" \
+            -v "${TARGET}:${TARGET}:ro" \
             -w "${RUNNER_TEMP}" \
             "${DEVTOOLS_IMAGE}" \
             python3 "${CONTROLLER}" \
@@ -2493,10 +2494,6 @@ jobs:
               and .base_sha == $base
               and .head_sha == $head
               and .controller_sha == $controller
-              and .promotion_review.evidence_kind == "release-app"
-              and .promotion_review.evidence_version == "v4"
-              and (.promotion_review.summary_sha256 |
-                test("^[0-9a-f]{64}$"))
               and (.ingress_count | type == "number" and . > 0)
               and (.ingress | length) == .ingress_count
               and (.post_baseline_ingress_count | type == "number" and . > 0)

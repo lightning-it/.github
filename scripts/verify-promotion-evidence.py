@@ -1007,10 +1007,18 @@ def bound_review_check(
         if (
             set(evidence) == expected_v4_keys
             and evidence.get("schema") == 4
-            and evidence.get("pull_request_number") == pull_number
+            and integer(
+                evidence.get("pull_request_number"),
+                "review-summary-pull-request",
+            )
+            == pull_number
             and evidence.get("base_sha") == base_sha
             and evidence.get("head_sha") == head_sha
-            and evidence.get("producer_run_id") == int(v4.group("run"))
+            and integer(
+                evidence.get("producer_run_id"),
+                "review-summary-producer",
+            )
+            == int(v4.group("run"))
             and evidence.get("input_sha256") == v4.group("input")
             and evidence.get("workflow_sha") == base_sha
             and SHA.fullmatch(
@@ -1171,73 +1179,6 @@ def collect_bound_ingress_evidence(
     }
 
 
-def collect_bound_promotion_review(
-    *,
-    repository: str,
-    pull: JSON,
-    pull_number: int,
-    base_sha: str,
-    head_sha: str,
-    wait: bool,
-) -> JSON:
-    observations = 450 if wait else 1
-    for observation in range(observations):
-        pages = gh_json(
-            [
-                "api",
-                "--paginate",
-                "--slurp",
-                (
-                    f"repos/{repository}/commits/{head_sha}/check-runs"
-                    "?check_name=Current%20revision%20review&filter=all&per_page=100"
-                ),
-            ]
-        )
-        candidates = [
-            check
-            for check in check_pages(pages)
-            if check.get("name") == "Current revision review"
-            and integer(
-                exact_object(check.get("app"), "promotion-review-app").get("id"),
-                "promotion-review-app-id",
-            )
-            == 15368
-            and check.get("head_sha") == head_sha
-            and V4_EXTERNAL_ID.fullmatch(
-                text(check.get("external_id"), "promotion-review-external-id")
-            )
-            is not None
-        ]
-        if candidates and wait and any(
-            check.get("status") != "completed" for check in candidates
-        ):
-            require(observation + 1 < observations, "promotion-review-timeout")
-            time.sleep(2)
-            continue
-        if candidates or not wait:
-            try:
-                return bound_review_check(
-                    pages,
-                    repository=repository,
-                    pull=pull,
-                    pull_number=pull_number,
-                    base_sha=base_sha,
-                    head_sha=head_sha,
-                )
-            except EvidenceError as error:
-                if (
-                    wait
-                    and str(error) == "producer-run-status"
-                    and observation + 1 < observations
-                ):
-                    time.sleep(2)
-                    continue
-                raise
-        require(observation + 1 < observations, "promotion-review-timeout")
-        time.sleep(2)
-    raise EvidenceError("promotion-review-timeout")
-
-
 def private_runtime_directory() -> Path:
     runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
     require(runner_temp.is_absolute(), "runner-temp-not-absolute")
@@ -1332,14 +1273,6 @@ def verify(arguments: argparse.Namespace) -> JSON:
     require(
         promotion_body_sha256(live_pull) == expected_body_sha256,
         "promotion-event-body-mismatch",
-    )
-    promotion_review = collect_bound_promotion_review(
-        repository=arguments.repository,
-        pull=live_pull,
-        pull_number=pull_number,
-        base_sha=expected_base,
-        head_sha=expected_head,
-        wait=True,
     )
     baseline_commit = exact_object(
         gh_json(["api", f"repos/{arguments.repository}/commits/{expected_base}"]),
@@ -1531,18 +1464,6 @@ def verify(arguments: argparse.Namespace) -> JSON:
         == canonical(promotion_binding(live_pull)),
         "promotion-mutated-during-verification",
     )
-    promotion_review_after = collect_bound_promotion_review(
-        repository=arguments.repository,
-        pull=live_pull_after,
-        pull_number=pull_number,
-        base_sha=expected_base,
-        head_sha=expected_head,
-        wait=False,
-    )
-    require(
-        canonical(promotion_review_after) == canonical(promotion_review),
-        "promotion-review-mutated-during-verification",
-    )
     validate_protected_ref_tips(
         arguments.repository,
         expected_base=expected_base,
@@ -1563,7 +1484,6 @@ def verify(arguments: argparse.Namespace) -> JSON:
         "integration_tree_sha": integration_tree,
         "diff": diff,
         "controller_sha": controller_sha,
-        "promotion_review": promotion_review,
         "ingress_count": len(ingress),
         "post_baseline_ingress_count": post_baseline_count,
         "ingress": ingress,

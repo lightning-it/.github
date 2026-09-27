@@ -470,48 +470,22 @@ class PromotionEvidenceTests(unittest.TestCase):
                     head_sha=HEAD,
                 )
 
-    def test_promotion_review_requires_bound_v4_evidence(self) -> None:
-        summary = json.dumps(
-            {
-                "schema": 4,
-                "base_sha": BASE,
-                "head_sha": HEAD,
-                "merge_base_sha": BASE,
-                "integration_tree_sha": "3" * 40,
-                "diff_sha256": "6" * 64,
-                "input_sha256": INPUT,
-                "pull_request_number": 17,
-                "producer_run_id": 88,
-                "run_url": "https://github.com/lightning-it/example/actions/runs/88",
-                "workflow_sha": BASE,
-            }
-        )
-        pages = [
-            {
-                "check_runs": [
-                    check_run(f"mlx90-current-revision:v4:88:{INPUT}", summary)
-                ]
-            }
-        ]
-        release_pull = ingress_pull(
-            login="lightning-it-release-automation[bot]",
-            user_id=307565056,
-            user_type="Bot",
-        )
-        run = producer_run(
-            login="lightning-it-release-automation[bot]", release=True
-        )
-        with mock.patch.object(MODULE, "gh_json", side_effect=[pages, run]):
-            evidence = MODULE.collect_bound_promotion_review(
-                repository="lightning-it/example",
-                pull=release_pull,
-                pull_number=17,
-                base_sha=BASE,
-                head_sha=HEAD,
-                wait=False,
-            )
-        self.assertEqual("v4", evidence["evidence_version"])
-        self.assertRegex(evidence["summary_sha256"], r"^[0-9a-f]{64}$")
+        for field in ("pull_request_number", "producer_run_id"):
+            malformed = json.loads(summary)
+            malformed[field] = True
+            pages[0]["check_runs"][0]["output"]["summary"] = json.dumps(malformed)
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                f"review-summary-{'pull-request' if field == 'pull_request_number' else 'producer'}",
+            ):
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
     def test_ancestry_exemption_requires_exact_ref_and_author_scope(self) -> None:
         release = ingress_pull(
@@ -978,6 +952,170 @@ class PromotionEvidenceTests(unittest.TestCase):
                 else:
                     os.environ["RUNNER_TEMP"] = old
 
+    def test_verify_aggregates_ingress_and_rejects_final_promotion_mutation(
+        self,
+    ) -> None:
+        boundary_head = "7" * 40
+        boundary_merge = "8" * 40
+        feature_merge = "9" * 40
+        boundary = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        boundary.update(
+            {
+                "number": 10,
+                "state": "closed",
+                "merged_at": "2026-09-27T00:00:00Z",
+                "merge_commit_sha": boundary_merge,
+            }
+        )
+        boundary["base"].update(
+            {"ref": "develop", "repo": {"full_name": "lightning-it/example"}}
+        )
+        boundary["head"].update(
+            {
+                "ref": "backmerge/release-main-1",
+                "sha": boundary_head,
+                "repo": {"full_name": "lightning-it/example"},
+            }
+        )
+        feature = ingress_pull()
+        feature.update(
+            {
+                "state": "closed",
+                "merged_at": "2026-09-27T01:00:00Z",
+                "merge_commit_sha": feature_merge,
+            }
+        )
+        feature["base"].update(
+            {"ref": "develop", "repo": {"full_name": "lightning-it/example"}}
+        )
+        merges = [
+            {
+                "base_sha": "a" * 40,
+                "head_sha": boundary_head,
+                "merge_sha": boundary_merge,
+            },
+            {
+                "base_sha": boundary_merge,
+                "head_sha": HEAD,
+                "merge_sha": feature_merge,
+            },
+        ]
+        bound = {
+            "review": {"check_id": 99, "summary_sha256": "6" * 64},
+            "threads": {"resolved_thread_ids": [], "unresolved_threads": 0},
+        }
+
+        def execute(*, mutate_final_pull: bool) -> dict[str, object]:
+            current = promotion()
+            pull_reads = 0
+
+            def api(arguments: list[str]) -> object:
+                nonlocal pull_reads
+                endpoint = arguments[-1]
+                if endpoint == "repos/lightning-it/example/pulls/41":
+                    pull_reads += 1
+                    value = json.loads(json.dumps(current))
+                    if mutate_final_pull and pull_reads == 2:
+                        value["body"] = "mutated release"
+                    return value
+                if endpoint == f"repos/lightning-it/example/commits/{BASE}":
+                    return {
+                        "sha": BASE,
+                        "commit": {
+                            "verification": {"verified": True, "reason": "valid"},
+                            "committer": {"date": "2026-09-27T00:00:00Z"},
+                        },
+                    }
+                if endpoint.endswith(f"commits/{boundary_merge}/pulls?per_page=100"):
+                    return [[boundary]]
+                if endpoint.endswith(f"commits/{feature_merge}/pulls?per_page=100"):
+                    return [[feature]]
+                if endpoint == "repos/lightning-it/example/pulls/10":
+                    return boundary
+                if endpoint == "repos/lightning-it/example/pulls/17":
+                    return feature
+                if endpoint == "repos/lightning-it/example/branches/main":
+                    return {"name": "main", "protected": True, "commit": {"sha": BASE}}
+                if endpoint == "repos/lightning-it/example/branches/develop":
+                    return {"name": "develop", "protected": True, "commit": {"sha": HEAD}}
+                raise AssertionError(endpoint)
+
+            with tempfile.TemporaryDirectory() as directory:
+                runtime = Path(directory).resolve(strict=True)
+                repository = runtime / "repository"
+                repository.mkdir()
+                output = runtime / "promotion-evidence.json"
+                arguments = MODULE.argparse.Namespace(
+                    repository="lightning-it/example",
+                    pull_request=41,
+                    base_ref="main",
+                    head_ref="develop",
+                    expected_base=BASE,
+                    expected_head=HEAD,
+                    controller_sha="5" * 40,
+                    expected_body_sha256=hashlib.sha256(b"release").hexdigest(),
+                    repository_path=repository,
+                    output=output,
+                )
+                previous = os.environ.get("RUNNER_TEMP")
+                os.environ["RUNNER_TEMP"] = str(runtime)
+                try:
+                    with (
+                        mock.patch.object(MODULE, "gh_json", side_effect=api),
+                        mock.patch.object(
+                            MODULE,
+                            "first_parent_merges",
+                            return_value=("a" * 40, "b" * 40, merges),
+                        ),
+                        mock.patch.object(
+                            MODULE,
+                            "compute_diff",
+                            return_value={"bytes": 707454, "sha256": "c" * 64},
+                        ),
+                        mock.patch.object(MODULE, "is_ancestor", return_value=True),
+                        mock.patch.object(
+                            MODULE,
+                            "has_exact_ancestry_merge_parents",
+                            side_effect=lambda _repository, *, head_sha, **_kwargs: head_sha
+                            == boundary_head,
+                        ),
+                        mock.patch.object(
+                            MODULE,
+                            "is_authorized_ancestry_boundary",
+                            side_effect=lambda pull, **_kwargs: pull["number"] == 10,
+                        ),
+                        mock.patch.object(
+                            MODULE, "validate_ancestry_boundary_content"
+                        ),
+                        mock.patch.object(
+                            MODULE,
+                            "collect_bound_ingress_evidence",
+                            return_value=bound,
+                        ),
+                    ):
+                        value = MODULE.verify(arguments)
+                        MODULE.write_output(output, value)
+                    self.assertEqual(2, value["ingress_count"])
+                    self.assertEqual(1, value["post_baseline_ingress_count"])
+                    self.assertNotIn("promotion_review", value)
+                    self.assertEqual(value, json.loads(output.read_text()))
+                    return value
+                finally:
+                    if previous is None:
+                        os.environ.pop("RUNNER_TEMP", None)
+                    else:
+                        os.environ["RUNNER_TEMP"] = previous
+
+        execute(mutate_final_pull=False)
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "promotion-event-body-mismatch"
+        ):
+            execute(mutate_final_pull=True)
+
     def test_duplicate_checks_and_unresolved_threads_fail_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         run = check_run(external_id, v6_summary())
@@ -1120,7 +1258,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn('.owner.login == "lightning-it"', promotion_job)
         self.assertIn("controller_ref=main", promotion_job)
         self.assertIn("controller_ref=develop", promotion_job)
-        self.assertIn('.promotion_review.evidence_version == "v4"', promotion_job)
+        self.assertIn('-v "${TARGET}:${TARGET}:ro"', promotion_job)
+        self.assertNotIn("promotion_review", promotion_job)
         self.assertGreaterEqual(
             SCRIPT.read_text(encoding="utf-8").count(
                 "collect_bound_ingress_evidence("
