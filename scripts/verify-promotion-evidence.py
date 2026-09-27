@@ -39,6 +39,8 @@ V4_EXTERNAL_ID = re.compile(
 )
 RELEASE_APP_LOGIN = "lightning-it-release-automation[bot]"
 RELEASE_APP_ID = 307565056
+SYNC_APP_LOGIN = "lightning-it-shared-assets-sync[bot]"
+SYNC_APP_ID = 307342877
 MAX_API_BYTES = 16 * 1024 * 1024
 MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
@@ -222,6 +224,20 @@ def validate_live_promotion(
     return value
 
 
+def validate_protected_ref_tips(
+    repository: str, *, expected_base: str, expected_head: str
+) -> None:
+    for ref, expected_sha in (("main", expected_base), ("develop", expected_head)):
+        branch = exact_object(
+            gh_json(["api", f"repos/{repository}/branches/{ref}"]),
+            f"final-{ref}-branch",
+        )
+        commit = exact_object(branch.get("commit"), f"final-{ref}-commit")
+        require(branch.get("name") == ref, f"final-{ref}-name")
+        require(branch.get("protected") is True, f"final-{ref}-not-protected")
+        require(commit.get("sha") == expected_sha, f"final-{ref}-moved")
+
+
 def promotion_body_sha256(value: JSON) -> str:
     body = text(value.get("body"), "promotion-body")
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -378,7 +394,8 @@ def expected_evidence_kind(pull: JSON, *, repository: str) -> str:
             )
             or (
                 repository == "lightning-it/.github"
-                and login == "lightning-it-shared-assets-sync[bot]"
+                and login == SYNC_APP_LOGIN
+                and user.get("id") == SYNC_APP_ID
                 and user_type == "Bot"
             ),
             "ancestry-backmerge-author",
@@ -398,6 +415,57 @@ def expected_evidence_kind(pull: JSON, *, repository: str) -> str:
         return "renovate"
     require(user_type == "User", "copilot-ingress-author-type")
     return "copilot"
+
+
+def is_authorized_ancestry_boundary(
+    pull: Any,
+    *,
+    repository: str,
+    expected_main: str,
+    previous_develop: str,
+) -> bool:
+    """Return whether an ingress PR is the exact controller-created backmerge."""
+
+    try:
+        value = exact_object(pull, "ancestry-boundary-pull")
+        user = exact_object(value.get("user"), "ancestry-boundary-user")
+        base = exact_object(value.get("base"), "ancestry-boundary-base")
+        head = exact_object(value.get("head"), "ancestry-boundary-head")
+        base_repo = exact_object(
+            base.get("repo"), "ancestry-boundary-base-repository"
+        )
+        head_repo = exact_object(
+            head.get("repo"), "ancestry-boundary-head-repository"
+        )
+        repository_name = repository.split("/", 1)[1]
+        branch_component = (
+            repository_name[1:]
+            if repository_name.startswith(".")
+            else repository_name
+        )
+        expected_ref = (
+            f"backmerge/{branch_component}-{expected_main[:12]}-"
+            f"{previous_develop[:12]}-main"
+        )
+        identity = (
+            user.get("login"),
+            user.get("id"),
+            user.get("type"),
+        )
+        allowed_identities = {(RELEASE_APP_LOGIN, RELEASE_APP_ID, "Bot")}
+        if repository == "lightning-it/.github":
+            allowed_identities.add((SYNC_APP_LOGIN, SYNC_APP_ID, "Bot"))
+        return (
+            base.get("ref") == "develop"
+            and base_repo.get("full_name") == repository
+            and head_repo.get("full_name") == repository
+            and head.get("ref") == expected_ref
+            and value.get("title")
+            == f"chore(governance): record main ancestry before {expected_main[:12]}"
+            and identity in allowed_identities
+        )
+    except (EvidenceError, IndexError):
+        return False
 
 
 def review_summary(check: JSON) -> JSON:
@@ -445,11 +513,13 @@ def validate_producer_run(
     require(summary.get("base_sha") == base_sha, "review-summary-base")
     require(summary.get("head_sha") == head_sha, "review-summary-head")
     require(
-        summary.get("pull_request_number") == pull_number,
+        integer(summary.get("pull_request_number"), "review-summary-pull-request")
+        == pull_number,
         "review-summary-pull-request",
     )
     require(
-        summary.get("producer_run_id") == producer_run_id,
+        integer(summary.get("producer_run_id"), "review-summary-producer")
+        == producer_run_id,
         "review-summary-producer",
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
@@ -955,14 +1025,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
         repository_path, expected_base, expected_head
     )
     diff = compute_diff(repository_path, expected_base, expected_head)
-    baseline_boundary: int | None = None
-    for index, merge in enumerate(merges):
-        if is_ancestor(repository_path, expected_base, merge["head_sha"]):
-            baseline_boundary = index
-            break
-    require(baseline_boundary is not None, "baseline-reconciliation-not-found")
-    ingress: list[JSON] = []
-    for index, merge in enumerate(merges):
+    ingress_inventory: list[tuple[JSON, JSON]] = []
+    for merge in merges:
         associated = gh_json(
             [
                 "api",
@@ -977,6 +1041,24 @@ def verify(arguments: argparse.Namespace) -> JSON:
             merge_sha=merge["merge_sha"],
             head_sha=merge["head_sha"],
         )
+        ingress_inventory.append((merge, pull))
+
+    baseline_candidates = [
+        index
+        for index, (merge, pull) in enumerate(ingress_inventory)
+        if is_ancestor(repository_path, expected_base, merge["head_sha"])
+        and is_authorized_ancestry_boundary(
+            pull,
+            repository=arguments.repository,
+            expected_main=expected_base,
+            previous_develop=merge["base_sha"],
+        )
+    ]
+    require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
+    baseline_boundary = baseline_candidates[0]
+
+    ingress: list[JSON] = []
+    for index, (merge, pull) in enumerate(ingress_inventory):
         number = integer(pull.get("number"), "ingress-pull-number")
         merged_at = text(pull.get("merged_at"), "ingress-merged-at")
         timestamp(merged_at, "ingress-merged-at")
@@ -1072,6 +1154,11 @@ def verify(arguments: argparse.Namespace) -> JSON:
         canonical(promotion_binding(live_pull_after))
         == canonical(promotion_binding(live_pull)),
         "promotion-mutated-during-verification",
+    )
+    validate_protected_ref_tips(
+        arguments.repository,
+        expected_base=expected_base,
+        expected_head=expected_head,
     )
 
     evidence = {

@@ -384,7 +384,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         managed = ingress_pull(
             login="lightning-it-shared-assets-sync[bot]",
-            user_id=9,
+            user_id=307342877,
             user_type="Bot",
         )
         managed["title"] = "chore(governance): record main ancestry before abc"
@@ -401,6 +401,81 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE.expected_evidence_kind(
                 managed, repository="lightning-it/example"
             )
+
+    def test_ancestry_boundary_requires_exact_controller_contract(self) -> None:
+        boundary = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        boundary["title"] = (
+            f"chore(governance): record main ancestry before {BASE[:12]}"
+        )
+        boundary["base"] = {
+            "ref": "develop",
+            "repo": {"full_name": "lightning-it/example"},
+        }
+        boundary["head"]["ref"] = (
+            f"backmerge/example-{BASE[:12]}-{MERGE[:12]}-main"
+        )
+        self.assertTrue(
+            MODULE.is_authorized_ancestry_boundary(
+                boundary,
+                repository="lightning-it/example",
+                expected_main=BASE,
+                previous_develop=MERGE,
+            )
+        )
+        ordinary = json.loads(json.dumps(boundary))
+        ordinary["head"]["ref"] = "fix/ordinary"
+        self.assertFalse(
+            MODULE.is_authorized_ancestry_boundary(
+                ordinary,
+                repository="lightning-it/example",
+                expected_main=BASE,
+                previous_develop=MERGE,
+            )
+        )
+        wrong_title = json.loads(json.dumps(boundary))
+        wrong_title["title"] += "-changed"
+        self.assertFalse(
+            MODULE.is_authorized_ancestry_boundary(
+                wrong_title,
+                repository="lightning-it/example",
+                expected_main=BASE,
+                previous_develop=MERGE,
+            )
+        )
+
+    def test_final_ref_validation_requires_protection_and_exact_tips(self) -> None:
+        branches = {
+            "repos/lightning-it/example/branches/main": {
+                "name": "main",
+                "protected": True,
+                "commit": {"sha": BASE},
+            },
+            "repos/lightning-it/example/branches/develop": {
+                "name": "develop",
+                "protected": True,
+                "commit": {"sha": HEAD},
+            },
+        }
+
+        def branch_api(arguments: list[str]) -> dict[str, object]:
+            return branches[arguments[-1]]
+
+        with mock.patch.object(MODULE, "gh_json", side_effect=branch_api):
+            MODULE.validate_protected_ref_tips(
+                "lightning-it/example", expected_base=BASE, expected_head=HEAD
+            )
+        branches["repos/lightning-it/example/branches/main"]["protected"] = False
+        with mock.patch.object(MODULE, "gh_json", side_effect=branch_api):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "final-main-not-protected"
+            ):
+                MODULE.validate_protected_ref_tips(
+                    "lightning-it/example", expected_base=BASE, expected_head=HEAD
+                )
 
     def test_graphql_errors_fail_closed_before_partial_thread_data(self) -> None:
         partial = {
@@ -511,6 +586,33 @@ class PromotionEvidenceTests(unittest.TestCase):
                     base_sha=BASE,
                     head_sha=HEAD,
                 )
+
+    def test_review_summary_rejects_boolean_integer_bindings(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        for field, label in (
+            ("pull_request_number", "review-summary-pull-request"),
+            ("producer_run_id", "review-summary-producer"),
+        ):
+            malformed = json.loads(v6_summary())
+            malformed[field] = True
+            with self.subTest(field=field), mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(producer_run())
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, label):
+                    MODULE.bound_review_check(
+                        [
+                            {
+                                "check_runs": [
+                                    check_run(external_id, json.dumps(malformed))
+                                ]
+                            }
+                        ],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
 
     def test_v6_rejects_schema_drift_and_failed_producer_run(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
