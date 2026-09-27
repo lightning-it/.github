@@ -946,6 +946,8 @@ def bound_review_check(
         ):
             continue
         external_id = text(check.get("external_id"), "check-external-id")
+        output = exact_object(check.get("output"), "check-output")
+        output_title = text(output.get("title"), "check-output-title")
         v6 = V6_EXTERNAL_ID.fullmatch(external_id)
         if v6 is not None:
             if (
@@ -953,6 +955,7 @@ def bound_review_check(
                 and int(v6.group("pr")) == pull_number
                 and v6.group("base") == base_sha
                 and v6.group("head") == head_sha
+                and output_title == "Current revision review passed"
             ):
                 summary = validate_producer_run(
                     check,
@@ -981,6 +984,7 @@ def bound_review_check(
                 expected_kind == v5.group("kind")
                 and v5.group("base") == base_sha
                 and v5.group("head") == head_sha
+                and output_title == "Current revision review passed"
             ):
                 summary = validate_producer_run(
                     check,
@@ -1004,7 +1008,11 @@ def bound_review_check(
                 matches.append(match)
             continue
         v4 = V4_EXTERNAL_ID.fullmatch(external_id)
-        if v4 is None or expected_kind != "release-app":
+        if (
+            v4 is None
+            or expected_kind != "release-app"
+            or output_title != "Protected Exact-Revision Codex review passed"
+        ):
             continue
         evidence = review_summary(check)
         expected_v4_keys = {
@@ -1407,10 +1415,37 @@ def verify(arguments: argparse.Namespace) -> JSON:
     post_baseline_count = sum(item["post_baseline"] is True for item in ingress)
     require(post_baseline_count > 0, "no-post-baseline-ingress")
 
-    # Re-read every mutable ingress acceptance binding only after the complete
-    # inventory exists. Any changed check selection, producer, or thread set is
-    # a concurrent mutation and fails closed instead of entering a stale
-    # promotion package.
+    # Finish every other mutable remote read before taking the final ingress
+    # snapshot. No network operation is permitted between this snapshot and
+    # constructing the evidence package.
+    live_pull_after = gh_json(
+        ["api", f"repos/{arguments.repository}/pulls/{pull_number}"]
+    )
+    validate_live_promotion(
+        live_pull_after,
+        repository=arguments.repository,
+        pull_number=pull_number,
+        expected_base=expected_base,
+        expected_head=expected_head,
+    )
+    require(
+        promotion_body_sha256(live_pull_after) == expected_body_sha256,
+        "promotion-event-body-mismatch",
+    )
+    require(
+        canonical(promotion_binding(live_pull_after))
+        == canonical(promotion_binding(live_pull)),
+        "promotion-mutated-during-verification",
+    )
+    validate_protected_ref_tips(
+        arguments.repository,
+        expected_base=expected_base,
+        expected_head=expected_head,
+    )
+
+    # Re-read every mutable ingress acceptance binding after all other remote
+    # validation. The package below is built from these final values, while the
+    # comparisons retain the earlier observation as a race detector.
     for item in ingress:
         ancestry_boundary = item.get("ancestry_boundary") is True
         if item["post_baseline"] is not True and not ancestry_boundary:
@@ -1457,34 +1492,10 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 == canonical(item["threads"]),
                 "ingress-evidence-mutated-during-verification",
             )
+            item["review"] = refreshed["review"]
+            item["threads"] = refreshed["threads"]
         except EvidenceError as error:
             raise EvidenceError(f"ingress-pr-{number}:{error}") from error
-
-    # Mutable bindings are deliberately read again after the complete inventory.
-    live_pull_after = gh_json(
-        ["api", f"repos/{arguments.repository}/pulls/{pull_number}"]
-    )
-    validate_live_promotion(
-        live_pull_after,
-        repository=arguments.repository,
-        pull_number=pull_number,
-        expected_base=expected_base,
-        expected_head=expected_head,
-    )
-    require(
-        promotion_body_sha256(live_pull_after) == expected_body_sha256,
-        "promotion-event-body-mismatch",
-    )
-    require(
-        canonical(promotion_binding(live_pull_after))
-        == canonical(promotion_binding(live_pull)),
-        "promotion-mutated-during-verification",
-    )
-    validate_protected_ref_tips(
-        arguments.repository,
-        expected_base=expected_base,
-        expected_head=expected_head,
-    )
 
     evidence = {
         "schema_version": 1,

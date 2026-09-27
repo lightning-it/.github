@@ -51,7 +51,11 @@ def promotion() -> dict[str, object]:
     }
 
 
-def check_run(external_id: str, summary: str = "{}") -> dict[str, object]:
+def check_run(
+    external_id: str,
+    summary: str = "{}",
+    title: str = "Current revision review passed",
+) -> dict[str, object]:
     return {
         "id": 99,
         "name": "Current revision review",
@@ -61,7 +65,7 @@ def check_run(external_id: str, summary: str = "{}") -> dict[str, object]:
         "external_id": external_id,
         "details_url": "https://github.com/lightning-it/example/runs/99",
         "app": {"id": 15368, "slug": "github-actions"},
-        "output": {"summary": summary},
+        "output": {"summary": summary, "title": title},
     }
 
 
@@ -284,6 +288,21 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
         self.assertEqual(evidence["producer_run_id"], 88)
+        pages[0]["check_runs"][0]["output"]["title"] = "unbound title"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+        ):
+            MODULE.bound_review_check(
+                pages,
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        pages[0]["check_runs"][0]["output"][
+            "title"
+        ] = "Current revision review passed"
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
                 pages,
@@ -403,6 +422,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     check_run(
                         f"mlx90-current-revision:v4:88:{INPUT}",
                         summary,
+                        "Protected Exact-Revision Codex review passed",
                     )
                 ]
             }
@@ -430,6 +450,22 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )["evidence_kind"],
                 "release-app",
             )
+
+        pages[0]["check_runs"][0]["output"]["title"] = "unbound title"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+        ):
+            MODULE.bound_review_check(
+                pages,
+                repository="lightning-it/example",
+                pull=release_pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        pages[0]["check_runs"][0]["output"][
+            "title"
+        ] = "Protected Exact-Revision Codex review passed"
 
         failed_run = producer_run(
             login="lightning-it-release-automation[bot]", release=True
@@ -796,6 +832,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     check_run(
                         f"mlx90-current-revision:v4:88:{INPUT}",
                         json.dumps(summary),
+                        "Protected Exact-Revision Codex review passed",
                     )
                 ]
             }
@@ -1052,10 +1089,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         def execute(*, mutate_final_pull: bool) -> dict[str, object]:
             current = promotion()
             pull_reads = 0
+            api_calls: list[str] = []
 
             def api(arguments: list[str]) -> object:
                 nonlocal pull_reads
                 endpoint = arguments[-1]
+                api_calls.append(endpoint)
                 if endpoint == "repos/lightning-it/example/pulls/41":
                     pull_reads += 1
                     value = json.loads(json.dumps(current))
@@ -1143,6 +1182,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                     self.assertEqual(1, value["post_baseline_ingress_count"])
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
+                    self.assertEqual(
+                        [
+                            "repos/lightning-it/example/pulls/10",
+                            "repos/lightning-it/example/pulls/17",
+                        ],
+                        api_calls[-2:],
+                    )
                     return value
                 finally:
                     if previous is None:
