@@ -194,8 +194,14 @@ def gh_json(arguments: list[str]) -> Any:
     require(bool(os.environ.get("GH_TOKEN")), "gh-token-missing")
     raw = run(["gh", *arguments])
     try:
-        return json.loads(raw)
-    except (UnicodeError, json.JSONDecodeError) as error:
+        return json.loads(
+            raw,
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonstandard_constant,
+        )
+    except EvidenceError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
         raise EvidenceError("github-response-not-json") from error
 
 

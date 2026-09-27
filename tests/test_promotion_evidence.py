@@ -203,6 +203,31 @@ def evidence_api(run: dict[str, object]):
 
 
 class PromotionEvidenceTests(unittest.TestCase):
+    def test_github_api_json_parser_fails_closed(self) -> None:
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}):
+            with mock.patch.object(
+                MODULE, "run", return_value='{"id":1,"id":2}'
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "check-summary-duplicate-key"
+                ):
+                    MODULE.gh_json(["api", "example"])
+            with mock.patch.object(MODULE, "run", return_value='{"id":NaN}'):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "check-summary-nonstandard-constant"
+                ):
+                    MODULE.gh_json(["api", "example"])
+            with mock.patch.object(MODULE, "run", return_value='{"id":1}'):
+                self.assertEqual({"id": 1}, MODULE.gh_json(["api", "example"]))
+            with (
+                mock.patch.object(MODULE, "run", return_value="{}"),
+                mock.patch.object(MODULE.json, "loads", side_effect=RecursionError),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "github-response-not-json"
+                ):
+                    MODULE.gh_json(["api", "example"])
+
     def test_exact_release_app_promotion_is_accepted(self) -> None:
         value = promotion()
         self.assertIs(
