@@ -791,7 +791,14 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
 
         def boundary_git(arguments: list[str], _: Path) -> str:
-            if arguments[:2] == ["diff", "--name-only"]:
+            if arguments == [
+                "diff",
+                "--no-renames",
+                "--name-only",
+                MERGE,
+                HEAD,
+                "--",
+            ]:
                 return ".lit/main-ancestry.json"
             if arguments == ["show", "-s", "--format=%s", HEAD]:
                 return "merge: preserve develop tree and main ancestry"
@@ -811,7 +818,14 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
 
         def extra_file(arguments: list[str], path: Path) -> str:
-            if arguments[:2] == ["diff", "--name-only"]:
+            if arguments == [
+                "diff",
+                "--no-renames",
+                "--name-only",
+                MERGE,
+                HEAD,
+                "--",
+            ]:
                 return ".lit/main-ancestry.json\nextra"
             return boundary_git(arguments, path)
 

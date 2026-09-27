@@ -543,7 +543,15 @@ def validate_ancestry_boundary_content(
 ) -> None:
     evidence_path = ".lit/main-ancestry.json"
     changed = git(
-        ["diff", "--name-only", previous_develop, head_sha, "--"], repository_path
+        [
+            "diff",
+            "--no-renames",
+            "--name-only",
+            previous_develop,
+            head_sha,
+            "--",
+        ],
+        repository_path,
     ).splitlines()
     require(changed == [evidence_path], "ancestry-boundary-content-scope")
     require(
