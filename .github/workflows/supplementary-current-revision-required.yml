@@ -394,8 +394,10 @@ jobs:
                     select(startswith("<!-- lit-promotion-run:"))]) as $before_run
                   | ([$current_lines[] |
                     select(startswith("<!-- lit-promotion-run:"))]) as $current_run
-                  | [$before_lines[] | select(. == $head_marker)] == [$head_marker]
-                  and [$current_lines[] | select(. == $head_marker)] == [$head_marker]
+                  | [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
                   and ($before_run | length) == 1
                   and $current_run == $before_run
                   and ($before_run[0] | test(
@@ -2436,8 +2438,10 @@ jobs:
                 select(startswith("<!-- lit-promotion-run:"))]) as $before_run
               | ([$current_lines[] |
                 select(startswith("<!-- lit-promotion-run:"))]) as $current_run
-              | [$before_lines[] | select(. == $head_marker)] == [$head_marker]
-              and [$current_lines[] | select(. == $head_marker)] == [$head_marker]
+              | [$before_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and [$current_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
               and ($before_run | length) == 1
               and $current_run == $before_run
               and ($before_run[0] | test(

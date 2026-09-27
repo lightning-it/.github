@@ -309,9 +309,20 @@ class PromotionEvidenceTests(unittest.TestCase):
                 repository="lightning-it/example",
                 merge_sha=MERGE,
                 head_sha=HEAD,
+                expected_number=17,
             )["number"],
             17,
         )
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "associated-pull-number-mismatch"
+        ):
+            MODULE.select_ingress_pull(
+                [candidate],
+                repository="lightning-it/example",
+                merge_sha=MERGE,
+                head_sha=HEAD,
+                expected_number=18,
+            )
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.select_ingress_pull(
                 [candidate, dict(candidate)],

@@ -364,6 +364,7 @@ def select_ingress_pull(
     repository: str,
     merge_sha: str,
     head_sha: str,
+    expected_number: int | None = None,
 ) -> JSON:
     candidates = []
     for item in exact_array(pulls, "associated-pulls"):
@@ -384,7 +385,9 @@ def select_ingress_pull(
             candidates.append(pull)
     require(len(candidates) == 1, "associated-pull-not-unique")
     candidate = candidates[0]
-    integer(candidate.get("number"), "associated-pull-number")
+    candidate_number = integer(candidate.get("number"), "associated-pull-number")
+    if expected_number is not None:
+        require(candidate_number == expected_number, "associated-pull-number-mismatch")
     timestamp(candidate.get("merged_at"), "associated-pull-merged-at")
     return candidate
 
@@ -1511,6 +1514,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 repository=arguments.repository,
                 merge_sha=sha(item.get("merge_sha"), "revalidation-merge-sha"),
                 head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+                expected_number=number,
             )
             require(
                 text(refreshed_pull.get("merged_at"), "revalidation-merged-at")

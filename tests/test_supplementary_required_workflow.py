@@ -8798,6 +8798,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("SENDER_ID", "76040632"),
             ("EVENT_BODY", current_body.replace(head_marker, "")),
             ("PREVIOUS_BODY", previous_body.replace(run_marker, "")),
+            (
+                "EVENT_BODY",
+                current_body
+                + "\n<!-- lit-promotion-head:"
+                + ("3" * 40)
+                + " -->",
+            ),
+            (
+                "PREVIOUS_BODY",
+                previous_body
+                + "\n<!-- lit-promotion-head:"
+                + ("3" * 40)
+                + " -->",
+            ),
         ):
             with self.subTest(invalid_finalization=field):
                 malformed = {**finalized, field: value}
