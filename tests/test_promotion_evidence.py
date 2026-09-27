@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,9 +58,71 @@ def check_run(external_id: str, summary: str = "{}") -> dict[str, object]:
         "status": "completed",
         "conclusion": "success",
         "external_id": external_id,
+        "details_url": "https://github.com/lightning-it/example/runs/99",
         "app": {"id": 15368, "slug": "github-actions"},
         "output": {"summary": summary},
     }
+
+
+def ingress_pull(
+    *, login: str = "litroc", user_id: int = 1, user_type: str = "User"
+) -> dict[str, object]:
+    return {
+        "number": 17,
+        "title": "fix: exact ingress",
+        "user": {"login": login, "id": user_id, "type": user_type},
+        "base": {"ref": "develop"},
+        "head": {"ref": "fix/exact-ingress", "sha": HEAD},
+    }
+
+
+def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, object]:
+    if release:
+        return {
+            "id": 88,
+            "html_url": "https://github.com/lightning-it/example/actions/runs/88",
+            "actor": {"login": login},
+            "triggering_actor": {"login": login},
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/release-bot-exact-head-review.yml",
+            "head_branch": "develop",
+            "head_sha": BASE,
+            "display_title": f"Exact-Revision Codex PR #17 {BASE}..{HEAD}",
+        }
+    return {
+        "id": 88,
+        "html_url": "https://github.com/lightning-it/example/actions/runs/88",
+        "actor": {"login": login},
+        "triggering_actor": {"login": login},
+        "run_attempt": 1,
+        "event": "pull_request_target",
+        "path": ".github/workflows/copilot-review.yml",
+        "name": "Current revision review gate",
+        "head_branch": "fix/exact-ingress",
+        "head_sha": HEAD,
+    }
+
+
+def v6_summary(kind: str = "copilot") -> str:
+    paths = {
+        "copilot": "applicable Copilot or governed automation exemption",
+        "managed-sync": "deterministic provenance-bound managed distribution exemption",
+        "ancestry-backmerge": "deterministic evidence-bound ancestry exemption",
+        "renovate": "deterministic policy-bound Renovate exemption",
+    }
+    return json.dumps(
+        {
+            "schema": 4,
+            "base_sha": BASE,
+            "head_sha": HEAD,
+            "head_repository": "lightning-it/example",
+            "pull_request_number": 17,
+            "producer_run_id": 88,
+            "run_url": "https://github.com/lightning-it/example/actions/runs/88",
+            "review_path": paths[kind],
+        }
+    )
 
 
 class PromotionEvidenceTests(unittest.TestCase):
@@ -130,17 +193,22 @@ class PromotionEvidenceTests(unittest.TestCase):
 
     def test_v6_review_check_binds_pr_base_and_head(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
-        pages = [{"check_runs": [check_run(external_id)]}]
-        evidence = MODULE.bound_review_check(
-            pages,
-            pull_number=17,
-            base_sha=BASE,
-            head_sha=HEAD,
-        )
+        pages = [{"check_runs": [check_run(external_id, v6_summary())]}]
+        with mock.patch.object(MODULE, "gh_json", return_value=producer_run()):
+            evidence = MODULE.bound_review_check(
+                pages,
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
         self.assertEqual(evidence["producer_run_id"], 88)
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
                 pages,
+                repository="lightning-it/example",
+                pull=ingress_pull(),
                 pull_number=18,
                 base_sha=BASE,
                 head_sha=HEAD,
@@ -155,6 +223,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "input_sha256": INPUT,
                 "pull_request_number": 17,
                 "producer_run_id": 88,
+                "run_url": "https://github.com/lightning-it/example/actions/runs/88",
             }
         )
         pages = [
@@ -167,24 +236,90 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ]
             }
         ]
-        self.assertEqual(
+        release_pull = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            return_value=producer_run(
+                login="lightning-it-release-automation[bot]", release=True
+            ),
+        ):
+            self.assertEqual(
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )["evidence_kind"],
+                "release-app",
+            )
+
+    def test_review_kind_and_producer_identity_are_bound_to_pull_author(self) -> None:
+        managed = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
-                pages,
+                [{"check_runs": [check_run(managed, v6_summary("managed-sync"))]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
                 pull_number=17,
                 base_sha=BASE,
                 head_sha=HEAD,
-            )["evidence_kind"],
-            "release-app",
-        )
+            )
+
+        copilot = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        wrong_actor = producer_run(login="attacker")
+        with mock.patch.object(MODULE, "gh_json", return_value=wrong_actor):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-run-actor-login"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(copilot, v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+    def test_private_runtime_and_output_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            old = os.environ.get("RUNNER_TEMP")
+            try:
+                os.environ["RUNNER_TEMP"] = str(runtime)
+                runtime.chmod(0o777)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "runner-temp-mode"):
+                    MODULE.private_runtime_directory()
+                runtime.chmod(0o700)
+                output = runtime / "evidence.json"
+                MODULE.write_output(output, {"accepted": True})
+                self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+                with self.assertRaises(FileExistsError):
+                    MODULE.write_output(output, {"accepted": False})
+            finally:
+                if old is None:
+                    os.environ.pop("RUNNER_TEMP", None)
+                else:
+                    os.environ["RUNNER_TEMP"] = old
 
     def test_duplicate_checks_and_unresolved_threads_fail_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
-        run = check_run(external_id)
+        run = check_run(external_id, v6_summary())
         duplicate = dict(run)
         duplicate["id"] = 100
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
                 [{"check_runs": [run, duplicate]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
                 pull_number=17,
                 base_sha=BASE,
                 head_sha=HEAD,
@@ -273,6 +408,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("promotion_candidate", workflow)
         self.assertIn("verify-develop-main-promotion-evidence:", workflow)
+        promotion_job = workflow.split(
+            "  verify-develop-main-promotion-evidence:\n", 1
+        )[1].split("\n  verify-protected-current-revision-evidence:\n", 1)[0]
+        for binding in (
+            "umask 077",
+            'test ! -L "${RUNNER_TEMP}"',
+            'stat -c %u -- "${RUNNER_TEMP}"',
+            "8#${runner_temp_mode} & 0022",
+        ):
+            self.assertIn(binding, promotion_job)
         self.assertIn("scripts/verify-promotion-evidence.py", workflow)
         self.assertIn("PROMOTION_RESULT", workflow)
         self.assertNotIn("MAX_REVIEW_BYTES", SCRIPT.read_text(encoding="utf-8"))

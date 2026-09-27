@@ -333,13 +333,166 @@ def check_pages(value: Any) -> list[JSON]:
     return runs
 
 
+def expected_evidence_kind(pull: JSON) -> str:
+    user = exact_object(pull.get("user"), "associated-pull-user")
+    login = text(user.get("login"), "associated-pull-user-login")
+    integer(user.get("id"), "associated-pull-user-id")
+    user_type = text(user.get("type"), "associated-pull-user-type")
+    head = exact_object(pull.get("head"), "associated-pull-head")
+    head_ref = text(head.get("ref"), "associated-pull-head-ref")
+    title = text(pull.get("title"), "associated-pull-title")
+    ancestry = head_ref.startswith("backmerge/") and title.startswith(
+        "chore(governance): record main ancestry before "
+    )
+    if ancestry:
+        require(
+            login
+            in {
+                RELEASE_APP_LOGIN,
+                "lightning-it-shared-assets-sync[bot]",
+            }
+            and user_type == "Bot",
+            "ancestry-backmerge-author",
+        )
+        return "ancestry-backmerge"
+    if login == RELEASE_APP_LOGIN:
+        require(
+            user.get("id") == RELEASE_APP_ID and user_type == "Bot",
+            "release-app-identity",
+        )
+        return "release-app"
+    if login == "lightning-it-shared-assets-sync[bot]":
+        require(user_type == "Bot", "managed-sync-identity")
+        return "managed-sync"
+    if login == "renovate[bot]":
+        require(user_type == "Bot", "renovate-identity")
+        return "renovate"
+    require(user_type == "User", "copilot-ingress-author-type")
+    return "copilot"
+
+
+def review_summary(check: JSON) -> JSON:
+    output = exact_object(check.get("output"), "check-output")
+    raw = text(output.get("summary"), "check-summary")
+    try:
+        return exact_object(json.loads(raw), "check-summary-json")
+    except json.JSONDecodeError as error:
+        raise EvidenceError("check-summary-not-json") from error
+
+
+def validate_producer_run(
+    check: JSON,
+    *,
+    repository: str,
+    pull: JSON,
+    pull_number: int,
+    base_sha: str,
+    head_sha: str,
+    evidence_kind: str,
+    producer_run_id: int,
+) -> None:
+    check_id = integer(check.get("id"), "check-id")
+    require(
+        check.get("details_url")
+        == f"https://github.com/{repository}/runs/{check_id}",
+        "check-details-url",
+    )
+    user = exact_object(pull.get("user"), "associated-pull-user")
+    author = text(user.get("login"), "associated-pull-user-login")
+    base = exact_object(pull.get("base"), "associated-pull-base")
+    head = exact_object(pull.get("head"), "associated-pull-head")
+    base_ref = text(base.get("ref"), "associated-pull-base-ref")
+    head_ref = text(head.get("ref"), "associated-pull-head-ref")
+    summary = review_summary(check)
+    run_url = f"https://github.com/{repository}/actions/runs/{producer_run_id}"
+    require(summary.get("schema") == 4, "review-summary-schema")
+    require(summary.get("base_sha") == base_sha, "review-summary-base")
+    require(summary.get("head_sha") == head_sha, "review-summary-head")
+    require(
+        summary.get("pull_request_number") == pull_number,
+        "review-summary-pull-request",
+    )
+    require(
+        summary.get("producer_run_id") == producer_run_id,
+        "review-summary-producer",
+    )
+    require(summary.get("run_url") == run_url, "review-summary-run-url")
+    if evidence_kind != "release-app":
+        require(
+            summary.get("head_repository") == repository,
+            "review-summary-head-repository",
+        )
+        expected_paths = {
+            "copilot": "applicable Copilot or governed automation exemption",
+            "managed-sync": (
+                "deterministic provenance-bound managed distribution exemption"
+            ),
+            "ancestry-backmerge": (
+                "deterministic evidence-bound ancestry exemption"
+            ),
+            "renovate": "deterministic policy-bound Renovate exemption",
+        }
+        require(
+            summary.get("review_path") == expected_paths[evidence_kind],
+            "review-summary-path",
+        )
+
+    run = exact_object(
+        gh_json(["api", f"repos/{repository}/actions/runs/{producer_run_id}"]),
+        "producer-run",
+    )
+    require(run.get("id") == producer_run_id, "producer-run-id")
+    require(run.get("html_url") == run_url, "producer-run-url")
+    actor = exact_object(run.get("actor"), "producer-run-actor")
+    triggering = exact_object(
+        run.get("triggering_actor"), "producer-run-triggering-actor"
+    )
+    require(actor.get("login") == author, "producer-run-actor-login")
+    require(
+        triggering.get("login") == author,
+        "producer-run-triggering-actor-login",
+    )
+    attempt = integer(run.get("run_attempt"), "producer-run-attempt")
+    if evidence_kind == "release-app":
+        require(attempt == 1, "release-producer-run-attempt")
+        require(run.get("event") == "workflow_dispatch", "release-producer-event")
+        require(
+            run.get("path") == ".github/workflows/release-bot-exact-head-review.yml",
+            "release-producer-workflow",
+        )
+        require(run.get("head_branch") == base_ref, "release-producer-branch")
+        require(run.get("head_sha") == base_sha, "release-producer-head")
+        require(
+            run.get("display_title")
+            == f"Exact-Revision Codex PR #{pull_number} {base_sha}..{head_sha}",
+            "release-producer-title",
+        )
+    else:
+        require(attempt in {1, 2}, "producer-run-attempt")
+        require(
+            attempt == 1 or evidence_kind == "copilot",
+            "producer-rerun-kind",
+        )
+        require(run.get("event") == "pull_request_target", "producer-event")
+        require(
+            run.get("path") == ".github/workflows/copilot-review.yml",
+            "producer-workflow",
+        )
+        require(run.get("name") == "Current revision review gate", "producer-name")
+        require(run.get("head_branch") == head_ref, "producer-branch")
+        require(run.get("head_sha") == head_sha, "producer-head")
+
+
 def bound_review_check(
     pages: Any,
     *,
+    repository: str,
+    pull: JSON,
     pull_number: int,
     base_sha: str,
     head_sha: str,
 ) -> JSON:
+    expected_kind = expected_evidence_kind(pull)
     matches: list[JSON] = []
     for check in check_pages(pages):
         app = exact_object(check.get("app"), "check-app")
@@ -356,29 +509,33 @@ def bound_review_check(
         v6 = V6_EXTERNAL_ID.fullmatch(external_id)
         if v6 is not None:
             if (
-                int(v6.group("pr")) == pull_number
+                expected_kind == v6.group("kind")
+                and int(v6.group("pr")) == pull_number
                 and v6.group("base") == base_sha
                 and v6.group("head") == head_sha
             ):
-                matches.append(
-                    {
-                        "check_id": integer(check.get("id"), "check-id"),
-                        "evidence_kind": v6.group("kind"),
-                        "external_id": external_id,
-                        "producer_run_id": int(v6.group("run")),
-                    }
+                match = {
+                    "check_id": integer(check.get("id"), "check-id"),
+                    "evidence_kind": v6.group("kind"),
+                    "external_id": external_id,
+                    "producer_run_id": int(v6.group("run")),
+                }
+                validate_producer_run(
+                    check,
+                    repository=repository,
+                    pull=pull,
+                    pull_number=pull_number,
+                    base_sha=base_sha,
+                    head_sha=head_sha,
+                    evidence_kind=v6.group("kind"),
+                    producer_run_id=int(v6.group("run")),
                 )
+                matches.append(match)
             continue
         v4 = V4_EXTERNAL_ID.fullmatch(external_id)
-        if v4 is None:
+        if v4 is None or expected_kind != "release-app":
             continue
-        output = exact_object(check.get("output"), "check-output")
-        summary = text(output.get("summary"), "check-summary")
-        try:
-            evidence = json.loads(summary)
-        except json.JSONDecodeError as error:
-            raise EvidenceError("exact-review-summary-not-json") from error
-        evidence = exact_object(evidence, "exact-review-summary")
+        evidence = review_summary(check)
         if (
             evidence.get("schema") == 4
             and evidence.get("pull_request_number") == pull_number
@@ -387,14 +544,23 @@ def bound_review_check(
             and evidence.get("producer_run_id") == int(v4.group("run"))
             and evidence.get("input_sha256") == v4.group("input")
         ):
-            matches.append(
-                {
-                    "check_id": integer(check.get("id"), "check-id"),
-                    "evidence_kind": "release-app",
-                    "external_id": external_id,
-                    "producer_run_id": int(v4.group("run")),
-                }
+            match = {
+                "check_id": integer(check.get("id"), "check-id"),
+                "evidence_kind": "release-app",
+                "external_id": external_id,
+                "producer_run_id": int(v4.group("run")),
+            }
+            validate_producer_run(
+                check,
+                repository=repository,
+                pull=pull,
+                pull_number=pull_number,
+                base_sha=base_sha,
+                head_sha=head_sha,
+                evidence_kind="release-app",
+                producer_run_id=int(v4.group("run")),
             )
+            matches.append(match)
     require(len(matches) == 1, "bound-current-revision-check-not-unique")
     return matches[0]
 
@@ -470,7 +636,7 @@ def collect_review_threads(repository: str, pull_number: int) -> JSON:
         after = cursor
 
 
-def compute_diff(repository_path: Path, base_sha: str, head_sha: str) -> JSON:
+def private_runtime_directory() -> Path:
     runner_temp = Path(os.environ.get("RUNNER_TEMP", ""))
     require(runner_temp.is_absolute(), "runner-temp-not-absolute")
     metadata = runner_temp.lstat()
@@ -478,11 +644,22 @@ def compute_diff(repository_path: Path, base_sha: str, head_sha: str) -> JSON:
         stat.S_ISDIR(metadata.st_mode) and not runner_temp.is_symlink(),
         "runner-temp-unsafe",
     )
+    require(metadata.st_uid == os.geteuid(), "runner-temp-owner")
+    require(metadata.st_mode & 0o022 == 0, "runner-temp-mode")
+    require(
+        os.access(runner_temp, os.R_OK | os.W_OK | os.X_OK),
+        "runner-temp-access",
+    )
+    return runner_temp
+
+
+def compute_diff(repository_path: Path, base_sha: str, head_sha: str) -> JSON:
+    runner_temp = private_runtime_directory()
     descriptor, name = tempfile.mkstemp(prefix="promotion-diff.", dir=runner_temp)
-    os.close(descriptor)
     path = Path(name)
     try:
-        with path.open("wb") as stream:
+        path.unlink()
+        with os.fdopen(descriptor, "w+b") as stream:
             completed = subprocess.run(
                 [
                     "git",
@@ -504,16 +681,20 @@ def compute_diff(repository_path: Path, base_sha: str, head_sha: str) -> JSON:
                 check=False,
                 timeout=180,
             )
-        require(completed.returncode == 0, "promotion-diff-failed")
-        size = path.stat().st_size
-        require(size > 0, "promotion-diff-empty")
-        hasher = hashlib.sha256()
-        with path.open("rb") as stream:
+            require(completed.returncode == 0, "promotion-diff-failed")
+            stream.flush()
+            size = stream.tell()
+            require(size > 0, "promotion-diff-empty")
+            stream.seek(0)
+            hasher = hashlib.sha256()
             for block in iter(lambda: stream.read(1024 * 1024), b""):
                 hasher.update(block)
         return {"bytes": size, "sha256": hasher.hexdigest()}
     finally:
-        path.unlink(missing_ok=True)
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 def verify(arguments: argparse.Namespace) -> JSON:
@@ -613,6 +794,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
             try:
                 review = bound_review_check(
                     checks,
+                    repository=arguments.repository,
+                    pull=pull,
                     pull_number=number,
                     base_sha=merge["base_sha"],
                     head_sha=merge["head_sha"],
@@ -674,11 +857,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
 
 
 def write_output(path: Path, value: JSON) -> None:
-    if path.exists():
-        metadata = path.lstat()
-        require(stat.S_ISREG(metadata.st_mode), "output-not-regular")
-    path.write_bytes(canonical(value))
-    path.chmod(0o600)
+    runner_temp = private_runtime_directory()
+    require(path.is_absolute(), "output-not-absolute")
+    require(path.parent == runner_temp, "output-outside-runner-temp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        payload = canonical(value)
+        written = 0
+        while written < len(payload):
+            count = os.write(descriptor, payload[written:])
+            require(count > 0, "output-short-write")
+            written += count
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
