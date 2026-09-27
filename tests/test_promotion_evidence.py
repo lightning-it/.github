@@ -340,7 +340,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE, "gh_json", side_effect=evidence_api(run)
         ):
             with self.assertRaisesRegex(
-                MODULE.EvidenceError, "producer-run-triggering-actor-login"
+                MODULE.EvidenceError, "producer-run-triggering-actor-identity"
             ):
                 MODULE.bound_review_check(
                     [{"check_runs": [check_run(external_id, v6_summary())]}],
@@ -839,7 +839,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE, "gh_json", side_effect=evidence_api(wrong_actor)
         ):
             with self.assertRaisesRegex(
-                MODULE.EvidenceError, "producer-run-actor-login"
+                MODULE.EvidenceError, "producer-run-actor-identity"
             ):
                 MODULE.bound_review_check(
                     [{"check_runs": [check_run(copilot, v6_summary())]}],
@@ -849,6 +849,46 @@ class PromotionEvidenceTests(unittest.TestCase):
                     base_sha=BASE,
                     head_sha=HEAD,
                 )
+
+        for field, value in (("id", 2), ("type", "Bot")):
+            wrong_identity = producer_run()
+            wrong_identity["actor"][field] = value
+            with mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(wrong_identity)
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "producer-run-actor-identity"
+                ):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(copilot, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
+        for field, value in (("id", 2), ("type", "Bot")):
+            wrong_trigger = producer_run()
+            wrong_trigger["triggering_actor"] = dict(
+                wrong_trigger["triggering_actor"]
+            )
+            wrong_trigger["triggering_actor"][field] = value
+            with mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(wrong_trigger)
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError,
+                    "producer-run-triggering-actor-identity",
+                ):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(copilot, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
 
     def test_review_summary_rejects_boolean_integer_bindings(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"

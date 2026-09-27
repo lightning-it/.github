@@ -686,6 +686,9 @@ def validate_producer_run(
     )
     user = exact_object(pull.get("user"), "associated-pull-user")
     author = text(user.get("login"), "associated-pull-user-login")
+    author_id = integer(user.get("id"), "associated-pull-user-id")
+    author_type = text(user.get("type"), "associated-pull-user-type")
+    require(author_type in {"User", "Bot"}, "associated-pull-user-type")
     base = exact_object(pull.get("base"), "associated-pull-base")
     head = exact_object(pull.get("head"), "associated-pull-head")
     base_ref = text(base.get("ref"), "associated-pull-base-ref")
@@ -861,18 +864,31 @@ def validate_producer_run(
         run.get("triggering_actor"), "producer-run-triggering-actor"
     )
     attempt = integer(run.get("run_attempt"), "producer-run-attempt")
-    require(actor.get("login") == author, "producer-run-actor-login")
+    require(
+        actor.get("login") == author
+        and integer(actor.get("id"), "producer-run-actor-id") == author_id
+        and actor.get("type") == author_type,
+        "producer-run-actor-identity",
+    )
     if evidence_kind == "copilot" and attempt == 2:
         require(
             triggering.get("login") == GITHUB_ACTIONS_LOGIN
-            and triggering.get("id") == GITHUB_ACTIONS_ID
+            and integer(
+                triggering.get("id"), "producer-run-triggering-actor-id"
+            )
+            == GITHUB_ACTIONS_ID
             and triggering.get("type") == "Bot",
-            "producer-run-triggering-actor-login",
+            "producer-run-triggering-actor-identity",
         )
     else:
         require(
-            triggering.get("login") == author,
-            "producer-run-triggering-actor-login",
+            triggering.get("login") == author
+            and integer(
+                triggering.get("id"), "producer-run-triggering-actor-id"
+            )
+            == author_id
+            and triggering.get("type") == author_type,
+            "producer-run-triggering-actor-identity",
         )
     require(run.get("status") == "completed", "producer-run-status")
     require(run.get("conclusion") == "success", "producer-run-conclusion")
