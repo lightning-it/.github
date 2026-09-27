@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -304,12 +305,14 @@ def select_ingress_pull(
         base = exact_object(pull.get("base"), "associated-pull-base")
         head = exact_object(pull.get("head"), "associated-pull-head")
         base_repo = exact_object(base.get("repo"), "associated-pull-base-repository")
+        head_repo = exact_object(head.get("repo"), "associated-pull-head-repository")
         if (
             pull.get("state") == "closed"
             and pull.get("merged_at") is not None
             and pull.get("merge_commit_sha") == merge_sha
             and base.get("ref") == "develop"
             and base_repo.get("full_name") == repository
+            and head_repo.get("full_name") == repository
             and head.get("sha") == head_sha
         ):
             candidates.append(pull)
@@ -418,10 +421,6 @@ def validate_producer_run(
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
     if evidence_kind != "release-app":
-        require(
-            summary.get("head_repository") == repository,
-            "review-summary-head-repository",
-        )
         expected_paths = {
             "copilot": "applicable Copilot or governed automation exemption",
             "managed-sync": (
@@ -435,6 +434,101 @@ def validate_producer_run(
         require(
             summary.get("review_path") == expected_paths[evidence_kind],
             "review-summary-path",
+        )
+        if evidence_kind == "renovate":
+            expected_keys = {
+                "base_sha",
+                "controller_ref",
+                "controller_sha",
+                "head_repository",
+                "head_sha",
+                "producer_run_id",
+                "pull_request_labels_sha256",
+                "pull_request_last_edited_at",
+                "pull_request_number",
+                "review_id",
+                "review_path",
+                "run_url",
+                "schema",
+            }
+            require(set(summary) == expected_keys, "renovate-review-summary-schema")
+            require(
+                summary.get("head_repository") == repository,
+                "review-summary-head-repository",
+            )
+            require(summary.get("review_id") is None, "renovate-review-id")
+            require(
+                SHA256.fullmatch(
+                    text(
+                        summary.get("pull_request_labels_sha256"),
+                        "renovate-labels-sha256",
+                    )
+                )
+                is not None,
+                "renovate-labels-sha256",
+            )
+            require(
+                summary.get("pull_request_last_edited_at") is None
+                or type(summary.get("pull_request_last_edited_at")) is str,
+                "renovate-last-edited-at",
+            )
+        else:
+            require(
+                set(summary)
+                == {
+                    "base_sha",
+                    "controller_sha",
+                    "head_sha",
+                    "producer_run_id",
+                    "pull_request_number",
+                    "review_path",
+                    "run_url",
+                    "schema",
+                },
+                "review-summary-schema",
+            )
+
+        controller_sha = sha(summary.get("controller_sha"), "controller-sha")
+        repository_state = exact_object(
+            gh_json(["api", f"repos/{repository}"]), "controller-repository"
+        )
+        controller_ref = text(
+            repository_state.get("default_branch"), "controller-ref"
+        )
+        if evidence_kind == "renovate":
+            require(
+                summary.get("controller_ref") == controller_ref,
+                "review-summary-controller-ref",
+            )
+        encoded_ref = urllib.parse.quote(controller_ref, safe="")
+        controller_branch = exact_object(
+            gh_json(["api", f"repos/{repository}/branches/{encoded_ref}"]),
+            "controller-branch",
+        )
+        controller_commit = exact_object(
+            controller_branch.get("commit"), "controller-branch-commit"
+        )
+        controller_head = sha(controller_commit.get("sha"), "controller-head")
+        ancestry = exact_object(
+            gh_json(
+                [
+                    "api",
+                    f"repos/{repository}/compare/{controller_sha}...{controller_head}",
+                ]
+            ),
+            "controller-ancestry",
+        )
+        merge_base = exact_object(
+            ancestry.get("merge_base_commit"), "controller-merge-base"
+        )
+        require(
+            ancestry.get("status") == "identical"
+            or (
+                ancestry.get("status") == "ahead"
+                and ancestry.get("behind_by") == 0
+                and merge_base.get("sha") == controller_sha
+            ),
+            "controller-not-protected-ancestor",
         )
 
     run = exact_object(
@@ -468,6 +562,8 @@ def validate_producer_run(
             "release-producer-title",
         )
     else:
+        require(run.get("status") == "completed", "producer-run-status")
+        require(run.get("conclusion") == "success", "producer-run-conclusion")
         require(attempt in {1, 2}, "producer-run-attempt")
         require(
             attempt == 1 or evidence_kind == "copilot",

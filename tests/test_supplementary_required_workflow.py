@@ -8690,6 +8690,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             repository: str = "lightning-it/.github",
             base_ref: str = "main",
             head_ref: str = "prestage/p1",
+            **event: str,
         ) -> tuple[int, dict[str, str], str]:
             with tempfile.TemporaryDirectory() as temporary:
                 output = Path(temporary) / "github-output"
@@ -8699,6 +8700,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "HEAD_REF": head_ref,
                     "PATH": TEST_TOOL_PATH,
                     "REPOSITORY": repository,
+                    **event,
                 }
                 if action is not None:
                     environment["EVENT_ACTION"] = action
@@ -8716,6 +8718,50 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         for line in output.read_text(encoding="utf-8").splitlines()
                     )
                 return result.returncode, values, result.stderr
+
+        exact_promotion = {
+            "AUTHOR_ID": "307565056",
+            "AUTHOR_LOGIN": "lightning-it-release-automation[bot]",
+            "AUTHOR_TYPE": "Bot",
+            "DRAFT": "false",
+            "HEAD_REPOSITORY": "lightning-it/example",
+            "TITLE": "chore(release): promote develop to main",
+        }
+        returncode, values, _ = route_result(
+            "opened",
+            repository="lightning-it/example",
+            base_ref="main",
+            head_ref="develop",
+            **exact_promotion,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual(
+            {
+                "promotion_candidate": "true",
+                "s0_candidate": "false",
+                "s0_prestage": "false",
+            },
+            values,
+        )
+        for field, value in (
+            ("AUTHOR_ID", "307565057"),
+            ("AUTHOR_LOGIN", "litroc"),
+            ("AUTHOR_TYPE", "User"),
+            ("DRAFT", "true"),
+            ("HEAD_REPOSITORY", "fork/example"),
+            ("TITLE", "release"),
+        ):
+            with self.subTest(promotion_near_miss=field):
+                near_miss = {**exact_promotion, field: value}
+                returncode, values, _ = route_result(
+                    "opened",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **near_miss,
+                )
+                self.assertEqual(0, returncode)
+                self.assertEqual("false", values["promotion_candidate"])
 
         for action in ("opened", "synchronize", "reopened"):
             with self.subTest(action=action):
