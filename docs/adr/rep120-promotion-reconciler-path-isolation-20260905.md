@@ -6,7 +6,7 @@ slug: /adr/rep120-promotion-reconciler-path-isolation-20260905/
 document:
   status: maintained
   approval_status: proposed
-  version: "6.0"
+  version: "6.1"
   classification: PUBLIC
   owner: Lightning IT Documentation Maintainers
   approver: Lightning IT Product Owners
@@ -14,7 +14,7 @@ document:
     - repository maintainers
     - platform engineers
     - security reviewers
-  last_reviewed: "2026-09-08"
+  last_reviewed: "2026-09-28"
   review_cadence: annual
 ---
 
@@ -62,6 +62,33 @@ The same old names are not exclusively write credentials.
 `lightning-it/shared-assets-lit` and `.github`. Substituting an invalid value
 would break a required workflow. The safe design separates source-read and
 successor-write capabilities.
+
+## LI-218 operational refinement (2026-09-28)
+
+The `1..199999` review-input bound applies to a feature pull request entering
+`develop`; it is not a second cumulative-diff review requirement for the
+protected `develop` to `main` promotion. The promotion reuses the exact native
+acceptance evidence of each first-parent `develop` merge, requires complete
+coverage through a bounded manifest, and emits one final aggregate result. A
+missing, stale, ambiguous, or incomplete unit remains fail-closed.
+
+The organization Required Workflow is immutable for a run and pins its public
+Supplementary source SHA when the pull-request event is created. The Release
+App first opens a promotion with a pending dispatch marker and then replaces
+that marker with its success marker. Consequently, an opened-event verifier can
+observe an earlier same-head terminal aggregate while the authoritative edited
+event is still materializing. Treating that earlier failure as immediately
+final creates a false terminal race.
+
+The LI-218 verifier therefore selects only the newest exact same-PR,
+same-base, same-head aggregate. If that newest exact result is terminally
+failed, it continues its bounded observation window so a later exact aggregate
+may supersede it. It succeeds only on the newer exact successful result and
+still fails closed when the deadline expires, the association is malformed, or
+the final evidence drifts. It never reruns an old workflow, reuses an older
+success after a newer failure, or weakens branch protection. Supplementary PRs
+#1123 and #1124 deliver this race correction to protected `main`; the final
+`.github` promotion remains the reference proof for operational acceptance.
 
 ## Current protected recovery evidence
 
