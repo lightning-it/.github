@@ -393,7 +393,8 @@ jobs:
                 --arg dispatch_pending "${dispatch_pending}" \
                 --arg dispatch_success "${dispatch_success}" \
                 --arg evidence_pending "${evidence_pending}" \
-                --arg evidence_ready "${evidence_ready}" '
+                --arg evidence_ready "${evidence_ready}" \
+                --arg repository "${REPOSITORY}" '
                   ($before | split("\n")) as $before_lines
                   | ($current | split("\n")) as $current_lines
                   | ([$before_lines[] |
@@ -410,7 +411,8 @@ jobs:
                     "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
                   ))
                   and (
-                    if ([$before_lines[] |
+                    if ($repository != "lightning-it/.github"
+                      and [$before_lines[] |
                       select(startswith("<!-- lit-protected-promotion:"))]
                         == [$protocol]
                       and [$current_lines[] |
@@ -2484,7 +2486,8 @@ jobs:
             --arg dispatch_pending "${dispatch_pending}" \
             --arg dispatch_success "${dispatch_success}" \
             --arg evidence_pending "${evidence_pending}" \
-            --arg evidence_ready "${evidence_ready}" '
+            --arg evidence_ready "${evidence_ready}" \
+            --arg repository "${REPOSITORY}" '
               ($before | split("\n")) as $before_lines
               | ($current | split("\n")) as $current_lines
               | ([$before_lines[] |
@@ -2501,7 +2504,8 @@ jobs:
                 "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
               ))
               and (
-                if ([$before_lines[] |
+                if ($repository != "lightning-it/.github"
+                  and [$before_lines[] |
                   select(startswith("<!-- lit-protected-promotion:"))]
                     == [$protocol]
                   and [$current_lines[] |

@@ -9041,6 +9041,18 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual("true", values["promotion_candidate"])
         self.assertEqual("false", values["promotion_pending"])
 
+        returncode, _, _ = route_result(
+            "edited",
+            repository="lightning-it/.github",
+            base_ref="main",
+            head_ref="develop",
+            **{
+                **evidence_finalized,
+                "HEAD_REPOSITORY": "lightning-it/.github",
+            },
+        )
+        self.assertNotEqual(0, returncode)
+
         for field, value in (
             (
                 "EVENT_BODY",
