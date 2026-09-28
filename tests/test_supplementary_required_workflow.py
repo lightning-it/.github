@@ -3113,14 +3113,32 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.user.login == "copilot-pull-request-reviewer[bot]"',
             late,
         )
-        self.assertIn('select(.submitted_at >= $producer_created_at)', late)
+        self.assertIn(
+            'select((.submitted_at | fromdateiso8601?)\n'
+            '                      >= ($producer_created_at | fromdateiso8601))',
+            late,
+        )
         self.assertIn(
             'actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}',
             late,
         )
-        self.assertIn('.created_at >= $review_submitted_at', late)
-        self.assertIn('.created_at > $first_verifier_completed_at', late)
-        self.assertIn('.updated_at <= $producer_updated_at', late)
+        self.assertIn(
+            '(.created_at | fromdateiso8601?)\n'
+            '                      >= ($review_submitted_at | fromdateiso8601)',
+            late,
+        )
+        self.assertIn(
+            '(.created_at | fromdateiso8601?)\n'
+            '                      > ($first_verifier_completed_at | fromdateiso8601)',
+            late,
+        )
+        self.assertIn('select((.created_at | type) == "string")', late)
+        self.assertIn('select((.updated_at | type) == "string")', late)
+        self.assertIn(
+            '(.updated_at | fromdateiso8601?)\n'
+            '                      <= ($producer_updated_at | fromdateiso8601)',
+            late,
+        )
         self.assertIn('.actor.login == $author', late)
         self.assertIn('.triggering_actor.login == $author', late)
         self.assertIn('test "$(jq \'length\' <<<"${refresh_runs}")" -eq 1', late)
@@ -3153,6 +3171,212 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
         self.assertNotIn('requested_reviewers', late)
+
+    def test_late_review_filters_execute_against_bound_fixtures(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        late = workflow.split(
+            '              test "${producer_kind}" = copilot\n', 1
+        )[1]
+        review_command = late.split('              reviews="$(jq -c \\\n', 1)[1]
+        review_command = review_command.split(
+            '\n                \' <<<"${review_pages}")"', 1
+        )[0]
+        review_filter = review_command.rsplit(" '\n", 1)[1]
+        refresh_command = late.split('              refresh_runs="$(jq -c \\\n', 1)[1]
+        refresh_command = refresh_command.split(
+            '\n                \' <<<"${refresh_pages}")"', 1
+        )[0]
+        refresh_filter = refresh_command.rsplit(" '\n", 1)[1]
+        jq = self._test_tool("jq")
+
+        head = "a" * 40
+        base = "b" * 40
+        repository = "lightning-it/.github"
+        api_url = "https://api.github.com"
+        author = "litroc"
+        head_ref = "fix/li-218-late-review-refresh-binding"
+        producer_created_at = "2026-09-27T23:42:20Z"
+        verifier_completed_at = "2026-09-27T23:45:00Z"
+        review_submitted_at = "2026-09-27T23:45:56Z"
+        producer_updated_at = "2026-09-27T23:46:30Z"
+        valid_review = {
+            "body": "No blocking findings.",
+            "commit_id": head,
+            "id": 5332705089,
+            "state": "COMMENTED",
+            "submitted_at": review_submitted_at,
+            "user": {
+                "login": "copilot-pull-request-reviewer[bot]",
+                "type": "Bot",
+            },
+        }
+        review_args = [
+            "--arg",
+            "producer_created_at",
+            producer_created_at,
+            "--arg",
+            "head",
+            head,
+        ]
+
+        def selected_reviews(reviews: list[dict[str, object]]) -> list[object]:
+            result = subprocess.run(
+                [jq, "-c", *review_args, review_filter],
+                input=json.dumps([reviews]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return json.loads(result.stdout)
+
+        self.assertEqual([valid_review], selected_reviews([valid_review]))
+        rejected_reviews = (
+            {**valid_review, "commit_id": "c" * 40},
+            {**valid_review, "state": "DISMISSED"},
+            {**valid_review, "id": "5332705089"},
+            {**valid_review, "submitted_at": None},
+            {key: value for key, value in valid_review.items() if key != "submitted_at"},
+            {**valid_review, "submitted_at": "not-a-date"},
+            {**valid_review, "submitted_at": "2026-09-27T23:42:19Z"},
+            {**valid_review, "body": "Unable to review this pull request."},
+        )
+        for candidate in rejected_reviews:
+            with self.subTest(review=candidate):
+                self.assertEqual([], selected_reviews([candidate]))
+        self.assertEqual(
+            [valid_review, valid_review],
+            selected_reviews([valid_review, valid_review]),
+        )
+
+        valid_refresh = {
+            "actor": {"login": author},
+            "conclusion": "success",
+            "created_at": "2026-09-27T23:46:00Z",
+            "event": "pull_request_review",
+            "head_branch": head_ref,
+            "head_sha": head,
+            "name": "Refresh Copilot review gate",
+            "path": ".github/workflows/copilot-review-refresh.yml",
+            "pull_requests": [
+                {
+                    "base": {
+                        "ref": "develop",
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
+                        "sha": base,
+                    },
+                    "head": {
+                        "ref": head_ref,
+                        "repo": {"url": f"{api_url}/repos/{repository}"},
+                        "sha": head,
+                    },
+                    "number": 627,
+                }
+            ],
+            "run_attempt": 1,
+            "status": "completed",
+            "triggering_actor": {"login": author},
+            "updated_at": "2026-09-27T23:46:10Z",
+        }
+        refresh_args = [
+            "--arg",
+            "api_url",
+            api_url,
+            "--arg",
+            "author",
+            author,
+            "--arg",
+            "base_ref",
+            "develop",
+            "--arg",
+            "base_sha",
+            base,
+            "--arg",
+            "head_ref",
+            head_ref,
+            "--arg",
+            "head_sha",
+            head,
+            "--arg",
+            "first_verifier_completed_at",
+            verifier_completed_at,
+            "--arg",
+            "repository",
+            repository,
+            "--arg",
+            "review_submitted_at",
+            review_submitted_at,
+            "--arg",
+            "producer_updated_at",
+            producer_updated_at,
+            "--argjson",
+            "pr_number",
+            "627",
+        ]
+
+        def selected_refreshes(runs: list[dict[str, object]]) -> list[object]:
+            result = subprocess.run(
+                [jq, "-c", *refresh_args, refresh_filter],
+                input=json.dumps([{"workflow_runs": runs}]),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return json.loads(result.stdout)
+
+        self.assertEqual([valid_refresh], selected_refreshes([valid_refresh]))
+        for copilot_actor in (
+            "Copilot",
+            "copilot-pull-request-reviewer",
+            "copilot-pull-request-reviewer[bot]",
+        ):
+            with self.subTest(copilot_actor=copilot_actor):
+                self.assertEqual(
+                    [
+                        {
+                            **valid_refresh,
+                            "actor": {"login": copilot_actor},
+                            "triggering_actor": {"login": copilot_actor},
+                        }
+                    ],
+                    selected_refreshes(
+                        [
+                            {
+                                **valid_refresh,
+                                "actor": {"login": copilot_actor},
+                                "triggering_actor": {"login": copilot_actor},
+                            }
+                        ]
+                    ),
+                )
+        missing_created = {
+            key: value for key, value in valid_refresh.items() if key != "created_at"
+        }
+        missing_updated = {
+            key: value for key, value in valid_refresh.items() if key != "updated_at"
+        }
+        rejected_refreshes = (
+            {**valid_refresh, "created_at": None},
+            missing_created,
+            {**valid_refresh, "created_at": "not-a-date"},
+            {**valid_refresh, "updated_at": None},
+            missing_updated,
+            {**valid_refresh, "updated_at": "not-a-date"},
+            {**valid_refresh, "created_at": verifier_completed_at},
+            {**valid_refresh, "created_at": "2026-09-27T23:45:55Z"},
+            {**valid_refresh, "updated_at": "2026-09-27T23:46:31Z"},
+            {**valid_refresh, "head_sha": "c" * 40},
+            {**valid_refresh, "triggering_actor": {"login": "other"}},
+            {**valid_refresh, "pull_requests": []},
+        )
+        for candidate in rejected_refreshes:
+            with self.subTest(refresh=candidate):
+                self.assertEqual([], selected_refreshes([candidate]))
+        self.assertEqual(
+            [valid_refresh, valid_refresh],
+            selected_refreshes([valid_refresh, valid_refresh]),
+        )
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

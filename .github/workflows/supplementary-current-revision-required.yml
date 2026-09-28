@@ -6809,14 +6809,15 @@ jobs:
                 --arg producer_created_at "$(jq -er '.created_at | strings' \
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
-                  [.[].[]? |
+                  [.[][]? |
                     select(.user.login == "copilot-pull-request-reviewer[bot]") |
                     select(.user.type == "Bot") |
                     select(.commit_id == $head) |
                     select(.state == "COMMENTED" or .state == "APPROVED") |
                     select((.id | type) == "number" and .id > 0) |
                     select((.submitted_at | type) == "string") |
-                    select(.submitted_at >= $producer_created_at) |
+                    select((.submitted_at | fromdateiso8601?)
+                      >= ($producer_created_at | fromdateiso8601)) |
                     select(((.body // "") | ascii_downcase |
                       (contains("unable to review this pull request") | not)
                       and (contains("premium request quota") | not)
@@ -6850,9 +6851,14 @@ jobs:
                     select(.path == ".github/workflows/copilot-review-refresh.yml") |
                     select(.name == "Refresh Copilot review gate") |
                     select(.head_branch == $head_ref and .head_sha == $head_sha) |
-                    select(.created_at > $first_verifier_completed_at) |
-                    select(.created_at >= $review_submitted_at) |
-                    select(.updated_at <= $producer_updated_at) |
+                    select((.created_at | type) == "string") |
+                    select((.updated_at | type) == "string") |
+                    select((.created_at | fromdateiso8601?)
+                      > ($first_verifier_completed_at | fromdateiso8601)) |
+                    select((.created_at | fromdateiso8601?)
+                      >= ($review_submitted_at | fromdateiso8601)) |
+                    select((.updated_at | fromdateiso8601?)
+                      <= ($producer_updated_at | fromdateiso8601)) |
                     select(
                       ((.actor.login == "Copilot"
                         or .actor.login == "copilot-pull-request-reviewer"
