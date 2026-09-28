@@ -2019,7 +2019,9 @@ jobs:
     # consumer `develop` recognizes this retired skipped-job name. The job ID,
     # route, permissions, and full promotion verifier remain unchanged. Once
     # the LI-218 helper reaches every protected consumer, a follow-up restores
-    # the accurate promotion display name.
+    # the accurate promotion display name. The retired job's approval
+    # environment was bound only to its now-unreachable Supplementary tuple;
+    # it is intentionally not widened to this generic promotion verifier.
     name: Authorize exact Supplementary catch-up v5 successor
     needs: route-protected-current-revision
     if: needs['route-protected-current-revision'].outputs.promotion_candidate == 'true'
@@ -2030,8 +2032,6 @@ jobs:
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    environment:
-      name: normal-release-promotion-approval
 
     steps:
       - name: Bind protected controller and target refs

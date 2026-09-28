@@ -9373,10 +9373,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             promotion,
         )
         self.assertIn("needs: route-protected-current-revision", promotion)
-        self.assertIn(
-            "environment:\n      name: normal-release-promotion-approval",
-            promotion,
-        )
+        self.assertNotIn("normal-release-promotion-approval", promotion)
+        self.assertNotIn("normal-release-promotion-approval", workflow)
         self.assertIn("scripts/verify-promotion-evidence.py", promotion)
         self.assertNotIn("Verify the one protected checkpoint authorization", workflow)
 
