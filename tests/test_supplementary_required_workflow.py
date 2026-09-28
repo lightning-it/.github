@@ -8841,7 +8841,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         finalizer = self._s0_job(
             "finalize-s0-feature-main-prestage",
-            "verify-protected-current-revision-evidence",
+            "verify-develop-main-promotion-evidence",
         )
 
         self.assertIn("permissions: {}", route)
@@ -8860,7 +8860,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(1, finalizer.count("--method PATCH"))
         self.assertNotIn("--method POST", finalizer)
         self.assertNotIn("secrets.", s0)
-        self.assertNotIn("environment:", s0)
+        self.assertNotIn(
+            "environment:",
+            route + reserve + deep + finalizer,
+        )
         self.assertNotIn("actions/create-github-app-token", s0)
         one_off_shas = [
             value
@@ -9350,75 +9353,30 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('test "${LEGACY_RESULT}" = success', gate)
 
 
-    def test_supplementary_catchup_v5_successor_authorization_is_one_exact_tuple(
-        self,
-    ) -> None:
+    def test_retired_supplementary_catchup_tuple_is_removed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        authorization = workflow.split(
-            "  authorize-supplementary-catchup-v5-successor:\n", 1
-        )[1].split("  route-protected-current-revision:\n", 1)[0]
-        for fragment in (
-            "name: Authorize exact Supplementary catch-up v5 successor",
-            "github.event.action == 'opened'",
-            "github.repository == 'lightning-it/ansible-collection-supplementary'",
-            "== 'lightning-it-release-automation[bot]'",
-            "github.event.pull_request.user.id == 307565056",
-            "github.event.pull_request.user.type == 'Bot'",
-            "github.event.pull_request.base.ref == 'main'",
-            "626f249d5e05a9bdca93f183029f031f6979061b",
+        self.assertNotIn(
+            "  authorize-supplementary-catchup-v5-successor:\n",
+            workflow,
+        )
+        self.assertNotIn(
             "5dcbc1ee4d08797c84ffe47282ff7502428553d9",
-            "43578ba3a09f1da6b6654ba9ba564a56f9ab5996",
-            "34503f45f037d8e06edd662ddacd70e95639f813",
-            "e9f6adc1d4114b2102e743809e7409819160c564",
-            "33e063b24ea6e15642b1ea0b1182d11e40bd41f3",
-            "6ed1845f1a5f1eab5a49c0efebb02a5c7bb6b100",
-            "cf4fab537760231b897f67074b87053b0bc8442a",
-            "cdf6673eb2ade10fafd06c09aba2d02268833155",
-            "expected_patch_bytes=199991",
-            "f3144c8266e245357aafd340a60485025708aea52657133b06be7657822cb7e4",
-            "aee7f71950743ce5037546e399b2ed376cee4d8e",
-            "rep60-bounded-supplementary-catchup-dispatch-bound:${expected_base}:${expected_head}:${source_run_id}",
-            "environment:\n      name: normal-release-promotion-approval",
-            "permission-actions: read",
-            "permission-contents: read",
-            'test "${GITHUB_RUN_ATTEMPT}" = 1',
-            ".commit.verification.verified == true",
-            "git -C target merge-base --is-ancestor",
-            "git -C target diff --binary --full-index",
-            "tests/unit/test_bounded_promotion_transition.py",
-            'test "${patch_bytes}" = "${expected_patch_bytes}"',
-            'test "${patch_sha}" = "${expected_patch_sha}"',
-            ".last_edited_at == null",
-            "and (.labels | length) == 0",
-            'and .actor.login == "litroc"',
-            'and .triggering_actor.login == "litroc"',
-            'and .run_attempt == 1',
-            'and .conclusion == "success"',
-            "Create exact Release-App catch-up PR",
-            "Dispatch the one protected Exact-Revision review",
-            "Finalize exact dispatch binding",
-        ):
-            self.assertIn(fragment, authorization)
-        self.assertGreaterEqual(
-            authorization.count("protected-checkpoint-1-v5-successor"), 5
+            workflow,
         )
-        self.assertNotIn("protected-checkpoint-2", authorization)
-        self.assertNotIn(
-            "f2e898c5fc466e99c58346c1df604ae37ab4b5b7",
-            authorization,
+        promotion = workflow.split(
+            "  verify-develop-main-promotion-evidence:\n", 1
+        )[1].split(
+            "\n  verify-protected-current-revision-evidence:\n", 1
+        )[0]
+        self.assertIn(
+            "name: Authorize exact Supplementary catch-up v5 successor",
+            promotion,
         )
-        self.assertNotIn(
-            "rep60-bounded-supplementary-catchup-dispatch-succeeded:",
-            authorization,
-        )
-        self.assertNotIn("permission-actions: write", authorization)
-        self.assertNotIn("permission-contents: write", authorization)
-        self.assertNotIn("permission-pull-requests: write", authorization)
-        self.assertNotIn("openai/codex-action", authorization)
-        self.assertNotIn("copilot", authorization.lower())
-        self.assertNotIn("gh run rerun", authorization)
-        self.assertNotIn("gh pr merge", authorization)
-        self.assertNotIn("--force", authorization)
+        self.assertIn("needs: route-protected-current-revision", promotion)
+        self.assertNotIn("normal-release-promotion-approval", promotion)
+        self.assertNotIn("normal-release-promotion-approval", workflow)
+        self.assertIn("scripts/verify-promotion-evidence.py", promotion)
+        self.assertNotIn("Verify the one protected checkpoint authorization", workflow)
 
 if __name__ == "__main__":
     unittest.main()
