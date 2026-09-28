@@ -331,6 +331,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
+      promotion_candidate: ${{ steps.route.outputs.promotion_candidate }}
+      promotion_pending: ${{ steps.route.outputs.promotion_pending }}
       s0_candidate: ${{ steps.route.outputs.s0_candidate }}
       s0_prestage: ${{ steps.route.outputs.s0_prestage }}
 
@@ -338,15 +340,81 @@ jobs:
       - name: Classify the protected S0 feature-to-main route
         id: route
         env:
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
           EVENT_ACTION: ${{ github.event.action }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PREVIOUS_BODY: ${{ github.event.changes.body.from }}
           REPOSITORY: ${{ github.repository }}
+          SENDER_ID: ${{ github.event.sender.id }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
         run: |
           set -euo pipefail
-          [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]
+          if ! [[ "${EVENT_ACTION}" =~ ^(opened|synchronize|reopened|ready_for_review|edited)$ ]]; then
+            echo 'Unsupported protected workflow event.' >&2
+            exit 1
+          fi
+          promotion_candidate=false
+          promotion_pending=false
           s0_candidate=false
           s0_prestage=false
+          if [ "${AUTHOR_LOGIN:-}" = 'lightning-it-release-automation[bot]' ] \
+            && [ "${AUTHOR_ID:-}" = 307565056 ] \
+            && [ "${AUTHOR_TYPE:-}" = Bot ] \
+            && [ "${BASE_REF}" = main ] \
+            && [ "${HEAD_REF}" = develop ] \
+            && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ]; then
+            if [ "${EVENT_ACTION}" != edited ]; then
+              promotion_pending=true
+            else
+              test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
+              test "${SENDER_ID:-}" = 307565056
+              test "${SENDER_TYPE:-}" = Bot
+              [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+              [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
+              head_marker="<!-- lit-promotion-head:${HEAD_SHA} -->"
+              pending_marker="<!-- lit-promotion-dispatch-pending:${BASE_SHA}:${HEAD_SHA} -->"
+              success_marker="<!-- lit-promotion-dispatch-succeeded:${BASE_SHA}:${HEAD_SHA} -->"
+              jq -en \
+                --arg before "${PREVIOUS_BODY}" \
+                --arg current "${EVENT_BODY}" \
+                --arg head_marker "${head_marker}" \
+                --arg pending "${pending_marker}" \
+                --arg success "${success_marker}" '
+                  ($before | split("\n")) as $before_lines
+                  | ($current | split("\n")) as $current_lines
+                  | ([$before_lines[] |
+                    select(startswith("<!-- lit-promotion-run:"))]) as $before_run
+                  | ([$current_lines[] |
+                    select(startswith("<!-- lit-promotion-run:"))]) as $current_run
+                  | [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+                  and ($before_run | length) == 1
+                  and $current_run == $before_run
+                  and ($before_run[0] | test(
+                    "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
+                  ))
+                  and [$before_lines[] | select(. == $pending)] == [$pending]
+                  and [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == [$pending]
+                  and [$current_lines[] | select(. == $success)] == [$success]
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == [$success]
+                  and ($before_lines
+                    | map(if . == $pending then $success else . end)) == $current_lines
+                ' >/dev/null
+              promotion_candidate=true
+            fi
+          fi
           if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
             && [ "${BASE_REF}" = main ] \
             && [[ "${HEAD_REF}" == prestage/* ]]; then
@@ -355,8 +423,12 @@ jobs:
               s0_prestage=true
             fi
           fi
-          printf 's0_candidate=%s\n' "${s0_candidate}" >>"${GITHUB_OUTPUT}"
-          printf 's0_prestage=%s\n' "${s0_prestage}" >>"${GITHUB_OUTPUT}"
+          {
+            printf 'promotion_candidate=%s\n' "${promotion_candidate}"
+            printf 'promotion_pending=%s\n' "${promotion_pending}"
+            printf 's0_candidate=%s\n' "${s0_candidate}"
+            printf 's0_prestage=%s\n' "${s0_prestage}"
+          } >>"${GITHUB_OUTPUT}"
 
   reserve-s0-feature-main-prestage:
     name: Reserve protected S0 feature-to-main verification
@@ -2201,6 +2273,340 @@ jobs:
           failure_armed=0
           trap - ERR
 
+  verify-develop-main-promotion-evidence:
+    name: Verify aggregated develop-to-main promotion evidence
+    needs: route-protected-current-revision
+    if: needs['route-protected-current-revision'].outputs.promotion_candidate == 'true'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Bind protected controller and target refs
+        id: bind
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "${RUNNER_TEMP:-}"
+          test -d "${RUNNER_TEMP}"
+          test ! -L "${RUNNER_TEMP}"
+          test "$(stat -c %u -- "${RUNNER_TEMP}")" -eq "$(id -u)"
+          runner_temp_mode="$(stat -c %a -- "${RUNNER_TEMP}")"
+          [[ "${runner_temp_mode}" =~ ^[0-7]{3,4}$ ]]
+          test $((8#${runner_temp_mode} & 0022)) -eq 0
+          test -r "${RUNNER_TEMP}"
+          test -w "${RUNNER_TEMP}"
+          test -x "${RUNNER_TEMP}"
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          case "${WORKFLOW_REF}" in
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/main)
+              controller_ref=main
+              ;;
+            lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop)
+              test "${REPOSITORY}" = lightning-it/.github
+              controller_ref=develop
+              ;;
+            *)
+              echo '::error::Unsupported protected controller ref.'
+              exit 1
+              ;;
+          esac
+
+          controller_repository="$(gh api repos/lightning-it/.github)"
+          controller_branch="$(gh api \
+            "repos/lightning-it/.github/branches/${controller_ref}")"
+          jq -e --argjson id 1112629689 '
+            .id == $id
+            and .full_name == "lightning-it/.github"
+            and .owner.login == "lightning-it"
+            and .visibility == "public"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${controller_repository}" >/dev/null
+          jq -e \
+            --arg ref "${controller_ref}" \
+            --arg sha "${WORKFLOW_SHA}" '
+              .name == $ref and .protected == true and .commit.sha == $sha
+            ' <<<"${controller_branch}" >/dev/null
+
+          target_repository="$(gh api "repos/${REPOSITORY}")"
+          target_main="$(gh api "repos/${REPOSITORY}/branches/main")"
+          target_develop="$(gh api "repos/${REPOSITORY}/branches/develop")"
+          jq -e --arg repository "${REPOSITORY}" '
+            .full_name == $repository
+            and .owner.login == "lightning-it"
+            and .archived == false
+            and .disabled == false
+          ' <<<"${target_repository}" >/dev/null
+          jq -e --arg sha "${EVENT_BASE}" '
+            .name == "main" and .protected == true and .commit.sha == $sha
+          ' <<<"${target_main}" >/dev/null
+          jq -e --arg sha "${EVENT_HEAD}" '
+            .name == "develop" and .protected == true and .commit.sha == $sha
+          ' <<<"${target_develop}" >/dev/null
+
+          controller="${RUNNER_TEMP}/verify-promotion-evidence.py"
+          controller_json="$(gh api \
+            "repos/lightning-it/.github/contents/scripts/verify-promotion-evidence.py?ref=${WORKFLOW_SHA}")"
+          jq -e '
+            .type == "file"
+            and .path == "scripts/verify-promotion-evidence.py"
+            and .encoding == "base64"
+            and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
+            and (.size | type == "number" and . > 0 and . <= 1048576)
+            and (.content | type == "string" and length > 0)
+          ' <<<"${controller_json}" >/dev/null
+          jq -er '.content' <<<"${controller_json}" \
+            | tr -d '\n' | base64 --decode >"${controller}"
+          test "$(git hash-object --no-filters "${controller}")" = \
+            "$(jq -er .sha <<<"${controller_json}")"
+          chmod 0500 "${controller}"
+
+          target="${RUNNER_TEMP}/target"
+          auth_header="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          git init --quiet "${target}"
+          git -C "${target}" remote add origin \
+            "${GITHUB_SERVER_URL}/${REPOSITORY}.git"
+          git -C "${target}" -c \
+            "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --quiet --no-tags origin \
+            "refs/heads/main:refs/remotes/origin/main" \
+            "refs/heads/develop:refs/remotes/origin/develop"
+          test "$(git -C "${target}" rev-parse refs/remotes/origin/main)" = \
+            "${EVENT_BASE}"
+          test "$(git -C "${target}" rev-parse refs/remotes/origin/develop)" = \
+            "${EVENT_HEAD}"
+          printf 'controller=%s\n' "${controller}" >>"${GITHUB_OUTPUT}"
+          printf 'target=%s\n' "${target}" >>"${GITHUB_OUTPUT}"
+
+      - name: Aggregate exact protected ingress evidence
+        id: aggregate
+        env:
+          CONTROLLER: ${{ steps.bind.outputs.controller }}
+          DEVTOOLS_IMAGE: >-
+            quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_BODY: ${{ github.event.changes.body.from }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          SENDER_ID: ${{ github.event.sender.id }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          TARGET: ${{ steps.bind.outputs.target }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          verifier_runtime="$(mktemp -d \
+            "${RUNNER_TEMP}/promotion-evidence.XXXXXXXX")"
+          chmod 0700 "${verifier_runtime}"
+          test ! -L "${verifier_runtime}"
+          test "$(stat -c %u -- "${verifier_runtime}")" = "$(id -u)"
+          test "$(stat -c %a -- "${verifier_runtime}")" = 700
+          verifier_home="${verifier_runtime}/home"
+          gh_config_dir="${verifier_runtime}/gh-config"
+          mkdir -m 0700 "${verifier_home}" "${gh_config_dir}"
+          output="${verifier_runtime}/promotion-evidence.json"
+          [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
+          test "${EVENT_ACTION}" = edited
+          test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
+          test "${SENDER_ID}" = 307565056
+          test "${SENDER_TYPE}" = Bot
+          head_marker="<!-- lit-promotion-head:${EVENT_HEAD} -->"
+          pending_marker="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
+          success_marker="<!-- lit-promotion-dispatch-succeeded:${EVENT_BASE}:${EVENT_HEAD} -->"
+          jq -en \
+            --arg before "${PREVIOUS_BODY}" \
+            --arg current "${EVENT_BODY}" \
+            --arg head_marker "${head_marker}" \
+            --arg pending "${pending_marker}" \
+            --arg success "${success_marker}" '
+              ($before | split("\n")) as $before_lines
+              | ($current | split("\n")) as $current_lines
+              | ([$before_lines[] |
+                select(startswith("<!-- lit-promotion-run:"))]) as $before_run
+              | ([$current_lines[] |
+                select(startswith("<!-- lit-promotion-run:"))]) as $current_run
+              | [$before_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and [$current_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and ($before_run | length) == 1
+              and $current_run == $before_run
+              and ($before_run[0] | test(
+                "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
+              ))
+              and [$before_lines[] | select(. == $pending)] == [$pending]
+              and [$before_lines[] | select(startswith("<!-- lit-promotion-dispatch-"))]
+                == [$pending]
+              and [$current_lines[] | select(. == $success)] == [$success]
+              and [$current_lines[] | select(startswith("<!-- lit-promotion-dispatch-"))]
+                == [$success]
+              and ($before_lines
+                | map(if . == $pending then $success else . end)) == $current_lines
+            ' >/dev/null
+          event_body_sha256="$(printf '%s' "${EVENT_BODY}" \
+            | sha256sum --binary | awk '{print $1}')"
+          [[ "${event_body_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          proxy_name="lit-promotion-proxy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          verifier_network="lit-promotion-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_verifier_network() {
+            docker rm --force "${proxy_name}" >/dev/null 2>&1 || true
+            docker network rm "${verifier_network}" >/dev/null 2>&1 || true
+          }
+          trap cleanup_verifier_network EXIT
+          docker network create --internal "${verifier_network}" >/dev/null
+          docker run --detach --rm \
+            --name "${proxy_name}" \
+            --network "${verifier_network}" \
+            --network-alias github-api-proxy \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --pids-limit 64 \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+            -e GH_TOKEN= \
+            -e GITHUB_TOKEN= \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "${CONTROLLER}:${CONTROLLER}:ro" \
+            "${DEVTOOLS_IMAGE}" \
+            python3 "${CONTROLLER}" --serve-github-api-proxy >/dev/null
+          docker network connect bridge "${proxy_name}"
+          proxy_ready=false
+          for _ in $(seq 1 20); do
+            if docker logs "${proxy_name}" 2>&1 \
+              | grep -Fxq 'github-api-proxy-ready'; then
+              proxy_ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "${proxy_ready}" = true
+          docker run --rm \
+            --read-only \
+            --network "${verifier_network}" \
+            --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --pids-limit 256 \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+            -e GITHUB_SERVER_URL \
+            -e GH_TOKEN \
+            -e GH_CONFIG_DIR="${gh_config_dir}" \
+            -e HOME="${verifier_home}" \
+            -e HTTPS_PROXY=http://github-api-proxy:8080 \
+            -e HTTP_PROXY=http://github-api-proxy:8080 \
+            -e ALL_PROXY= \
+            -e NO_PROXY= \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e RUNNER_TEMP="${verifier_runtime}" \
+            -v "${verifier_runtime}:${verifier_runtime}:rw" \
+            -v "${CONTROLLER}:${CONTROLLER}:ro" \
+            -v "${TARGET}:${TARGET}:ro" \
+            -w "${verifier_runtime}" \
+            "${DEVTOOLS_IMAGE}" \
+            python3 "${CONTROLLER}" \
+            --repository "${REPOSITORY}" \
+            --pull-request "${PR_NUMBER}" \
+            --base-ref main \
+            --head-ref develop \
+            --expected-base "${EVENT_BASE}" \
+            --expected-head "${EVENT_HEAD}" \
+            --expected-body-sha256 "${event_body_sha256}" \
+            --controller-sha "${WORKFLOW_SHA}" \
+            --repository-path "${TARGET}" \
+            --output "${output}" >/dev/null
+          jq -e \
+            --arg base "${EVENT_BASE}" \
+            --arg controller "${WORKFLOW_SHA}" \
+            --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            --argjson pull_request "${PR_NUMBER}" '
+              .schema_version == 1
+              and .repository == $repository
+              and .pull_request == $pull_request
+              and .base_sha == $base
+              and .head_sha == $head
+              and .controller_sha == $controller
+              and (.ingress_count | type == "number" and . > 0)
+              and (.ingress | length) == .ingress_count
+              and (.post_baseline_ingress_count | type == "number" and . > 0)
+              and .post_baseline_ingress_count <= .ingress_count
+              and (.diff.bytes | type == "number" and . > 0)
+              and (.diff.sha256 | test("^[0-9a-f]{64}$"))
+              and (.evidence_sha256 | test("^[0-9a-f]{64}$"))
+            ' "${output}" >/dev/null
+          package_sha256="$(sha256sum --binary "${output}" | awk '{print $1}')"
+          [[ "${package_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          evidence_sha256="$(jq -er .evidence_sha256 "${output}")"
+          {
+            printf 'evidence_sha256=%s\n' "${evidence_sha256}"
+            printf 'output=%s\n' "${output}"
+            printf 'package_sha256=%s\n' "${package_sha256}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Persist exact promotion evidence package
+        id: persist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: >-
+            promotion-evidence-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ steps.aggregate.outputs.output }}
+          if-no-files-found: error
+          compression-level: 9
+          overwrite: false
+          retention-days: 90
+
+      - name: Bind persisted package to the final result
+        env:
+          ARCHIVE_SHA256: ${{ steps.persist.outputs.artifact-digest }}
+          ARTIFACT_ID: ${{ steps.persist.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.persist.outputs.artifact-url }}
+          EVIDENCE_SHA256: ${{ steps.aggregate.outputs.evidence_sha256 }}
+          EVIDENCE_PATH: ${{ steps.aggregate.outputs.output }}
+          PACKAGE_SHA256: ${{ steps.aggregate.outputs.package_sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "${ARCHIVE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${ARTIFACT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${ARTIFACT_URL}" =~ ^https://github.com/[^/]+/[^/]+/actions/runs/[1-9][0-9]*/artifacts/[1-9][0-9]*$ ]]
+          [[ "${EVIDENCE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${PACKAGE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          jq -r '
+            "### Protected promotion evidence\n\n"
+            + "- Ingress PRs: \(.ingress_count)\n"
+            + "- Post-baseline reviewed PRs: \(.post_baseline_ingress_count)\n"
+            + "- Promotion bytes: \(.diff.bytes)\n"
+            + "- Promotion SHA-256: `\(.diff.sha256)`\n"
+            + "- Evidence SHA-256: `\(.evidence_sha256)`"
+          ' "${EVIDENCE_PATH}" >>"${GITHUB_STEP_SUMMARY}"
+          {
+            printf "\n- Evidence package SHA-256: \`%s\`\n" "${PACKAGE_SHA256}"
+            printf -- "- Persisted archive SHA-256: \`%s\`\n" "${ARCHIVE_SHA256}"
+            printf -- "- Persisted artifact: [%s](%s)\n" "${ARTIFACT_ID}" "${ARTIFACT_URL}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
   verify-protected-current-revision-evidence:
     # Keep the native Required-Workflow job distinct from the API evidence
     # check it verifies. GitHub Actions check runs share one App identity, so
@@ -2214,7 +2620,10 @@ jobs:
     # reservation alive while boundedly awaiting protected producer evidence;
     # the historical single verifier-only re-evaluation remains verifiable.
     needs: route-protected-current-revision
-    if: needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
+    if: >-
+      needs['route-protected-current-revision'].outputs.s0_candidate != 'true'
+      && needs['route-protected-current-revision'].outputs.promotion_candidate != 'true'
+      && needs['route-protected-current-revision'].outputs.promotion_pending != 'true'
     permissions:
       actions: read
       checks: write
@@ -6414,122 +6823,6 @@ jobs:
                 ' <<<"${producer}" >/dev/null
             else
               test "${producer_kind}" = copilot
-              authorization_pages="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Late%20review%20rerun%20authorization&filter=all&per_page=100")"
-              authorizations="$(jq -c \
-                --arg base "${EVENT_BASE}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg pr "${PR_NUMBER}" \
-                --arg producer "${producer_run_id}" '
-                  [.[].check_runs[]? |
-                    select(.name == "Late review rerun authorization") |
-                    select(.app.id == 15368 and .app.slug == "github-actions") |
-                    select(.head_sha == $head) |
-                    select((.external_id | type) == "string") |
-                    select(.external_id |
-                      test("^rep60-late-review-rerun:v1:[1-9][0-9]*:"
-                        + $pr + ":" + $producer + ":" + $base + ":"
-                        + $head + ":[1-9][0-9]*$"))]
-                ' <<<"${authorization_pages}")"
-              test "$(jq 'length' <<<"${authorizations}")" -eq 1
-              authorization="$(jq -c '.[0]' <<<"${authorizations}")"
-              jq -e '
-                .status == "completed"
-                and .conclusion == "success"
-                and (.output.summary | type) == "string"
-              ' <<<"${authorization}" >/dev/null
-              authorization_external_id="$(jq -er '.external_id' \
-                <<<"${authorization}")"
-              [[ "${authorization_external_id}" =~ ^rep60-late-review-rerun:v1:([1-9][0-9]*):${PR_NUMBER}:${producer_run_id}:${EVENT_BASE}:${EVENT_HEAD}:([1-9][0-9]*)$ ]]
-              refresh_run_id="${BASH_REMATCH[1]}"
-              review_id="${BASH_REMATCH[2]}"
-              refresh_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${refresh_run_id}"
-              test "$(jq -r '.details_url // empty' <<<"${authorization}")" = \
-                "${refresh_run_url}"
-              authorization_summary="$(jq -er \
-                '.output.summary | fromjson | select(type == "object")' \
-                <<<"${authorization}")"
-              jq -e \
-                --arg base "${EVENT_BASE}" \
-                --arg controller "${controller_sha}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg refresh_url "${refresh_run_url}" \
-                --argjson pr_number "${PR_NUMBER}" \
-                --argjson producer_id "${producer_run_id}" \
-                --argjson refresh_id "${refresh_run_id}" \
-                --argjson review_id "${review_id}" '
-                  (keys | sort) == ([
-                    "base_sha", "controller_sha", "head_sha",
-                    "producer_run_id", "pull_request_number",
-                    "refresh_run_id", "refresh_run_url", "review_id",
-                    "review_submitted_at", "schema"
-                  ] | sort)
-                  and .schema == "rep60-late-review-rerun/v1"
-                  and .base_sha == $base
-                  and .controller_sha == $controller
-                  and .head_sha == $head
-                  and .producer_run_id == $producer_id
-                  and .pull_request_number == $pr_number
-                  and .refresh_run_id == $refresh_id
-                  and .refresh_run_url == $refresh_url
-                  and .review_id == $review_id
-                  and (.review_submitted_at | type) == "string"
-                ' <<<"${authorization_summary}" >/dev/null
-
-              refresh_run="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${refresh_run_id}")"
-              jq -e \
-                --arg api_url "${GITHUB_API_URL}" \
-                --arg base_ref "${base_ref}" \
-                --arg base_sha "${EVENT_BASE}" \
-                --arg head_ref "${head_ref}" \
-                --arg head_sha "${EVENT_HEAD}" \
-                --arg repository "${REPOSITORY}" \
-                --arg run_url "${refresh_run_url}" \
-                --argjson pr_number "${PR_NUMBER}" '
-                  .event == "pull_request_review"
-                  and .run_attempt == 1
-                  and .status == "completed"
-                  and .conclusion == "success"
-                  and .path == ".github/workflows/copilot-review-refresh.yml"
-                  and .name == "Refresh Copilot review gate"
-                  and .head_branch == $head_ref
-                  and .head_sha == $head_sha
-                  and .html_url == $run_url
-                  and .actor.login == "Copilot"
-                  and .triggering_actor.login == "Copilot"
-                  and (.pull_requests | length) == 1
-                  and .pull_requests[0].number == $pr_number
-                  and .pull_requests[0].base.ref == $base_ref
-                  and .pull_requests[0].base.sha == $base_sha
-                  and .pull_requests[0].base.repo.url
-                    == ($api_url + "/repos/" + $repository)
-                  and .pull_requests[0].head.ref == $head_ref
-                  and .pull_requests[0].head.sha == $head_sha
-                  and .pull_requests[0].head.repo.url
-                    == ($api_url + "/repos/" + $repository)
-                ' <<<"${refresh_run}" >/dev/null
-
-              review="$(gh api \
-                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews/${review_id}")"
-              jq -e \
-                --arg head "${EVENT_HEAD}" \
-                --arg submitted "$(jq -r .review_submitted_at \
-                  <<<"${authorization_summary}")" \
-                --argjson review_id "${review_id}" '
-                  .id == $review_id
-                  and .user.login == "copilot-pull-request-reviewer[bot]"
-                  and .user.type == "Bot"
-                  and .commit_id == $head
-                  and (.state == "COMMENTED" or .state == "APPROVED")
-                  and .submitted_at == $submitted
-                  and ((.body // "") | ascii_downcase |
-                    (contains("unable to review this pull request") | not)
-                    and (contains("premium request quota") | not)
-                    and (contains("premium requests quota") | not)
-                    and (contains("encountered an error") | not))
-                ' <<<"${review}" >/dev/null
-
               attempt_one="$(gh api \
                 "repos/${REPOSITORY}/actions/runs/${producer_run_id}/attempts/1")"
               jq -e \
@@ -6562,9 +6855,82 @@ jobs:
                     and .conclusion == "failure") |
                   .completed_at] | select(length == 1) | .[0]
                 ' <<<"${attempt_one_jobs}")"
+
+              review_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+              reviews="$(jq -c \
+                --arg producer_created_at "$(jq -er '.created_at | strings' \
+                  <<<"${attempt_one}")" \
+                --arg head "${EVENT_HEAD}" '
+                  [.[][]? |
+                    select(.user.login == "copilot-pull-request-reviewer[bot]") |
+                    select(.user.type == "Bot") |
+                    select(.commit_id == $head) |
+                    select(.state == "COMMENTED" or .state == "APPROVED") |
+                    select((.id | type) == "number" and .id > 0) |
+                    select((.submitted_at | type) == "string") |
+                    select((.submitted_at | fromdateiso8601?)
+                      >= ($producer_created_at | fromdateiso8601)) |
+                    select(((.body // "") | ascii_downcase |
+                      (contains("unable to review this pull request") | not)
+                      and (contains("premium request quota") | not)
+                      and (contains("premium requests quota") | not)
+                      and (contains("encountered an error") | not)))]
+                ' <<<"${review_pages}")"
+              test "$(jq 'length' <<<"${reviews}")" -eq 1
+              review="$(jq -c '.[0]' <<<"${reviews}")"
               review_submitted_at="$(jq -r .submitted_at <<<"${review}")"
-              test "$(date -u -d "${review_submitted_at}" +%s)" -gt \
-                "$(date -u -d "${first_verifier_completed_at}" +%s)"
+
+              refresh_pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}&per_page=100")"
+              refresh_runs="$(jq -c \
+                --arg api_url "${GITHUB_API_URL}" \
+                --arg author "${author}" \
+                --arg base_ref "${base_ref}" \
+                --arg base_sha "${EVENT_BASE}" \
+                --arg head_ref "${head_ref}" \
+                --arg head_sha "${EVENT_HEAD}" \
+                --arg first_verifier_completed_at \
+                  "${first_verifier_completed_at}" \
+                --arg repository "${REPOSITORY}" \
+                --arg review_submitted_at "${review_submitted_at}" \
+                --arg producer_updated_at "$(jq -er '.updated_at | strings' \
+                  <<<"${producer}")" \
+                --argjson pr_number "${PR_NUMBER}" '
+                  [.[].workflow_runs[]? |
+                    select(.event == "pull_request_review"
+                      and .run_attempt == 1) |
+                    select(.status == "completed" and .conclusion == "success") |
+                    select(.path == ".github/workflows/copilot-review-refresh.yml") |
+                    select(.name == "Refresh Copilot review gate") |
+                    select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                    select((.created_at | type) == "string") |
+                    select((.updated_at | type) == "string") |
+                    select((.created_at | fromdateiso8601?)
+                      > ($first_verifier_completed_at | fromdateiso8601)) |
+                    select((.created_at | fromdateiso8601?)
+                      >= ($review_submitted_at | fromdateiso8601)) |
+                    select((.updated_at | fromdateiso8601?)
+                      <= ($producer_updated_at | fromdateiso8601)) |
+                    select(
+                      ((.actor.login == "Copilot"
+                        or .actor.login == "copilot-pull-request-reviewer"
+                        or .actor.login == "copilot-pull-request-reviewer[bot]")
+                        and .triggering_actor.login == .actor.login)
+                      or (.actor.login == $author
+                        and .triggering_actor.login == $author)) |
+                    select((.pull_requests | length) == 1) |
+                    select(.pull_requests[0].number == $pr_number) |
+                    select(.pull_requests[0].base.ref == $base_ref) |
+                    select(.pull_requests[0].base.sha == $base_sha) |
+                    select(.pull_requests[0].base.repo.url
+                      == ($api_url + "/repos/" + $repository)) |
+                    select(.pull_requests[0].head.ref == $head_ref) |
+                    select(.pull_requests[0].head.sha == $head_sha) |
+                    select(.pull_requests[0].head.repo.url
+                      == ($api_url + "/repos/" + $repository))]
+                ' <<<"${refresh_pages}")"
+              test "$(jq 'length' <<<"${refresh_runs}")" -eq 1
 
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
               jq -e --arg actor "${author}" \
@@ -7185,6 +7551,7 @@ jobs:
       - reserve-s0-feature-main-prestage
       - verify-s0-feature-main-prestage
       - finalize-s0-feature-main-prestage
+      - verify-develop-main-promotion-evidence
       - verify-protected-current-revision-evidence
     if: always()
     permissions: {}
@@ -7198,6 +7565,12 @@ jobs:
             ${{ needs['finalize-s0-feature-main-prestage'].result }}
           LEGACY_RESULT: >-
             ${{ needs['verify-protected-current-revision-evidence'].result }}
+          PROMOTION_CANDIDATE: >-
+            ${{ needs['route-protected-current-revision'].outputs.promotion_candidate }}
+          PROMOTION_PENDING: >-
+            ${{ needs['route-protected-current-revision'].outputs.promotion_pending }}
+          PROMOTION_RESULT: >-
+            ${{ needs['verify-develop-main-promotion-evidence'].result }}
           RESERVE_RESULT: >-
             ${{ needs['reserve-s0-feature-main-prestage'].result }}
           ROUTE_RESULT: >-
@@ -7210,26 +7583,58 @@ jobs:
             ${{ needs['verify-s0-feature-main-prestage'].result }}
         run: |
           set -euo pipefail
+          PROMOTION_CANDIDATE="${PROMOTION_CANDIDATE:-false}"
+          PROMOTION_PENDING="${PROMOTION_PENDING:-false}"
+          PROMOTION_RESULT="${PROMOTION_RESULT:-skipped}"
           test "${ROUTE_RESULT}" = success
           if [ "${S0_PRESTAGE}" = true ]; then
             test "${S0_CANDIDATE}" = true
             test "${RESERVE_RESULT}" = success
             test "${VERIFY_RESULT}" = success
             test "${FINALIZE_RESULT}" = success
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
           elif [ "${S0_CANDIDATE}" = true ]; then
             test "${S0_PRESTAGE}" = false
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = skipped
             echo 'S0 candidate action requires the separately authorized listener.' >&2
             exit 1
+          elif [ "${PROMOTION_PENDING}" = true ]; then
+            test "${S0_CANDIDATE}" = false
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_RESULT}" = skipped
+            test "${LEGACY_RESULT}" = skipped
+            echo 'Release-App promotion is pending its authenticated finalization event.' >&2
+            exit 1
+          elif [ "${PROMOTION_CANDIDATE}" = true ]; then
+            test "${S0_CANDIDATE}" = false
+            test "${S0_PRESTAGE}" = false
+            test "${RESERVE_RESULT}" = skipped
+            test "${VERIFY_RESULT}" = skipped
+            test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_PENDING}" = false
+            test "${PROMOTION_RESULT}" = success
+            test "${LEGACY_RESULT}" = skipped
           else
             test "${S0_CANDIDATE}" = false
             test "${S0_PRESTAGE}" = false
             test "${RESERVE_RESULT}" = skipped
             test "${VERIFY_RESULT}" = skipped
             test "${FINALIZE_RESULT}" = skipped
+            test "${PROMOTION_CANDIDATE}" = false
+            test "${PROMOTION_PENDING}" = false
+            test "${PROMOTION_RESULT}" = skipped
             test "${LEGACY_RESULT}" = success
           fi
