@@ -9369,7 +9369,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "\n  verify-protected-current-revision-evidence:\n", 1
         )[0]
         self.assertIn(
-            "name: Authorize exact Supplementary catch-up v5 successor",
+            "github.repository == 'lightning-it/shared-assets-lit'",
+            promotion,
+        )
+        self.assertIn(
+            "&& 'Authorize exact Supplementary catch-up v5 successor'",
+            promotion,
+        )
+        self.assertIn(
+            "|| 'Verify aggregated develop-to-main promotion evidence'",
             promotion,
         )
         self.assertIn("needs: route-protected-current-revision", promotion)
