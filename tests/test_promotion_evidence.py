@@ -203,11 +203,32 @@ def evidence_api(run: dict[str, object]):
 
 
 class PromotionEvidenceTests(unittest.TestCase):
+    def test_github_api_proxy_accepts_only_exact_connect_target(self) -> None:
+        accepted = (
+            b"CONNECT api.github.com:443 HTTP/1.1\r\n"
+            b"Host: api.github.com:443\r\n"
+            b"User-Agent: gh\r\n\r\n"
+        )
+        MODULE.validate_github_api_connect_request(accepted)
+        rejected = (
+            accepted.replace(b"api.github.com", b"example.com"),
+            accepted + b"smuggled",
+            accepted.replace(
+                b"User-Agent: gh\r\n",
+                b"Host: api.github.com:443\r\nUser-Agent: gh\r\n",
+            ),
+            accepted.replace(
+                b"User-Agent: gh\r\n",
+                b"Proxy-Authorization: Basic secret\r\n",
+            ),
+        )
+        for request in rejected:
+            with self.subTest(request=request), self.assertRaises(MODULE.EvidenceError):
+                MODULE.validate_github_api_connect_request(request)
+
     def test_github_api_json_parser_fails_closed(self) -> None:
         with mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}):
-            with mock.patch.object(
-                MODULE, "run", return_value='{"id":1,"id":2}'
-            ):
+            with mock.patch.object(MODULE, "run", return_value='{"id":1,"id":2}'):
                 with self.assertRaisesRegex(
                     MODULE.EvidenceError, "check-summary-duplicate-key"
                 ):
@@ -397,9 +418,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 base_sha=BASE,
                 head_sha=HEAD,
             )
-        pages[0]["check_runs"][0]["output"][
-            "title"
-        ] = "Current revision review passed"
+        pages[0]["check_runs"][0]["output"]["title"] = "Current revision review passed"
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
                 pages,
@@ -436,9 +455,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "type": "Bot",
         }
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
-        with mock.patch.object(
-            MODULE, "gh_json", side_effect=evidence_api(run)
-        ):
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
             MODULE.bound_review_check(
                 [{"check_runs": [check_run(external_id, v6_summary())]}],
                 repository="lightning-it/example",
@@ -452,9 +469,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "id": 1,
             "type": "User",
         }
-        with mock.patch.object(
-            MODULE, "gh_json", side_effect=evidence_api(run)
-        ):
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
             with self.assertRaisesRegex(
                 MODULE.EvidenceError, "producer-run-triggering-actor-identity"
             ):
@@ -471,9 +486,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         for mutate, reason in (
             (
-                lambda run: run["pull_requests"].append(
-                    dict(run["pull_requests"][0])
-                ),
+                lambda run: run["pull_requests"].append(dict(run["pull_requests"][0])),
                 "producer-run-pull-request-count",
             ),
             (
@@ -481,17 +494,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "producer-run-pull-request-binding",
             ),
             (
-                lambda run: run["pull_requests"][0]["head"].update(
-                    {"sha": "f" * 40}
-                ),
+                lambda run: run["pull_requests"][0]["head"].update({"sha": "f" * 40}),
                 "producer-run-pull-request-head-binding",
             ),
         ):
             run = producer_run()
             mutate(run)
-            with mock.patch.object(
-                MODULE, "gh_json", side_effect=evidence_api(run)
-            ):
+            with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
                 with self.assertRaisesRegex(MODULE.EvidenceError, reason):
                     MODULE.bound_review_check(
                         [{"check_runs": [check_run(external_id, v6_summary())]}],
@@ -514,13 +523,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             ):
                 records.append(
                     MODULE.bound_review_check(
-                        [
-                            {
-                                "check_runs": [
-                                    check_run(external_id, json.dumps(summary))
-                                ]
-                            }
-                        ],
+                        [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
                         repository="lightning-it/example",
                         pull=ingress_pull(),
                         pull_number=17,
@@ -528,9 +531,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
                 )
-        self.assertNotEqual(
-            records[0]["summary_sha256"], records[1]["summary_sha256"]
-        )
+        self.assertNotEqual(records[0]["summary_sha256"], records[1]["summary_sha256"])
 
     def test_v4_release_review_requires_exact_json_evidence(self) -> None:
         summary = json.dumps(
@@ -579,9 +580,36 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )["evidence_kind"],
                 "release-app",
             )
+
+        mismatched_merge_base = json.loads(summary)
+        mismatched_merge_base["merge_base_sha"] = "9" * 40
+        pages[0]["check_runs"][0]["output"]["summary"] = json.dumps(
+            mismatched_merge_base
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            return_value=producer_run(
+                login="lightning-it-release-automation[bot]", release=True
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+            ):
+                MODULE.bound_review_check(
+                    pages,
+                    repository="lightning-it/example",
+                    pull=release_pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                    merge_base_sha=BASE,
+                )
+        pages[0]["check_runs"][0]["output"]["summary"] = summary
 
         pages[0]["check_runs"][0]["output"]["title"] = "unbound title"
         with self.assertRaisesRegex(
@@ -594,6 +622,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 pull_number=17,
                 base_sha=BASE,
                 head_sha=HEAD,
+                merge_base_sha=BASE,
             )
         pages[0]["check_runs"][0]["output"][
             "title"
@@ -614,6 +643,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
         untrusted = json.loads(summary)
@@ -636,6 +666,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
         for field in ("pull_request_number", "producer_run_id"):
@@ -653,6 +684,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
     def test_ancestry_exemption_requires_exact_ref_and_author_scope(self) -> None:
@@ -665,16 +697,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         release["head"]["ref"] = "backmerge/release-main"
         self.assertEqual(
             "ancestry-backmerge",
-            MODULE.expected_evidence_kind(
-                release, repository="lightning-it/example"
-            ),
+            MODULE.expected_evidence_kind(release, repository="lightning-it/example"),
         )
         release["head"]["ref"] = "backmerge/release"
         self.assertEqual(
             "release-app",
-            MODULE.expected_evidence_kind(
-                release, repository="lightning-it/example"
-            ),
+            MODULE.expected_evidence_kind(release, repository="lightning-it/example"),
         )
 
         managed = ingress_pull(
@@ -686,16 +714,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         managed["head"]["ref"] = "backmerge/sync-main"
         self.assertEqual(
             "ancestry-backmerge",
-            MODULE.expected_evidence_kind(
-                managed, repository="lightning-it/.github"
-            ),
+            MODULE.expected_evidence_kind(managed, repository="lightning-it/.github"),
         )
-        with self.assertRaisesRegex(
-            MODULE.EvidenceError, "ancestry-backmerge-author"
-        ):
-            MODULE.expected_evidence_kind(
-                managed, repository="lightning-it/example"
-            )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "ancestry-backmerge-author"):
+            MODULE.expected_evidence_kind(managed, repository="lightning-it/example")
 
         release["head"]["ref"] = "backmerge/release-main"
         with (
@@ -727,9 +749,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "ref": "develop",
             "repo": {"full_name": "lightning-it/example"},
         }
-        boundary["head"]["ref"] = (
-            f"backmerge/example-{BASE[:12]}-{MERGE[:12]}-main"
-        )
+        boundary["head"]["ref"] = f"backmerge/example-{BASE[:12]}-{MERGE[:12]}-main"
         self.assertTrue(
             MODULE.is_authorized_ancestry_boundary(
                 boundary,
@@ -795,7 +815,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             target.mkdir()
             link = Path(directory) / "repository"
             link.symlink_to(target, target_is_directory=True)
-            with self.assertRaisesRegex(MODULE.EvidenceError, "repository-path-symlink"):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "repository-path-symlink"
+            ):
                 MODULE.validate_repository_path(link)
 
     def test_baseline_boundary_is_not_post_baseline_ingress(self) -> None:
@@ -804,9 +826,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual((False, True), MODULE.classify_ingress_position(2, 1))
 
     def test_ancestry_boundary_requires_exact_merge_parents(self) -> None:
-        with mock.patch.object(
-            MODULE, "git", return_value=f"{MERGE} {BASE}"
-        ):
+        with mock.patch.object(MODULE, "git", return_value=f"{MERGE} {BASE}"):
             self.assertTrue(
                 MODULE.has_exact_ancestry_merge_parents(
                     ROOT,
@@ -815,9 +835,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     expected_main=BASE,
                 )
             )
-        with mock.patch.object(
-            MODULE, "git", return_value=f"{MERGE} {'9' * 40}"
-        ):
+        with mock.patch.object(MODULE, "git", return_value=f"{MERGE} {'9' * 40}"):
             self.assertFalse(
                 MODULE.has_exact_ancestry_merge_parents(
                     ROOT,
@@ -897,15 +915,11 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(
             "managed-sync",
-            MODULE.expected_evidence_kind(
-                managed, repository="lightning-it/example"
-            ),
+            MODULE.expected_evidence_kind(managed, repository="lightning-it/example"),
         )
         managed["user"]["id"] = 1
         with self.assertRaisesRegex(MODULE.EvidenceError, "managed-sync-identity"):
-            MODULE.expected_evidence_kind(
-                managed, repository="lightning-it/example"
-            )
+            MODULE.expected_evidence_kind(managed, repository="lightning-it/example")
 
     def test_renovate_policy_rebinds_labels_head_and_edit_time(self) -> None:
         renovate = ingress_pull(
@@ -935,9 +949,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         renovate["labels"].pop()
         renovate["user"]["id"] = 1
         with self.assertRaisesRegex(MODULE.EvidenceError, "renovate-identity"):
-            MODULE.expected_evidence_kind(
-                renovate, repository="lightning-it/example"
-            )
+            MODULE.expected_evidence_kind(renovate, repository="lightning-it/example")
 
     def test_graphql_errors_fail_closed_before_partial_thread_data(self) -> None:
         partial = {
@@ -958,9 +970,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             },
         }
         with mock.patch.object(MODULE, "gh_json", return_value=partial):
-            with self.assertRaisesRegex(
-                MODULE.EvidenceError, "thread-response-errors"
-            ):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "thread-response-errors"):
                 MODULE.collect_review_threads("lightning-it/example", 17)
 
     def test_review_summary_rejects_duplicate_keys_and_numeric_hashes(self) -> None:
@@ -1017,12 +1027,11 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
     def test_review_kind_and_producer_identity_are_bound_to_pull_author(self) -> None:
-        managed = (
-            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
-        )
+        managed = f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
         with self.assertRaises(MODULE.EvidenceError):
             MODULE.bound_review_check(
                 [{"check_runs": [check_run(managed, v6_summary("managed-sync"))]}],
@@ -1048,6 +1057,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
         for field, value in (("id", 2), ("type", "Bot")):
@@ -1070,9 +1080,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         for field, value in (("id", 2), ("type", "Bot")):
             wrong_trigger = producer_run()
-            wrong_trigger["triggering_actor"] = dict(
-                wrong_trigger["triggering_actor"]
-            )
+            wrong_trigger["triggering_actor"] = dict(wrong_trigger["triggering_actor"])
             wrong_trigger["triggering_actor"][field] = value
             with mock.patch.object(
                 MODULE, "gh_json", side_effect=evidence_api(wrong_trigger)
@@ -1098,8 +1106,11 @@ class PromotionEvidenceTests(unittest.TestCase):
         ):
             malformed = json.loads(v6_summary())
             malformed[field] = True
-            with self.subTest(field=field), mock.patch.object(
-                MODULE, "gh_json", side_effect=evidence_api(producer_run())
+            with (
+                self.subTest(field=field),
+                mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(producer_run())
+                ),
             ):
                 with self.assertRaisesRegex(MODULE.EvidenceError, label):
                     MODULE.bound_review_check(
@@ -1133,9 +1144,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         failed = producer_run()
         failed["conclusion"] = "failure"
-        with mock.patch.object(
-            MODULE, "gh_json", side_effect=evidence_api(failed)
-        ):
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(failed)):
             with self.assertRaisesRegex(
                 MODULE.EvidenceError, "producer-run-conclusion"
             ):
@@ -1146,6 +1155,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
+                    merge_base_sha=BASE,
                 )
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
@@ -1315,7 +1325,11 @@ class PromotionEvidenceTests(unittest.TestCase):
                 if endpoint == "repos/lightning-it/example/branches/main":
                     return {"name": "main", "protected": True, "commit": {"sha": BASE}}
                 if endpoint == "repos/lightning-it/example/branches/develop":
-                    return {"name": "develop", "protected": True, "commit": {"sha": HEAD}}
+                    return {
+                        "name": "develop",
+                        "protected": True,
+                        "commit": {"sha": HEAD},
+                    }
                 raise AssertionError(endpoint)
 
             with tempfile.TemporaryDirectory() as directory:
@@ -1362,9 +1376,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                             "is_authorized_ancestry_boundary",
                             side_effect=lambda pull, **_kwargs: pull["number"] == 10,
                         ),
-                        mock.patch.object(
-                            MODULE, "validate_ancestry_boundary_content"
-                        ),
+                        mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
+                        mock.patch.object(MODULE, "git", return_value=BASE),
                         mock.patch.object(
                             MODULE,
                             "collect_bound_ingress_evidence",
@@ -1541,11 +1554,19 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("controller_ref=main", promotion_job)
         self.assertIn("controller_ref=develop", promotion_job)
         self.assertIn('-v "${TARGET}:${TARGET}:ro"', promotion_job)
+        self.assertIn(
+            'docker network create --internal "${verifier_network}"', promotion_job
+        )
+        self.assertIn('--network "${verifier_network}"', promotion_job)
+        self.assertIn("--network-alias github-api-proxy", promotion_job)
+        self.assertIn("--serve-github-api-proxy", promotion_job)
+        self.assertIn("-e GH_TOKEN=", promotion_job)
+        self.assertIn("-e GH_TOKEN \\", promotion_job)
+        self.assertIn("-e HTTPS_PROXY=http://github-api-proxy:8080", promotion_job)
+        self.assertNotIn("--network bridge \\", promotion_job)
         self.assertNotIn("promotion_review", promotion_job)
         self.assertGreaterEqual(
-            SCRIPT.read_text(encoding="utf-8").count(
-                "collect_bound_ingress_evidence("
-            ),
+            SCRIPT.read_text(encoding="utf-8").count("collect_bound_ingress_evidence("),
             3,
         )
         self.assertGreaterEqual(

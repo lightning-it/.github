@@ -2459,9 +2459,44 @@ jobs:
           event_body_sha256="$(printf '%s' "${EVENT_BODY}" \
             | sha256sum --binary | awk '{print $1}')"
           [[ "${event_body_sha256}" =~ ^[0-9a-f]{64}$ ]]
+          proxy_name="lit-promotion-proxy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          verifier_network="lit-promotion-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_verifier_network() {
+            docker rm --force "${proxy_name}" >/dev/null 2>&1 || true
+            docker network rm "${verifier_network}" >/dev/null 2>&1 || true
+          }
+          trap cleanup_verifier_network EXIT
+          docker network create --internal "${verifier_network}" >/dev/null
+          docker run --detach --rm \
+            --name "${proxy_name}" \
+            --network "${verifier_network}" \
+            --network-alias github-api-proxy \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges=true \
+            --pids-limit 64 \
+            --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+            -e GH_TOKEN= \
+            -e GITHUB_TOKEN= \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "${CONTROLLER}:${CONTROLLER}:ro" \
+            "${DEVTOOLS_IMAGE}" \
+            python3 "${CONTROLLER}" --serve-github-api-proxy >/dev/null
+          docker network connect bridge "${proxy_name}"
+          proxy_ready=false
+          for _ in $(seq 1 20); do
+            if docker logs "${proxy_name}" 2>&1 \
+              | grep -Fxq 'github-api-proxy-ready'; then
+              proxy_ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "${proxy_ready}" = true
           docker run --rm \
             --read-only \
-            --network bridge \
+            --network "${verifier_network}" \
             --cap-drop ALL \
             --security-opt no-new-privileges=true \
             --pids-limit 256 \
@@ -2469,6 +2504,10 @@ jobs:
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
             -e GITHUB_SERVER_URL \
             -e GH_TOKEN \
+            -e HTTPS_PROXY=http://github-api-proxy:8080 \
+            -e HTTP_PROXY=http://github-api-proxy:8080 \
+            -e ALL_PROXY= \
+            -e NO_PROXY= \
             -e PYTHONDONTWRITEBYTECODE=1 \
             -e RUNNER_TEMP \
             -v "${RUNNER_TEMP}:${RUNNER_TEMP}:rw" \

@@ -15,6 +15,9 @@ import hashlib
 import json
 import os
 import re
+import select
+import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -41,8 +44,7 @@ V5_EXTERNAL_ID = re.compile(
     r"(?P<base>[0-9a-f]{40}):(?P<head>[0-9a-f]{40})$"
 )
 V4_EXTERNAL_ID = re.compile(
-    r"^mlx90-current-revision:v4:(?P<run>[1-9][0-9]*):"
-    r"(?P<input>[0-9a-f]{64})$"
+    r"^mlx90-current-revision:v4:(?P<run>[1-9][0-9]*):" r"(?P<input>[0-9a-f]{64})$"
 )
 RELEASE_APP_LOGIN = "lightning-it-release-automation[bot]"
 RELEASE_APP_ID = 307565056
@@ -55,10 +57,103 @@ GITHUB_ACTIONS_ID = 41898282
 MAX_API_BYTES = 16 * 1024 * 1024
 MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
+GITHUB_API_PROXY_PORT = 8080
+MAX_PROXY_HEADER_BYTES = 8192
 
 
 class EvidenceError(ValueError):
     """A promotion evidence invariant failed closed."""
+
+
+def validate_github_api_connect_request(payload: bytes) -> None:
+    """Accept only one exact HTTPS CONNECT request for api.github.com."""
+    require(
+        0 < len(payload) <= MAX_PROXY_HEADER_BYTES,
+        "github-api-proxy-request-size",
+    )
+    require(
+        payload.endswith(b"\r\n\r\n") and payload.count(b"\r\n\r\n") == 1,
+        "github-api-proxy-request-framing",
+    )
+    try:
+        lines = payload[:-4].decode("ascii", errors="strict").split("\r\n")
+    except UnicodeDecodeError as error:
+        raise EvidenceError("github-api-proxy-request-encoding") from error
+    require(
+        bool(lines) and lines[0] == "CONNECT api.github.com:443 HTTP/1.1",
+        "github-api-proxy-target",
+    )
+    hosts: list[str] = []
+    for line in lines[1:]:
+        require(bool(line) and not line[0].isspace(), "github-api-proxy-header")
+        name, separator, value = line.partition(":")
+        require(
+            separator == ":"
+            and re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name) is not None,
+            "github-api-proxy-header",
+        )
+        require("\r" not in value and "\n" not in value, "github-api-proxy-header")
+        if name.lower() == "host":
+            hosts.append(value.strip())
+        require(name.lower() != "proxy-authorization", "github-api-proxy-auth")
+    require(hosts == ["api.github.com:443"], "github-api-proxy-host")
+
+
+class GithubApiProxyHandler(socketserver.BaseRequestHandler):
+    """Minimal token-blind CONNECT relay restricted to GitHub's API host."""
+
+    def handle(self) -> None:
+        self.request.settimeout(15)
+        payload = b""
+        while b"\r\n\r\n" not in payload:
+            block = self.request.recv(
+                min(4096, MAX_PROXY_HEADER_BYTES + 1 - len(payload))
+            )
+            if not block:
+                return
+            payload += block
+            if len(payload) > MAX_PROXY_HEADER_BYTES:
+                return
+        try:
+            validate_github_api_connect_request(payload)
+            upstream = socket.create_connection(("api.github.com", 443), timeout=15)
+        except (EvidenceError, OSError):
+            self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+            return
+        with upstream:
+            upstream.settimeout(300)
+            self.request.sendall(
+                b"HTTP/1.1 200 Connection Established\r\nConnection: close\r\n\r\n"
+            )
+            sockets = [self.request, upstream]
+            while sockets:
+                readable, _, exceptional = select.select(sockets, [], sockets, 300)
+                if exceptional or not readable:
+                    return
+                for source in readable:
+                    target = upstream if source is self.request else self.request
+                    try:
+                        block = source.recv(65536)
+                    except OSError:
+                        return
+                    if not block:
+                        return
+                    target.sendall(block)
+
+
+class GithubApiProxyServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = False
+    daemon_threads = True
+
+
+def serve_github_api_proxy() -> None:
+    require(not os.environ.get("GH_TOKEN"), "github-api-proxy-gh-token")
+    require(not os.environ.get("GITHUB_TOKEN"), "github-api-proxy-github-token")
+    with GithubApiProxyServer(
+        ("0.0.0.0", GITHUB_API_PROXY_PORT), GithubApiProxyHandler
+    ) as server:
+        print("github-api-proxy-ready", flush=True)
+        server.serve_forever()
 
 
 def require(condition: bool, reason: str) -> None:
@@ -483,17 +578,11 @@ def is_authorized_ancestry_boundary(
         user = exact_object(value.get("user"), "ancestry-boundary-user")
         base = exact_object(value.get("base"), "ancestry-boundary-base")
         head = exact_object(value.get("head"), "ancestry-boundary-head")
-        base_repo = exact_object(
-            base.get("repo"), "ancestry-boundary-base-repository"
-        )
-        head_repo = exact_object(
-            head.get("repo"), "ancestry-boundary-head-repository"
-        )
+        base_repo = exact_object(base.get("repo"), "ancestry-boundary-base-repository")
+        head_repo = exact_object(head.get("repo"), "ancestry-boundary-head-repository")
         repository_name = repository.split("/", 1)[1]
         branch_component = (
-            repository_name[1:]
-            if repository_name.startswith(".")
-            else repository_name
+            repository_name[1:] if repository_name.startswith(".") else repository_name
         )
         expected_ref = (
             f"backmerge/{branch_component}-{expected_main[:12]}-"
@@ -528,9 +617,7 @@ def has_exact_ancestry_merge_parents(
     previous_develop: str,
     expected_main: str,
 ) -> bool:
-    parents = git(
-        ["show", "-s", "--format=%P", head_sha], repository_path
-    ).split()
+    parents = git(["show", "-s", "--format=%P", head_sha], repository_path).split()
     return parents == [previous_develop, expected_main]
 
 
@@ -597,8 +684,7 @@ def validate_ancestry_boundary_content(
         "ancestry-boundary-develop",
     )
     require(
-        text(evidence.get("repository"), "ancestry-boundary-repository")
-        == repository,
+        text(evidence.get("repository"), "ancestry-boundary-repository") == repository,
         "ancestry-boundary-repository",
     )
     require(
@@ -698,8 +784,7 @@ def validate_producer_run(
 ) -> JSON:
     check_id = integer(check.get("id"), "check-id")
     require(
-        check.get("details_url")
-        == f"https://github.com/{repository}/runs/{check_id}",
+        check.get("details_url") == f"https://github.com/{repository}/runs/{check_id}",
         "check-details-url",
     )
     user = exact_object(pull.get("user"), "associated-pull-user")
@@ -748,9 +833,7 @@ def validate_producer_run(
             "managed-sync": (
                 "deterministic provenance-bound managed distribution exemption"
             ),
-            "ancestry-backmerge": (
-                "deterministic evidence-bound ancestry exemption"
-            ),
+            "ancestry-backmerge": ("deterministic evidence-bound ancestry exemption"),
             "renovate": "deterministic policy-bound Renovate exemption",
         }
         require(
@@ -822,7 +905,8 @@ def validate_producer_run(
                 "schema",
             }
             require(
-                set(summary) in (
+                set(summary)
+                in (
                     expected_v5_keys,
                     expected_v5_keys | {"pull_request_number"},
                 ),
@@ -833,9 +917,7 @@ def validate_producer_run(
         repository_state = exact_object(
             gh_json(["api", f"repos/{repository}"]), "controller-repository"
         )
-        controller_ref = text(
-            repository_state.get("default_branch"), "controller-ref"
-        )
+        controller_ref = text(repository_state.get("default_branch"), "controller-ref")
         if evidence_kind == "renovate":
             require(
                 summary.get("controller_ref") == controller_ref,
@@ -892,9 +974,7 @@ def validate_producer_run(
     if evidence_kind == "copilot" and attempt == 2:
         require(
             triggering.get("login") == GITHUB_ACTIONS_LOGIN
-            and integer(
-                triggering.get("id"), "producer-run-triggering-actor-id"
-            )
+            and integer(triggering.get("id"), "producer-run-triggering-actor-id")
             == GITHUB_ACTIONS_ID
             and triggering.get("type") == "Bot",
             "producer-run-triggering-actor-identity",
@@ -902,9 +982,7 @@ def validate_producer_run(
     else:
         require(
             triggering.get("login") == author
-            and integer(
-                triggering.get("id"), "producer-run-triggering-actor-id"
-            )
+            and integer(triggering.get("id"), "producer-run-triggering-actor-id")
             == author_id
             and triggering.get("type") == author_type,
             "producer-run-triggering-actor-identity",
@@ -940,18 +1018,14 @@ def validate_producer_run(
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
         require(repository_state is not None, "producer-repository-state")
-        repository_id = integer(
-            repository_state.get("id"), "producer-repository-id"
-        )
+        repository_id = integer(repository_state.get("id"), "producer-repository-id")
         repository_name = repository.split("/", 1)[1]
         repository_url = f"https://api.github.com/repos/{repository}"
         associations = exact_array(
             run.get("pull_requests"), "producer-run-pull-requests"
         )
         require(len(associations) == 1, "producer-run-pull-request-count")
-        association = exact_object(
-            associations[0], "producer-run-pull-request"
-        )
+        association = exact_object(associations[0], "producer-run-pull-request")
         association_base = exact_object(
             association.get("base"), "producer-run-pull-request-base"
         )
@@ -981,8 +1055,7 @@ def validate_producer_run(
         require(
             integer(association.get("number"), "producer-run-pull-request-number")
             == pull_number
-            and association.get("url")
-            == f"{repository_url}/pulls/{pull_number}",
+            and association.get("url") == f"{repository_url}/pulls/{pull_number}",
             "producer-run-pull-request-binding",
         )
     return summary
@@ -996,6 +1069,7 @@ def bound_review_check(
     pull_number: int,
     base_sha: str,
     head_sha: str,
+    merge_base_sha: str | None = None,
 ) -> JSON:
     expected_kind = expected_evidence_kind(pull, repository=repository)
     matches: list[JSON] = []
@@ -1079,6 +1153,8 @@ def bound_review_check(
             or output_title != "Protected Exact-Revision Codex review passed"
         ):
             continue
+        require(merge_base_sha is not None, "expected-review-merge-base-missing")
+        expected_merge_base = sha(merge_base_sha, "expected-review-merge-base")
         evidence = review_summary(check)
         expected_v4_keys = {
             "base_sha",
@@ -1110,10 +1186,8 @@ def bound_review_check(
             == int(v4.group("run"))
             and evidence.get("input_sha256") == v4.group("input")
             and evidence.get("workflow_sha") == base_sha
-            and SHA.fullmatch(
-                text(evidence.get("merge_base_sha"), "review-summary-merge-base")
-            )
-            is not None
+            and sha(evidence.get("merge_base_sha"), "review-summary-merge-base")
+            == expected_merge_base
             and SHA.fullmatch(
                 text(
                     evidence.get("integration_tree_sha"),
@@ -1241,10 +1315,10 @@ def collect_bound_ingress_evidence(
     pull_number: int,
     base_sha: str,
     head_sha: str,
+    merge_base_sha: str | None = None,
 ) -> JSON:
     require(
-        expected_evidence_kind(pull, repository=repository)
-        != "ancestry-backmerge",
+        expected_evidence_kind(pull, repository=repository) != "ancestry-backmerge",
         "ancestry-backmerge-not-structural-boundary",
     )
     checks = gh_json(
@@ -1266,6 +1340,7 @@ def collect_bound_ingress_evidence(
             pull_number=pull_number,
             base_sha=base_sha,
             head_sha=head_sha,
+            merge_base_sha=merge_base_sha,
         ),
         "threads": validate_review_threads(
             collect_review_threads(repository, pull_number)
@@ -1346,9 +1421,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
     expected_base = sha(arguments.expected_base, "expected-base")
     expected_head = sha(arguments.expected_head, "expected-head")
     controller_sha = sha(arguments.controller_sha, "controller-sha")
-    expected_body_sha256 = text(
-        arguments.expected_body_sha256, "expected-body-sha256"
-    )
+    expected_body_sha256 = text(arguments.expected_body_sha256, "expected-body-sha256")
     require(
         SHA256.fullmatch(expected_body_sha256) is not None,
         "expected-body-sha256",
@@ -1460,12 +1533,20 @@ def verify(arguments: argparse.Namespace) -> JSON:
         threads: JSON | None = None
         if not ancestry_boundary:
             try:
+                ingress_merge_base = sha(
+                    git(
+                        ["merge-base", "--all", merge["base_sha"], merge["head_sha"]],
+                        repository_path,
+                    ),
+                    "ingress-merge-base",
+                )
                 bound = collect_bound_ingress_evidence(
                     repository=arguments.repository,
                     pull=pull,
                     pull_number=number,
                     base_sha=merge["base_sha"],
                     head_sha=merge["head_sha"],
+                    merge_base_sha=ingress_merge_base,
                 )
                 review = bound["review"]
                 threads = bound["threads"]
@@ -1554,11 +1635,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 pull_number=number,
                 base_sha=sha(item.get("base_sha"), "revalidation-base-sha"),
                 head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+                merge_base_sha=sha(
+                    git(
+                        [
+                            "merge-base",
+                            "--all",
+                            sha(item.get("base_sha"), "revalidation-base-sha"),
+                            sha(item.get("head_sha"), "revalidation-head-sha"),
+                        ],
+                        repository_path,
+                    ),
+                    "revalidation-merge-base",
+                ),
             )
             require(
                 canonical(refreshed["review"]) == canonical(item["review"])
-                and canonical(refreshed["threads"])
-                == canonical(item["threads"]),
+                and canonical(refreshed["threads"]) == canonical(item["threads"]),
                 "ingress-evidence-mutated-during-verification",
             )
             item["review"] = refreshed["review"]
@@ -1622,6 +1714,13 @@ def parse_arguments(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--serve-github-api-proxy"]:
+        try:
+            serve_github_api_proxy()
+        except (EvidenceError, OSError) as error:
+            print(f"promotion-evidence-proxy: {error}", file=sys.stderr)
+            return 1
+        return 0
     arguments = parse_arguments()
     try:
         result = verify(arguments)
