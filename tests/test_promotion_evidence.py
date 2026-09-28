@@ -360,7 +360,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
-    def test_first_parent_history_must_start_at_expected_base(self) -> None:
+    def test_first_parent_history_allows_structural_backmerge_anchor(self) -> None:
         def history_git(arguments: list[str], _: Path) -> str:
             if arguments == ["status", "--porcelain=v1", "--untracked-files=no"]:
                 return ""
@@ -386,10 +386,15 @@ class PromotionEvidenceTests(unittest.TestCase):
                 mock.patch.object(MODULE, "git", side_effect=history_git),
                 mock.patch.object(MODULE, "run", return_value=""),
             ):
-                with self.assertRaisesRegex(
-                    MODULE.EvidenceError, "first-parent-history-anchor-drift"
-                ):
-                    MODULE.first_parent_merges(Path(directory), BASE, HEAD)
+                history_anchor, integration_tree, merges = MODULE.first_parent_merges(
+                    Path(directory), BASE, HEAD
+                )
+        self.assertEqual(history_anchor, MERGE)
+        self.assertEqual(integration_tree, "4" * 40)
+        self.assertEqual(
+            merges,
+            [{"base_sha": MERGE, "head_sha": BASE, "merge_sha": HEAD}],
+        )
 
     def test_v6_review_check_binds_pr_base_and_head(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
