@@ -2022,12 +2022,7 @@ jobs:
     # a follow-up removes this repository-specific alias. The retired job's
     # approval environment was bound only to its now-unreachable Supplementary
     # tuple; it is intentionally not widened to this generic verifier.
-    name: >-
-      ${{
-        github.repository == 'lightning-it/shared-assets-lit'
-        && 'Authorize exact Supplementary catch-up v5 successor'
-        || 'Verify aggregated develop-to-main promotion evidence'
-      }}
+    name: ${{ github.repository == 'lightning-it/shared-assets-lit' && 'Authorize exact Supplementary catch-up v5 successor' || 'Verify aggregated develop-to-main promotion evidence' }}
     needs: route-protected-current-revision
     if: needs['route-protected-current-revision'].outputs.promotion_candidate == 'true'
     permissions:

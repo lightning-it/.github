@@ -9368,13 +9368,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split(
             "\n  verify-protected-current-revision-evidence:\n", 1
         )[0]
-        expected_name = """    name: >-
-      ${{
-        github.repository == 'lightning-it/shared-assets-lit'
-        && 'Authorize exact Supplementary catch-up v5 successor'
-        || 'Verify aggregated develop-to-main promotion evidence'
-      }}
-"""
+        expected_name = (
+            "    name: ${{ github.repository == "
+            "'lightning-it/shared-assets-lit' && "
+            "'Authorize exact Supplementary catch-up v5 successor' || "
+            "'Verify aggregated develop-to-main promotion evidence' }}\n"
+        )
         self.assertIn(expected_name, promotion)
         self.assertIn("needs: route-protected-current-revision", promotion)
         self.assertNotIn("normal-release-promotion-approval", promotion)
