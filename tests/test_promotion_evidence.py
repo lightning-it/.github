@@ -62,6 +62,7 @@ def check_run(
         "head_sha": HEAD,
         "status": "completed",
         "conclusion": "success",
+        "completed_at": "2026-09-27T00:04:30Z",
         "external_id": external_id,
         "details_url": "https://github.com/lightning-it/example/runs/99",
         "app": {"id": 15368, "slug": "github-actions"},
@@ -568,7 +569,9 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
-    def test_empty_run_association_uses_exact_provider_producer_suite(self) -> None:
+    def test_empty_run_association_uses_native_binding_when_check_suite_is_reused(
+        self,
+    ) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         run = producer_run()
         run["pull_requests"] = []
@@ -586,6 +589,23 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
         self.assertEqual(88, evidence["producer_run_id"])
+
+        early_check = check_run(external_id, v6_summary())
+        early_check["completed_at"] = "2026-09-27T00:03:00Z"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [early_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
         mismatched_suite = {
             "id": 199,
@@ -735,6 +755,36 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
         self.assertEqual(88, evidence["producer_run_id"])
+
+        for marker in (
+            "Unable to review this pull request",
+            "Wasn't able to review any files",
+            "Wasn’t able to review any files",
+            "Premium request quota exhausted",
+            "Premium request quota exceeded",
+            "Suppressed comments",
+            "Encountered an error",
+        ):
+            with self.subTest(marker=marker), mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(
+                    run,
+                    review=valid_review
+                    | {"body": f"{valid_review['body']}\n{marker}"},
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "producer-review-binding"
+                ):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
 
         managed_run = producer_run(
             login="lightning-it-shared-assets-sync[bot]"

@@ -1033,6 +1033,10 @@ def validate_producer_run(
             suite_id = integer(
                 run.get("check_suite_id"), "producer-run-check-suite-id"
             )
+            # GitHub may reuse a neutral Checks API result from an earlier suite
+            # when a successor PR has the same head. Treat that check only as an
+            # untrusted locator: the exact provider run, PR, merge, native review,
+            # and completion chronology are authenticated independently below.
             suite = exact_object(
                 gh_json(["api", f"repos/{repository}/check-suites/{suite_id}"]),
                 "producer-check-suite",
@@ -1121,6 +1125,9 @@ def validate_producer_run(
             )
             run_created = timestamp(run.get("created_at"), "producer-run-created-at")
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
+            check_completed = timestamp(
+                check.get("completed_at"), "candidate-check-completed-at"
+            )
             require(run_created <= run_updated, "producer-run-time-order")
             current_reviews: list[JSON] = []
             review_ids: list[int] = []
@@ -1147,13 +1154,36 @@ def validate_producer_run(
                         review.get("submitted_at"), "producer-review-submitted-at"
                     )
                     body = text(review.get("body"), "producer-review-body")
+                    normalized_body = re.sub(
+                        r"\s+",
+                        "",
+                        body.lower()
+                        .replace("wasn't", "was not")
+                        .replace("wasn’t", "was not"),
+                    )
+                    failure_markers = (
+                        "unabletoreviewthispullrequest",
+                        "wasnotabletoreviewanyfiles",
+                        "abletoreviewanyfiles",
+                        "quotaexhausted",
+                        "quotaexceeded",
+                        "suppressedcomments",
+                        "encounteredanerror",
+                    )
                     require(
                         review.get("state") in {"COMMENTED", "APPROVED"}
-                        and run_created <= submitted <= run_updated <= merged_at
+                        and run_created
+                        <= submitted
+                        <= check_completed
+                        <= run_updated
+                        <= merged_at
                         and body.startswith("<!-- ccr-overview-v2 -->")
                         and "**Findings:** None" in body
                         and "Changes recommended" not in body
-                        and "<strong>Open (" not in body,
+                        and "<strong>Open (" not in body
+                        and not any(
+                            marker in normalized_body for marker in failure_markers
+                        ),
                         "producer-review-binding",
                     )
                     current_reviews.append(review)
