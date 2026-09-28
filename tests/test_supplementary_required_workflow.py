@@ -8939,6 +8939,42 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     )
                 return result.returncode, values, result.stderr
 
+        aggregate = WORKFLOW.read_text(encoding="utf-8").split(
+            "      - name: Aggregate exact protected ingress evidence\n", 1
+        )[1].split("      - name: Upload exact promotion evidence\n", 1)[0]
+        aggregate_script = textwrap.dedent(
+            aggregate.split("        run: |\n", 1)[1]
+        )
+        aggregate_transition = (
+            "set -euo pipefail\nhead_marker="
+            + aggregate_script.split("head_marker=", 1)[1].split(
+                "event_body_sha256=", 1
+            )[0]
+        )
+
+        def aggregate_transition_result(
+            *,
+            base_sha: str,
+            current_body: str,
+            head_sha: str,
+            previous_body: str,
+            repository: str = "lightning-it/example",
+        ) -> int:
+            return subprocess.run(
+                [bash, "-c", aggregate_transition],
+                env={
+                    "EVENT_BASE": base_sha,
+                    "EVENT_BODY": current_body,
+                    "EVENT_HEAD": head_sha,
+                    "PATH": TEST_TOOL_PATH,
+                    "PREVIOUS_BODY": previous_body,
+                    "REPOSITORY": repository,
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            ).returncode
+
         exact_promotion = {
             "AUTHOR_ID": "307565056",
             "AUTHOR_LOGIN": "lightning-it-release-automation[bot]",
@@ -9011,6 +9047,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(0, returncode)
         self.assertEqual("true", values["promotion_candidate"])
         self.assertEqual("false", values["promotion_pending"])
+        self.assertEqual(
+            0,
+            aggregate_transition_result(
+                base_sha=base_sha,
+                current_body=current_body,
+                head_sha=head_sha,
+                previous_body=previous_body,
+            ),
+        )
 
         protocol = "<!-- lit-protected-promotion:v2 -->"
         evidence_pending = (
@@ -9040,6 +9085,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(0, returncode)
         self.assertEqual("true", values["promotion_candidate"])
         self.assertEqual("false", values["promotion_pending"])
+        self.assertEqual(
+            0,
+            aggregate_transition_result(
+                base_sha=base_sha,
+                current_body=evidence_current_body,
+                head_sha=head_sha,
+                previous_body=evidence_previous_body,
+            ),
+        )
 
         returncode, _, _ = route_result(
             "edited",
@@ -9078,6 +9132,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     **malformed,
                 )
                 self.assertNotEqual(0, returncode)
+                self.assertNotEqual(
+                    0,
+                    aggregate_transition_result(
+                        base_sha=base_sha,
+                        current_body=malformed["EVENT_BODY"],
+                        head_sha=head_sha,
+                        previous_body=malformed["PREVIOUS_BODY"],
+                    ),
+                )
 
         for field, value in (
             ("SENDER_LOGIN", "litroc"),
