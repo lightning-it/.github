@@ -571,6 +571,46 @@ class PromotionEvidenceTests(unittest.TestCase):
                     head_sha=HEAD,
                 )
 
+        invalid_suites = (
+            ({"id": 199.0}, "producer-check-suite-id-not-positive-integer"),
+            ({"id": 200}, "producer-check-suite-id"),
+            (
+                {"app": {"id": 15368.0, "slug": "github-actions"}},
+                "producer-check-suite-app-id-not-positive-integer",
+            ),
+            (
+                {"app": {"id": 15368, "slug": "untrusted-actions"}},
+                "producer-check-suite-app",
+            ),
+            ({"status": "in_progress"}, "producer-check-suite-result"),
+            ({"conclusion": "failure"}, "producer-check-suite-result"),
+            ({"head_sha": "f" * 40}, "producer-check-suite-pull-request-binding"),
+        )
+        valid_suite = {
+            "id": 199,
+            "head_branch": "refs/pull/17/head",
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        for mutation, reason in invalid_suites:
+            suite = {**valid_suite, **mutation}
+            with self.subTest(mutation=mutation), mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(run, suite),
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
     def test_bound_review_digest_detects_valid_v5_summary_mutation(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}"
         first = json.loads(v6_summary())

@@ -1037,9 +1037,12 @@ def validate_producer_run(
                 "producer-check-suite",
             )
             suite_app = exact_object(suite.get("app"), "producer-check-suite-app")
-            require(suite.get("id") == suite_id, "producer-check-suite-id")
             require(
-                suite_app.get("id") == 15368
+                integer(suite.get("id"), "producer-check-suite-id") == suite_id,
+                "producer-check-suite-id",
+            )
+            require(
+                integer(suite_app.get("id"), "producer-check-suite-app-id") == 15368
                 and suite_app.get("slug") == "github-actions",
                 "producer-check-suite-app",
             )
