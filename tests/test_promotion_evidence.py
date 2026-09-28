@@ -75,9 +75,16 @@ def ingress_pull(
 ) -> dict[str, object]:
     return {
         "number": 17,
+        "state": "closed",
+        "merged_at": "2026-09-27T00:06:00Z",
+        "merge_commit_sha": MERGE,
         "title": "fix: exact ingress",
         "user": {"login": login, "id": user_id, "type": user_type},
-        "base": {"ref": "develop"},
+        "base": {
+            "ref": "develop",
+            "sha": BASE,
+            "repo": {"full_name": "lightning-it/example"},
+        },
         "head": {
             "ref": "fix/exact-ingress",
             "sha": HEAD,
@@ -121,6 +128,8 @@ def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, o
         "head_sha": HEAD,
         "status": "completed",
         "conclusion": "success",
+        "created_at": "2026-09-27T00:00:00Z",
+        "updated_at": "2026-09-27T00:05:00Z",
         "pull_requests": [
             {
                 "id": 1700,
@@ -180,7 +189,10 @@ def v6_summary(kind: str = "copilot") -> str:
 
 
 def evidence_api(
-    run: dict[str, object], suite: dict[str, object] | None = None
+    run: dict[str, object],
+    suite: dict[str, object] | None = None,
+    review: dict[str, object] | None = None,
+    merge: dict[str, object] | None = None,
 ):
     def dispatch(arguments: list[str]) -> dict[str, object]:
         endpoint = arguments[-1]
@@ -210,6 +222,33 @@ def evidence_api(
                 "conclusion": "success",
                 "app": {"id": 15368, "slug": "github-actions"},
             }
+        if endpoint == f"repos/lightning-it/example/commits/{MERGE}":
+            return merge or {
+                "sha": MERGE,
+                "parents": [{"sha": BASE}, {"sha": HEAD}],
+            }
+        if endpoint == "repos/lightning-it/example/pulls/17/reviews?per_page=100":
+            return [
+                [
+                    review
+                    or {
+                        "id": 17001,
+                        "user": {
+                            "login": "copilot-pull-request-reviewer[bot]",
+                            "id": 175728472,
+                            "type": "Bot",
+                        },
+                        "state": "COMMENTED",
+                        "commit_id": HEAD,
+                        "submitted_at": "2026-09-27T00:04:00Z",
+                        "body": (
+                            "<!-- ccr-overview-v2 -->\n\n"
+                            "### 🟢 Approval recommended\n\n"
+                            "**Findings:** None\n"
+                        ),
+                    }
+                ]
+            ]
         raise AssertionError(endpoint)
 
     return dispatch
@@ -569,6 +608,148 @@ class PromotionEvidenceTests(unittest.TestCase):
                     [{"check_runs": [check_run(external_id, v6_summary())]}],
                     repository="lightning-it/example",
                     pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+    def test_empty_run_association_requires_native_pr_merge_and_review_binding(
+        self,
+    ) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, v6_summary())
+        run = producer_run()
+        run["pull_requests"] = []
+        valid_review = {
+            "id": 17001,
+            "user": {
+                "login": "copilot-pull-request-reviewer[bot]",
+                "id": 175728472,
+                "type": "Bot",
+            },
+            "state": "COMMENTED",
+            "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": (
+                "<!-- ccr-overview-v2 -->\n\n"
+                "### 🟢 Approval recommended\n\n"
+                "**Findings:** None\n"
+            ),
+        }
+
+        invalid_cases = (
+            (
+                ingress_pull() | {"state": "open", "merged_at": None},
+                None,
+                valid_review,
+                run,
+                "producer-pull-not-merged",
+            ),
+            (
+                ingress_pull(),
+                {"sha": MERGE, "parents": [{"sha": "f" * 40}, {"sha": HEAD}]},
+                valid_review,
+                run,
+                "producer-pull-merge-binding",
+            ),
+            (
+                ingress_pull()
+                | {
+                    "base": {
+                        "ref": "develop",
+                        "sha": BASE,
+                        "repo": {"full_name": "attacker/example"},
+                    }
+                },
+                None,
+                valid_review,
+                run,
+                "producer-pull-revision-binding",
+            ),
+            (
+                ingress_pull(),
+                {"sha": MERGE, "parents": [{"sha": 7}, {"sha": HEAD}]},
+                valid_review,
+                run,
+                "producer-pull-merge-parent-0-sha-not-string",
+            ),
+            (
+                ingress_pull(),
+                None,
+                valid_review | {"commit_id": "f" * 40},
+                run,
+                "producer-current-copilot-review-not-unique",
+            ),
+            (
+                ingress_pull(),
+                None,
+                valid_review | {"body": "<!-- ccr-overview-v2 -->\nChanges recommended"},
+                run,
+                "producer-review-binding",
+            ),
+            (
+                ingress_pull(),
+                None,
+                valid_review,
+                run | {"created_at": "2026-09-27T00:04:30Z"},
+                "producer-review-binding",
+            ),
+            (
+                ingress_pull(),
+                None,
+                valid_review,
+                run | {"updated_at": "2026-09-27T00:07:00Z"},
+                "producer-review-binding",
+            ),
+        )
+        for pull, merge, review, candidate_run, reason in invalid_cases:
+            with self.subTest(reason=reason), mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(candidate_run, review=review, merge=merge),
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check]}],
+                        repository="lightning-it/example",
+                        pull=pull,
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
+        managed_run = producer_run(
+            login="lightning-it-shared-assets-sync[bot]"
+        )
+        managed_run["actor"]["id"] = 307342877
+        managed_run["triggering_actor"]["id"] = 307342877
+        managed_run["pull_requests"] = []
+        managed_external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(managed_run)
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-empty-association-kind"
+            ):
+                MODULE.bound_review_check(
+                    [
+                        {
+                            "check_runs": [
+                                check_run(
+                                    managed_external_id,
+                                    v6_summary("managed-sync"),
+                                )
+                            ]
+                        }
+                    ],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(
+                        login="lightning-it-shared-assets-sync[bot]",
+                        user_id=307342877,
+                        user_type="Bot",
+                    ),
                     pull_number=17,
                     base_sha=BASE,
                     head_sha=HEAD,
