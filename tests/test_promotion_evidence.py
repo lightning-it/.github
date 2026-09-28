@@ -109,6 +109,7 @@ def producer_run(*, login: str = "litroc", release: bool = False) -> dict[str, o
         }
     return {
         "id": 88,
+        "check_suite_id": 199,
         "html_url": "https://github.com/lightning-it/example/actions/runs/88",
         "actor": identity,
         "triggering_actor": identity,
@@ -203,7 +204,7 @@ def evidence_api(
         if endpoint == "repos/lightning-it/example/check-suites/199":
             return suite or {
                 "id": 199,
-                "head_branch": "refs/pull/17/head",
+                "head_branch": "fix/exact-ingress",
                 "head_sha": HEAD,
                 "status": "completed",
                 "conclusion": "success",
@@ -528,15 +529,17 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
-    def test_empty_run_association_uses_exact_provider_check_suite_ref(self) -> None:
+    def test_empty_run_association_uses_exact_provider_producer_suite(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         run = producer_run()
         run["pull_requests"] = []
+        check = check_run(external_id, v6_summary())
+        check["check_suite"] = {"id": 198}
         with mock.patch.object(
             MODULE, "gh_json", side_effect=evidence_api(run)
         ):
             evidence = MODULE.bound_review_check(
-                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                [{"check_runs": [check]}],
                 repository="lightning-it/example",
                 pull=ingress_pull(),
                 pull_number=17,
@@ -547,7 +550,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         mismatched_suite = {
             "id": 199,
-            "head_branch": "refs/pull/18/head",
+            "head_branch": "fix/other-ingress",
             "head_sha": HEAD,
             "status": "completed",
             "conclusion": "success",
@@ -560,7 +563,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 MODULE.EvidenceError,
-                "producer-check-suite-pull-request-binding",
+                "producer-check-suite-head-binding",
             ):
                 MODULE.bound_review_check(
                     [{"check_runs": [check_run(external_id, v6_summary())]}],
@@ -584,11 +587,11 @@ class PromotionEvidenceTests(unittest.TestCase):
             ),
             ({"status": "in_progress"}, "producer-check-suite-result"),
             ({"conclusion": "failure"}, "producer-check-suite-result"),
-            ({"head_sha": "f" * 40}, "producer-check-suite-pull-request-binding"),
+            ({"head_sha": "f" * 40}, "producer-check-suite-head-binding"),
         )
         valid_suite = {
             "id": 199,
-            "head_branch": "refs/pull/17/head",
+            "head_branch": "fix/exact-ingress",
             "head_sha": HEAD,
             "status": "completed",
             "conclusion": "success",
@@ -610,6 +613,21 @@ class PromotionEvidenceTests(unittest.TestCase):
                         base_sha=BASE,
                         head_sha=HEAD,
                     )
+
+        run["check_suite_id"] = 199.0
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                "producer-run-check-suite-id-not-positive-integer",
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
     def test_bound_review_digest_detects_valid_v5_summary_mutation(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}"
