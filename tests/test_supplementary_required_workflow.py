@@ -9011,6 +9011,62 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(0, returncode)
         self.assertEqual("true", values["promotion_candidate"])
         self.assertEqual("false", values["promotion_pending"])
+
+        protocol = "<!-- lit-protected-promotion:v2 -->"
+        evidence_pending = (
+            f"<!-- lit-promotion-evidence-pending:{base_sha}:{head_sha} -->"
+        )
+        evidence_ready = (
+            f"<!-- lit-promotion-evidence-ready:{base_sha}:{head_sha} -->"
+        )
+        evidence_previous_body = "\n".join(
+            (head_marker, run_marker, evidence_pending, protocol, "release")
+        )
+        evidence_current_body = evidence_previous_body.replace(
+            evidence_pending, evidence_ready
+        )
+        evidence_finalized = {
+            **finalized,
+            "EVENT_BODY": evidence_current_body,
+            "PREVIOUS_BODY": evidence_previous_body,
+        }
+        returncode, values, _ = route_result(
+            "edited",
+            repository="lightning-it/example",
+            base_ref="main",
+            head_ref="develop",
+            **evidence_finalized,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual("true", values["promotion_candidate"])
+        self.assertEqual("false", values["promotion_pending"])
+
+        for field, value in (
+            (
+                "EVENT_BODY",
+                evidence_current_body.replace(
+                    run_marker, "<!-- lit-promotion-run:9:1 -->"
+                ),
+            ),
+            ("EVENT_BODY", evidence_current_body + "\n" + succeeded),
+            ("PREVIOUS_BODY", evidence_previous_body + "\n" + pending),
+            ("EVENT_BODY", evidence_current_body.replace(protocol, "")),
+            (
+                "EVENT_BODY",
+                evidence_current_body.replace(evidence_ready, succeeded),
+            ),
+        ):
+            with self.subTest(invalid_evidence_finalization=field, value=value):
+                malformed = {**evidence_finalized, field: value}
+                returncode, _, _ = route_result(
+                    "edited",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **malformed,
+                )
+                self.assertNotEqual(0, returncode)
+
         for field, value in (
             ("SENDER_LOGIN", "litroc"),
             ("SENDER_ID", "76040632"),
