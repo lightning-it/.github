@@ -63,6 +63,11 @@
   complete release-evidence package. It binds the full integrated promotion
   diff, base, head, merge base, integration tree, policy, reviewer result, and
   all release and audit checks.
+- That promotion reuses the exact native acceptance evidence of every
+  first-parent `develop` merge through the bounded coverage manifest and final
+  aggregate verifier. It MUST NOT repeat AI review of the cumulative diff or
+  apply a feature-PR review-byte limit to the promotion itself. Missing,
+  ambiguous, stale, or incomplete coverage fails closed.
 - Agents, workflows, and repository-local rules MUST NOT duplicate that durable
   evidence per `develop` pull request or invoke local AI to create evidence.
   Repository-local rules may only make this lifecycle stricter.
