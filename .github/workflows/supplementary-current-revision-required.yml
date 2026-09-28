@@ -2417,7 +2417,13 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          output="${RUNNER_TEMP}/promotion-evidence.json"
+          verifier_runtime="$(mktemp -d \
+            "${RUNNER_TEMP}/promotion-evidence.XXXXXXXX")"
+          chmod 0700 "${verifier_runtime}"
+          test ! -L "${verifier_runtime}"
+          test "$(stat -c %u -- "${verifier_runtime}")" = "$(id -u)"
+          test "$(stat -c %a -- "${verifier_runtime}")" = 700
+          output="${verifier_runtime}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
           test "${EVENT_ACTION}" = edited
           test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
@@ -2509,10 +2515,11 @@ jobs:
             -e ALL_PROXY= \
             -e NO_PROXY= \
             -e PYTHONDONTWRITEBYTECODE=1 \
-            -e RUNNER_TEMP \
-            -v "${RUNNER_TEMP}:${RUNNER_TEMP}:rw" \
+            -e RUNNER_TEMP="${verifier_runtime}" \
+            -v "${verifier_runtime}:${verifier_runtime}:rw" \
+            -v "${CONTROLLER}:${CONTROLLER}:ro" \
             -v "${TARGET}:${TARGET}:ro" \
-            -w "${RUNNER_TEMP}" \
+            -w "${verifier_runtime}" \
             "${DEVTOOLS_IMAGE}" \
             python3 "${CONTROLLER}" \
             --repository "${REPOSITORY}" \
@@ -2550,6 +2557,7 @@ jobs:
           evidence_sha256="$(jq -er .evidence_sha256 "${output}")"
           {
             printf 'evidence_sha256=%s\n' "${evidence_sha256}"
+            printf 'output=%s\n' "${output}"
             printf 'package_sha256=%s\n' "${package_sha256}"
           } >>"${GITHUB_OUTPUT}"
 
@@ -2559,7 +2567,7 @@ jobs:
         with:
           name: >-
             promotion-evidence-${{ github.repository_id }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/promotion-evidence.json
+          path: ${{ steps.aggregate.outputs.output }}
           if-no-files-found: error
           compression-level: 9
           overwrite: false
@@ -2571,6 +2579,7 @@ jobs:
           ARTIFACT_ID: ${{ steps.persist.outputs.artifact-id }}
           ARTIFACT_URL: ${{ steps.persist.outputs.artifact-url }}
           EVIDENCE_SHA256: ${{ steps.aggregate.outputs.evidence_sha256 }}
+          EVIDENCE_PATH: ${{ steps.aggregate.outputs.output }}
           PACKAGE_SHA256: ${{ steps.aggregate.outputs.package_sha256 }}
         run: |
           set -euo pipefail
@@ -2586,7 +2595,7 @@ jobs:
             + "- Promotion bytes: \(.diff.bytes)\n"
             + "- Promotion SHA-256: `\(.diff.sha256)`\n"
             + "- Evidence SHA-256: `\(.evidence_sha256)`"
-          ' "${RUNNER_TEMP}/promotion-evidence.json" >>"${GITHUB_STEP_SUMMARY}"
+          ' "${EVIDENCE_PATH}" >>"${GITHUB_STEP_SUMMARY}"
           {
             printf "\n- Evidence package SHA-256: \`%s\`\n" "${PACKAGE_SHA256}"
             printf -- "- Persisted archive SHA-256: \`%s\`\n" "${ARCHIVE_SHA256}"

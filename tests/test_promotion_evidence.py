@@ -1554,6 +1554,20 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("controller_ref=main", promotion_job)
         self.assertIn("controller_ref=develop", promotion_job)
         self.assertIn('-v "${TARGET}:${TARGET}:ro"', promotion_job)
+        self.assertIn('-v "${CONTROLLER}:${CONTROLLER}:ro"', promotion_job)
+        self.assertIn(
+            'verifier_runtime="$(mktemp -d', promotion_job
+        )
+        self.assertIn('chmod 0700 "${verifier_runtime}"', promotion_job)
+        self.assertIn(
+            '-v "${verifier_runtime}:${verifier_runtime}:rw"', promotion_job
+        )
+        self.assertIn(
+            '-e RUNNER_TEMP="${verifier_runtime}"', promotion_job
+        )
+        self.assertNotIn(
+            '-v "${RUNNER_TEMP}:${RUNNER_TEMP}:rw"', promotion_job
+        )
         self.assertIn(
             'docker network create --internal "${verifier_network}"', promotion_job
         )
