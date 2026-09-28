@@ -4280,7 +4280,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split("    permissions:", 1)[0]
         self.assertIn("needs: route-protected-current-revision", job_header)
         self.assertIn(
-            "if: needs['route-protected-current-revision'].outputs."
+            "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",
             job_header,
         )
@@ -8869,7 +8869,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             if value != "0" * 40
         ]
-        self.assertEqual([], one_off_shas)
+        self.assertEqual(
+            ["043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"], one_off_shas
+        )
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",
@@ -8908,6 +8910,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             repository: str = "lightning-it/.github",
             base_ref: str = "main",
             head_ref: str = "prestage/p1",
+            **event: str,
         ) -> tuple[int, dict[str, str], str]:
             with tempfile.TemporaryDirectory() as temporary:
                 output = Path(temporary) / "github-output"
@@ -8917,6 +8920,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "HEAD_REF": head_ref,
                     "PATH": TEST_TOOL_PATH,
                     "REPOSITORY": repository,
+                    **event,
                 }
                 if action is not None:
                     environment["EVENT_ACTION"] = action
@@ -8935,12 +8939,120 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     )
                 return result.returncode, values, result.stderr
 
+        exact_promotion = {
+            "AUTHOR_ID": "307565056",
+            "AUTHOR_LOGIN": "lightning-it-release-automation[bot]",
+            "AUTHOR_TYPE": "Bot",
+            "HEAD_REPOSITORY": "lightning-it/example",
+        }
+        returncode, values, _ = route_result(
+            "opened",
+            repository="lightning-it/example",
+            base_ref="main",
+            head_ref="develop",
+            **exact_promotion,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual(
+            {
+                "promotion_candidate": "false",
+                "promotion_pending": "true",
+                "s0_candidate": "false",
+                "s0_prestage": "false",
+            },
+            values,
+        )
+        for field, value in (
+            ("AUTHOR_ID", "307565057"),
+            ("AUTHOR_LOGIN", "litroc"),
+            ("AUTHOR_TYPE", "User"),
+            ("HEAD_REPOSITORY", "fork/example"),
+        ):
+            with self.subTest(promotion_near_miss=field):
+                near_miss = {**exact_promotion, field: value}
+                returncode, values, _ = route_result(
+                    "opened",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **near_miss,
+                )
+                self.assertEqual(0, returncode)
+                self.assertEqual("false", values["promotion_candidate"])
+                self.assertEqual("false", values["promotion_pending"])
+
+        base_sha = "1" * 40
+        head_sha = "2" * 40
+        head_marker = f"<!-- lit-promotion-head:{head_sha} -->"
+        run_marker = "<!-- lit-promotion-run:12345:1 -->"
+        pending = f"<!-- lit-promotion-dispatch-pending:{base_sha}:{head_sha} -->"
+        succeeded = (
+            f"<!-- lit-promotion-dispatch-succeeded:{base_sha}:{head_sha} -->"
+        )
+        previous_body = "\n".join((head_marker, run_marker, pending, "release"))
+        current_body = previous_body.replace(pending, succeeded)
+        finalized = {
+            **exact_promotion,
+            "BASE_SHA": base_sha,
+            "EVENT_BODY": current_body,
+            "HEAD_SHA": head_sha,
+            "PREVIOUS_BODY": previous_body,
+            "SENDER_ID": "307565056",
+            "SENDER_LOGIN": "lightning-it-release-automation[bot]",
+            "SENDER_TYPE": "Bot",
+        }
+        returncode, values, _ = route_result(
+            "edited",
+            repository="lightning-it/example",
+            base_ref="main",
+            head_ref="develop",
+            **finalized,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual("true", values["promotion_candidate"])
+        self.assertEqual("false", values["promotion_pending"])
+        for field, value in (
+            ("SENDER_LOGIN", "litroc"),
+            ("SENDER_ID", "76040632"),
+            ("EVENT_BODY", current_body.replace(head_marker, "")),
+            ("PREVIOUS_BODY", previous_body.replace(run_marker, "")),
+            (
+                "EVENT_BODY",
+                current_body
+                + "\n<!-- lit-promotion-head:"
+                + ("3" * 40)
+                + " -->",
+            ),
+            (
+                "PREVIOUS_BODY",
+                previous_body
+                + "\n<!-- lit-promotion-head:"
+                + ("3" * 40)
+                + " -->",
+            ),
+        ):
+            with self.subTest(invalid_finalization=field):
+                malformed = {**finalized, field: value}
+                returncode, _, _ = route_result(
+                    "edited",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **malformed,
+                )
+                self.assertNotEqual(0, returncode)
+
         for action in ("opened", "synchronize", "reopened"):
             with self.subTest(action=action):
                 returncode, values, _ = route_result(action)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "true", "s0_prestage": "true"},
+                    {
+                        "promotion_candidate": "false",
+                        "promotion_pending": "false",
+                        "s0_candidate": "true",
+                        "s0_prestage": "true",
+                    },
                     values,
                 )
         for action in ("ready_for_review", "edited"):
@@ -8948,7 +9060,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 returncode, values, _ = route_result(action)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "true", "s0_prestage": "false"},
+                    {
+                        "promotion_candidate": "false",
+                        "promotion_pending": "false",
+                        "s0_candidate": "true",
+                        "s0_prestage": "false",
+                    },
                     values,
                 )
         for candidate in (
@@ -8960,7 +9077,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 returncode, values, _ = route_result(*candidate)
                 self.assertEqual(0, returncode)
                 self.assertEqual(
-                    {"s0_candidate": "false", "s0_prestage": "false"},
+                    {
+                        "promotion_candidate": "false",
+                        "promotion_pending": "false",
+                        "s0_candidate": "false",
+                        "s0_prestage": "false",
+                    },
                     values,
                 )
         for action in (None, "closed", "READY_FOR_REVIEW"):
@@ -9008,6 +9130,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "LEGACY_RESULT": "success",
             "S0_CANDIDATE": "false",
         }
+        promotion = {
+            **unsupported_candidate,
+            "LEGACY_RESULT": "skipped",
+            "PROMOTION_CANDIDATE": "true",
+            "PROMOTION_PENDING": "false",
+            "PROMOTION_RESULT": "success",
+            "S0_CANDIDATE": "false",
+        }
+        promotion_pending = {
+            **promotion,
+            "PROMOTION_CANDIDATE": "false",
+            "PROMOTION_PENDING": "true",
+            "PROMOTION_RESULT": "skipped",
+        }
         self.assertEqual(0, gate_result(**direct)[0])
         unsupported_returncode, unsupported_stderr = gate_result(
             **unsupported_candidate
@@ -9018,6 +9154,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             unsupported_stderr,
         )
         self.assertEqual(0, gate_result(**non_candidate)[0])
+        self.assertEqual(0, gate_result(**promotion)[0])
+        pending_returncode, pending_stderr = gate_result(**promotion_pending)
+        self.assertNotEqual(0, pending_returncode)
+        self.assertIn("pending its authenticated finalization", pending_stderr)
         for contradiction in (
             {**direct, "S0_CANDIDATE": "false"},
             {**unsupported_candidate, "LEGACY_RESULT": "success"},
