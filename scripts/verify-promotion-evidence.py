@@ -56,9 +56,25 @@ RENOVATE_APP_LOGIN = "renovate[bot]"
 RENOVATE_APP_ID = 29139614
 GITHUB_ACTIONS_LOGIN = "github-actions[bot]"
 GITHUB_ACTIONS_ID = 41898282
+COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
+COPILOT_REVIEWER_ID = 175728472
+COPILOT_REVIEW_FAILURE_MARKERS = (
+    "unabletoreviewthispullrequest",
+    "nofilestoreview",
+    "wasnotabletoreviewanyfiles",
+    "abletoreviewanyfiles",
+    "premiumrequestquota",
+    "premiumrequestsquota",
+    "quotaexhausted",
+    "quotaexceeded",
+    "suppressedcomments",
+    "encounteredanerror",
+)
 MAX_API_BYTES = 16 * 1024 * 1024
 MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
+MAX_REVIEWS_PER_PULL = 1000
+MAX_REVIEW_COMMENTS_PER_REVIEW = 1000
 GITHUB_API_PROXY_PORT = 8080
 MAX_PROXY_HEADER_BYTES = 8192
 
@@ -199,6 +215,14 @@ def exact_array(value: Any, label: str) -> list[Any]:
 def text(value: Any, label: str) -> str:
     require(type(value) is str and bool(value), f"{label}-not-string")
     return value
+
+
+def normalized_review_text(value: str) -> str:
+    return re.sub(
+        r"\s+",
+        "",
+        value.lower().replace("wasn't", "was not").replace("wasn’t", "was not"),
+    )
 
 
 def integer(value: Any, label: str) -> int:
@@ -1026,9 +1050,14 @@ def validate_producer_run(
             run.get("pull_requests"), "producer-run-pull-requests"
         )
         if not associations:
+            require(evidence_kind == "copilot", "producer-empty-association-kind")
             suite_id = integer(
                 run.get("check_suite_id"), "producer-run-check-suite-id"
             )
+            # GitHub may reuse a neutral Checks API result from an earlier suite
+            # when a successor PR has the same head. Treat that check only as an
+            # untrusted locator: the exact provider run, PR, merge, native review,
+            # and completion chronology are authenticated independently below.
             suite = exact_object(
                 gh_json(["api", f"repos/{repository}/check-suites/{suite_id}"]),
                 "producer-check-suite",
@@ -1052,6 +1081,168 @@ def validate_producer_run(
                 suite.get("head_branch") == head_ref
                 and suite.get("head_sha") == head_sha,
                 "producer-check-suite-head-binding",
+            )
+            require(
+                integer(pull.get("number"), "producer-pull-number") == pull_number,
+                "producer-pull-number",
+            )
+            require(
+                pull.get("state") == "closed" and pull.get("merged_at") is not None,
+                "producer-pull-not-merged",
+            )
+            merged_at = timestamp(
+                pull.get("merged_at"), "producer-pull-merged-at"
+            )
+            pull_base = exact_object(pull.get("base"), "producer-pull-base")
+            pull_head = exact_object(pull.get("head"), "producer-pull-head")
+            pull_base_repo = exact_object(
+                pull_base.get("repo"), "producer-pull-base-repository"
+            )
+            pull_head_repo = exact_object(
+                pull_head.get("repo"), "producer-pull-head-repository"
+            )
+            require(
+                pull_base.get("ref") == "develop"
+                and pull_base.get("sha") == base_sha
+                and pull_base_repo.get("full_name") == repository
+                and pull_head.get("ref") == head_ref
+                and pull_head.get("sha") == head_sha
+                and pull_head_repo.get("full_name") == repository,
+                "producer-pull-revision-binding",
+            )
+            merge_sha = sha(pull.get("merge_commit_sha"), "producer-pull-merge")
+            merge = exact_object(
+                gh_json(["api", f"repos/{repository}/commits/{merge_sha}"]),
+                "producer-pull-merge-commit",
+            )
+            parents = exact_array(
+                merge.get("parents"), "producer-pull-merge-parents"
+            )
+            require(len(parents) == 2, "producer-pull-merge-binding")
+            parent_shas = [
+                sha(
+                    exact_object(parent, f"producer-pull-merge-parent-{index}").get(
+                        "sha"
+                    ),
+                    f"producer-pull-merge-parent-{index}-sha",
+                )
+                for index, parent in enumerate(parents)
+            ]
+            require(
+                merge.get("sha") == merge_sha
+                and parent_shas == [base_sha, head_sha],
+                "producer-pull-merge-binding",
+            )
+            review_pages = exact_array(
+                gh_json(
+                    [
+                        "api",
+                        "--paginate",
+                        "--slurp",
+                        f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
+                    ]
+                ),
+                "producer-review-pages",
+            )
+            run_created = timestamp(run.get("created_at"), "producer-run-created-at")
+            run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
+            check_completed = timestamp(
+                check.get("completed_at"), "candidate-check-completed-at"
+            )
+            require(run_created <= run_updated, "producer-run-time-order")
+            current_reviews: list[JSON] = []
+            review_ids: list[int] = []
+            for page in review_pages:
+                for item in exact_array(page, "producer-review-page"):
+                    review = exact_object(item, "producer-review")
+                    review_id = integer(review.get("id"), "producer-review-id")
+                    review_ids.append(review_id)
+                    require(
+                        len(review_ids) <= MAX_REVIEWS_PER_PULL,
+                        "producer-review-inventory-too-large",
+                    )
+                    reviewer = exact_object(review.get("user"), "producer-review-user")
+                    if not (
+                        reviewer.get("login") == COPILOT_REVIEWER_LOGIN
+                        and integer(reviewer.get("id"), "producer-review-user-id")
+                        == COPILOT_REVIEWER_ID
+                        and reviewer.get("type") == "Bot"
+                        and review.get("commit_id") == head_sha
+                    ):
+                        continue
+                    submitted = timestamp(
+                        review.get("submitted_at"), "producer-review-submitted-at"
+                    )
+                    body = text(review.get("body"), "producer-review-body")
+                    comment_pages = exact_array(
+                        gh_json(
+                            [
+                                "api",
+                                "--paginate",
+                                "--slurp",
+                                f"repos/{repository}/pulls/{pull_number}/reviews/"
+                                f"{review_id}/comments?per_page=100",
+                            ]
+                        ),
+                        "producer-review-comment-pages",
+                    )
+                    review_texts = [body]
+                    comment_ids: list[int] = []
+                    for comment_page in comment_pages:
+                        for comment_item in exact_array(
+                            comment_page, "producer-review-comment-page"
+                        ):
+                            comment = exact_object(
+                                comment_item, "producer-review-comment"
+                            )
+                            comment_ids.append(
+                                integer(
+                                    comment.get("id"), "producer-review-comment-id"
+                                )
+                            )
+                            require(
+                                len(comment_ids) <= MAX_REVIEW_COMMENTS_PER_REVIEW,
+                                "producer-review-comment-inventory-too-large",
+                            )
+                            review_texts.append(
+                                text(
+                                    comment.get("body"),
+                                    "producer-review-comment-body",
+                                )
+                            )
+                    require(
+                        len(comment_ids) == len(set(comment_ids)),
+                        "producer-review-comment-duplicate",
+                    )
+                    normalized_texts = [
+                        normalized_review_text(value) for value in review_texts
+                    ]
+                    require(
+                        review.get("state") in {"COMMENTED", "APPROVED"}
+                        and run_created
+                        <= submitted
+                        <= check_completed
+                        <= run_updated
+                        <= merged_at
+                        and body.startswith("<!-- ccr-overview-v2 -->")
+                        and "**Findings:** None" in body
+                        and "Changes recommended" not in body
+                        and "<strong>Open (" not in body
+                        and not any(
+                            marker in normalized
+                            for normalized in normalized_texts
+                            for marker in COPILOT_REVIEW_FAILURE_MARKERS
+                        ),
+                        "producer-review-binding",
+                    )
+                    current_reviews.append(review)
+            require(
+                len(review_ids) == len(set(review_ids)),
+                "producer-review-duplicate",
+            )
+            require(
+                len(current_reviews) == 1,
+                "producer-current-copilot-review-not-unique",
             )
             return summary
         require(len(associations) == 1, "producer-run-pull-request-count")
