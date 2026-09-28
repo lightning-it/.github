@@ -1934,10 +1934,14 @@ class PromotionEvidenceTests(unittest.TestCase):
         promotion_job = workflow.split(
             "  verify-develop-main-promotion-evidence:\n", 1
         )[1].split("\n  verify-protected-current-revision-evidence:\n", 1)[0]
-        self.assertIn(
-            "name: Authorize exact Supplementary catch-up v5 successor",
-            promotion_job,
-        )
+        expected_name = """    name: >-
+      ${{
+        github.repository == 'lightning-it/shared-assets-lit'
+        && 'Authorize exact Supplementary catch-up v5 successor'
+        || 'Verify aggregated develop-to-main promotion evidence'
+      }}
+"""
+        self.assertIn(expected_name, promotion_job)
         self.assertNotIn(
             "  authorize-supplementary-catchup-v5-successor:\n",
             workflow,
