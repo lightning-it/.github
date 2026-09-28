@@ -764,8 +764,11 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         for marker in (
             "Unable to review this pull request",
+            "No files to review",
             "Wasn't able to review any files",
             "Wasn’t able to review any files",
+            "Premium request quota unavailable",
+            "Premium requests quota unavailable",
             "Premium request quota exhausted",
             "Premium request quota exceeded",
             "Suppressed comments",
