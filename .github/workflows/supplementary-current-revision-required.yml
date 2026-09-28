@@ -2423,6 +2423,9 @@ jobs:
           test ! -L "${verifier_runtime}"
           test "$(stat -c %u -- "${verifier_runtime}")" = "$(id -u)"
           test "$(stat -c %a -- "${verifier_runtime}")" = 700
+          verifier_home="${verifier_runtime}/home"
+          gh_config_dir="${verifier_runtime}/gh-config"
+          mkdir -m 0700 "${verifier_home}" "${gh_config_dir}"
           output="${verifier_runtime}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
           test "${EVENT_ACTION}" = edited
@@ -2510,6 +2513,8 @@ jobs:
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
             -e GITHUB_SERVER_URL \
             -e GH_TOKEN \
+            -e GH_CONFIG_DIR="${gh_config_dir}" \
+            -e HOME="${verifier_home}" \
             -e HTTPS_PROXY=http://github-api-proxy:8080 \
             -e HTTP_PROXY=http://github-api-proxy:8080 \
             -e ALL_PROXY= \
