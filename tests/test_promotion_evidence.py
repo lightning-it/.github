@@ -1941,6 +1941,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "'Verify aggregated develop-to-main promotion evidence' }}\n"
         )
         self.assertIn(expected_name, promotion_job)
+        self.assertNotIn("    name: >-\n      ${{", promotion_job)
         self.assertNotIn(
             "  authorize-supplementary-catchup-v5-successor:\n",
             workflow,
