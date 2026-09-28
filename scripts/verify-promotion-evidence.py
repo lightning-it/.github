@@ -1148,7 +1148,7 @@ def validate_producer_run(
                     )
                     body = text(review.get("body"), "producer-review-body")
                     require(
-                        review.get("state") == "COMMENTED"
+                        review.get("state") in {"COMMENTED", "APPROVED"}
                         and run_created <= submitted <= run_updated <= merged_at
                         and body.startswith("<!-- ccr-overview-v2 -->")
                         and "**Findings:** None" in body

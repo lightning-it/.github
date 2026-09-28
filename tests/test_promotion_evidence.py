@@ -718,6 +718,24 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(
+                run,
+                review=valid_review | {"state": "APPROVED"},
+            ),
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, evidence["producer_run_id"])
+
         managed_run = producer_run(
             login="lightning-it-shared-assets-sync[bot]"
         )
