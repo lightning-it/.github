@@ -1565,6 +1565,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn(
             '-e RUNNER_TEMP="${verifier_runtime}"', promotion_job
         )
+        self.assertIn('-e GH_CONFIG_DIR="${gh_config_dir}"', promotion_job)
+        self.assertIn('-e HOME="${verifier_home}"', promotion_job)
+        self.assertIn(
+            'mkdir -m 0700 "${verifier_home}" "${gh_config_dir}"',
+            promotion_job,
+        )
         self.assertNotIn(
             '-v "${RUNNER_TEMP}:${RUNNER_TEMP}:rw"', promotion_job
         )
