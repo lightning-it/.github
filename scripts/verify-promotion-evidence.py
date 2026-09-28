@@ -2,9 +2,11 @@
 """Verify native ingress evidence for an exact develop-to-main promotion.
 
 The verifier intentionally does not review the cumulative promotion diff again.
-It proves that the protected first-parent history between main and develop consists
-only of GitHub merge commits whose exact PR heads already carry one successful,
-bound ``Current revision review`` result and no unresolved review conversations.
+It proves that the protected develop first-parent history in the promotion range
+consists only of GitHub merge commits whose exact PR heads already carry one
+successful, bound ``Current revision review`` result and no unresolved review
+conversations. The existing main tip is bound through exactly one separately
+validated ancestry boundary.
 """
 
 from __future__ import annotations
@@ -449,7 +451,6 @@ def first_parent_merges(
             {"base_sha": parents[0], "head_sha": parents[1], "merge_sha": commit}
         )
         previous = commit
-    require(history_anchor == expected_base, "first-parent-history-anchor-drift")
     require(previous == expected_head, "first-parent-tip-drift")
     return history_anchor, integration_tree, merges
 
