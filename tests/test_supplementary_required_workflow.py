@@ -8941,7 +8941,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         aggregate = WORKFLOW.read_text(encoding="utf-8").split(
             "      - name: Aggregate exact protected ingress evidence\n", 1
-        )[1].split("      - name: Upload exact promotion evidence\n", 1)[0]
+        )[1].split(
+            "      - name: Persist exact promotion evidence package\n", 1
+        )[0]
         aggregate_script = textwrap.dedent(
             aggregate.split("        run: |\n", 1)[1]
         )
