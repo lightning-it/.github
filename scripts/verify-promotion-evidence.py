@@ -1025,6 +1025,38 @@ def validate_producer_run(
         associations = exact_array(
             run.get("pull_requests"), "producer-run-pull-requests"
         )
+        if not associations:
+            suite_reference = exact_object(
+                check.get("check_suite"), "producer-check-suite-reference"
+            )
+            suite_id = integer(
+                suite_reference.get("id"), "producer-check-suite-reference-id"
+            )
+            suite = exact_object(
+                gh_json(["api", f"repos/{repository}/check-suites/{suite_id}"]),
+                "producer-check-suite",
+            )
+            suite_app = exact_object(suite.get("app"), "producer-check-suite-app")
+            require(
+                integer(suite.get("id"), "producer-check-suite-id") == suite_id,
+                "producer-check-suite-id",
+            )
+            require(
+                integer(suite_app.get("id"), "producer-check-suite-app-id") == 15368
+                and suite_app.get("slug") == "github-actions",
+                "producer-check-suite-app",
+            )
+            require(
+                suite.get("status") == "completed"
+                and suite.get("conclusion") == "success",
+                "producer-check-suite-result",
+            )
+            require(
+                suite.get("head_branch") == f"refs/pull/{pull_number}/head"
+                and suite.get("head_sha") == head_sha,
+                "producer-check-suite-pull-request-binding",
+            )
+            return summary
         require(len(associations) == 1, "producer-run-pull-request-count")
         association = exact_object(associations[0], "producer-run-pull-request")
         association_base = exact_object(

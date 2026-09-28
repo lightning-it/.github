@@ -65,6 +65,7 @@ def check_run(
         "external_id": external_id,
         "details_url": "https://github.com/lightning-it/example/runs/99",
         "app": {"id": 15368, "slug": "github-actions"},
+        "check_suite": {"id": 199},
         "output": {"summary": summary, "title": title},
     }
 
@@ -177,7 +178,9 @@ def v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
-def evidence_api(run: dict[str, object]):
+def evidence_api(
+    run: dict[str, object], suite: dict[str, object] | None = None
+):
     def dispatch(arguments: list[str]) -> dict[str, object]:
         endpoint = arguments[-1]
         if endpoint == "repos/lightning-it/example":
@@ -197,6 +200,15 @@ def evidence_api(run: dict[str, object]):
             }
         if endpoint == "repos/lightning-it/example/actions/runs/88":
             return run
+        if endpoint == "repos/lightning-it/example/check-suites/199":
+            return suite or {
+                "id": 199,
+                "head_branch": "refs/pull/17/head",
+                "head_sha": HEAD,
+                "status": "completed",
+                "conclusion": "success",
+                "app": {"id": 15368, "slug": "github-actions"},
+            }
         raise AssertionError(endpoint)
 
     return dispatch
@@ -506,6 +518,89 @@ class PromotionEvidenceTests(unittest.TestCase):
             run = producer_run()
             mutate(run)
             with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
+    def test_empty_run_association_uses_exact_provider_check_suite_ref(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        run = producer_run()
+        run["pull_requests"] = []
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, evidence["producer_run_id"])
+
+        mismatched_suite = {
+            "id": 199,
+            "head_branch": "refs/pull/18/head",
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, mismatched_suite),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                "producer-check-suite-pull-request-binding",
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+        invalid_suites = (
+            ({"id": 199.0}, "producer-check-suite-id-not-positive-integer"),
+            ({"id": 200}, "producer-check-suite-id"),
+            (
+                {"app": {"id": 15368.0, "slug": "github-actions"}},
+                "producer-check-suite-app-id-not-positive-integer",
+            ),
+            (
+                {"app": {"id": 15368, "slug": "untrusted-actions"}},
+                "producer-check-suite-app",
+            ),
+            ({"status": "in_progress"}, "producer-check-suite-result"),
+            ({"conclusion": "failure"}, "producer-check-suite-result"),
+            ({"head_sha": "f" * 40}, "producer-check-suite-pull-request-binding"),
+        )
+        valid_suite = {
+            "id": 199,
+            "head_branch": "refs/pull/17/head",
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        for mutation, reason in invalid_suites:
+            suite = {**valid_suite, **mutation}
+            with self.subTest(mutation=mutation), mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(run, suite),
+            ):
                 with self.assertRaisesRegex(MODULE.EvidenceError, reason):
                     MODULE.bound_review_check(
                         [{"check_runs": [check_run(external_id, v6_summary())]}],
