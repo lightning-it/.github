@@ -1942,6 +1942,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             "  authorize-supplementary-catchup-v5-successor:\n",
             workflow,
         )
+        self.assertIn(
+            "environment:\n      name: normal-release-promotion-approval",
+            promotion_job,
+        )
         for binding in (
             "umask 077",
             'test ! -L "${RUNNER_TEMP}"',

@@ -8841,7 +8841,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         finalizer = self._s0_job(
             "finalize-s0-feature-main-prestage",
-            "verify-protected-current-revision-evidence",
+            "verify-develop-main-promotion-evidence",
         )
 
         self.assertIn("permissions: {}", route)
@@ -8860,7 +8860,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(1, finalizer.count("--method PATCH"))
         self.assertNotIn("--method POST", finalizer)
         self.assertNotIn("secrets.", s0)
-        self.assertNotIn("environment:", s0)
+        self.assertNotIn(
+            "environment:",
+            route + reserve + deep + finalizer,
+        )
         self.assertNotIn("actions/create-github-app-token", s0)
         one_off_shas = [
             value
@@ -9370,6 +9373,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             promotion,
         )
         self.assertIn("needs: route-protected-current-revision", promotion)
+        self.assertIn(
+            "environment:\n      name: normal-release-promotion-approval",
+            promotion,
+        )
         self.assertIn("scripts/verify-promotion-evidence.py", promotion)
         self.assertNotIn("Verify the one protected checkpoint authorization", workflow)
 

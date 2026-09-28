@@ -2030,6 +2030,8 @@ jobs:
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    environment:
+      name: normal-release-promotion-approval
 
     steps:
       - name: Bind protected controller and target refs
