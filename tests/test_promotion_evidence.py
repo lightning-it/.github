@@ -194,6 +194,7 @@ def evidence_api(
     suite: dict[str, object] | None = None,
     review: dict[str, object] | None = None,
     merge: dict[str, object] | None = None,
+    review_comment: dict[str, object] | None = None,
 ):
     def dispatch(arguments: list[str]) -> dict[str, object]:
         endpoint = arguments[-1]
@@ -250,6 +251,11 @@ def evidence_api(
                     }
                 ]
             ]
+        if endpoint == (
+            "repos/lightning-it/example/pulls/17/reviews/17001/"
+            "comments?per_page=100"
+        ):
+            return [[review_comment] if review_comment is not None else []]
         raise AssertionError(endpoint)
 
     return dispatch
@@ -785,6 +791,30 @@ class PromotionEvidenceTests(unittest.TestCase):
                         base_sha=BASE,
                         head_sha=HEAD,
                     )
+
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(
+                run,
+                review=valid_review,
+                review_comment={
+                    "id": 18001,
+                    "body": "Copilot encountered an error while reviewing",
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
 
         managed_run = producer_run(
             login="lightning-it-shared-assets-sync[bot]"
