@@ -6531,8 +6531,9 @@ jobs:
                       select(.name == "Verify current revision policy") |
                       select(.head_sha == $head) |
                       select(.run_attempt == 1) |
-                      select(.status == "completed"
-                        and .conclusion == "success") |
+                      select(
+                        (.status == "completed" and .conclusion == "success")
+                        or (.status == "in_progress" and .conclusion == null)) |
                       select((.steps | type) == "array")]
                   ' <<<"${producer_jobs_pages}")"
                 d='^Request protected verifier re-evaluation( / (Diagnose Release-App reusable context and fail closed|Re-run the one protected verifier attempt))?$'
