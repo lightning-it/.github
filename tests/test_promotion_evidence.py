@@ -398,6 +398,22 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual(1, command.call_count)
         pause.assert_not_called()
 
+        with (
+            mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}),
+            mock.patch.object(
+                MODULE,
+                "run",
+                side_effect=MODULE.EvidenceError(
+                    "command-failed:gh:unexpected end of JSON input; HTTP 403"
+                ),
+            ) as command,
+            mock.patch.object(MODULE.time, "sleep") as pause,
+        ):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "HTTP 403"):
+                MODULE.gh_json(["api", "example"])
+        self.assertEqual(1, command.call_count)
+        pause.assert_not_called()
+
         with mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}):
             with self.assertRaisesRegex(
                 MODULE.EvidenceError, "gh-json-read-command"
