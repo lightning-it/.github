@@ -1260,6 +1260,33 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )
             )
 
+    def test_historical_ancestry_boundary_uses_its_exact_main_parent(self) -> None:
+        with mock.patch.object(MODULE, "git", return_value=f"{MERGE} {BASE}"):
+            self.assertEqual(
+                BASE,
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                ),
+            )
+        with mock.patch.object(MODULE, "git", return_value=f"{'9' * 40} {BASE}"):
+            self.assertIsNone(
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                )
+            )
+        with mock.patch.object(MODULE, "git", return_value=MERGE):
+            self.assertIsNone(
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                )
+            )
+
     def test_ancestry_boundary_content_is_exact(self) -> None:
         evidence = json.dumps(
             {
@@ -1747,7 +1774,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         boundary_head = "7" * 40
         boundary_merge = "8" * 40
         feature_merge = "9" * 40
-        pre_boundary = ingress_pull()
+        historical_main = "c" * 40
+        pre_boundary = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
         pre_boundary.update(
             {
                 "number": 16,
@@ -1761,10 +1793,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         pre_boundary["head"].update(
             {
-                "ref": "fix/pre-boundary",
+                "ref": (
+                    f"backmerge/example-{historical_main[:12]}-"
+                    f"{'a' * 12}-main"
+                ),
                 "sha": pre_boundary_head,
                 "repo": {"full_name": "lightning-it/example"},
             }
+        )
+        pre_boundary["title"] = (
+            f"chore(governance): record main ancestry before {historical_main[:12]}"
         )
         boundary = ingress_pull(
             login="lightning-it-release-automation[bot]",
@@ -1784,10 +1822,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         boundary["head"].update(
             {
-                "ref": "backmerge/release-main-1",
+                "ref": (
+                    f"backmerge/example-{BASE[:12]}-"
+                    f"{pre_boundary_merge[:12]}-main"
+                ),
                 "sha": boundary_head,
                 "repo": {"full_name": "lightning-it/example"},
             }
+        )
+        boundary["title"] = (
+            f"chore(governance): record main ancestry before {BASE[:12]}"
         )
         feature = ingress_pull()
         feature.update(
@@ -1910,8 +1954,12 @@ class PromotionEvidenceTests(unittest.TestCase):
                         ),
                         mock.patch.object(
                             MODULE,
-                            "is_authorized_ancestry_boundary",
-                            side_effect=lambda pull, **_kwargs: pull["number"] == 10,
+                            "ancestry_merge_main",
+                            side_effect=lambda _repository, *, head_sha, **_kwargs: (
+                                historical_main
+                                if head_sha == pre_boundary_head
+                                else BASE if head_sha == boundary_head else None
+                            ),
                         ),
                         mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
                         mock.patch.object(MODULE, "git", return_value=BASE),
@@ -1925,6 +1973,10 @@ class PromotionEvidenceTests(unittest.TestCase):
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
                     self.assertEqual(1, value["post_baseline_ingress_count"])
+                    self.assertTrue(value["ingress"][0]["ancestry_boundary"])
+                    self.assertTrue(value["ingress"][1]["ancestry_boundary"])
+                    self.assertFalse(value["ingress"][2]["ancestry_boundary"])
+                    self.assertIsNone(value["ingress"][0]["review"])
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(

@@ -647,6 +647,24 @@ def has_exact_ancestry_merge_parents(
     return parents == [previous_develop, expected_main]
 
 
+def ancestry_merge_main(
+    repository_path: Path,
+    *,
+    head_sha: str,
+    previous_develop: str,
+) -> str | None:
+    """Return the historical main parent of an exact two-parent backmerge."""
+
+    parents = git(["show", "-s", "--format=%P", head_sha], repository_path).split()
+    if (
+        len(parents) != 2
+        or parents[0] != previous_develop
+        or SHA.fullmatch(parents[1]) is None
+    ):
+        return None
+    return parents[1]
+
+
 def validate_ancestry_boundary_content(
     repository_path: Path,
     *,
@@ -1860,13 +1878,32 @@ def verify(arguments: argparse.Namespace) -> JSON:
     ]
     require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
     baseline_boundary = baseline_candidates[0]
-    boundary_merge, _ = ingress_inventory[baseline_boundary]
-    validate_ancestry_boundary_content(
-        repository_path,
-        repository=arguments.repository,
-        head_sha=boundary_merge["head_sha"],
-        previous_develop=boundary_merge["base_sha"],
-        expected_main=expected_base,
+
+    structural_boundaries: dict[int, str] = {}
+    for index, (merge, pull) in enumerate(ingress_inventory):
+        historical_main = ancestry_merge_main(
+            repository_path,
+            head_sha=merge["head_sha"],
+            previous_develop=merge["base_sha"],
+        )
+        if historical_main is None or not is_authorized_ancestry_boundary(
+            pull,
+            repository=arguments.repository,
+            expected_main=historical_main,
+            previous_develop=merge["base_sha"],
+        ):
+            continue
+        validate_ancestry_boundary_content(
+            repository_path,
+            repository=arguments.repository,
+            head_sha=merge["head_sha"],
+            previous_develop=merge["base_sha"],
+            expected_main=historical_main,
+        )
+        structural_boundaries[index] = historical_main
+    require(
+        structural_boundaries.get(baseline_boundary) == expected_base,
+        "baseline-reconciliation-not-structural",
     )
 
     ingress: list[JSON] = []
@@ -1874,9 +1911,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
         number = integer(pull.get("number"), "ingress-pull-number")
         merged_at = text(pull.get("merged_at"), "ingress-merged-at")
         timestamp(merged_at, "ingress-merged-at")
-        ancestry_boundary, post_baseline = classify_ingress_position(
-            index, baseline_boundary
-        )
+        _, post_baseline = classify_ingress_position(index, baseline_boundary)
+        ancestry_boundary = index in structural_boundaries
         if post_baseline:
             require(
                 is_ancestor(repository_path, expected_base, merge["head_sha"]),
@@ -1970,11 +2006,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 "ingress-merge-mutated-during-verification",
             )
             if ancestry_boundary:
+                historical_main = ancestry_merge_main(
+                    repository_path,
+                    head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+                    previous_develop=sha(
+                        item.get("base_sha"), "revalidation-base-sha"
+                    ),
+                )
+                require(
+                    historical_main is not None,
+                    "ancestry-boundary-parents-mutated-during-verification",
+                )
                 require(
                     is_authorized_ancestry_boundary(
                         refreshed_pull,
                         repository=arguments.repository,
-                        expected_main=expected_base,
+                        expected_main=historical_main,
                         previous_develop=sha(
                             item.get("base_sha"), "revalidation-base-sha"
                         ),
