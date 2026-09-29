@@ -189,6 +189,20 @@ def v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
+def expanded_v6_summary() -> str:
+    evidence = json.loads(v6_summary())
+    evidence.update(
+        {
+            "controller_ref": "develop",
+            "head_repository": "lightning-it/example",
+            "pull_request_labels_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "pull_request_last_edited_at": None,
+            "review_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+        }
+    )
+    return json.dumps(evidence)
+
+
 def evidence_api(
     run: dict[str, object],
     suite: dict[str, object] | None = None,
@@ -1557,6 +1571,75 @@ class PromotionEvidenceTests(unittest.TestCase):
                     head_sha=HEAD,
                     merge_base_sha=BASE,
                 )
+
+    def test_v6_accepts_exact_expanded_review_metadata(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(producer_run())
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual("copilot", evidence["evidence_kind"])
+
+    def test_v6_expanded_review_metadata_fails_closed(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        cases = (
+            ("head_repository", "fork/example", "review-summary-head-repository"),
+            ("controller_ref", "main", "review-summary-controller-ref"),
+            ("pull_request_labels_sha256", "7" * 64, "review-summary-labels-mutated"),
+            (
+                "pull_request_last_edited_at",
+                "2026-09-28T00:00:00Z",
+                "review-summary-last-edited-at-mutated",
+            ),
+            ("review_id", "not-a-review", "review-summary-review-id"),
+        )
+        for field, value, error in cases:
+            summary = json.loads(expanded_v6_summary())
+            summary[field] = value
+            pull = ingress_pull()
+            pull["labels"] = []
+            pull["last_edited_at"] = None
+            with (
+                self.subTest(field=field),
+                mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(producer_run())
+                ),
+                self.assertRaisesRegex(MODULE.EvidenceError, error),
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
+                    repository="lightning-it/example",
+                    pull=pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+        summary = json.loads(expanded_v6_summary())
+        summary["unexpected"] = True
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        with self.assertRaisesRegex(MODULE.EvidenceError, "review-summary-schema"):
+            MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {

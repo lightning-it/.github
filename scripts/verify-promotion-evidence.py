@@ -33,6 +33,7 @@ from typing import Any
 JSON = dict[str, Any]
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+PULL_REQUEST_REVIEW_NODE_ID = re.compile(r"^PRR_[A-Za-z0-9_+=/-]{4,252}$")
 V6_EXTERNAL_ID = re.compile(
     r"^mlx90-current-revision:"
     r"(?P<kind>copilot|managed-sync|ancestry-backmerge|renovate):v6:"
@@ -795,6 +796,53 @@ def validate_renovate_policy(pull: JSON, summary: JSON, *, repository: str) -> N
     )
 
 
+def validate_expanded_review_metadata(
+    pull: JSON, summary: JSON, *, repository: str
+) -> None:
+    head = exact_object(pull.get("head"), "review-summary-head")
+    head_repo = exact_object(head.get("repo"), "review-summary-head-repository")
+    require(
+        head_repo.get("full_name") == repository
+        and summary.get("head_repository") == repository,
+        "review-summary-head-repository",
+    )
+    labels = exact_array(pull.get("labels"), "review-summary-labels")
+    names = [
+        text(
+            exact_object(item, "review-summary-label").get("name"),
+            "review-summary-label-name",
+        )
+        for item in labels
+    ]
+    require(len(names) == len(set(names)), "review-summary-label-duplicate")
+    labels_json = json.dumps(
+        sorted(names), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    labels_sha256 = text(
+        summary.get("pull_request_labels_sha256"),
+        "review-summary-labels-sha256",
+    )
+    require(
+        SHA256.fullmatch(labels_sha256) is not None
+        and hashlib.sha256(labels_json).hexdigest() == labels_sha256,
+        "review-summary-labels-mutated",
+    )
+    last_edited_at = pull.get("last_edited_at")
+    require(
+        last_edited_at is None or type(last_edited_at) is str,
+        "review-summary-live-last-edited-at",
+    )
+    require(
+        last_edited_at == summary.get("pull_request_last_edited_at"),
+        "review-summary-last-edited-at-mutated",
+    )
+    review_id = text(summary.get("review_id"), "review-summary-review-id")
+    require(
+        PULL_REQUEST_REVIEW_NODE_ID.fullmatch(review_id) is not None,
+        "review-summary-review-id",
+    )
+
+
 def validate_producer_run(
     check: JSON,
     *,
@@ -904,20 +952,30 @@ def validate_producer_run(
             )
             validate_renovate_policy(pull, summary, repository=repository)
         elif evidence_version == "v6":
+            legacy_v6_keys = {
+                "base_sha",
+                "controller_sha",
+                "head_sha",
+                "producer_run_id",
+                "pull_request_number",
+                "review_path",
+                "run_url",
+                "schema",
+            }
+            expanded_v6_keys = legacy_v6_keys | {
+                "controller_ref",
+                "head_repository",
+                "pull_request_labels_sha256",
+                "pull_request_last_edited_at",
+                "review_id",
+            }
             require(
-                set(summary)
-                == {
-                    "base_sha",
-                    "controller_sha",
-                    "head_sha",
-                    "producer_run_id",
-                    "pull_request_number",
-                    "review_path",
-                    "run_url",
-                    "schema",
-                },
+                set(summary) in (legacy_v6_keys, expanded_v6_keys),
                 "review-summary-schema",
             )
+            if set(summary) == expanded_v6_keys:
+                require(evidence_kind == "copilot", "review-summary-expanded-kind")
+                validate_expanded_review_metadata(pull, summary, repository=repository)
         else:
             require(evidence_version == "v5", "review-summary-version")
             expected_v5_keys = {
@@ -943,7 +1001,7 @@ def validate_producer_run(
             gh_json(["api", f"repos/{repository}"]), "controller-repository"
         )
         controller_ref = text(repository_state.get("default_branch"), "controller-ref")
-        if evidence_kind == "renovate":
+        if evidence_kind == "renovate" or "controller_ref" in summary:
             require(
                 summary.get("controller_ref") == controller_ref,
                 "review-summary-controller-ref",
