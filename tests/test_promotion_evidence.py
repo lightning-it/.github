@@ -1647,6 +1647,20 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+        pull = ingress_pull()
+        pull["labels"] = []
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "review-summary-live-last-edited-at"
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
             "number": 17,

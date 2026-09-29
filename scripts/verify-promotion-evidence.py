@@ -827,6 +827,7 @@ def validate_expanded_review_metadata(
         and hashlib.sha256(labels_json).hexdigest() == labels_sha256,
         "review-summary-labels-mutated",
     )
+    require("last_edited_at" in pull, "review-summary-live-last-edited-at")
     last_edited_at = pull.get("last_edited_at")
     require(
         last_edited_at is None or type(last_edited_at) is str,
