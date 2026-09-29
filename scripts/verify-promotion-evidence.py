@@ -321,9 +321,7 @@ def gh_json(arguments: list[str]) -> Any:
         try:
             raw = run(["gh", *arguments])
         except EvidenceError as error:
-            transient = any(
-                marker in str(error) for marker in GH_JSON_TRANSIENT_ERRORS
-            )
+            transient = str(error) in GH_JSON_TRANSIENT_ERRORS
             if not transient or attempt + 1 == GH_JSON_MAX_ATTEMPTS:
                 raise
             time.sleep(0.25 * (2**attempt))
