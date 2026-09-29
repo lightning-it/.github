@@ -1497,8 +1497,7 @@ def validate_producer_run(
                     ]
                     require(
                         review.get("state") in {"COMMENTED", "APPROVED"}
-                        and run_created
-                        <= submitted
+                        and submitted
                         <= check_completed
                         <= run_updated
                         <= merged_at

@@ -747,13 +747,6 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ingress_pull(),
                 None,
                 valid_review,
-                run | {"created_at": "2026-09-27T00:04:30Z"},
-                "producer-review-binding",
-            ),
-            (
-                ingress_pull(),
-                None,
-                valid_review,
                 run | {"updated_at": "2026-09-27T00:07:00Z"},
                 "producer-review-binding",
             ),
@@ -781,6 +774,25 @@ class PromotionEvidenceTests(unittest.TestCase):
                 run,
                 review=valid_review | {"state": "APPROVED"},
             ),
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, evidence["producer_run_id"])
+
+        # GitHub may reuse a valid native review for the same exact head in a
+        # later protected verifier run. The review therefore may predate the
+        # producer run while still preceding its bound check and the merge.
+        reused_review_run = run | {"created_at": "2026-09-27T00:04:15Z"}
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(reused_review_run, review=valid_review),
         ):
             evidence = MODULE.bound_review_check(
                 [{"check_runs": [check]}],
