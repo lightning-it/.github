@@ -1855,6 +1855,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 "name": "Unexpected failed job",
             }
         )
+
         unrelated_failure["total_count"] = 2
         self.assertEqual(
             2,
@@ -1874,6 +1875,30 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             self.assertEqual(
                 [], json.loads(evaluate(malformed, failed_filter).stdout)
             )
+
+    def test_cross_rerun_keeps_frozen_neutral_producer_binding(self) -> None:
+        function = self._rerun_shell_function(
+            "authorize_cross_rerun_transaction"
+        )
+        self.assertIn(
+            "local live_pr neutral_snapshot reservation_run "
+            "producer_rebind",
+            function,
+        )
+        self.assertIn(
+            'reservation_run="$(wait_for_stable_'
+            'reservation_producer_success)"',
+            function,
+        )
+        self.assertIn(
+            'test "${producer_rebind}" = '
+            '"${reservation_run}"',
+            function,
+        )
+        self.assertNotIn(
+            "local live_pr neutral_snapshot producer_binding",
+            function,
+        )
 
     def test_cross_attempt_two_ledger_is_exactly_one_successful_job(
         self,
