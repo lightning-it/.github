@@ -1264,9 +1264,17 @@ def validate_producer_run(
                 require(
                     name in expected_jobs
                     and name not in observed_jobs
+                    and integer(job.get("run_id"), "producer-run-job-run-id")
+                    == producer_run_id
+                    and integer(
+                        job.get("run_attempt"), "producer-run-job-run-attempt"
+                    )
+                    == attempt
+                    and sha(job.get("head_sha"), "producer-run-job-head")
+                    == head_sha
                     and job.get("status") == "completed"
                     and job.get("conclusion") == expected_jobs[name],
-                    "producer-run-job-topology",
+                    "producer-run-job-binding",
                 )
                 job_ids.append(job_id)
                 observed_jobs[name] = job

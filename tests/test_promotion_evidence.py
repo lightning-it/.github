@@ -1622,24 +1622,36 @@ class PromotionEvidenceTests(unittest.TestCase):
         exact_jobs = [
             {
                 "id": 1,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
                 "name": "Request Copilot review for current revision",
                 "status": "completed",
                 "conclusion": "success",
             },
             {
                 "id": 2,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
                 "name": "Verify current revision policy",
                 "status": "completed",
                 "conclusion": "success",
             },
             {
                 "id": 3,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
                 "name": "Classify protected main trust-root handoff",
                 "status": "completed",
                 "conclusion": "skipped",
             },
             {
                 "id": 4,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
                 "name": (
                     "Request protected verifier re-evaluation / "
                     "Re-run the one protected verifier attempt"
@@ -1651,6 +1663,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             },
             {
                 "id": 5,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
                 "name": "Dispatch protected managed-sync finalizer re-evaluation",
                 "status": "completed",
                 "conclusion": "skipped",
@@ -1674,7 +1689,19 @@ class PromotionEvidenceTests(unittest.TestCase):
         for mutate, reason in (
             (
                 lambda candidate: candidate[1].update({"conclusion": "failure"}),
-                "producer-run-job-topology",
+                "producer-run-job-binding",
+            ),
+            (
+                lambda candidate: candidate[0].update({"run_id": 89}),
+                "producer-run-job-binding",
+            ),
+            (
+                lambda candidate: candidate[1].update({"run_attempt": 2}),
+                "producer-run-job-binding",
+            ),
+            (
+                lambda candidate: candidate[2].update({"head_sha": "9" * 40}),
+                "producer-run-job-binding",
             ),
             (
                 lambda candidate: candidate[3].update(
