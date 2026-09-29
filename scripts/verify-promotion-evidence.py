@@ -33,6 +33,7 @@ from typing import Any
 JSON = dict[str, Any]
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+PULL_REQUEST_REVIEW_NODE_ID = re.compile(r"^PRR_[A-Za-z0-9_+=/-]{4,252}$")
 V6_EXTERNAL_ID = re.compile(
     r"^mlx90-current-revision:"
     r"(?P<kind>copilot|managed-sync|ancestry-backmerge|renovate):v6:"
@@ -646,6 +647,24 @@ def has_exact_ancestry_merge_parents(
     return parents == [previous_develop, expected_main]
 
 
+def ancestry_merge_main(
+    repository_path: Path,
+    *,
+    head_sha: str,
+    previous_develop: str,
+) -> str | None:
+    """Return the historical main parent of an exact two-parent backmerge."""
+
+    parents = git(["show", "-s", "--format=%P", head_sha], repository_path).split()
+    if (
+        len(parents) != 2
+        or parents[0] != previous_develop
+        or SHA.fullmatch(parents[1]) is None
+    ):
+        return None
+    return parents[1]
+
+
 def validate_ancestry_boundary_content(
     repository_path: Path,
     *,
@@ -795,6 +814,111 @@ def validate_renovate_policy(pull: JSON, summary: JSON, *, repository: str) -> N
     )
 
 
+def validate_expanded_review_metadata(
+    pull: JSON, summary: JSON, *, repository: str
+) -> None:
+    head = exact_object(pull.get("head"), "review-summary-head")
+    head_repo = exact_object(head.get("repo"), "review-summary-head-repository")
+    require(
+        head_repo.get("full_name") == repository
+        and summary.get("head_repository") == repository,
+        "review-summary-head-repository",
+    )
+    labels = exact_array(pull.get("labels"), "review-summary-labels")
+    names = [
+        text(
+            exact_object(item, "review-summary-label").get("name"),
+            "review-summary-label-name",
+        )
+        for item in labels
+    ]
+    require(len(names) == len(set(names)), "review-summary-label-duplicate")
+    labels_json = json.dumps(
+        sorted(names), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    labels_sha256 = text(
+        summary.get("pull_request_labels_sha256"),
+        "review-summary-labels-sha256",
+    )
+    require(
+        SHA256.fullmatch(labels_sha256) is not None
+        and hashlib.sha256(labels_json).hexdigest() == labels_sha256,
+        "review-summary-labels-mutated",
+    )
+    require("last_edited_at" in pull, "review-summary-live-last-edited-at")
+    last_edited_at = pull.get("last_edited_at")
+    require(
+        last_edited_at is None or type(last_edited_at) is str,
+        "review-summary-live-last-edited-at",
+    )
+    require(
+        last_edited_at == summary.get("pull_request_last_edited_at"),
+        "review-summary-last-edited-at-mutated",
+    )
+    review_id = text(summary.get("review_id"), "review-summary-review-id")
+    require(
+        PULL_REQUEST_REVIEW_NODE_ID.fullmatch(review_id) is not None,
+        "review-summary-review-id",
+    )
+
+
+def validate_expanded_review_identity(
+    *, repository: str, pull_number: int, head_sha: str, summary: JSON
+) -> list[Any]:
+    review_pages = exact_array(
+        gh_json(
+            [
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
+            ]
+        ),
+        "review-summary-review-pages",
+    )
+    review_ids: list[int] = []
+    review_node_ids: list[str] = []
+    current_reviews: list[JSON] = []
+    for page in review_pages:
+        for item in exact_array(page, "review-summary-review-page"):
+            review = exact_object(item, "review-summary-live-review")
+            review_ids.append(
+                integer(review.get("id"), "review-summary-live-review-id")
+            )
+            review_node_ids.append(
+                text(review.get("node_id"), "review-summary-live-review-node-id")
+            )
+            require(
+                len(review_ids) <= MAX_REVIEWS_PER_PULL,
+                "review-summary-review-inventory-too-large",
+            )
+            reviewer = exact_object(
+                review.get("user"), "review-summary-live-review-user"
+            )
+            if (
+                reviewer.get("login") == COPILOT_REVIEWER_LOGIN
+                and integer(
+                    reviewer.get("id"), "review-summary-live-review-user-id"
+                )
+                == COPILOT_REVIEWER_ID
+                and reviewer.get("type") == "Bot"
+                and review.get("commit_id") == head_sha
+                and review.get("state") in {"COMMENTED", "APPROVED"}
+            ):
+                current_reviews.append(review)
+    require(
+        len(review_ids) == len(set(review_ids))
+        and len(review_node_ids) == len(set(review_node_ids)),
+        "review-summary-live-review-duplicate",
+    )
+    require(
+        len(current_reviews) == 1
+        and current_reviews[0].get("node_id") == summary.get("review_id"),
+        "review-summary-review-binding",
+    )
+    return review_pages
+
+
 def validate_producer_run(
     check: JSON,
     *,
@@ -852,6 +976,7 @@ def validate_producer_run(
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
     repository_state: JSON | None = None
+    expanded_review_pages: list[Any] | None = None
     if evidence_kind != "release-app":
         expected_paths = {
             "copilot": "applicable Copilot or governed automation exemption",
@@ -904,20 +1029,30 @@ def validate_producer_run(
             )
             validate_renovate_policy(pull, summary, repository=repository)
         elif evidence_version == "v6":
+            legacy_v6_keys = {
+                "base_sha",
+                "controller_sha",
+                "head_sha",
+                "producer_run_id",
+                "pull_request_number",
+                "review_path",
+                "run_url",
+                "schema",
+            }
+            expanded_v6_keys = legacy_v6_keys | {
+                "controller_ref",
+                "head_repository",
+                "pull_request_labels_sha256",
+                "pull_request_last_edited_at",
+                "review_id",
+            }
             require(
-                set(summary)
-                == {
-                    "base_sha",
-                    "controller_sha",
-                    "head_sha",
-                    "producer_run_id",
-                    "pull_request_number",
-                    "review_path",
-                    "run_url",
-                    "schema",
-                },
+                set(summary) in (legacy_v6_keys, expanded_v6_keys),
                 "review-summary-schema",
             )
+            if set(summary) == expanded_v6_keys:
+                require(evidence_kind == "copilot", "review-summary-expanded-kind")
+                validate_expanded_review_metadata(pull, summary, repository=repository)
         else:
             require(evidence_version == "v5", "review-summary-version")
             expected_v5_keys = {
@@ -943,7 +1078,7 @@ def validate_producer_run(
             gh_json(["api", f"repos/{repository}"]), "controller-repository"
         )
         controller_ref = text(repository_state.get("default_branch"), "controller-ref")
-        if evidence_kind == "renovate":
+        if evidence_kind == "renovate" or "controller_ref" in summary:
             require(
                 summary.get("controller_ref") == controller_ref,
                 "review-summary-controller-ref",
@@ -1042,6 +1177,13 @@ def validate_producer_run(
         require(run.get("name") == "Current revision review gate", "producer-name")
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
+        if evidence_kind == "copilot" and "review_id" in summary:
+            expanded_review_pages = validate_expanded_review_identity(
+                repository=repository,
+                pull_number=pull_number,
+                head_sha=head_sha,
+                summary=summary,
+            )
         require(repository_state is not None, "producer-repository-state")
         repository_id = integer(repository_state.get("id"), "producer-repository-id")
         repository_name = repository.split("/", 1)[1]
@@ -1133,17 +1275,20 @@ def validate_producer_run(
                 and parent_shas == [base_sha, head_sha],
                 "producer-pull-merge-binding",
             )
-            review_pages = exact_array(
-                gh_json(
-                    [
-                        "api",
-                        "--paginate",
-                        "--slurp",
-                        f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
-                    ]
-                ),
-                "producer-review-pages",
-            )
+            if expanded_review_pages is None:
+                review_pages = exact_array(
+                    gh_json(
+                        [
+                            "api",
+                            "--paginate",
+                            "--slurp",
+                            f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
+                        ]
+                    ),
+                    "producer-review-pages",
+                )
+            else:
+                review_pages = expanded_review_pages
             run_created = timestamp(run.get("created_at"), "producer-run-created-at")
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
             check_completed = timestamp(
@@ -1244,6 +1389,11 @@ def validate_producer_run(
                 len(current_reviews) == 1,
                 "producer-current-copilot-review-not-unique",
             )
+            if expanded_review_pages is not None:
+                require(
+                    current_reviews[0].get("node_id") == summary.get("review_id"),
+                    "review-summary-review-binding",
+                )
             return summary
         require(len(associations) == 1, "producer-run-pull-request-count")
         association = exact_object(associations[0], "producer-run-pull-request")
@@ -1728,13 +1878,32 @@ def verify(arguments: argparse.Namespace) -> JSON:
     ]
     require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
     baseline_boundary = baseline_candidates[0]
-    boundary_merge, _ = ingress_inventory[baseline_boundary]
-    validate_ancestry_boundary_content(
-        repository_path,
-        repository=arguments.repository,
-        head_sha=boundary_merge["head_sha"],
-        previous_develop=boundary_merge["base_sha"],
-        expected_main=expected_base,
+
+    structural_boundaries: dict[int, str] = {}
+    for index, (merge, pull) in enumerate(ingress_inventory):
+        historical_main = ancestry_merge_main(
+            repository_path,
+            head_sha=merge["head_sha"],
+            previous_develop=merge["base_sha"],
+        )
+        if historical_main is None or not is_authorized_ancestry_boundary(
+            pull,
+            repository=arguments.repository,
+            expected_main=historical_main,
+            previous_develop=merge["base_sha"],
+        ):
+            continue
+        validate_ancestry_boundary_content(
+            repository_path,
+            repository=arguments.repository,
+            head_sha=merge["head_sha"],
+            previous_develop=merge["base_sha"],
+            expected_main=historical_main,
+        )
+        structural_boundaries[index] = historical_main
+    require(
+        structural_boundaries.get(baseline_boundary) == expected_base,
+        "baseline-reconciliation-not-structural",
     )
 
     ingress: list[JSON] = []
@@ -1742,9 +1911,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
         number = integer(pull.get("number"), "ingress-pull-number")
         merged_at = text(pull.get("merged_at"), "ingress-merged-at")
         timestamp(merged_at, "ingress-merged-at")
-        ancestry_boundary, post_baseline = classify_ingress_position(
-            index, baseline_boundary
-        )
+        _, post_baseline = classify_ingress_position(index, baseline_boundary)
+        ancestry_boundary = index in structural_boundaries
         if post_baseline:
             require(
                 is_ancestor(repository_path, expected_base, merge["head_sha"]),
@@ -1838,11 +2006,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 "ingress-merge-mutated-during-verification",
             )
             if ancestry_boundary:
+                historical_main = ancestry_merge_main(
+                    repository_path,
+                    head_sha=sha(item.get("head_sha"), "revalidation-head-sha"),
+                    previous_develop=sha(
+                        item.get("base_sha"), "revalidation-base-sha"
+                    ),
+                )
+                require(
+                    historical_main is not None,
+                    "ancestry-boundary-parents-mutated-during-verification",
+                )
                 require(
                     is_authorized_ancestry_boundary(
                         refreshed_pull,
                         repository=arguments.repository,
-                        expected_main=expected_base,
+                        expected_main=historical_main,
                         previous_develop=sha(
                             item.get("base_sha"), "revalidation-base-sha"
                         ),

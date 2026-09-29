@@ -189,6 +189,20 @@ def v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
+def expanded_v6_summary() -> str:
+    evidence = json.loads(v6_summary())
+    evidence.update(
+        {
+            "controller_ref": "develop",
+            "head_repository": "lightning-it/example",
+            "pull_request_labels_sha256": hashlib.sha256(b"[]").hexdigest(),
+            "pull_request_last_edited_at": None,
+            "review_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+        }
+    )
+    return json.dumps(evidence)
+
+
 def evidence_api(
     run: dict[str, object],
     suite: dict[str, object] | None = None,
@@ -235,6 +249,7 @@ def evidence_api(
                     review
                     or {
                         "id": 17001,
+                        "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
                         "user": {
                             "login": "copilot-pull-request-reviewer[bot]",
                             "id": 175728472,
@@ -1245,6 +1260,33 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )
             )
 
+    def test_historical_ancestry_boundary_uses_its_exact_main_parent(self) -> None:
+        with mock.patch.object(MODULE, "git", return_value=f"{MERGE} {BASE}"):
+            self.assertEqual(
+                BASE,
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                ),
+            )
+        with mock.patch.object(MODULE, "git", return_value=f"{'9' * 40} {BASE}"):
+            self.assertIsNone(
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                )
+            )
+        with mock.patch.object(MODULE, "git", return_value=MERGE):
+            self.assertIsNone(
+                MODULE.ancestry_merge_main(
+                    ROOT,
+                    head_sha=HEAD,
+                    previous_develop=MERGE,
+                )
+            )
+
     def test_ancestry_boundary_content_is_exact(self) -> None:
         evidence = json.dumps(
             {
@@ -1558,6 +1600,128 @@ class PromotionEvidenceTests(unittest.TestCase):
                     merge_base_sha=BASE,
                 )
 
+    def test_v6_accepts_exact_expanded_review_metadata(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(producer_run())
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual("copilot", evidence["evidence_kind"])
+
+    def test_v6_expanded_review_metadata_fails_closed(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        cases = (
+            ("head_repository", "fork/example", "review-summary-head-repository"),
+            ("controller_ref", "main", "review-summary-controller-ref"),
+            ("pull_request_labels_sha256", "7" * 64, "review-summary-labels-mutated"),
+            (
+                "pull_request_last_edited_at",
+                "2026-09-28T00:00:00Z",
+                "review-summary-last-edited-at-mutated",
+            ),
+            ("review_id", "not-a-review", "review-summary-review-id"),
+            (
+                "review_id",
+                "PRR_kwDOQs6tNc8AAAABDifferent",
+                "review-summary-review-binding",
+            ),
+        )
+        for field, value, error in cases:
+            summary = json.loads(expanded_v6_summary())
+            summary[field] = value
+            pull = ingress_pull()
+            pull["labels"] = []
+            pull["last_edited_at"] = None
+            with (
+                self.subTest(field=field),
+                mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(producer_run())
+                ),
+                self.assertRaisesRegex(MODULE.EvidenceError, error),
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
+                    repository="lightning-it/example",
+                    pull=pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+        summary = json.loads(expanded_v6_summary())
+        summary["unexpected"] = True
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        with self.assertRaisesRegex(MODULE.EvidenceError, "review-summary-schema"):
+            MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, json.dumps(summary))]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
+        pull = ingress_pull()
+        pull["labels"] = []
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "review-summary-live-last-edited-at"
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+                )
+
+    def test_expanded_fallback_reuses_one_review_inventory_snapshot(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        delegate = evidence_api(run)
+        review_calls = 0
+
+        def mutating_api(arguments: list[str]) -> dict[str, object]:
+            nonlocal review_calls
+            if arguments[-1] == (
+                "repos/lightning-it/example/pulls/17/reviews?per_page=100"
+            ):
+                review_calls += 1
+                if review_calls > 1:
+                    replacement = delegate(arguments)
+                    replacement[0][0]["node_id"] = "PRR_kwDOQs6tNc8AAAABReplacement"
+                    return replacement
+            return delegate(arguments)
+
+        with mock.patch.object(MODULE, "gh_json", side_effect=mutating_api):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual(1, review_calls)
+
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
             "number": 17,
@@ -1610,7 +1774,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         boundary_head = "7" * 40
         boundary_merge = "8" * 40
         feature_merge = "9" * 40
-        pre_boundary = ingress_pull()
+        historical_main = "c" * 40
+        pre_boundary = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
         pre_boundary.update(
             {
                 "number": 16,
@@ -1624,10 +1793,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         pre_boundary["head"].update(
             {
-                "ref": "fix/pre-boundary",
+                "ref": (
+                    f"backmerge/example-{historical_main[:12]}-"
+                    f"{'a' * 12}-main"
+                ),
                 "sha": pre_boundary_head,
                 "repo": {"full_name": "lightning-it/example"},
             }
+        )
+        pre_boundary["title"] = (
+            f"chore(governance): record main ancestry before {historical_main[:12]}"
         )
         boundary = ingress_pull(
             login="lightning-it-release-automation[bot]",
@@ -1647,10 +1822,16 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         boundary["head"].update(
             {
-                "ref": "backmerge/release-main-1",
+                "ref": (
+                    f"backmerge/example-{BASE[:12]}-"
+                    f"{pre_boundary_merge[:12]}-main"
+                ),
                 "sha": boundary_head,
                 "repo": {"full_name": "lightning-it/example"},
             }
+        )
+        boundary["title"] = (
+            f"chore(governance): record main ancestry before {BASE[:12]}"
         )
         feature = ingress_pull()
         feature.update(
@@ -1773,8 +1954,12 @@ class PromotionEvidenceTests(unittest.TestCase):
                         ),
                         mock.patch.object(
                             MODULE,
-                            "is_authorized_ancestry_boundary",
-                            side_effect=lambda pull, **_kwargs: pull["number"] == 10,
+                            "ancestry_merge_main",
+                            side_effect=lambda _repository, *, head_sha, **_kwargs: (
+                                historical_main
+                                if head_sha == pre_boundary_head
+                                else BASE if head_sha == boundary_head else None
+                            ),
                         ),
                         mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
                         mock.patch.object(MODULE, "git", return_value=BASE),
@@ -1788,6 +1973,10 @@ class PromotionEvidenceTests(unittest.TestCase):
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
                     self.assertEqual(1, value["post_baseline_ingress_count"])
+                    self.assertTrue(value["ingress"][0]["ancestry_boundary"])
+                    self.assertTrue(value["ingress"][1]["ancestry_boundary"])
+                    self.assertFalse(value["ingress"][2]["ancestry_boundary"])
+                    self.assertIsNone(value["ingress"][0]["review"])
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(
@@ -1960,9 +2149,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("docker run --rm", promotion_job)
         self.assertIn("actions/upload-artifact@043fb46d", promotion_job)
         self.assertIn("Persisted archive SHA-256", promotion_job)
-        self.assertIn('test "${EVENT_ACTION}" = opened', promotion_job)
+        self.assertIn('test "${EVENT_ACTION}" = edited', promotion_job)
         self.assertIn("lit-promotion-dispatch-pending", promotion_job)
         self.assertIn("lit-promotion-dispatch-succeeded", promotion_job)
+        self.assertIn("lit-promotion-evidence-pending", promotion_job)
         self.assertIn("lit-promotion-evidence-ready", promotion_job)
         self.assertIn("lit-protected-promotion:v2", promotion_job)
         self.assertIn("--expected-body-sha256", promotion_job)

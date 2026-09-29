@@ -8968,11 +8968,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return subprocess.run(
                 [bash, "-c", aggregate_transition],
                 env={
-                    "EVENT_ACTION": (
-                        "edited"
-                        if repository == "lightning-it/.github"
-                        else "opened"
-                    ),
                     "EVENT_BASE": base_sha,
                     "EVENT_BODY": current_body,
                     "EVENT_HEAD": head_sha,
@@ -8990,67 +8985,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "AUTHOR_LOGIN": "lightning-it-release-automation[bot]",
             "AUTHOR_TYPE": "Bot",
             "HEAD_REPOSITORY": "lightning-it/example",
-            "SENDER_ID": "307565056",
-            "SENDER_LOGIN": "lightning-it-release-automation[bot]",
-            "SENDER_TYPE": "Bot",
-        }
-        base_sha = "1" * 40
-        head_sha = "2" * 40
-        head_marker = f"<!-- lit-promotion-head:{head_sha} -->"
-        run_marker = "<!-- lit-promotion-run:12345:1 -->"
-        protocol = "<!-- lit-protected-promotion:v2 -->"
-        evidence_ready = (
-            f"<!-- lit-promotion-evidence-ready:{base_sha}:{head_sha} -->"
-        )
-        evidence_body = "\n".join(
-            (
-                head_marker,
-                run_marker,
-                evidence_ready,
-                protocol,
-                "Automated protected promotion of changes already reviewed on develop.",
-                "The organization Required Workflow aggregates exact ingress evidence; "
-                "it does not request a second AI review of the cumulative diff.",
-            )
-        )
-        opened = {
-            **exact_promotion,
-            "BASE_SHA": base_sha,
-            "EVENT_BODY": evidence_body,
-            "HEAD_SHA": head_sha,
-            "PREVIOUS_BODY": "",
         }
         returncode, values, _ = route_result(
             "opened",
             repository="lightning-it/example",
             base_ref="main",
             head_ref="develop",
-            **opened,
+            **exact_promotion,
         )
         self.assertEqual(0, returncode)
-        self.assertEqual("true", values["promotion_candidate"])
-        self.assertEqual("false", values["promotion_pending"])
         self.assertEqual(
-            0,
-            aggregate_transition_result(
-                base_sha=base_sha,
-                current_body=evidence_body,
-                head_sha=head_sha,
-                previous_body="",
-            ),
+            {
+                "promotion_candidate": "false",
+                "promotion_pending": "true",
+                "s0_candidate": "false",
+                "s0_prestage": "false",
+            },
+            values,
         )
-
-        returncode, values, _ = route_result(
-            "edited",
-            repository="lightning-it/example",
-            base_ref="main",
-            head_ref="develop",
-            **opened,
-        )
-        self.assertEqual(0, returncode)
-        self.assertEqual("false", values["promotion_candidate"])
-        self.assertEqual("true", values["promotion_pending"])
-
         for field, value in (
             ("AUTHOR_ID", "307565057"),
             ("AUTHOR_LOGIN", "litroc"),
@@ -9058,7 +9010,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("HEAD_REPOSITORY", "fork/example"),
         ):
             with self.subTest(promotion_near_miss=field):
-                near_miss = {**opened, field: value}
+                near_miss = {**exact_promotion, field: value}
                 returncode, values, _ = route_result(
                     "opened",
                     repository="lightning-it/example",
@@ -9070,28 +9022,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual("false", values["promotion_candidate"])
                 self.assertEqual("false", values["promotion_pending"])
 
-        for field, value in (
-            ("SENDER_LOGIN", "litroc"),
-            ("SENDER_ID", "76040632"),
-            ("EVENT_BODY", evidence_body.replace(head_marker, "")),
-            ("EVENT_BODY", evidence_body.replace(protocol, "")),
-            ("EVENT_BODY", evidence_body + "\n" + evidence_ready),
-            (
-                "EVENT_BODY",
-                evidence_body.replace(run_marker, "<!-- lit-promotion-run:9:2 -->"),
-            ),
-        ):
-            with self.subTest(invalid_opened_promotion=field, value=value):
-                malformed = {**opened, field: value}
-                returncode, _, _ = route_result(
-                    "opened",
-                    repository="lightning-it/example",
-                    base_ref="main",
-                    head_ref="develop",
-                    **malformed,
-                )
-                self.assertNotEqual(0, returncode)
-
+        base_sha = "1" * 40
+        head_sha = "2" * 40
+        head_marker = f"<!-- lit-promotion-head:{head_sha} -->"
+        run_marker = "<!-- lit-promotion-run:12345:1 -->"
         pending = f"<!-- lit-promotion-dispatch-pending:{base_sha}:{head_sha} -->"
         succeeded = (
             f"<!-- lit-promotion-dispatch-succeeded:{base_sha}:{head_sha} -->"
@@ -9100,7 +9034,6 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         current_body = previous_body.replace(pending, succeeded)
         finalized = {
             **exact_promotion,
-            "HEAD_REPOSITORY": "lightning-it/.github",
             "BASE_SHA": base_sha,
             "EVENT_BODY": current_body,
             "HEAD_SHA": head_sha,
@@ -9111,7 +9044,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         }
         returncode, values, _ = route_result(
             "edited",
-            repository="lightning-it/.github",
+            repository="lightning-it/example",
             base_ref="main",
             head_ref="develop",
             **finalized,
@@ -9126,9 +9059,93 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 current_body=current_body,
                 head_sha=head_sha,
                 previous_body=previous_body,
-                repository="lightning-it/.github",
             ),
         )
+
+        protocol = "<!-- lit-protected-promotion:v2 -->"
+        evidence_pending = (
+            f"<!-- lit-promotion-evidence-pending:{base_sha}:{head_sha} -->"
+        )
+        evidence_ready = (
+            f"<!-- lit-promotion-evidence-ready:{base_sha}:{head_sha} -->"
+        )
+        evidence_previous_body = "\n".join(
+            (head_marker, run_marker, evidence_pending, protocol, "release")
+        )
+        evidence_current_body = evidence_previous_body.replace(
+            evidence_pending, evidence_ready
+        )
+        evidence_finalized = {
+            **finalized,
+            "EVENT_BODY": evidence_current_body,
+            "PREVIOUS_BODY": evidence_previous_body,
+        }
+        returncode, values, _ = route_result(
+            "edited",
+            repository="lightning-it/example",
+            base_ref="main",
+            head_ref="develop",
+            **evidence_finalized,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual("true", values["promotion_candidate"])
+        self.assertEqual("false", values["promotion_pending"])
+        self.assertEqual(
+            0,
+            aggregate_transition_result(
+                base_sha=base_sha,
+                current_body=evidence_current_body,
+                head_sha=head_sha,
+                previous_body=evidence_previous_body,
+            ),
+        )
+
+        returncode, _, _ = route_result(
+            "edited",
+            repository="lightning-it/.github",
+            base_ref="main",
+            head_ref="develop",
+            **{
+                **evidence_finalized,
+                "HEAD_REPOSITORY": "lightning-it/.github",
+            },
+        )
+        self.assertNotEqual(0, returncode)
+
+        for field, value in (
+            (
+                "EVENT_BODY",
+                evidence_current_body.replace(
+                    run_marker, "<!-- lit-promotion-run:9:1 -->"
+                ),
+            ),
+            ("EVENT_BODY", evidence_current_body + "\n" + succeeded),
+            ("PREVIOUS_BODY", evidence_previous_body + "\n" + pending),
+            ("EVENT_BODY", evidence_current_body.replace(protocol, "")),
+            (
+                "EVENT_BODY",
+                evidence_current_body.replace(evidence_ready, succeeded),
+            ),
+        ):
+            with self.subTest(invalid_evidence_finalization=field, value=value):
+                malformed = {**evidence_finalized, field: value}
+                returncode, _, _ = route_result(
+                    "edited",
+                    repository="lightning-it/example",
+                    base_ref="main",
+                    head_ref="develop",
+                    **malformed,
+                )
+                self.assertNotEqual(0, returncode)
+                self.assertNotEqual(
+                    0,
+                    aggregate_transition_result(
+                        base_sha=base_sha,
+                        current_body=malformed["EVENT_BODY"],
+                        head_sha=head_sha,
+                        previous_body=malformed["PREVIOUS_BODY"],
+                    ),
+                )
 
         for field, value in (
             ("SENDER_LOGIN", "litroc"),
@@ -9154,7 +9171,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 malformed = {**finalized, field: value}
                 returncode, _, _ = route_result(
                     "edited",
-                    repository="lightning-it/.github",
+                    repository="lightning-it/example",
                     base_ref="main",
                     head_ref="develop",
                     **malformed,

@@ -72,8 +72,9 @@ jobs:
             && [ "${BASE_REF}" = main ] \
             && [ "${HEAD_REF}" = develop ] \
             && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ]; then
-            if [ "${REPOSITORY}" != 'lightning-it/.github' ] \
-              && [ "${EVENT_ACTION}" = opened ]; then
+            if [ "${EVENT_ACTION}" != edited ]; then
+              promotion_pending=true
+            else
               test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
               test "${SENDER_ID:-}" = 307565056
               test "${SENDER_TYPE:-}" = Bot
@@ -81,43 +82,20 @@ jobs:
               [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
               head_marker="<!-- lit-promotion-head:${HEAD_SHA} -->"
               protocol_marker='<!-- lit-protected-promotion:v2 -->'
-              evidence_ready="<!-- lit-promotion-evidence-ready:${BASE_SHA}:${HEAD_SHA} -->"
-              jq -en \
-                --arg current "${EVENT_BODY}" \
-                --arg head_marker "${head_marker}" \
-                --arg protocol "${protocol_marker}" \
-                --arg evidence_ready "${evidence_ready}" \
-                --arg summary 'Automated protected promotion of changes already reviewed on develop.' \
-                --arg detail 'The organization Required Workflow aggregates exact ingress evidence; it does not request a second AI review of the cumulative diff.' '
-                  ($current | split("\n")) as $lines
-                  | ([$lines[] |
-                    select(startswith("<!-- lit-promotion-run:"))]) as $run
-                  | ($run | length) == 1
-                  and ($run[0] | test(
-                    "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
-                  ))
-                  and $lines == [
-                    $head_marker, $run[0], $evidence_ready,
-                    $protocol, $summary, $detail
-                  ]
-                ' >/dev/null
-              promotion_candidate=true
-            elif [ "${REPOSITORY}" = 'lightning-it/.github' ] \
-              && [ "${EVENT_ACTION}" = edited ]; then
-              test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
-              test "${SENDER_ID:-}" = 307565056
-              test "${SENDER_TYPE:-}" = Bot
-              [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
-              [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
-              head_marker="<!-- lit-promotion-head:${HEAD_SHA} -->"
               dispatch_pending="<!-- lit-promotion-dispatch-pending:${BASE_SHA}:${HEAD_SHA} -->"
               dispatch_success="<!-- lit-promotion-dispatch-succeeded:${BASE_SHA}:${HEAD_SHA} -->"
+              evidence_pending="<!-- lit-promotion-evidence-pending:${BASE_SHA}:${HEAD_SHA} -->"
+              evidence_ready="<!-- lit-promotion-evidence-ready:${BASE_SHA}:${HEAD_SHA} -->"
               jq -en \
                 --arg before "${PREVIOUS_BODY}" \
                 --arg current "${EVENT_BODY}" \
                 --arg head_marker "${head_marker}" \
+                --arg protocol "${protocol_marker}" \
                 --arg dispatch_pending "${dispatch_pending}" \
-                --arg dispatch_success "${dispatch_success}" '
+                --arg dispatch_success "${dispatch_success}" \
+                --arg evidence_pending "${evidence_pending}" \
+                --arg evidence_ready "${evidence_ready}" \
+                --arg repository "${REPOSITORY}" '
                   ($before | split("\n")) as $before_lines
                   | ($current | split("\n")) as $current_lines
                   | ([$before_lines[] |
@@ -133,27 +111,49 @@ jobs:
                   and ($before_run[0] | test(
                     "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
                   ))
-                  and [$before_lines[] |
-                    select(startswith("<!-- lit-protected-promotion:"))] == []
-                  and [$current_lines[] |
-                    select(startswith("<!-- lit-protected-promotion:"))] == []
-                  and [$before_lines[] |
-                    select(startswith("<!-- lit-promotion-evidence-"))] == []
-                  and [$current_lines[] |
-                    select(startswith("<!-- lit-promotion-evidence-"))] == []
-                  and [$before_lines[] |
-                    select(startswith("<!-- lit-promotion-dispatch-"))]
-                      == [$dispatch_pending]
-                  and [$current_lines[] |
-                    select(startswith("<!-- lit-promotion-dispatch-"))]
-                      == [$dispatch_success]
-                  and ($before_lines | map(
-                    if . == $dispatch_pending then $dispatch_success else . end
-                  )) == $current_lines
+                  and (
+                    if ($repository != "lightning-it/.github"
+                      and [$before_lines[] |
+                      select(startswith("<!-- lit-protected-promotion:"))]
+                        == [$protocol]
+                      and [$current_lines[] |
+                      select(startswith("<!-- lit-protected-promotion:"))]
+                        == [$protocol]) then
+                      [$before_lines[] |
+                        select(startswith("<!-- lit-promotion-dispatch-"))] == []
+                      and [$current_lines[] |
+                        select(startswith("<!-- lit-promotion-dispatch-"))] == []
+                      and [$before_lines[] |
+                        select(startswith("<!-- lit-promotion-evidence-"))]
+                          == [$evidence_pending]
+                      and [$current_lines[] |
+                        select(startswith("<!-- lit-promotion-evidence-"))]
+                          == [$evidence_ready]
+                      and ($before_lines | map(
+                        if . == $evidence_pending then $evidence_ready else . end
+                      )) == $current_lines
+                    elif ([$before_lines[] |
+                      select(startswith("<!-- lit-protected-promotion:"))] == []
+                      and [$current_lines[] |
+                      select(startswith("<!-- lit-protected-promotion:"))] == []) then
+                      [$before_lines[] |
+                        select(startswith("<!-- lit-promotion-evidence-"))] == []
+                      and [$current_lines[] |
+                        select(startswith("<!-- lit-promotion-evidence-"))] == []
+                      and [$before_lines[] |
+                        select(startswith("<!-- lit-promotion-dispatch-"))]
+                          == [$dispatch_pending]
+                      and [$current_lines[] |
+                        select(startswith("<!-- lit-promotion-dispatch-"))]
+                          == [$dispatch_success]
+                      and ($before_lines | map(
+                        if . == $dispatch_pending then $dispatch_success else . end
+                      )) == $current_lines
+                    else false
+                    end
+                  )
                 ' >/dev/null
               promotion_candidate=true
-            else
-              promotion_pending=true
             fi
           fi
           if [ "${REPOSITORY}" = 'lightning-it/.github' ] \
@@ -2176,6 +2176,7 @@ jobs:
           mkdir -m 0700 "${verifier_home}" "${gh_config_dir}"
           output="${verifier_runtime}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
+          test "${EVENT_ACTION}" = edited
           test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
           test "${SENDER_ID}" = 307565056
           test "${SENDER_TYPE}" = Bot
@@ -2183,12 +2184,8 @@ jobs:
           protocol_marker='<!-- lit-protected-promotion:v2 -->'
           dispatch_pending="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
           dispatch_success="<!-- lit-promotion-dispatch-succeeded:${EVENT_BASE}:${EVENT_HEAD} -->"
+          evidence_pending="<!-- lit-promotion-evidence-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
           evidence_ready="<!-- lit-promotion-evidence-ready:${EVENT_BASE}:${EVENT_HEAD} -->"
-          if [ "${REPOSITORY}" = 'lightning-it/.github' ]; then
-            test "${EVENT_ACTION}" = edited
-          else
-            test "${EVENT_ACTION}" = opened
-          fi
           jq -en \
             --arg before "${PREVIOUS_BODY}" \
             --arg current "${EVENT_BODY}" \
@@ -2196,38 +2193,50 @@ jobs:
             --arg protocol "${protocol_marker}" \
             --arg dispatch_pending "${dispatch_pending}" \
             --arg dispatch_success "${dispatch_success}" \
+            --arg evidence_pending "${evidence_pending}" \
             --arg evidence_ready "${evidence_ready}" \
-            --arg repository "${REPOSITORY}" \
-            --arg summary 'Automated protected promotion of changes already reviewed on develop.' \
-            --arg detail 'The organization Required Workflow aggregates exact ingress evidence; it does not request a second AI review of the cumulative diff.' '
+            --arg repository "${REPOSITORY}" '
               ($before | split("\n")) as $before_lines
               | ($current | split("\n")) as $current_lines
               | ([$before_lines[] |
                 select(startswith("<!-- lit-promotion-run:"))]) as $before_run
               | ([$current_lines[] |
                 select(startswith("<!-- lit-promotion-run:"))]) as $current_run
-              | if $repository != "lightning-it/.github" then
-                  ($current_run | length) == 1
-                  and ($current_run[0] | test(
-                    "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
-                  ))
-                  and $current_lines == [
-                    $head_marker, $current_run[0], $evidence_ready,
-                    $protocol, $summary, $detail
-                  ]
-                else
-                  [$before_lines[] |
-                    select(startswith("<!-- lit-promotion-head:"))]
-                      == [$head_marker]
-                  and [$current_lines[] |
-                    select(startswith("<!-- lit-promotion-head:"))]
-                      == [$head_marker]
-                  and ($before_run | length) == 1
-                  and $current_run == $before_run
-                  and ($before_run[0] | test(
-                    "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
-                  ))
+              | [$before_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and [$current_lines[] |
+                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
+              and ($before_run | length) == 1
+              and $current_run == $before_run
+              and ($before_run[0] | test(
+                "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
+              ))
+              and (
+                if ($repository != "lightning-it/.github"
                   and [$before_lines[] |
+                  select(startswith("<!-- lit-protected-promotion:"))]
+                    == [$protocol]
+                  and [$current_lines[] |
+                  select(startswith("<!-- lit-protected-promotion:"))]
+                    == [$protocol]) then
+                  [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == []
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-dispatch-"))] == []
+                  and [$before_lines[] |
+                    select(startswith("<!-- lit-promotion-evidence-"))]
+                      == [$evidence_pending]
+                  and [$current_lines[] |
+                    select(startswith("<!-- lit-promotion-evidence-"))]
+                      == [$evidence_ready]
+                  and ($before_lines | map(
+                    if . == $evidence_pending then $evidence_ready else . end
+                  )) == $current_lines
+                elif ([$before_lines[] |
+                  select(startswith("<!-- lit-protected-promotion:"))] == []
+                  and [$current_lines[] |
+                  select(startswith("<!-- lit-protected-promotion:"))] == []) then
+                  [$before_lines[] |
                     select(startswith("<!-- lit-promotion-evidence-"))] == []
                   and [$current_lines[] |
                     select(startswith("<!-- lit-promotion-evidence-"))] == []
@@ -2240,7 +2249,9 @@ jobs:
                   and ($before_lines | map(
                     if . == $dispatch_pending then $dispatch_success else . end
                   )) == $current_lines
+                else false
                 end
+              )
             ' >/dev/null
           event_body_sha256="$(printf '%s' "${EVENT_BODY}" \
             | sha256sum --binary | awk '{print $1}')"
