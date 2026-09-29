@@ -338,6 +338,41 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ):
                     MODULE.gh_json(["api", "example"])
 
+    def test_github_api_json_retries_only_bounded_transient_reads(self) -> None:
+        transient = MODULE.EvidenceError(
+            "command-failed:gh:unexpected end of JSON input"
+        )
+        with (
+            mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}),
+            mock.patch.object(
+                MODULE, "run", side_effect=[transient, '{"id":1}']
+            ) as command,
+            mock.patch.object(MODULE.time, "sleep") as pause,
+        ):
+            self.assertEqual({"id": 1}, MODULE.gh_json(["api", "example"]))
+        self.assertEqual(2, command.call_count)
+        pause.assert_called_once_with(0.25)
+
+        with (
+            mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}),
+            mock.patch.object(
+                MODULE,
+                "run",
+                side_effect=MODULE.EvidenceError("command-failed:gh:HTTP 403"),
+            ) as command,
+            mock.patch.object(MODULE.time, "sleep") as pause,
+        ):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "HTTP 403"):
+                MODULE.gh_json(["api", "example"])
+        self.assertEqual(1, command.call_count)
+        pause.assert_not_called()
+
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "test-token"}):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "gh-json-read-command"
+            ):
+                MODULE.gh_json(["pr", "view", "1"])
+
     def test_exact_release_app_promotion_is_accepted(self) -> None:
         value = promotion()
         self.assertIs(
