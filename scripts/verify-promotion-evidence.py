@@ -336,11 +336,7 @@ def gh_json(arguments: list[str]) -> Any:
             )
         except EvidenceError:
             raise
-        except (UnicodeError, json.JSONDecodeError) as error:
-            if attempt + 1 == GH_JSON_MAX_ATTEMPTS:
-                raise EvidenceError("github-response-not-json") from error
-            time.sleep(0.25 * (2**attempt))
-        except RecursionError as error:
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
             raise EvidenceError("github-response-not-json") from error
     raise AssertionError("bounded GitHub JSON attempts exhausted")
 
