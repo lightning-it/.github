@@ -898,7 +898,6 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "producer-check-suite-app",
             ),
             ({"status": "in_progress"}, "producer-check-suite-result"),
-            ({"conclusion": "failure"}, "producer-check-suite-result"),
             ({"head_sha": "f" * 40}, "producer-check-suite-head-binding"),
         )
         valid_suite = {
@@ -925,6 +924,22 @@ class PromotionEvidenceTests(unittest.TestCase):
                         base_sha=BASE,
                         head_sha=HEAD,
                     )
+
+        failed_locator_suite = {**valid_suite, "conclusion": "failure"}
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, failed_locator_suite),
+        ):
+            result = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(result["producer_run_id"], 88)
 
         run["check_suite_id"] = 199.0
         with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
