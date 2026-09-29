@@ -5625,7 +5625,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n                  \' <<<"${producer_jobs_pages}")"', 1
         )[0]
 
-        def selected_evidence_jobs(status: str, conclusion: object) -> list[dict]:
+        def selected_evidence_jobs(
+            status: str,
+            conclusion: object,
+            *,
+            policy_conclusion: str = "success",
+        ) -> list[dict]:
             result = subprocess.run(
                 [jq, "-c", "--arg", "head", "a" * 40, evidence_filter],
                 input=json.dumps(
@@ -5642,7 +5647,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                                         {
                                             "name": "Verify current Copilot review and resolved findings",
                                             "status": "completed",
-                                            "conclusion": "success",
+                                            "conclusion": policy_conclusion,
                                         },
                                         publish,
                                     ],
@@ -5658,10 +5663,39 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             return json.loads(result.stdout)
 
+        def evidence_is_ready(
+            status: str,
+            conclusion: object,
+            *,
+            policy_conclusion: str = "success",
+        ) -> bool:
+            evidence = selected_evidence_jobs(
+                status,
+                conclusion,
+                policy_conclusion=policy_conclusion,
+            )
+            if len(evidence) != 1:
+                return False
+            critical = selected_critical_steps(
+                "Verify current Copilot review and resolved findings",
+                evidence[0]["steps"],
+            )
+            return len(critical) == 2 and len(
+                {step["name"] for step in critical}
+            ) == 2
+
         self.assertEqual(1, len(selected_evidence_jobs("in_progress", None)))
         self.assertEqual(1, len(selected_evidence_jobs("completed", "success")))
         self.assertEqual([], selected_evidence_jobs("queued", None))
         self.assertEqual([], selected_evidence_jobs("completed", "failure"))
+        self.assertTrue(evidence_is_ready("in_progress", None))
+        self.assertFalse(
+            evidence_is_ready(
+                "in_progress",
+                None,
+                policy_conclusion="failure",
+            )
+        )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
