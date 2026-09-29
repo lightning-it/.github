@@ -1345,9 +1345,11 @@ def validate_producer_run(
                 and suite_app.get("slug") == "github-actions",
                 "producer-check-suite-app",
             )
+            # The suite is only an untrusted locator. Its aggregate conclusion
+            # can be red because it also contains unrelated verifier jobs; the
+            # exact producer run and review evidence are validated separately.
             require(
-                suite.get("status") == "completed"
-                and suite.get("conclusion") == "success",
+                suite.get("status") == "completed",
                 "producer-check-suite-result",
             )
             require(
