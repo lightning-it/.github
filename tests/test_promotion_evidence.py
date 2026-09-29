@@ -211,6 +211,16 @@ def evidence_api(
     review_comment: dict[str, object] | None = None,
 ):
     def dispatch(arguments: list[str]) -> dict[str, object]:
+        if arguments[:2] == ["api", "graphql"] and any(
+            "lastEditedAt" in argument for argument in arguments
+        ):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {"number": 17, "lastEditedAt": None}
+                    }
+                }
+            }
         endpoint = arguments[-1]
         if endpoint == "repos/lightning-it/example":
             return {
@@ -1604,7 +1614,6 @@ class PromotionEvidenceTests(unittest.TestCase):
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         pull = ingress_pull()
         pull["labels"] = []
-        pull["last_edited_at"] = None
         with mock.patch.object(
             MODULE, "gh_json", side_effect=evidence_api(producer_run())
         ):
@@ -1674,18 +1683,79 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
-        pull = ingress_pull()
-        pull["labels"] = []
-        with self.assertRaisesRegex(
-            MODULE.EvidenceError, "review-summary-live-last-edited-at"
-        ):
-            MODULE.bound_review_check(
-                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
-                repository="lightning-it/example",
-                pull=pull,
-                pull_number=17,
-                base_sha=BASE,
-                head_sha=HEAD,
+    def test_v6_expanded_review_metadata_rebinds_graphql_edit_time(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        delegate = evidence_api(producer_run())
+
+        def api_with_edit_response(payload: dict[str, object]):
+            def dispatch(arguments: list[str]) -> dict[str, object]:
+                if arguments[:2] == ["api", "graphql"] and any(
+                    "lastEditedAt" in argument for argument in arguments
+                ):
+                    return payload
+                return delegate(arguments)
+
+            return dispatch
+
+        cases = (
+            (
+                {"errors": [{"message": "partial"}], "data": {}},
+                "review-summary-edit-response-errors",
+            ),
+            (
+                {
+                    "data": {
+                        "repository": {"pullRequest": {"number": 17}}
+                    }
+                },
+                "review-summary-live-last-edited-at",
+            ),
+            (
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "number": 17,
+                                "lastEditedAt": "not-a-timestamp",
+                            }
+                        }
+                    }
+                },
+                "review-summary-live-last-edited-at-not-timestamp",
+            ),
+            (
+                {
+                    "data": {
+                        "repository": {
+                            "pullRequest": {
+                                "number": 17,
+                                "lastEditedAt": "2026-09-28T00:00:00Z",
+                            }
+                        }
+                    }
+                },
+                "review-summary-last-edited-at-mutated",
+            ),
+        )
+        for payload, error in cases:
+            pull = ingress_pull()
+            pull["labels"] = []
+            with (
+                self.subTest(error=error),
+                mock.patch.object(
+                    MODULE,
+                    "gh_json",
+                    side_effect=api_with_edit_response(payload),
+                ),
+                self.assertRaisesRegex(MODULE.EvidenceError, error),
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                    repository="lightning-it/example",
+                    pull=pull,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
                 )
 
     def test_expanded_fallback_reuses_one_review_inventory_snapshot(self) -> None:
