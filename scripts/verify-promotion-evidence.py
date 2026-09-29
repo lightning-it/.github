@@ -76,6 +76,8 @@ MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
 MAX_REVIEWS_PER_PULL = 1000
 MAX_REVIEW_COMMENTS_PER_REVIEW = 1000
+GH_JSON_MAX_ATTEMPTS = 3
+GH_JSON_TRANSIENT_ERRORS = ("command-failed:gh:unexpected end of JSON input",)
 GITHUB_API_PROXY_PORT = 8080
 MAX_PROXY_HEADER_BYTES = 8192
 
@@ -314,17 +316,29 @@ def is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
 
 def gh_json(arguments: list[str]) -> Any:
     require(bool(os.environ.get("GH_TOKEN")), "gh-token-missing")
-    raw = run(["gh", *arguments])
-    try:
-        return json.loads(
-            raw,
-            object_pairs_hook=reject_duplicate_keys,
-            parse_constant=reject_nonstandard_constant,
-        )
-    except EvidenceError:
-        raise
-    except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
-        raise EvidenceError("github-response-not-json") from error
+    require(bool(arguments) and arguments[0] == "api", "gh-json-read-command")
+    for attempt in range(GH_JSON_MAX_ATTEMPTS):
+        try:
+            raw = run(["gh", *arguments])
+        except EvidenceError as error:
+            transient = any(
+                marker in str(error) for marker in GH_JSON_TRANSIENT_ERRORS
+            )
+            if not transient or attempt + 1 == GH_JSON_MAX_ATTEMPTS:
+                raise
+            time.sleep(0.25 * (2**attempt))
+            continue
+        try:
+            return json.loads(
+                raw,
+                object_pairs_hook=reject_duplicate_keys,
+                parse_constant=reject_nonstandard_constant,
+            )
+        except EvidenceError:
+            raise
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as error:
+            raise EvidenceError("github-response-not-json") from error
+    raise AssertionError("bounded GitHub JSON attempts exhausted")
 
 
 def validate_live_promotion(
