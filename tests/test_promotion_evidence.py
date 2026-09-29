@@ -2036,6 +2036,58 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual(1, review_calls)
 
+    def test_expanded_fallback_uses_bound_review_instead_of_stale_overview(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        stale_overview = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {
+                "login": "copilot-pull-request-reviewer[bot]",
+                "id": 175728472,
+                "type": "Bot",
+            },
+            "state": "COMMENTED",
+            "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": (
+                "<!-- ccr-overview-v2 -->\n\n"
+                "### 🟢 Approval recommended\n\n"
+                "**Findings:** 1\n\n"
+                "<details open><summary><strong>Open (1)</strong></summary>"
+                "Previously reported finding"
+                "</details>"
+            ),
+        }
+        delegate = evidence_api(run, review=stale_overview)
+        comment_calls = 0
+
+        def tracked_api(arguments: list[str]) -> dict[str, object]:
+            nonlocal comment_calls
+            if arguments[-1] == (
+                "repos/lightning-it/example/pulls/17/reviews/17001/"
+                "comments?per_page=100"
+            ):
+                comment_calls += 1
+            return delegate(arguments)
+
+        with mock.patch.object(MODULE, "gh_json", side_effect=tracked_api):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual("copilot", evidence["evidence_kind"])
+        self.assertEqual(0, comment_calls)
+
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
             "number": 17,

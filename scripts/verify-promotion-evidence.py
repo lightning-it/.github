@@ -1464,68 +1464,80 @@ def validate_producer_run(
                         review.get("submitted_at"), "producer-review-submitted-at"
                     )
                     body = text(review.get("body"), "producer-review-body")
-                    comment_pages = exact_array(
-                        gh_json(
-                            [
-                                "api",
-                                "--paginate",
-                                "--slurp",
-                                f"repos/{repository}/pulls/{pull_number}/reviews/"
-                                f"{review_id}/comments?per_page=100",
-                            ]
-                        ),
-                        "producer-review-comment-pages",
-                    )
-                    review_texts = [body]
-                    comment_ids: list[int] = []
-                    for comment_page in comment_pages:
-                        for comment_item in exact_array(
-                            comment_page, "producer-review-comment-page"
-                        ):
-                            comment = exact_object(
-                                comment_item, "producer-review-comment"
-                            )
-                            comment_ids.append(
-                                integer(
-                                    comment.get("id"), "producer-review-comment-id"
-                                )
-                            )
-                            require(
-                                len(comment_ids) <= MAX_REVIEW_COMMENTS_PER_REVIEW,
-                                "producer-review-comment-inventory-too-large",
-                            )
-                            review_texts.append(
-                                text(
-                                    comment.get("body"),
-                                    "producer-review-comment-body",
-                                )
-                            )
                     require(
-                        len(comment_ids) == len(set(comment_ids)),
-                        "producer-review-comment-duplicate",
-                    )
-                    normalized_texts = [
-                        normalized_review_text(value) for value in review_texts
-                    ]
-                    require(
-                        review.get("state") in {"COMMENTED", "APPROVED"}
-                        and submitted
-                        <= check_completed
-                        and run_created
-                        <= check_completed
-                        <= run_updated
-                        <= merged_at
-                        and body.startswith("<!-- ccr-overview-v2 -->")
-                        and "**Findings:** None" in body
-                        and "Changes recommended" not in body
-                        and "<strong>Open (" not in body
-                        and not any(
-                            marker in normalized
-                            for normalized in normalized_texts
-                            for marker in COPILOT_REVIEW_FAILURE_MARKERS
+                        (
+                            review.get("state") in {"COMMENTED", "APPROVED"}
+                            and submitted <= check_completed
+                            and run_created
+                            <= check_completed
+                            <= run_updated
+                            <= merged_at
+                            and body.startswith("<!-- ccr-overview-v2 -->")
                         ),
                         "producer-review-binding",
                     )
+                    if expanded_review_pages is None:
+                        comment_pages = exact_array(
+                            gh_json(
+                                [
+                                    "api",
+                                    "--paginate",
+                                    "--slurp",
+                                    f"repos/{repository}/pulls/{pull_number}/reviews/"
+                                    f"{review_id}/comments?per_page=100",
+                                ]
+                            ),
+                            "producer-review-comment-pages",
+                        )
+                        review_texts = [body]
+                        comment_ids: list[int] = []
+                        for comment_page in comment_pages:
+                            for comment_item in exact_array(
+                                comment_page, "producer-review-comment-page"
+                            ):
+                                comment = exact_object(
+                                    comment_item, "producer-review-comment"
+                                )
+                                comment_ids.append(
+                                    integer(
+                                        comment.get("id"),
+                                        "producer-review-comment-id",
+                                    )
+                                )
+                                require(
+                                    len(comment_ids)
+                                    <= MAX_REVIEW_COMMENTS_PER_REVIEW,
+                                    "producer-review-comment-inventory-too-large",
+                                )
+                                review_texts.append(
+                                    text(
+                                        comment.get("body"),
+                                        "producer-review-comment-body",
+                                    )
+                                )
+                        require(
+                            len(comment_ids) == len(set(comment_ids)),
+                            "producer-review-comment-duplicate",
+                        )
+                        normalized_texts = [
+                            normalized_review_text(value) for value in review_texts
+                        ]
+                        require(
+                            "**Findings:** None" in body
+                            and "Changes recommended" not in body
+                            and "<strong>Open (" not in body
+                            and not any(
+                                marker in normalized
+                                for normalized in normalized_texts
+                                for marker in COPILOT_REVIEW_FAILURE_MARKERS
+                            ),
+                            "producer-review-binding",
+                        )
+                    # Expanded v6 evidence binds the exact native review ID in
+                    # the protected producer result. Its overview counts are a
+                    # historical rendering and may still mention a finding
+                    # after its live thread was resolved. The independently
+                    # revalidated thread inventory below is authoritative.
                     current_reviews.append(review)
             require(
                 len(review_ids) == len(set(review_ids)),

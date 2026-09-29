@@ -5400,6 +5400,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn('.name == "Verify current revision policy"', permanent)
+        self.assertIn(
+            '(.status == "completed" and .conclusion == "success")', permanent
+        )
+        self.assertIn(
+            'or (.status == "in_progress" and .conclusion == null)', permanent
+        )
         self.assertIn("INLINE_POLICY_STEP: >-", workflow)
         self.assertIn(
             "steps.terminal-producer.outputs.producer_kind == 'copilot'",
@@ -5611,6 +5617,85 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ],
         )
         self.assertEqual([publish["name"]], [step["name"] for step in mismatched])
+        evidence_filter = permanent.split(
+            'evidence_jobs="$(jq -c \\\n'
+            '                  --arg head "${EVENT_HEAD}" \'',
+            1,
+        )[1].split(
+            '\n                  \' <<<"${producer_jobs_pages}")"', 1
+        )[0]
+
+        def selected_evidence_jobs(
+            status: str,
+            conclusion: object,
+            *,
+            policy_conclusion: str = "success",
+        ) -> list[dict]:
+            result = subprocess.run(
+                [jq, "-c", "--arg", "head", "a" * 40, evidence_filter],
+                input=json.dumps(
+                    [
+                        {
+                            "jobs": [
+                                {
+                                    "name": "Verify current revision policy",
+                                    "head_sha": "a" * 40,
+                                    "run_attempt": 1,
+                                    "status": status,
+                                    "conclusion": conclusion,
+                                    "steps": [
+                                        {
+                                            "name": "Verify current Copilot review and resolved findings",
+                                            "status": "completed",
+                                            "conclusion": policy_conclusion,
+                                        },
+                                        publish,
+                                    ],
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            return json.loads(result.stdout)
+
+        def evidence_is_ready(
+            status: str,
+            conclusion: object,
+            *,
+            policy_conclusion: str = "success",
+        ) -> bool:
+            evidence = selected_evidence_jobs(
+                status,
+                conclusion,
+                policy_conclusion=policy_conclusion,
+            )
+            if len(evidence) != 1:
+                return False
+            critical = selected_critical_steps(
+                "Verify current Copilot review and resolved findings",
+                evidence[0]["steps"],
+            )
+            return len(critical) == 2 and len(
+                {step["name"] for step in critical}
+            ) == 2
+
+        self.assertEqual(1, len(selected_evidence_jobs("in_progress", None)))
+        self.assertEqual(1, len(selected_evidence_jobs("completed", "success")))
+        self.assertEqual([], selected_evidence_jobs("queued", None))
+        self.assertEqual([], selected_evidence_jobs("completed", "failure"))
+        self.assertTrue(evidence_is_ready("in_progress", None))
+        self.assertFalse(
+            evidence_is_ready(
+                "in_progress",
+                None,
+                policy_conclusion="failure",
+            )
+        )
         producer_loop = permanent.split(
             "for producer_observation in $(seq 1 60)", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
