@@ -747,6 +747,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ingress_pull(),
                 None,
                 valid_review,
+                run | {"created_at": "2026-09-27T00:04:31Z"},
+                "producer-review-binding",
+            ),
+            (
+                ingress_pull(),
+                None,
+                valid_review,
                 run | {"updated_at": "2026-09-27T00:07:00Z"},
                 "producer-review-binding",
             ),

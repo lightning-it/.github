@@ -1499,6 +1499,8 @@ def validate_producer_run(
                         review.get("state") in {"COMMENTED", "APPROVED"}
                         and submitted
                         <= check_completed
+                        and run_created
+                        <= check_completed
                         <= run_updated
                         <= merged_at
                         and body.startswith("<!-- ccr-overview-v2 -->")
