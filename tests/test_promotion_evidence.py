@@ -209,6 +209,7 @@ def evidence_api(
     review: dict[str, object] | None = None,
     merge: dict[str, object] | None = None,
     review_comment: dict[str, object] | None = None,
+    jobs: list[dict[str, object]] | None = None,
 ):
     def dispatch(arguments: list[str]) -> dict[str, object]:
         if arguments[:2] == ["api", "graphql"] and any(
@@ -239,6 +240,10 @@ def evidence_api(
             }
         if endpoint == "repos/lightning-it/example/actions/runs/88":
             return run
+        if endpoint == (
+            "repos/lightning-it/example/actions/runs/88/jobs?filter=all&per_page=100"
+        ):
+            return {"total_count": len(jobs or []), "jobs": jobs or []}
         if endpoint == "repos/lightning-it/example/check-suites/199":
             return suite or {
                 "id": 199,
@@ -1598,7 +1603,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         failed["conclusion"] = "failure"
         with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(failed)):
             with self.assertRaisesRegex(
-                MODULE.EvidenceError, "producer-run-conclusion"
+                MODULE.EvidenceError, "producer-run-job-count"
             ):
                 MODULE.bound_review_check(
                     [{"check_runs": [check_run(external_id, v6_summary())]}],
@@ -1609,6 +1614,102 @@ class PromotionEvidenceTests(unittest.TestCase):
                     head_sha=HEAD,
                     merge_base_sha=BASE,
                 )
+
+    def test_v6_accepts_only_exact_post_evidence_handoff_failure(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        run = producer_run()
+        run["conclusion"] = "failure"
+        exact_jobs = [
+            {
+                "id": 1,
+                "name": "Request Copilot review for current revision",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "id": 2,
+                "name": "Verify current revision policy",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "id": 3,
+                "name": "Classify protected main trust-root handoff",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+            {
+                "id": 4,
+                "name": (
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt"
+                ),
+                "status": "completed",
+                "conclusion": "failure",
+                "started_at": "2026-09-27T00:04:31Z",
+                "completed_at": "2026-09-27T00:04:40Z",
+            },
+            {
+                "id": 5,
+                "name": "Dispatch protected managed-sync finalizer re-evaluation",
+                "status": "completed",
+                "conclusion": "skipped",
+            },
+        ]
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, jobs=exact_jobs),
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, evidence["producer_run_id"])
+
+        for mutate, reason in (
+            (
+                lambda candidate: candidate[1].update({"conclusion": "failure"}),
+                "producer-run-job-topology",
+            ),
+            (
+                lambda candidate: candidate[3].update(
+                    {"started_at": "2026-09-27T00:04:29Z"}
+                ),
+                "producer-post-evidence-failure-order",
+            ),
+            (
+                lambda candidate: candidate.append(
+                    {
+                        "id": 6,
+                        "name": "Unexpected job",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ),
+                "producer-run-job-count",
+            ),
+        ):
+            candidate = [dict(job) for job in exact_jobs]
+            mutate(candidate)
+            with mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(run, jobs=candidate),
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
 
     def test_v6_accepts_exact_expanded_review_metadata(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"

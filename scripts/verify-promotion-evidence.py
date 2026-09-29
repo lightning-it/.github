@@ -1192,8 +1192,8 @@ def validate_producer_run(
             "producer-run-triggering-actor-identity",
         )
     require(run.get("status") == "completed", "producer-run-status")
-    require(run.get("conclusion") == "success", "producer-run-conclusion")
     if evidence_kind == "release-app":
+        require(run.get("conclusion") == "success", "producer-run-conclusion")
         require(attempt == 1, "release-producer-run-attempt")
         require(run.get("event") == "workflow_dispatch", "release-producer-event")
         require(
@@ -1221,6 +1221,85 @@ def validate_producer_run(
         require(run.get("name") == "Current revision review gate", "producer-name")
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
+        if run.get("conclusion") != "success":
+            require(
+                evidence_kind == "copilot"
+                and evidence_version == "v6"
+                and attempt == 1
+                and run.get("conclusion") == "failure",
+                "producer-run-conclusion",
+            )
+            job_inventory = exact_object(
+                gh_json(
+                    [
+                        "api",
+                        f"repos/{repository}/actions/runs/{producer_run_id}/jobs"
+                        "?filter=all&per_page=100",
+                    ]
+                ),
+                "producer-run-jobs",
+            )
+            jobs = exact_array(job_inventory.get("jobs"), "producer-run-jobs")
+            total_count = job_inventory.get("total_count")
+            require(
+                type(total_count) is int and total_count == len(jobs) == 5,
+                "producer-run-job-count",
+            )
+            expected_jobs = {
+                "Request Copilot review for current revision": "success",
+                "Verify current revision policy": "success",
+                "Classify protected main trust-root handoff": "skipped",
+                (
+                    "Request protected verifier re-evaluation / "
+                    "Re-run the one protected verifier attempt"
+                ): "failure",
+                "Dispatch protected managed-sync finalizer re-evaluation": "skipped",
+            }
+            observed_jobs: dict[str, JSON] = {}
+            job_ids: list[int] = []
+            for item in jobs:
+                job = exact_object(item, "producer-run-job")
+                job_id = integer(job.get("id"), "producer-run-job-id")
+                name = text(job.get("name"), "producer-run-job-name")
+                require(
+                    name in expected_jobs
+                    and name not in observed_jobs
+                    and job.get("status") == "completed"
+                    and job.get("conclusion") == expected_jobs[name],
+                    "producer-run-job-topology",
+                )
+                job_ids.append(job_id)
+                observed_jobs[name] = job
+            require(
+                len(job_ids) == len(set(job_ids))
+                and set(observed_jobs) == set(expected_jobs),
+                "producer-run-job-topology",
+            )
+            failed_handoff = observed_jobs[
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt"
+            ]
+            check_completed = timestamp(
+                check.get("completed_at"), "candidate-check-completed-at"
+            )
+            handoff_started = timestamp(
+                failed_handoff.get("started_at"),
+                "producer-failed-handoff-started-at",
+            )
+            handoff_completed = timestamp(
+                failed_handoff.get("completed_at"),
+                "producer-failed-handoff-completed-at",
+            )
+            run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
+            merged_at = timestamp(pull.get("merged_at"), "producer-pull-merged-at")
+            require(
+                check_completed
+                <= handoff_started
+                <= handoff_completed
+                <= run_updated
+                <= merged_at,
+                "producer-post-evidence-failure-order",
+            )
         if evidence_kind == "copilot" and "review_id" in summary:
             expanded_review_pages = validate_expanded_review_identity(
                 repository=repository,
