@@ -1441,9 +1441,9 @@ jobs:
 
           authorize_cross_rerun_transaction() {
             local cross_inventory cross_job_snapshot cross_snapshot
-            local live_pr neutral_snapshot producer_binding producer_rebind
+            local live_pr neutral_snapshot reservation_run producer_rebind
             local reservation_inventory reservation_snapshot
-            producer_binding="$(wait_for_stable_reservation_producer_success)" \
+            reservation_run="$(wait_for_stable_reservation_producer_success)" \
               || return 1
             neutral_snapshot="$(revalidate_neutral_authorization)" || return 1
             live_pr="$(bounded_gh_api \
@@ -1484,7 +1484,7 @@ jobs:
               "${neutral_snapshot}" || return 1
             producer_rebind="$(capture_reservation_producer_success)" \
               || return 1
-            test "${producer_rebind}" = "${producer_binding}"
+            test "${producer_rebind}" = "${reservation_run}"
           }
 
           rerun_protected_verifier_once() {
