@@ -846,7 +846,7 @@ def validate_expanded_review_metadata(
 
 def validate_expanded_review_identity(
     *, repository: str, pull_number: int, head_sha: str, summary: JSON
-) -> None:
+) -> list[Any]:
     review_pages = exact_array(
         gh_json(
             [
@@ -898,6 +898,7 @@ def validate_expanded_review_identity(
         and current_reviews[0].get("node_id") == summary.get("review_id"),
         "review-summary-review-binding",
     )
+    return review_pages
 
 
 def validate_producer_run(
@@ -957,6 +958,7 @@ def validate_producer_run(
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
     repository_state: JSON | None = None
+    expanded_review_pages: list[Any] | None = None
     if evidence_kind != "release-app":
         expected_paths = {
             "copilot": "applicable Copilot or governed automation exemption",
@@ -1158,7 +1160,7 @@ def validate_producer_run(
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
         if evidence_kind == "copilot" and "review_id" in summary:
-            validate_expanded_review_identity(
+            expanded_review_pages = validate_expanded_review_identity(
                 repository=repository,
                 pull_number=pull_number,
                 head_sha=head_sha,
@@ -1255,17 +1257,20 @@ def validate_producer_run(
                 and parent_shas == [base_sha, head_sha],
                 "producer-pull-merge-binding",
             )
-            review_pages = exact_array(
-                gh_json(
-                    [
-                        "api",
-                        "--paginate",
-                        "--slurp",
-                        f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
-                    ]
-                ),
-                "producer-review-pages",
-            )
+            if expanded_review_pages is None:
+                review_pages = exact_array(
+                    gh_json(
+                        [
+                            "api",
+                            "--paginate",
+                            "--slurp",
+                            f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
+                        ]
+                    ),
+                    "producer-review-pages",
+                )
+            else:
+                review_pages = expanded_review_pages
             run_created = timestamp(run.get("created_at"), "producer-run-created-at")
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
             check_completed = timestamp(
@@ -1366,6 +1371,11 @@ def validate_producer_run(
                 len(current_reviews) == 1,
                 "producer-current-copilot-review-not-unique",
             )
+            if expanded_review_pages is not None:
+                require(
+                    current_reviews[0].get("node_id") == summary.get("review_id"),
+                    "review-summary-review-binding",
+                )
             return summary
         require(len(associations) == 1, "producer-run-pull-request-count")
         association = exact_object(associations[0], "producer-run-pull-request")

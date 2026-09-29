@@ -1659,7 +1659,41 @@ class PromotionEvidenceTests(unittest.TestCase):
                 pull_number=17,
                 base_sha=BASE,
                 head_sha=HEAD,
+                )
+
+    def test_expanded_fallback_reuses_one_review_inventory_snapshot(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        pull["last_edited_at"] = None
+        delegate = evidence_api(run)
+        review_calls = 0
+
+        def mutating_api(arguments: list[str]) -> dict[str, object]:
+            nonlocal review_calls
+            if arguments[-1] == (
+                "repos/lightning-it/example/pulls/17/reviews?per_page=100"
+            ):
+                review_calls += 1
+                if review_calls > 1:
+                    replacement = delegate(arguments)
+                    replacement[0][0]["node_id"] = "PRR_kwDOQs6tNc8AAAABReplacement"
+                    return replacement
+            return delegate(arguments)
+
+        with mock.patch.object(MODULE, "gh_json", side_effect=mutating_api):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, expanded_v6_summary())]}],
+                repository="lightning-it/example",
+                pull=pull,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
             )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual(1, review_calls)
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
