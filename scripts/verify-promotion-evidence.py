@@ -843,6 +843,62 @@ def validate_expanded_review_metadata(
     )
 
 
+def validate_expanded_review_identity(
+    *, repository: str, pull_number: int, head_sha: str, summary: JSON
+) -> None:
+    review_pages = exact_array(
+        gh_json(
+            [
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
+            ]
+        ),
+        "review-summary-review-pages",
+    )
+    review_ids: list[int] = []
+    review_node_ids: list[str] = []
+    current_reviews: list[JSON] = []
+    for page in review_pages:
+        for item in exact_array(page, "review-summary-review-page"):
+            review = exact_object(item, "review-summary-live-review")
+            review_ids.append(
+                integer(review.get("id"), "review-summary-live-review-id")
+            )
+            review_node_ids.append(
+                text(review.get("node_id"), "review-summary-live-review-node-id")
+            )
+            require(
+                len(review_ids) <= MAX_REVIEWS_PER_PULL,
+                "review-summary-review-inventory-too-large",
+            )
+            reviewer = exact_object(
+                review.get("user"), "review-summary-live-review-user"
+            )
+            if (
+                reviewer.get("login") == COPILOT_REVIEWER_LOGIN
+                and integer(
+                    reviewer.get("id"), "review-summary-live-review-user-id"
+                )
+                == COPILOT_REVIEWER_ID
+                and reviewer.get("type") == "Bot"
+                and review.get("commit_id") == head_sha
+                and review.get("state") in {"COMMENTED", "APPROVED"}
+            ):
+                current_reviews.append(review)
+    require(
+        len(review_ids) == len(set(review_ids))
+        and len(review_node_ids) == len(set(review_node_ids)),
+        "review-summary-live-review-duplicate",
+    )
+    require(
+        len(current_reviews) == 1
+        and current_reviews[0].get("node_id") == summary.get("review_id"),
+        "review-summary-review-binding",
+    )
+
+
 def validate_producer_run(
     check: JSON,
     *,
@@ -1100,6 +1156,13 @@ def validate_producer_run(
         require(run.get("name") == "Current revision review gate", "producer-name")
         require(run.get("head_branch") == head_ref, "producer-branch")
         require(run.get("head_sha") == head_sha, "producer-head")
+        if evidence_kind == "copilot" and "review_id" in summary:
+            validate_expanded_review_identity(
+                repository=repository,
+                pull_number=pull_number,
+                head_sha=head_sha,
+                summary=summary,
+            )
         require(repository_state is not None, "producer-repository-state")
         repository_id = integer(repository_state.get("id"), "producer-repository-id")
         repository_name = repository.split("/", 1)[1]

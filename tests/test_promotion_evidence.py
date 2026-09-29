@@ -249,6 +249,7 @@ def evidence_api(
                     review
                     or {
                         "id": 17001,
+                        "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
                         "user": {
                             "login": "copilot-pull-request-reviewer[bot]",
                             "id": 175728472,
@@ -1603,6 +1604,11 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "review-summary-last-edited-at-mutated",
             ),
             ("review_id", "not-a-review", "review-summary-review-id"),
+            (
+                "review_id",
+                "PRR_kwDOQs6tNc8AAAABDifferent",
+                "review-summary-review-binding",
+            ),
         )
         for field, value, error in cases:
             summary = json.loads(expanded_v6_summary())
