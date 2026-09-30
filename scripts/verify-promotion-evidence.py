@@ -1601,6 +1601,12 @@ def bound_review_check(
     merge_base_sha: str | None = None,
 ) -> JSON:
     expected_kind = expected_evidence_kind(pull, repository=repository)
+    v6_titles = {
+        "ancestry-backmerge": "Current revision deterministic exemption passed",
+        "copilot": "Current revision review passed",
+        "managed-sync": "Current revision managed distribution exemption passed",
+        "renovate": "Current revision Renovate exemption passed",
+    }
     matches: list[JSON] = []
     for check in check_pages(pages):
         app = exact_object(check.get("app"), "check-app")
@@ -1623,7 +1629,7 @@ def bound_review_check(
                 and int(v6.group("pr")) == pull_number
                 and v6.group("base") == base_sha
                 and v6.group("head") == head_sha
-                and output_title == "Current revision review passed"
+                and output_title == v6_titles[expected_kind]
             ):
                 summary = validate_producer_run(
                     check,
