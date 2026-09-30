@@ -2490,12 +2490,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             "  verify-develop-main-promotion-evidence:\n", 1
         )[1].split("\n  verify-protected-current-revision-evidence:\n", 1)[0]
         expected_name = (
-            "    name: ${{ github.repository == "
-            "'lightning-it/shared-assets-lit' && "
-            "'Authorize exact Supplementary catch-up v5 successor' || "
-            "'Verify aggregated develop-to-main promotion evidence' }}\n"
+            "    name: Verify aggregated develop-to-main promotion evidence\n"
         )
         self.assertIn(expected_name, promotion_job)
+        self.assertNotIn("Authorize exact Supplementary catch-up", promotion_job)
         self.assertNotIn("    name: >-\n      ${{", promotion_job)
         self.assertNotIn(
             "  authorize-supplementary-catchup-v5-successor:\n",
