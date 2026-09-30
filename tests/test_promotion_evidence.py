@@ -667,6 +667,82 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+    def test_v6_renovate_allows_one_empty_run_association(self) -> None:
+        renovate = ingress_pull(
+            login="renovate[bot]", user_id=29139614, user_type="Bot"
+        )
+        renovate["base"]["ref"] = "develop"
+        renovate["head"]["ref"] = "renovate/dependency"
+        renovate["labels"] = [
+            {"name": "safe-automerge"},
+            {"name": "dependencies"},
+            {"name": "renovate"},
+        ]
+        renovate["last_edited_at"] = None
+
+        summary = json.loads(v6_summary("renovate"))
+        summary["pull_request_labels_sha256"] = hashlib.sha256(
+            b'["dependencies","renovate","safe-automerge"]'
+        ).hexdigest()
+        run = producer_run(login="renovate[bot]")
+        renovate_identity = {
+            "login": "renovate[bot]",
+            "id": 29139614,
+            "type": "Bot",
+        }
+        run["actor"] = renovate_identity
+        run["triggering_actor"] = renovate_identity
+        run["head_branch"] = "renovate/dependency"
+        run["pull_requests"] = []
+        check = check_run(
+            f"mlx90-current-revision:renovate:v6:17:88:{BASE}:{HEAD}",
+            json.dumps(summary),
+            "Current revision Renovate exemption passed",
+        )
+        suite = {
+            "id": 199,
+            "head_branch": "renovate/dependency",
+            "head_sha": HEAD,
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, suite=suite),
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=renovate,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("renovate", evidence["evidence_kind"])
+
+        run["updated_at"] = "2026-09-27T00:04:00Z"
+        with (
+            mock.patch.object(
+                MODULE,
+                "gh_json",
+                side_effect=evidence_api(run, suite=suite),
+            ),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-renovate-time-binding"
+            ),
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=renovate,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
     def test_v6_managed_sync_check_requires_the_exact_producer_title(self) -> None:
         managed = ingress_pull(
             login="lightning-it-shared-assets-sync[bot]",

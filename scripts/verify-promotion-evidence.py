@@ -1335,7 +1335,10 @@ def validate_producer_run(
             run.get("pull_requests"), "producer-run-pull-requests"
         )
         if not associations:
-            require(evidence_kind == "copilot", "producer-empty-association-kind")
+            require(
+                evidence_kind in {"copilot", "renovate"},
+                "producer-empty-association-kind",
+            )
             suite_id = integer(
                 run.get("check_suite_id"), "producer-run-check-suite-id"
             )
@@ -1420,6 +1423,24 @@ def validate_producer_run(
                 and parent_shas == [base_sha, head_sha],
                 "producer-pull-merge-binding",
             )
+            if evidence_kind == "renovate":
+                run_created = timestamp(
+                    run.get("created_at"), "producer-run-created-at"
+                )
+                run_updated = timestamp(
+                    run.get("updated_at"), "producer-run-updated-at"
+                )
+                check_completed = timestamp(
+                    check.get("completed_at"), "candidate-check-completed-at"
+                )
+                require(
+                    run_created
+                    <= check_completed
+                    <= run_updated
+                    <= merged_at,
+                    "producer-renovate-time-binding",
+                )
+                return summary
             if expanded_review_pages is None:
                 review_pages = exact_array(
                     gh_json(
