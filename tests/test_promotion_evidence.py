@@ -667,6 +667,96 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+    def test_v6_managed_sync_check_requires_the_exact_producer_title(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        check = check_run(
+            external_id,
+            v6_summary("managed-sync"),
+            "Current revision managed distribution exemption passed",
+        )
+
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("managed-sync", evidence["evidence_kind"])
+
+        check["output"]["title"] = "Current revision review passed"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
+    def test_v6_ancestry_check_requires_the_exact_producer_title(self) -> None:
+        ancestry = ingress_pull(
+            login="lightning-it-release-automation[bot]",
+            user_id=307565056,
+            user_type="Bot",
+        )
+        ancestry["title"] = "chore(governance): record main ancestry before abc"
+        ancestry["head"]["ref"] = "backmerge/release-main"
+        run = producer_run(login="lightning-it-release-automation[bot]")
+        run["head_branch"] = "backmerge/release-main"
+        run["pull_requests"][0]["head"]["ref"] = "backmerge/release-main"
+        external_id = (
+            f"mlx90-current-revision:ancestry-backmerge:v6:17:88:{BASE}:{HEAD}"
+        )
+        check = check_run(
+            external_id,
+            v6_summary("ancestry-backmerge"),
+            "Current revision deterministic exemption passed",
+        )
+
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=ancestry,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("ancestry-backmerge", evidence["evidence_kind"])
+
+        check["output"]["title"] = "Current revision review passed"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=ancestry,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
     def test_v5_copilot_evidence_remains_compatible(self) -> None:
         summary = json.loads(v6_summary())
         summary.pop("pull_request_number")
