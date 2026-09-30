@@ -2143,6 +2143,90 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual("managed-sync", evidence["evidence_kind"])
 
+    def test_v6_accepts_expanded_managed_sync_without_run_association(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        managed["labels"] = []
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        run["pull_requests"] = []
+        external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [
+                    {
+                        "check_runs": [
+                            check_run(
+                                external_id,
+                                expanded_v6_summary("managed-sync"),
+                                (
+                                    "Current revision managed distribution "
+                                    "exemption passed"
+                                ),
+                            )
+                        ]
+                    }
+                ],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual("managed-sync", evidence["evidence_kind"])
+
+    def test_v6_expanded_managed_sync_empty_association_binds_time(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        managed["labels"] = []
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        run["pull_requests"] = []
+        run["updated_at"] = "2026-09-27T00:03:00Z"
+        external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-managed-sync-time-binding"
+            ),
+        ):
+            MODULE.bound_review_check(
+                [
+                    {
+                        "check_runs": [
+                            check_run(
+                                external_id,
+                                expanded_v6_summary("managed-sync"),
+                                (
+                                    "Current revision managed distribution "
+                                    "exemption passed"
+                                ),
+                            )
+                        ]
+                    }
+                ],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
     def test_v6_expanded_managed_sync_requires_null_review_id(self) -> None:
         managed = ingress_pull(
             login="lightning-it-shared-assets-sync[bot]",
