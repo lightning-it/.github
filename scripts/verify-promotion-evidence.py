@@ -1349,7 +1349,8 @@ def validate_producer_run(
         )
         if not associations:
             require(
-                evidence_kind in {"copilot", "renovate"},
+                evidence_kind in {"copilot", "renovate"}
+                or (evidence_kind == "managed-sync" and "review_id" in summary),
                 "producer-empty-association-kind",
             )
             suite_id = integer(
@@ -1436,6 +1437,24 @@ def validate_producer_run(
                 and parent_shas == [base_sha, head_sha],
                 "producer-pull-merge-binding",
             )
+            if evidence_kind == "managed-sync":
+                run_created = timestamp(
+                    run.get("created_at"), "producer-run-created-at"
+                )
+                run_updated = timestamp(
+                    run.get("updated_at"), "producer-run-updated-at"
+                )
+                check_completed = timestamp(
+                    check.get("completed_at"), "candidate-check-completed-at"
+                )
+                require(
+                    run_created
+                    <= check_completed
+                    <= run_updated
+                    <= merged_at,
+                    "producer-managed-sync-time-binding",
+                )
+                return summary
             if evidence_kind == "renovate":
                 run_created = timestamp(
                     run.get("created_at"), "producer-run-created-at"
