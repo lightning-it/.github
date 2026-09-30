@@ -836,7 +836,12 @@ query($owner:String!,$name:String!,$number:Int!){
 
 
 def validate_expanded_review_metadata(
-    pull: JSON, summary: JSON, *, repository: str, pull_number: int
+    pull: JSON,
+    summary: JSON,
+    *,
+    repository: str,
+    pull_number: int,
+    evidence_kind: str,
 ) -> None:
     head = exact_object(pull.get("head"), "review-summary-head")
     head_repo = exact_object(head.get("repo"), "review-summary-head-repository")
@@ -906,11 +911,15 @@ def validate_expanded_review_metadata(
         last_edited_at == summary.get("pull_request_last_edited_at"),
         "review-summary-last-edited-at-mutated",
     )
-    review_id = text(summary.get("review_id"), "review-summary-review-id")
-    require(
-        PULL_REQUEST_REVIEW_NODE_ID.fullmatch(review_id) is not None,
-        "review-summary-review-id",
-    )
+    if evidence_kind == "copilot":
+        review_id = text(summary.get("review_id"), "review-summary-review-id")
+        require(
+            PULL_REQUEST_REVIEW_NODE_ID.fullmatch(review_id) is not None,
+            "review-summary-review-id",
+        )
+    else:
+        require(evidence_kind == "managed-sync", "review-summary-expanded-kind")
+        require(summary.get("review_id") is None, "managed-sync-review-id")
 
 
 def validate_expanded_review_identity(
@@ -1102,12 +1111,16 @@ def validate_producer_run(
                 "review-summary-schema",
             )
             if set(summary) == expanded_v6_keys:
-                require(evidence_kind == "copilot", "review-summary-expanded-kind")
+                require(
+                    evidence_kind in {"copilot", "managed-sync"},
+                    "review-summary-expanded-kind",
+                )
                 validate_expanded_review_metadata(
                     pull,
                     summary,
                     repository=repository,
                     pull_number=pull_number,
+                    evidence_kind=evidence_kind,
                 )
         else:
             require(evidence_version == "v5", "review-summary-version")
