@@ -189,15 +189,17 @@ def v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
-def expanded_v6_summary() -> str:
-    evidence = json.loads(v6_summary())
+def expanded_v6_summary(kind: str = "copilot") -> str:
+    evidence = json.loads(v6_summary(kind))
     evidence.update(
         {
             "controller_ref": "develop",
             "head_repository": "lightning-it/example",
             "pull_request_labels_sha256": hashlib.sha256(b"[]").hexdigest(),
             "pull_request_last_edited_at": None,
-            "review_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "review_id": (
+                "PRR_kwDOQs6tNc8AAAABPj6qbQ" if kind == "copilot" else None
+            ),
         }
     )
     return json.dumps(evidence)
@@ -2100,6 +2102,89 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual("copilot", evidence["evidence_kind"])
+
+    def test_v6_accepts_exact_expanded_managed_sync_metadata(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        managed["labels"] = []
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [
+                    {
+                        "check_runs": [
+                            check_run(
+                                external_id,
+                                expanded_v6_summary("managed-sync"),
+                                (
+                                    "Current revision managed distribution "
+                                    "exemption passed"
+                                ),
+                            )
+                        ]
+                    }
+                ],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("v6", evidence["evidence_version"])
+        self.assertEqual("managed-sync", evidence["evidence_kind"])
+
+    def test_v6_expanded_managed_sync_requires_null_review_id(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        managed["labels"] = []
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        summary = json.loads(expanded_v6_summary("managed-sync"))
+        summary["review_id"] = "PRR_kwDOQs6tNc8AAAABPj6qbQ"
+        external_id = (
+            f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        )
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "managed-sync-review-id"
+            ),
+        ):
+            MODULE.bound_review_check(
+                [
+                    {
+                        "check_runs": [
+                            check_run(
+                                external_id,
+                                json.dumps(summary),
+                                (
+                                    "Current revision managed distribution "
+                                    "exemption passed"
+                                ),
+                            )
+                        ]
+                    }
+                ],
+                repository="lightning-it/example",
+                pull=managed,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
 
     def test_v6_expanded_review_metadata_fails_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
