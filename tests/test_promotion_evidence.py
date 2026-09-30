@@ -493,6 +493,68 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+    def test_v6_renovate_check_requires_the_exact_producer_title(self) -> None:
+        renovate = ingress_pull(
+            login="renovate[bot]", user_id=29139614, user_type="Bot"
+        )
+        renovate["base"]["ref"] = "develop"
+        renovate["head"]["ref"] = "renovate/dependency"
+        renovate["labels"] = [
+            {"name": "safe-automerge"},
+            {"name": "dependencies"},
+            {"name": "renovate"},
+        ]
+        renovate["last_edited_at"] = None
+
+        summary = json.loads(v6_summary("renovate"))
+        summary["pull_request_labels_sha256"] = hashlib.sha256(
+            b'["dependencies","renovate","safe-automerge"]'
+        ).hexdigest()
+        external_id = (
+            f"mlx90-current-revision:renovate:v6:17:88:{BASE}:{HEAD}"
+        )
+        run = producer_run(login="renovate[bot]")
+        renovate_identity = {
+            "login": "renovate[bot]",
+            "id": 29139614,
+            "type": "Bot",
+        }
+        run["actor"] = renovate_identity
+        run["triggering_actor"] = renovate_identity
+        run["head_branch"] = "renovate/dependency"
+        run["pull_requests"][0]["head"]["ref"] = "renovate/dependency"
+
+        check = check_run(
+            external_id,
+            json.dumps(summary),
+            "Current revision Renovate exemption passed",
+        )
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run)
+        ):
+            evidence = MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=renovate,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual("renovate", evidence["evidence_kind"])
+
+        check["output"]["title"] = "Current revision review passed"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "bound-current-revision-check-not-unique"
+        ):
+            MODULE.bound_review_check(
+                [{"check_runs": [check]}],
+                repository="lightning-it/example",
+                pull=renovate,
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+
     def test_v5_copilot_evidence_remains_compatible(self) -> None:
         summary = json.loads(v6_summary())
         summary.pop("pull_request_number")
@@ -841,6 +903,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                                 check_run(
                                     managed_external_id,
                                     v6_summary("managed-sync"),
+                                    "Current revision managed distribution exemption passed",
                                 )
                             ]
                         }
