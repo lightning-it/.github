@@ -9421,7 +9421,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('test "${LEGACY_RESULT}" = success', gate)
 
 
-    def test_retired_supplementary_catchup_tuple_is_removed(self) -> None:
+    def test_retired_supplementary_catchup_tuple_and_alias_are_removed(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn(
             "  authorize-supplementary-catchup-v5-successor:\n",
@@ -9436,13 +9436,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split(
             "\n  verify-protected-current-revision-evidence:\n", 1
         )[0]
-        expected_name = (
-            "    name: ${{ github.repository == "
-            "'lightning-it/shared-assets-lit' && "
-            "'Authorize exact Supplementary catch-up v5 successor' || "
-            "'Verify aggregated develop-to-main promotion evidence' }}\n"
+        self.assertIn(
+            "    name: Verify aggregated develop-to-main promotion evidence\n",
+            promotion,
         )
-        self.assertIn(expected_name, promotion)
+        self.assertNotIn("Authorize exact Supplementary catch-up", promotion)
         self.assertIn("needs: route-protected-current-revision", promotion)
         self.assertNotIn("normal-release-promotion-approval", promotion)
         self.assertNotIn("normal-release-promotion-approval", workflow)

@@ -2015,14 +2015,7 @@ jobs:
           trap - ERR
 
   verify-develop-main-promotion-evidence:
-    # Transitional display-name alias: only the pre-LI-218 helper on
-    # shared-assets-lit `develop` needs the retired skipped-job name. Every
-    # other consumer keeps the accurate promotion name required by its
-    # independent verifier. Once the LI-218 helper reaches shared-assets-lit,
-    # a follow-up removes this repository-specific alias. The retired job's
-    # approval environment was bound only to its now-unreachable Supplementary
-    # tuple; it is intentionally not widened to this generic verifier.
-    name: ${{ github.repository == 'lightning-it/shared-assets-lit' && 'Authorize exact Supplementary catch-up v5 successor' || 'Verify aggregated develop-to-main promotion evidence' }}
+    name: Verify aggregated develop-to-main promotion evidence
     needs: route-protected-current-revision
     if: needs['route-protected-current-revision'].outputs.promotion_candidate == 'true'
     permissions:
