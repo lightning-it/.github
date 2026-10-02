@@ -2085,6 +2085,101 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
+    def test_managed_sync_v6_accepts_only_exact_post_evidence_handoff_failure(self) -> None:
+        managed = ingress_pull(
+            login="lightning-it-shared-assets-sync[bot]",
+            user_id=307342877,
+            user_type="Bot",
+        )
+        managed["labels"] = []
+        run = producer_run(login="lightning-it-shared-assets-sync[bot]")
+        run["actor"]["id"] = 307342877
+        run["triggering_actor"]["id"] = 307342877
+        run["conclusion"] = "failure"
+        run["pull_requests"] = []
+        external_id = f"mlx90-current-revision:managed-sync:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(
+            external_id,
+            expanded_v6_summary("managed-sync"),
+            "Current revision managed distribution exemption passed",
+        )
+        outcomes = (
+            ("Request Copilot review for current revision", "skipped"),
+            ("Verify current revision policy", "success"),
+            ("Classify protected main trust-root handoff", "skipped"),
+            (
+                "Request protected verifier re-evaluation / "
+                "Re-run the one protected verifier attempt",
+                "failure",
+            ),
+            ("Dispatch protected managed-sync finalizer re-evaluation", "success"),
+        )
+        exact_jobs = [
+            {
+                "id": index,
+                "run_id": 88,
+                "run_attempt": 1,
+                "head_sha": HEAD,
+                "name": name,
+                "status": "completed",
+                "conclusion": conclusion,
+                "started_at": "2026-09-27T00:04:31Z",
+                "completed_at": "2026-09-27T00:04:40Z",
+            }
+            for index, (name, conclusion) in enumerate(outcomes, start=1)
+        ]
+
+        def verify(jobs):
+            with mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run, jobs=jobs)
+            ):
+                return MODULE.bound_review_check(
+                    [{"check_runs": [check]}],
+                    repository="lightning-it/example",
+                    pull=managed,
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+        evidence = verify(exact_jobs)
+        self.assertEqual("managed-sync", evidence["evidence_kind"])
+        self.assertEqual(88, evidence["producer_run_id"])
+
+        for index, field, value, reason in (
+            (0, "conclusion", "success", "producer-run-job-binding"),
+            (1, "conclusion", "failure", "producer-run-job-binding"),
+            (4, "conclusion", "failure", "producer-run-job-binding"),
+            (4, "conclusion", "skipped", "producer-run-job-binding"),
+            (0, "run_id", 89, "producer-run-job-binding"),
+            (1, "run_attempt", 2, "producer-run-job-binding"),
+            (2, "head_sha", "9" * 40, "producer-run-job-binding"),
+            (4, "status", "in_progress", "producer-run-job-binding"),
+            (4, "id", 1, "producer-run-job-topology"),
+            (4, "name", "Unexpected job", "producer-run-job-binding"),
+            (4, "name", outcomes[0][0], "producer-run-job-binding"),
+            (
+                3,
+                "started_at",
+                "2026-09-27T00:04:29Z",
+                "producer-post-evidence-failure-order",
+            ),
+        ):
+            jobs = [dict(job) for job in exact_jobs]
+            jobs[index][field] = value
+            with self.subTest(index=index, field=field, value=value):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    verify(jobs)
+        for jobs in (exact_jobs[:-1], exact_jobs + [dict(exact_jobs[0])]):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "producer-run-job-count"):
+                verify(jobs)
+        for attempt in (2, 3):
+            run["run_attempt"] = attempt
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-rerun-kind|producer-run-attempt"
+            ):
+                verify(exact_jobs)
+
     def test_v6_accepts_exact_expanded_review_metadata(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         pull = ingress_pull()
