@@ -2630,10 +2630,22 @@ class PromotionEvidenceTests(unittest.TestCase):
             "threads": {"resolved_thread_ids": [], "unresolved_threads": 0},
         }
 
-        def execute(*, mutate_final_pull: bool) -> dict[str, object]:
+        def execute(
+            *, mutate_final_pull: bool, reviewed_release: bool = False, missing_release_review: bool = False
+        ) -> dict[str, object]:
             current = promotion()
             pull_reads = 0
             api_calls: list[str] = []
+            active_boundary = json.loads(json.dumps(boundary))
+            if reviewed_release:
+                active_boundary["user"] = {"login": "litroc", "id": 1, "type": "User"}
+                active_boundary["title"] = "chore(release): sync v1.14.0 back to develop"
+                active_boundary["head"]["ref"] = "backsync/release-v1.14.0-to-develop"
+
+            def collect(**kwargs: object) -> dict[str, object]:
+                if missing_release_review and kwargs["pull_number"] == 10:
+                    raise MODULE.EvidenceError("no-current-head-review")
+                return bound
 
             def api(arguments: list[str]) -> object:
                 nonlocal pull_reads
@@ -2654,7 +2666,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         },
                     }
                 if endpoint.endswith(f"commits/{boundary_merge}/pulls?per_page=100"):
-                    return [[boundary]]
+                    return [[active_boundary]]
                 if endpoint.endswith(
                     f"commits/{pre_boundary_merge}/pulls?per_page=100"
                 ):
@@ -2662,7 +2674,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 if endpoint.endswith(f"commits/{feature_merge}/pulls?per_page=100"):
                     return [[feature]]
                 if endpoint == "repos/lightning-it/example/pulls/10":
-                    return boundary
+                    return active_boundary
                 if endpoint == "repos/lightning-it/example/pulls/16":
                     return pre_boundary
                 if endpoint == "repos/lightning-it/example/pulls/17":
@@ -2709,12 +2721,17 @@ class PromotionEvidenceTests(unittest.TestCase):
                             "compute_diff",
                             return_value={"bytes": 707454, "sha256": "c" * 64},
                         ),
-                        mock.patch.object(MODULE, "is_ancestor", return_value=True),
+                        mock.patch.object(
+                            MODULE,
+                            "is_ancestor",
+                            side_effect=lambda _path, _ancestor, descendant: not reviewed_release
+                            or descendant in {boundary_head, boundary_merge, HEAD, feature_merge},
+                        ),
                         mock.patch.object(
                             MODULE,
                             "has_exact_ancestry_merge_parents",
                             side_effect=lambda _repository, *, head_sha, **_kwargs: head_sha
-                            == boundary_head,
+                            == boundary_head and not reviewed_release,
                         ),
                         mock.patch.object(
                             MODULE,
@@ -2726,21 +2743,32 @@ class PromotionEvidenceTests(unittest.TestCase):
                             ),
                         ),
                         mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
+                        mock.patch.object(MODULE, "validate_reviewed_release_baseline") as release_binding,
                         mock.patch.object(MODULE, "git", return_value=BASE),
                         mock.patch.object(
                             MODULE,
                             "collect_bound_ingress_evidence",
-                            return_value=bound,
-                        ),
+                            side_effect=collect,
+                        ) as native_evidence,
                     ):
                         value = MODULE.verify(arguments)
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
                     self.assertEqual(1, value["post_baseline_ingress_count"])
                     self.assertTrue(value["ingress"][0]["ancestry_boundary"])
-                    self.assertTrue(value["ingress"][1]["ancestry_boundary"])
+                    self.assertEqual(not reviewed_release, value["ingress"][1]["ancestry_boundary"])
                     self.assertFalse(value["ingress"][2]["ancestry_boundary"])
                     self.assertIsNone(value["ingress"][0]["review"])
+                    if reviewed_release:
+                        self.assertEqual(bound["review"], value["ingress"][1]["review"])
+                        self.assertEqual(bound["threads"], value["ingress"][1]["threads"])
+                        self.assertEqual(2, release_binding.call_count)
+                        self.assertEqual(
+                            2,
+                            sum(call.kwargs["pull_number"] == 10 for call in native_evidence.call_args_list),
+                        )
+                    else:
+                        release_binding.assert_not_called()
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(
@@ -2759,6 +2787,9 @@ class PromotionEvidenceTests(unittest.TestCase):
                         os.environ["RUNNER_TEMP"] = previous
 
         execute(mutate_final_pull=False)
+        execute(mutate_final_pull=False, reviewed_release=True)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-10:no-current-head-review"):
+            execute(mutate_final_pull=False, reviewed_release=True, missing_release_review=True)
         with self.assertRaisesRegex(
             MODULE.EvidenceError, "promotion-event-body-mismatch"
         ):
