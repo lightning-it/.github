@@ -101,6 +101,11 @@ class GitHubReader:
             headers={"Authorization": "Bearer " + token,
                      "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28"})
+        return self._read_json(request, (identity, identifier))
+
+    def _read_json(self, request, expected_identity=None):
+        """Shared bounded I/O kernel; callers must first select a fixed read route."""
+        require(self.requests < self.max_requests, "request-budget-exhausted")
         try:
             with deadline(self.expires):
                 remaining = self.expires - time.monotonic()
@@ -117,8 +122,10 @@ class GitHubReader:
                             "response-incomplete")
                 payload = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant,
                                      parse_float=number)
-                require(type(payload) is dict and type(payload.get(identity)) is int
-                        and payload[identity] == identifier, "response-identity")
+                if expected_identity is not None:
+                    identity, identifier = expected_identity
+                    require(type(payload) is dict and type(payload.get(identity)) is int
+                            and payload[identity] == identifier, "response-identity")
                 require(time.monotonic() < self.expires, "time-budget-exhausted")
         except ReadFailure:
             raise

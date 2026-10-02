@@ -50,5 +50,11 @@ the request token added by this transport.
 All output states `authority: none`, `writes: 0`. Nothing publishes checks,
 requests reviews, enables an observer, changes a ruleset, or activates a
 workflow. LI-227 is split B of the owner-approved LI-219 decomposition, begun
-only after LI-226's protected merge. Full observer integration, protected
-writers and production measurements remain separate, unimplemented work.
+only after LI-226's protected merge. Observer integration belongs to separate
+LI-228; protected writers and production measurements remain unimplemented.
+
+LI-228's separate `required-review-shadow-api.py` reuses the private bounded
+`_read_json` I/O kernel after selecting its own closed read route or fixed
+GraphQL query. This does not expand the public single-object CLI above. See
+[the default-off integration boundary](required-review-shadow.md); neither
+module implements a writer or accepts arbitrary caller-supplied network routes.
