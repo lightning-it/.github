@@ -123,10 +123,12 @@ scripts/wunder-devtools-ee.sh python3 -m unittest discover \
   -s tests -p test_required_review_state.py -v
 ```
 
-Before operational acceptance, the adapter, event listener, protected storage,
-scheduled sweeper, native Required-Workflow relationship, and three protected
-reference runs (`.github`, Shared Assets, representative consumer) remain to be
-implemented and verified. Measure runner job seconds, request-to-review,
+The default-off read-only adapter, event listener, and scheduled audit sweeper
+are implemented below. Before operational acceptance, the authorized production
+writer integration, protected storage, complete reservation ledger, native
+Required-Workflow relationship, and three protected reference runs (`.github`,
+Shared Assets, representative consumer) remain to be implemented and verified.
+Measure runner job seconds, request-to-review,
 review-to-verifier, total latency median/P95, and false negatives over matched
 before/after cohorts. No after-rollout measurement exists yet; local simulated
 time must never be reported as a live latency reduction.

@@ -64,6 +64,13 @@ def one(values, reason):
     return values[0]
 
 
+def reservation_state(check):
+    # The native v3 writer admits pending checks and publishes success/failure.
+    require((check.get("status"), check.get("conclusion")) in (
+        ("queued", None), ("in_progress", None),
+        ("completed", "success"), ("completed", "failure")), "reservation-state")
+
+
 def validate_policy(policy):
     require(type(policy) is dict and set(policy) == {
         "schema", "lifecycle", "repository", "repository_id", "controller_ref",
@@ -193,7 +200,8 @@ def snapshot(api, policy, run_id, number):
     require(branch.get("protected") is True and branch["commit"]["sha"] == base,
             "protected-base-drift")
     rules = api.read(f"{prefix}/rules/branches/develop")
-    require(type(rules) is list and any(rule.get("ruleset_id") == 21200954
+    require(type(rules) is list and all(type(rule) is dict for rule in rules), "rules-shape")
+    require(any(rule.get("ruleset_id") == 21200954
         and rule.get("type") == "workflows" and rule.get("parameters", {}).get(
             "workflows") == [{"path": ".github/workflows/dot-github-current-revision-required.yml",
                               "ref": "refs/heads/main", "repository_id": 1103407173}]
@@ -325,7 +333,7 @@ def observe(api, policy, run_id, number, now):
     final = snapshot(api, policy, run_id, number)
     require(first["reservation"] == final["reservation"], "reservation-read-drift")
     check = first["reservation"]
-    require(check.get("status") in ("queued", "in_progress", "completed"), "reservation-status")
+    reservation_state(check)
     created = epoch(check["started_at"])
     identity = first["proof"]["binding"]
     model = STATE.admit(identity, check["id"], created, policy["reservation_ttl_seconds"])
@@ -406,6 +414,8 @@ def sweep(api, policy, now):
     require(len(pulls) <= 20, "sweeper-pull-budget")
     results = []
     for pull in pulls:
+        require(pull.get("state") == "open" and pull["base"]["ref"] == "develop",
+                "sweeper-pull-state")
         head = pull["head"]["sha"]
         require(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head), "sweeper-head")
         checks = api.inventory(f"{prefix}/commits/{head}/check-runs?filter=all", "check_runs")
@@ -417,7 +427,8 @@ def sweep(api, policy, now):
                     and int(match[2]) == pull["number"]
                     and check.get("app", {}).get("id") == 15368
                     and check["app"].get("slug") == "github-actions", "sweeper-binding")
-            if check.get("status") not in ("queued", "in_progress"):
+            reservation_state(check)
+            if check["status"] == "completed":
                 continue
             age = now - epoch(check["started_at"])
             require(age >= 0, "sweeper-clock")
@@ -425,6 +436,11 @@ def sweep(api, policy, now):
                 continue
             refreshed = api.read(f"{prefix}/check-runs/{check['id']}")
             require(refreshed == check, "sweeper-reservation-drift")
+            current = api.read(f"{prefix}/pulls/{pull['number']}")
+            require(type(current) is dict and current.get("state") == "open"
+                    and current.get("number") == pull["number"]
+                    and current.get("base") == pull["base"]
+                    and current.get("head") == pull["head"], "sweeper-pull-drift")
             results.append({"check_id": check["id"], "head": head,
                             "reservation_digest": STATE.digest(check), "age_seconds": age,
                             "would_finalize": "failure", "reason": "expired"})
@@ -437,12 +453,14 @@ def dispatch(api, policy, event_name, event, now):
     validate_policy(policy)
     if policy["lifecycle"] == "inactive":
         return {"schema": "li219-shadow-disabled/v1", "authority": "none", "writes": 0}
+    require(type(event) is dict and type(event.get("repository")) is dict, "event-shape")
     require(event.get("repository", {}).get("id") == policy["repository_id"]
             and event["repository"].get("full_name") == policy["repository"], "event-repository")
     if event_name == "schedule":
         return sweep(api, policy, now)
     require(event_name == "workflow_run" and event.get("action") == "completed", "event-kind")
     delivered = event["workflow_run"]
+    require(type(delivered) is dict, "event-run-shape")
     run = producer(api, policy, delivered.get("id"))
     require(all(delivered.get(key) == run.get(key) for key in (
         "id", "run_attempt", "head_sha", "path", "event", "status", "conclusion",
@@ -479,7 +497,7 @@ def main():
         result["observer_seconds"] = round(time.monotonic() - started, 3)
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (ValueError, KeyError, TypeError, OSError) as error:
+    except (ValueError, KeyError, TypeError, AttributeError, OSError) as error:
         # Only emit invariant identifiers, never user-controlled response bodies.
         reason = str(error)
         if re.fullmatch(r"[a-z][a-z0-9-]{0,100}", reason) is None:

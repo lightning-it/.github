@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import importlib.util
+import io
 import json
 from pathlib import Path
 import re
@@ -211,6 +212,59 @@ class EventAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "sweeper-reservation-drift"):
             EVENTS.sweep(self.api(), self.policy, self.now + 86400)
 
+    def test_reservation_status_conclusion_pairs_fail_closed(self):
+        for status, conclusion in (("completed", None), ("in_progress", "failure"),
+                                   ("queued", "success"), ("completed", "neutral")):
+            self.check.update(status=status, conclusion=conclusion)
+            for operation in (lambda: EVENTS.observe(self.api(), self.policy, 200, 7, self.now),
+                              lambda: EVENTS.sweep(self.api(), self.policy, self.now + 86400)):
+                with self.subTest(status=status, conclusion=conclusion), self.assertRaisesRegex(
+                        ValueError, "reservation-state"):
+                    operation()
+
+    def test_terminal_reservations_are_observed_but_not_expired(self):
+        for conclusion in ("success", "failure"):
+            self.check.update(status="completed", conclusion=conclusion)
+            result = EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
+            self.assertEqual(conclusion == "failure",
+                             result["metrics"]["native_failure_with_ready_evidence"])
+            self.assertEqual([], EVENTS.sweep(self.api(), self.policy, self.now + 86400)["expired"])
+
+    def test_sweeper_revalidates_pull_after_reservation_refresh(self):
+        for field, value in (("state", "closed"), ("number", 8),
+                             ("head", {**self.pull["head"], "sha": "c" * 40}),
+                             ("base", {**self.pull["base"], "sha": "d" * 40}),
+                             ("base", {**self.pull["base"], "ref": "main"})):
+            api = self.api()
+            def drift(path, payload, occurrence):
+                if path == f"{self.prefix}/pulls/7":
+                    self.assertIn(f"{self.prefix}/check-runs/300", api.paths)
+                    payload[field] = value
+                return payload
+            api.transform = drift
+            with self.subTest(field=field, value=value), self.assertRaisesRegex(
+                    ValueError, "sweeper-pull-drift"):
+                EVENTS.sweep(api, self.policy, self.now + 86400)
+
+    def test_malformed_json_shapes_produce_sanitized_cli_rejection(self):
+        for mode in ("event-array", "rule-array", "nested-shape"):
+            api = self.api()
+            if mode == "rule-array":
+                api.responses = {**self.responses, f"{self.prefix}/rules/branches/develop": [[]]}
+            elif mode == "nested-shape":
+                api.responses = {**self.responses, f"{self.prefix}/branches/develop": []}
+            raw = b"[]" if mode == "event-array" else json.dumps(self.event()).encode()
+            with mock.patch("sys.argv", ["observer", "--event", "workflow_run", "--event-path", "event.json"]), \
+                    mock.patch.object(Path, "read_bytes", side_effect=[json.dumps(self.policy).encode(), raw]), \
+                    mock.patch.object(Path, "stat", return_value=mock.Mock(st_size=len(raw))), \
+                    mock.patch.object(EVENTS, "API", return_value=api), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(1, EVENTS.main())
+                result = json.loads(output.getvalue())
+            self.assertEqual("li219-shadow-rejection/v1", result["schema"])
+            self.assertEqual(0, result["writes"])
+            self.assertNotIn("Traceback", output.getvalue())
+
     def test_inactive_policy_performs_zero_api_calls_and_active_is_refused(self):
         policy = {**self.policy, "lifecycle": "inactive"}
         api = self.api()
@@ -314,6 +368,8 @@ class EventAdapterTests(unittest.TestCase):
         for filename in ("required-review-event-shadow.yml", "required-review-sweeper-shadow.yml"):
             workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
             self.assertTrue(all(value == "read" for value in workflow["permissions"].values()))
+            self.assertEqual(filename == "required-review-event-shadow.yml",
+                             "actions" in workflow["permissions"])
             job = workflow["jobs"]["observe"]
             self.assertIn("vars.LI219_EVENT_SHADOW == 'true'", job["if"])
             self.assertEqual("${{ github.workflow_sha }}", job["steps"][0]["with"]["ref"])

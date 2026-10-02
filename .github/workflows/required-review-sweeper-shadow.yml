@@ -8,7 +8,6 @@ on:
     - cron: '17 */6 * * *'
 
 permissions:
-  actions: read
   checks: read
   contents: read
   pull-requests: read
