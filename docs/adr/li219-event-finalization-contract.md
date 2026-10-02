@@ -135,6 +135,13 @@ time must never be reported as a live latency reduction.
 
 ## Default-off event integration after PR 718
 
+The transport requires Linux/POSIX execution in the main thread. A process
+real-time signal timer actively interrupts connect, body reads (including
+continuously arriving data), and parsing at the remaining absolute API deadline.
+Missing signal support, a competing active timer, or worker-thread invocation
+fails closed; each request restores the previous handler and disarms its timer.
+Socket idle timeouts remain an additional, not equivalent, bound.
+
 The feature branch based on protected `develop@3d06b53e57e1209ce008453e24375ed9e7410b01`
 adds executable integration artifacts:
 

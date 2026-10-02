@@ -6,6 +6,8 @@ import io
 import json
 from pathlib import Path
 import re
+import signal
+import time
 import unittest
 from unittest import mock
 
@@ -388,6 +390,66 @@ class EventAdapterTests(unittest.TestCase):
                         else:
                             with self.assertRaisesRegex(ValueError, "api-budget-exhausted"):
                                 api.read(self.prefix)
+
+    def test_absolute_deadline_interrupts_continuously_progressing_reader(self):
+        api = EVENTS.API({**self.policy, "max_seconds": 1})
+        response = mock.MagicMock()
+        chunks = []
+        finished = []
+        previous = signal.getsignal(signal.SIGALRM)
+        def dribble(size):
+            until = time.monotonic() + 3
+            while time.monotonic() < until:
+                chunks.append(b" ")
+                time.sleep(.01)
+            finished.append(True)
+            return b'{}'
+        response.__enter__.return_value.read.side_effect = dribble
+        api.opener.open = mock.Mock(return_value=response)
+        with mock.patch.dict(EVENTS.os.environ, {"GH_TOKEN": "test-token"}):
+            with self.assertRaisesRegex(ValueError, "api-budget-exhausted"):
+                api.read(self.prefix)
+        self.assertTrue(chunks)
+        self.assertEqual([], finished)
+        self.assertEqual((0.0, 0.0), signal.getitimer(signal.ITIMER_REAL))
+        self.assertEqual(previous, signal.getsignal(signal.SIGALRM))
+
+    def test_absolute_deadline_covers_connect_and_parse_and_restores_handler(self):
+        for stage in ("connect", "parse"):
+            api = EVENTS.API({**self.policy, "max_seconds": 1})
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{}'
+            api.opener.open = mock.Mock(return_value=response)
+            previous = signal.getsignal(signal.SIGALRM)
+            def delayed(*args, **kwargs):
+                time.sleep(3)
+                self.fail("absolute deadline did not interrupt " + stage)
+            with mock.patch.object(EVENTS, "parsed", side_effect=delayed if stage == "parse" else json.loads), \
+                    mock.patch.dict(EVENTS.os.environ, {"GH_TOKEN": "test-token"}):
+                if stage == "connect":
+                    api.opener.open.side_effect = delayed
+                with self.assertRaisesRegex(ValueError, "api-budget-exhausted"):
+                    api.read(self.prefix)
+            self.assertEqual((0.0, 0.0), signal.getitimer(signal.ITIMER_REAL))
+            self.assertEqual(previous, signal.getsignal(signal.SIGALRM))
+
+    def test_absolute_deadline_rejects_competing_timer_and_worker_thread(self):
+        from concurrent.futures import ThreadPoolExecutor
+        api = self.api()
+        with mock.patch.object(EVENTS, "signal", object()):
+            with self.assertRaisesRegex(ValueError, "api-deadline-unavailable"):
+                with api.deadline(1):
+                    self.fail("unsupported platform accepted")
+        with mock.patch.object(signal, "getitimer", return_value=(1.0, 0.0)):
+            with self.assertRaisesRegex(ValueError, "api-deadline-in-use"):
+                with api.deadline(1):
+                    self.fail("competing timer accepted")
+        def worker():
+            with api.deadline(1):
+                self.fail("worker thread accepted")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.assertRaisesRegex(ValueError, "api-deadline-unavailable"):
+                pool.submit(worker).result()
 
     def test_workflows_are_default_off_read_only_and_use_protected_source(self):
         import yaml

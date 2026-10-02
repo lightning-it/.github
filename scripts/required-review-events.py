@@ -6,6 +6,7 @@ must therefore never PATCH them, even when its two live reads agree.
 """
 
 import argparse
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 import importlib.util
@@ -14,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import time
 import urllib.error
 import urllib.request
@@ -101,6 +103,26 @@ class API:
         self.started = time.monotonic()
         self.opener = urllib.request.build_opener(NoRedirect())
 
+    @contextmanager
+    def deadline(self, remaining):
+        """Linux/POSIX main-thread transport: actively interrupt all blocking I/O."""
+        require(remaining > 0, "api-budget-exhausted")
+        require(all(hasattr(signal, name) for name in (
+            "SIGALRM", "ITIMER_REAL", "getitimer", "setitimer")), "api-deadline-unavailable")
+        require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "api-deadline-in-use")
+        def expired(signum, frame):
+            raise ValueError("api-budget-exhausted")
+        try:
+            previous = signal.signal(signal.SIGALRM, expired)
+        except (ValueError, OSError) as error:
+            raise ValueError("api-deadline-unavailable") from error
+        try:
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+
     def read(self, endpoint, variables=None):
         require(endpoint == "graphql" or endpoint.startswith(
             "repos/" + self.policy["repository"] + "/")
@@ -124,15 +146,16 @@ class API:
             method="GET" if body is None else "POST",
         )
         self.requests += 1
-        try:
-            with self.opener.open(request, timeout=min(10, remaining)) as response:
-                raw = response.read(2 * 1024 * 1024 + 1)
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise ValueError("api-read-failed") from exc
-        require(time.monotonic() - self.started < self.policy["max_seconds"],
-                "api-budget-exhausted")
-        require(len(raw) <= 2 * 1024 * 1024, "api-response-too-large")
-        result = parsed(raw)
+        with self.deadline(self.policy["max_seconds"] - (time.monotonic() - self.started)):
+            try:
+                with self.opener.open(request, timeout=min(10, remaining)) as response:
+                    raw = response.read(2 * 1024 * 1024 + 1)
+            except (urllib.error.URLError, TimeoutError) as exc:
+                raise ValueError("api-read-failed") from exc
+            require(time.monotonic() - self.started < self.policy["max_seconds"],
+                    "api-budget-exhausted")
+            require(len(raw) <= 2 * 1024 * 1024, "api-response-too-large")
+            result = parsed(raw)
         require(time.monotonic() - self.started < self.policy["max_seconds"],
                 "api-budget-exhausted")
         return result
