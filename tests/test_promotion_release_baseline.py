@@ -28,7 +28,10 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         self.git("init", "--quiet", "-b", "initial")
         self.write("galaxy.yml", "namespace: lit\nname: example\nversion: 1.13.0\n")
         self.write("CHANGELOG.rst", "old release\n")
-        self.fragments = ["fix.yml", "123.fix.yml", "[a].yaml", "fix with space.yml"]
+        self.fragments = [
+            "fix.yml", "123.fix.yml", "[a].yaml", "fix with space.yml", "fix\r\nline.yml",
+            os.fsdecode(b"nonutf8-\xff.yml"),
+        ]
         for fragment in self.fragments:
             self.write(f"changelogs/fragments/{fragment}", "bugfixes: [fix]\n")
         self.write("roles/example/tasks/main.yml", "---\n[]\n")
@@ -117,6 +120,18 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-content-scope"):
             self.validate()
 
+    def test_whitespace_prefixed_paths_cannot_impersonate_metadata(self) -> None:
+        for path in (" galaxy.yml", "\tgalaxy.yml", "\ngalaxy.yml", "\r\ngalaxy.yml"):
+            with self.subTest(path=path):
+                self.write(path, "not canonical metadata\n")
+                self.head = self.commit("add whitespace-prefixed non-metadata file")
+                try:
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-content-scope"):
+                        self.validate()
+                finally:
+                    (self.repository / path).unlink()
+                    self.head = self.commit("remove non-metadata fixture")
+
     def test_merge_resolution_cannot_introduce_unreviewed_content(self) -> None:
         reviewed_head = self.head
         self.write("roles/example/tasks/main.yml", "---\n[]\n")
@@ -201,16 +216,16 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-galaxy-not-version-only"):
                     self.validate()
 
-    def test_git_blob_preserves_bytes_and_fails_closed(self) -> None:
+    def test_git_raw_preserves_bytes_and_fails_closed(self) -> None:
         content = b"\r\nunchanged: \xff\r\n \t\n"
         (self.repository / "bytes.yml").write_bytes(content)
         revision = self.commit("byte-preserving fixture")
-        self.assertEqual(content, MODULE.git_blob(f"{revision}:bytes.yml", self.repository))
-        with self.assertRaisesRegex(MODULE.EvidenceError, "git-blob-read-failed"):
-            MODULE.git_blob(f"{revision}:missing.yml", self.repository)
+        self.assertEqual(content, MODULE.git_raw(["cat-file", "blob", f"{revision}:bytes.yml"], self.repository))
+        with self.assertRaisesRegex(MODULE.EvidenceError, "git-raw-read-failed"):
+            MODULE.git_raw(["cat-file", "blob", f"{revision}:missing.yml"], self.repository)
         with mock.patch.object(MODULE, "MAX_API_BYTES", len(content) - 1):
             with self.assertRaisesRegex(MODULE.EvidenceError, "command-output-too-large"):
-                MODULE.git_blob(f"{revision}:bytes.yml", self.repository)
+                MODULE.git_raw(["cat-file", "blob", f"{revision}:bytes.yml"], self.repository)
 
 
 if __name__ == "__main__":

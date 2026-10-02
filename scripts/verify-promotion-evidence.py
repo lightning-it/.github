@@ -301,19 +301,25 @@ def git(arguments: list[str], repository: Path) -> str:
     return run(["git", *arguments], cwd=repository).strip()
 
 
-def git_blob(object_name: str, repository: Path) -> bytes:
-    """Read exact blob bytes, without whitespace or newline normalization."""
+def git_raw(arguments: list[str], repository: Path) -> bytes:
+    """Read exact Git bytes, without whitespace or newline normalization."""
     completed = subprocess.run(
-        ["git", "cat-file", "blob", object_name],
+        ["git", *arguments],
         cwd=repository,
         env=clean_environment(),
+        text=False,
         capture_output=True,
         check=False,
         timeout=90,
     )
-    require(completed.returncode == 0, "git-blob-read-failed")
+    require(completed.returncode == 0, "git-raw-read-failed")
     require(len(completed.stdout) <= MAX_API_BYTES, "command-output-too-large")
     return completed.stdout
+
+
+def git_paths(arguments: list[str], repository: Path) -> list[str]:
+    """Decode NUL-delimited paths losslessly for literal Git arguments."""
+    return [os.fsdecode(path) for path in git_raw(arguments, repository).split(b"\0") if path]
 
 
 def is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
@@ -830,7 +836,7 @@ def validate_reviewed_release_baseline(
         "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
         "--no-renames", "--name-only", "-z",
     ]
-    changed = [path for path in git([*diff_options, previous, head_sha, "--"], repository_path).split("\0") if path]
+    changed = git_paths([*diff_options, previous, head_sha, "--"], repository_path)
     metadata_paths = {
         "galaxy.yml",
         "CHANGELOG.rst",
@@ -844,42 +850,38 @@ def validate_reviewed_release_baseline(
     )
     consumed_fragments = {
         path
-        for path in git(
+        for path in git_paths(
             [*diff_options, "--diff-filter=D", common, expected_main, "--", "changelogs/fragments/"],
             repository_path,
-        ).split("\0")
+        )
         if re.fullmatch(r"changelogs/fragments/[^/]+\.ya?ml", path)
     }
     # Check release-consumed fragments even when restoring a previous blob makes
     # them disappear from the previous..head diff. New develop fragments stay.
     for path in sorted(consumed_fragments):
         require(
-            not git(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path),
+            not git_raw(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path),
             "release-baseline-consumed-fragment-retained",
         )
     require("galaxy.yml" in changed, "release-baseline-version-missing")
     for path in changed:
         fragment = re.fullmatch(r"changelogs/fragments/[^/]+\.ya?ml", path)
         require(path in metadata_paths or fragment is not None, "release-baseline-content-scope")
-        entry = git(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path)
+        entry = git_raw(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path)
         if fragment is not None:
             require(not entry, "release-baseline-fragment-not-removed")
             require(path in consumed_fragments, "release-baseline-fragment-not-consumed")
         else:
-            fields = entry.removesuffix("\0").split()
             require(
-                len(fields) == 4
-                and fields[:2] == ["100644", "blob"]
-                and SHA.fullmatch(fields[2]) is not None
-                and fields[3] == path,
+                re.fullmatch(rb"100644 blob [0-9a-f]{40}\t" + re.escape(path.encode("ascii")) + rb"\0", entry) is not None,
                 "release-baseline-metadata-mode",
             )
     require(
-        git([*diff_options, expected_main, head_sha, "--", *sorted(metadata_paths)], repository_path) == "",
+        git_raw([*diff_options, expected_main, head_sha, "--", *sorted(metadata_paths)], repository_path) == b"",
         "release-baseline-not-exact-main-metadata",
     )
-    previous_galaxy = git_blob(f"{previous}:galaxy.yml", repository_path)
-    current_galaxy = git_blob(f"{head_sha}:galaxy.yml", repository_path)
+    previous_galaxy = git_raw(["cat-file", "blob", f"{previous}:galaxy.yml"], repository_path)
+    current_galaxy = git_raw(["cat-file", "blob", f"{head_sha}:galaxy.yml"], repository_path)
     # Leave the original LF/CRLF terminator outside the version substitution.
     version_pattern = rb"^version: [0-9]+\.[0-9]+\.[0-9]+(?=\r?$)"
     require(
