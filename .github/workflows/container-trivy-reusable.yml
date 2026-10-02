@@ -36,6 +36,7 @@ permissions:
 
 jobs:
   trivy:
+    timeout-minutes: 60
     name: Trivy container scan
     runs-on: ubuntu-latest
     permissions:
