@@ -27,16 +27,20 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         self.git("init", "--quiet", "-b", "initial")
         self.write("galaxy.yml", "namespace: lit\nname: example\nversion: 1.13.0\n")
         self.write("CHANGELOG.rst", "old release\n")
-        self.write("changelogs/fragments/fix.yml", "bugfixes: [fix]\n")
+        self.fragments = ["fix.yml", "123.fix.yml", "[a].yaml", "fix with space.yml"]
+        for fragment in self.fragments:
+            self.write(f"changelogs/fragments/{fragment}", "bugfixes: [fix]\n")
         self.write("roles/example/tasks/main.yml", "---\n[]\n")
         initial = self.commit("initial")
         self.git("checkout", "--quiet", "-b", "main")
         self.write("galaxy.yml", "namespace: lit\nname: example\nversion: 1.14.0\n")
         self.write("CHANGELOG.rst", "published release\n")
-        (self.repository / "changelogs/fragments/fix.yml").unlink()
+        for fragment in self.fragments:
+            (self.repository / f"changelogs/fragments/{fragment}").unlink()
         self.main = self.commit("published release metadata")
         self.git("checkout", "--quiet", "-b", "develop", initial)
         self.write("roles/example/tasks/main.yml", "---\n- name: Preserved feature\n  ansible.builtin.debug:\n    msg: feature\n")
+        self.write("changelogs/fragments/a.yaml", "bugfixes: [not released yet]\n")
         self.previous = self.commit("feature remains in develop")
         self.git("checkout", "--quiet", "-b", "backsync", self.main)
         self.git("merge", "--quiet", "--no-ff", self.previous, "-m", "merge protected develop into backsync")
@@ -79,6 +83,32 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         self.validate()
         self.assertEqual("copilot", MODULE.expected_evidence_kind(self.pull, repository="lightning-it/example"))
         self.assertIn("Preserved feature", self.git("show", f"{self.head}:roles/example/tasks/main.yml"))
+        self.assertEqual("bugfixes: [not released yet]", self.git("show", f"{self.head}:changelogs/fragments/a.yaml"))
+
+    def test_retained_consumed_fragment_is_rejected_even_when_absent_from_diff(self) -> None:
+        for fragment in self.fragments:
+            with self.subTest(fragment=fragment):
+                path = f"changelogs/fragments/{fragment}"
+                self.write(path, "bugfixes: [fix]\n")
+                self.head = self.commit("restore unchanged released fragment")
+                self.assertEqual("", self.git("--literal-pathspecs", "diff", "--name-only", self.previous, self.head, "--", path))
+                with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-consumed-fragment-retained"):
+                    self.validate()
+                (self.repository / path).unlink()
+                self.head = self.commit("remove consumed fragment again")
+
+    def test_develop_only_fragment_cannot_be_deleted(self) -> None:
+        (self.repository / "changelogs/fragments/a.yaml").unlink()
+        self.head = self.commit("delete unreleased develop fragment")
+        with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-fragment-not-consumed"):
+            self.validate()
+
+    def test_unchanged_old_metadata_cannot_escape_main_comparison(self) -> None:
+        self.write("CHANGELOG.rst", "old release\n")
+        self.head = self.commit("restore previous changelog")
+        self.assertEqual("", self.git("diff", "--name-only", self.previous, self.head, "--", "CHANGELOG.rst"))
+        with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-not-exact-main-metadata"):
+            self.validate()
 
     def test_runtime_content_in_backsync_is_rejected(self) -> None:
         self.write("roles/example/tasks/main.yml", "---\n[]\n")

@@ -811,8 +811,11 @@ def validate_reviewed_release_baseline(
         == git(["rev-parse", f"{head_sha}^{{tree}}"], repository_path),
         "release-baseline-merge-tree-differs",
     )
-    diff_options = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only"]
-    changed = git([*diff_options, previous, head_sha, "--"], repository_path).splitlines()
+    diff_options = [
+        "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv",
+        "--no-renames", "--name-only", "-z",
+    ]
+    changed = [path for path in git([*diff_options, previous, head_sha, "--"], repository_path).split("\0") if path]
     metadata_paths = {
         "galaxy.yml",
         "CHANGELOG.rst",
@@ -820,15 +823,35 @@ def validate_reviewed_release_baseline(
         "changelogs/.plugin-cache.yaml",
         "changelogs/release-preparation.json",
     }
+    common = sha(
+        git(["merge-base", "--all", expected_main, previous], repository_path),
+        "release-baseline-common-ancestor",
+    )
+    consumed_fragments = {
+        path
+        for path in git(
+            [*diff_options, "--diff-filter=D", common, expected_main, "--", "changelogs/fragments/"],
+            repository_path,
+        ).split("\0")
+        if re.fullmatch(r"changelogs/fragments/[^/]+\.ya?ml", path)
+    }
+    # Check release-consumed fragments even when restoring a previous blob makes
+    # them disappear from the previous..head diff. New develop fragments stay.
+    for path in sorted(consumed_fragments):
+        require(
+            not git(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path),
+            "release-baseline-consumed-fragment-retained",
+        )
     require("galaxy.yml" in changed, "release-baseline-version-missing")
     for path in changed:
-        fragment = re.fullmatch(r"changelogs/fragments/[A-Za-z0-9_-]+\.ya?ml", path)
+        fragment = re.fullmatch(r"changelogs/fragments/[^/]+\.ya?ml", path)
         require(path in metadata_paths or fragment is not None, "release-baseline-content-scope")
-        entry = git(["ls-tree", head_sha, "--", path], repository_path)
+        entry = git(["--literal-pathspecs", "ls-tree", "-z", head_sha, "--", path], repository_path)
         if fragment is not None:
             require(not entry, "release-baseline-fragment-not-removed")
+            require(path in consumed_fragments, "release-baseline-fragment-not-consumed")
         else:
-            fields = entry.split()
+            fields = entry.removesuffix("\0").split()
             require(
                 len(fields) == 4
                 and fields[:2] == ["100644", "blob"]
@@ -837,7 +860,7 @@ def validate_reviewed_release_baseline(
                 "release-baseline-metadata-mode",
             )
     require(
-        git([*diff_options, expected_main, head_sha, "--", *changed], repository_path) == "",
+        git([*diff_options, expected_main, head_sha, "--", *sorted(metadata_paths)], repository_path) == "",
         "release-baseline-not-exact-main-metadata",
     )
     previous_galaxy = git(["show", f"{previous}:galaxy.yml"], repository_path)
