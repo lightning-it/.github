@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -3129,9 +3130,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '(.created_at | fromdateiso8601?)\n'
-            '                      > ($first_verifier_completed_at | fromdateiso8601)',
+            '                      >= ($first_verifier_completed_at | fromdateiso8601)',
             late,
         )
+        self.assertIn('and $step_started > $failed', workflow)
+        self.assertIn('and $step_started <= $producer_started', workflow)
+        self.assertIn(
+            'actions/runs/${refresh_run_id}/attempts/1/jobs?per_page=100', late
+        )
+        self.assertIn('and .run_id == $refresh.id and .run_attempt == 1', workflow)
+        self.assertIn('-f "${RUNNER_TEMP}/native-recovery-ordering.jq"', late)
+        self.assertIn('select(.run_id == $run_id and .head_sha == $head)', late)
         self.assertIn('select((.created_at | type) == "string")', late)
         self.assertIn('select((.updated_at | type) == "string")', late)
         self.assertIn(
@@ -3250,6 +3259,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         valid_refresh = {
+            "id": 37071643656,
             "actor": {"login": author},
             "conclusion": "success",
             "created_at": "2026-09-27T23:46:00Z",
@@ -3326,6 +3336,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return json.loads(result.stdout)
 
         self.assertEqual([valid_refresh], selected_refreshes([valid_refresh]))
+        # Native run creation and the failed verifier may share one second.
+        # Selection alone never authorizes this candidate: the bound native
+        # refresh job/step must independently establish strict execution order.
+        collision = {**valid_refresh, "created_at": review_submitted_at}
+        collision_args = list(refresh_args)
+        collision_args[collision_args.index("first_verifier_completed_at") + 1] = (
+            review_submitted_at
+        )
+        collision_result = subprocess.run(
+            [jq, "-c", *collision_args, refresh_filter],
+            input=json.dumps([{"workflow_runs": [collision]}]),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, collision_result.returncode, collision_result.stderr)
+        self.assertEqual([collision], json.loads(collision_result.stdout))
         for copilot_actor in (
             "Copilot",
             "copilot-pull-request-reviewer",
@@ -3357,6 +3384,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             key: value for key, value in valid_refresh.items() if key != "updated_at"
         }
         rejected_refreshes = (
+            {**valid_refresh, "id": 0},
+            {**valid_refresh, "id": "37071643656"},
+            {**valid_refresh, "id": 0.5},
+            {**valid_refresh, "event": "workflow_dispatch"},
+            {**valid_refresh, "run_attempt": 2},
+            {**valid_refresh, "path": ".github/workflows/forged.yml"},
+            {**valid_refresh, "conclusion": "failure"},
+            {**valid_refresh, "actor": {"login": "other"}},
             {**valid_refresh, "created_at": None},
             missing_created,
             {**valid_refresh, "created_at": "not-a-date"},
@@ -3373,10 +3408,146 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         for candidate in rejected_refreshes:
             with self.subTest(refresh=candidate):
                 self.assertEqual([], selected_refreshes([candidate]))
+        for side in ("base", "head"):
+            for field, value in (
+                ("sha", "c" * 40),
+                ("ref", "other"),
+                ("repo", {"url": f"{api_url}/repos/foreign/repository"}),
+            ):
+                candidate = copy.deepcopy(valid_refresh)
+                candidate["pull_requests"][0][side][field] = value
+                with self.subTest(side=side, field=field):
+                    self.assertEqual([], selected_refreshes([candidate]))
+        candidate = copy.deepcopy(valid_refresh)
+        candidate["pull_requests"][0]["number"] = 626
+        self.assertEqual([], selected_refreshes([candidate]))
         self.assertEqual(
             [valid_refresh, valid_refresh],
             selected_refreshes([valid_refresh, valid_refresh]),
         )
+
+    def test_native_recovery_ordering_rejects_replay_forgery_and_collision(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        ordering_filter = workflow.split(
+            'cat >"${ordering}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        refresh = {
+            "id": 37071643656,
+            "created_at": "2026-10-02T22:17:03Z",
+            "updated_at": "2026-10-02T22:17:10Z",
+        }
+        step = {
+            "name": "Rerun the canonical protected gate when needed",
+            "number": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-02T22:17:06Z",
+            "completed_at": "2026-10-02T22:17:08Z",
+        }
+        job = {
+            "id": 111052218155,
+            "run_id": refresh["id"],
+            "run_attempt": 1,
+            "head_sha": head,
+            "name": "Refresh canonical Copilot review gate",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-02T22:17:06Z",
+            "completed_at": "2026-10-02T22:17:09Z",
+            "steps": [step],
+        }
+        valid = [{"total_count": 1, "jobs": [job]}]
+
+        def job_pages(candidate: dict[str, object]) -> list[dict[str, object]]:
+            return [{"total_count": 1, "jobs": [candidate]}]
+
+        def step_pages(candidate: dict[str, object]) -> list[dict[str, object]]:
+            return job_pages({**job, "steps": [candidate]})
+
+        def accepted(
+            pages: object = valid,
+            run: object = refresh,
+            failed: str = "2026-10-02T22:17:03Z",
+            started: str = "2026-10-02T22:17:08Z",
+        ) -> bool:
+            result = subprocess.run(
+                [
+                    jq, "-e", "--arg", "head", head,
+                    "--arg", "failed_at", failed,
+                    "--arg", "producer_started_at", started,
+                    "--argjson", "refresh", json.dumps(run), ordering_filter,
+                ],
+                input=json.dumps(pages), text=True, capture_output=True, check=False,
+            )
+            return result.returncode == 0
+
+        # Real collision: run creation ties the failure, but native execution
+        # starts three seconds later and precedes attempt two. Cross-second
+        # creation follows the exact same proof, not a weaker legacy path.
+        self.assertTrue(accepted())
+        self.assertTrue(accepted(run={
+            **refresh, "created_at": "2026-10-02T22:17:04Z",
+        }))
+        self.assertFalse(accepted(started="2026-10-02T22:17:05Z"))
+        self.assertFalse(accepted(failed="2026-10-02T22:17:06Z"))
+        self.assertFalse(accepted(run={**refresh, "id": 37071643657}))
+
+        for field, values in {
+            "id": (0, -1, 0.5, "111052218155", None),
+            "run_id": (37071643657, "37071643656", None),
+            "run_attempt": (2, "1", None),
+            "head_sha": ("b" * 40, None),
+            "name": ("forged", None),
+            "status": ("in_progress", None),
+            "conclusion": ("skipped", "failure", None),
+            "steps": ([], [step, step], None),
+            "started_at": ("2026-10-02T22:17:07Z",),
+            "completed_at": ("2026-10-02T22:17:07Z",),
+        }.items():
+            for value in values:
+                with self.subTest(job_field=field, value=value):
+                    self.assertFalse(accepted(job_pages({**job, field: value})))
+        for field, values in {
+            "name": ("forged", None),
+            "number": (1, "2", None),
+            "status": ("in_progress", None),
+            "conclusion": ("skipped", "failure", None),
+            "started_at": ("2026-10-02T22:17:03Z", "2026-10-02T22:17:09Z"),
+            "completed_at": ("2026-10-02T22:17:05Z", "2026-10-02T22:17:10Z"),
+        }.items():
+            for value in values:
+                with self.subTest(step_field=field, value=value):
+                    self.assertFalse(accepted(step_pages({**step, field: value})))
+        for pages in (
+            [], {}, [None], [valid[0], valid[0]],
+            [{"total_count": 1, "jobs": []}],
+            [{"total_count": 1, "jobs": [job, job]}],
+            [{"total_count": 2, "jobs": [job]}],
+            [{"jobs": [job]}],
+        ):
+            with self.subTest(pages=pages):
+                self.assertFalse(accepted(pages))
+        for field in ("created_at", "updated_at"):
+            for value in (None, "invalid", "2026-02-30T22:17:03Z"):
+                with self.subTest(run_timestamp=field, value=value):
+                    self.assertFalse(accepted(run={**refresh, field: value}))
+        for field in ("started_at", "completed_at"):
+            for value in (None, "invalid", "2026-02-30T22:17:03Z"):
+                with self.subTest(job_timestamp=field, value=value):
+                    self.assertFalse(accepted(job_pages({**job, field: value})))
+                with self.subTest(step_timestamp=field, value=value):
+                    self.assertFalse(accepted(step_pages({**step, field: value})))
+        self.assertFalse(accepted(failed="invalid"))
+        self.assertFalse(accepted(started="invalid"))
+        for field, value in (
+            ("created_at", "2026-10-02T22:17:02Z"),
+            ("created_at", "2026-10-02T22:17:07Z"),
+            ("updated_at", "2026-10-02T22:17:08Z"),
+        ):
+            with self.subTest(timestamp=field, value=value):
+                self.assertFalse(accepted(run={**refresh, field: value}))
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
