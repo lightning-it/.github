@@ -210,6 +210,50 @@ class EventAdapterTests(unittest.TestCase):
         self.assertEqual(0, result["writes"])
         self.assertEqual([], EVENTS.sweep(self.api(), self.policy, self.now)["expired"])
 
+    def test_terminal_foreign_reservations_do_not_poison_exact_scope(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        for foreign_pr, foreign_base in ((8, self.base), (7, "c" * 40)):
+            for conclusion in ("success", "failure"):
+                api = self.api()
+                api.responses = deepcopy(self.responses)
+                foreign = {**deepcopy(self.check), "id": 302, "status": "completed",
+                           "conclusion": conclusion, "external_id":
+                           f"rep60-required-workflow:v3:202:{foreign_pr}:{foreign_base}:{self.head}"}
+                api.responses[path]["check_runs"].append(foreign)
+                api.responses[path]["total_count"] = 3
+                with self.subTest(pr=foreign_pr, base=foreign_base, conclusion=conclusion):
+                    self.assertEqual(300, EVENTS.observe(api, self.policy, 200, 7, self.now)["check_id"])
+                    sweep = EVENTS.sweep(api, self.policy, self.now + 86400)
+                    self.assertEqual([300], [item["check_id"] for item in sweep["expired"]])
+                    self.assertFalse(any(path.endswith("/actions/runs/202") for path in api.paths))
+
+    def test_sweeper_terminal_foreign_reservation_is_ignored(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        self.responses[path]["check_runs"].append({**deepcopy(self.check), "id": 302,
+            "status": "completed", "conclusion": "success", "external_id":
+            f"rep60-required-workflow:v3:202:8:{self.base}:{self.head}"})
+        self.responses[path]["total_count"] = 3
+        self.assertEqual([300], [item["check_id"] for item in
+                         EVENTS.sweep(self.api(), self.policy, self.now + 86400)["expired"]])
+
+    def test_exact_scope_duplicates_and_forged_provenance_still_reject(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        for mode in ("duplicate", "app", "head"):
+            api = self.api()
+            api.responses = deepcopy(self.responses)
+            checks = api.responses[path]["check_runs"]
+            if mode == "duplicate":
+                checks.append({**deepcopy(self.check), "id": 302})
+                api.responses[path]["total_count"] = 3
+            elif mode == "app":
+                checks[0]["app"] = {"id": 42, "slug": "unknown"}
+            else:
+                checks[0]["head_sha"] = "c" * 40
+            for operation in (lambda: EVENTS.observe(api, self.policy, 200, 7, self.now),
+                              lambda: EVENTS.sweep(api, self.policy, self.now + 86400)):
+                with self.subTest(mode=mode), self.assertRaises(ValueError):
+                    operation()
+
     def test_sweeper_drift_rejects(self):
         self.responses[f"{self.prefix}/check-runs/300"] = {**self.check, "head_sha": "c" * 40}
         with self.assertRaisesRegex(ValueError, "sweeper-reservation-drift"):

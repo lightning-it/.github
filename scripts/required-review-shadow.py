@@ -81,6 +81,24 @@ def reservation_state(check):
         ("completed", "success"), ("completed", "failure")), "reservation-state")
 
 
+def scoped_reservations(checks, number, base, head):
+    """Select this immutable scope before uniqueness or provenance validation.
+
+    Commit check inventories may also contain a retired PR or an older base.
+    Those records are not candidates and never authorize this observer.
+    """
+    selected = []
+    for check in checks:
+        if check.get("name") != "Protected current-revision verifier":
+            continue
+        external = check.get("external_id")
+        match = RESERVATION.fullmatch(external) if type(external) is str else None
+        if match is not None and match.groups()[1:] == (str(number), base, head):
+            selected.append(check)
+    require(len(selected) <= 1, "reservation-not-unique")
+    return selected
+
+
 def validate_policy(policy):
     require(type(policy) is dict and set(policy) == {
         "schema", "lifecycle", "repository", "repository_id", "controller_ref",
@@ -186,9 +204,7 @@ def snapshot(api, policy, run_id, number):
     require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
             and ancestry.get("behind_by") == 0
             and ancestry.get("merge_base_commit", {}).get("sha") == controller), "controller-ancestry")
-    reservation = one([check for check in checks if check.get("name") ==
-                       "Protected current-revision verifier" and RESERVATION.fullmatch(
-                           check.get("external_id") or "")], "reservation-not-unique")
+    reservation = one(scoped_reservations(checks, number, base, head), "reservation-not-unique")
     bound = RESERVATION.fullmatch(reservation["external_id"])
     require(bound.groups()[1:] == (str(number), base, head)
             and reservation.get("head_sha") == head
@@ -367,10 +383,8 @@ def sweep(api, policy, now):
         head = pull["head"]["sha"]
         require(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head), "sweeper-head")
         checks = api.inventory(f"{prefix}/commits/{head}/check-runs?filter=all", "check_runs")
-        for check in checks:
+        for check in scoped_reservations(checks, pull["number"], pull["base"]["sha"], head):
             match = RESERVATION.fullmatch(check.get("external_id") or "")
-            if check.get("name") != "Protected current-revision verifier" or match is None:
-                continue
             require(check.get("head_sha") == head and match[4] == head
                     and match[3] == pull["base"]["sha"]
                     and int(match[2]) == pull["number"]

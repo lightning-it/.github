@@ -71,6 +71,13 @@ current PR and admission run. Drift rejects the whole result. Terminal checks
 are never expiry candidates. Its advisory expiry results include reservation
 and admission digests; it cannot finalize anything.
 
+Both paths select the exact PR/base/head reservation scope before uniqueness
+and provenance validation. Commit inventories can contain terminal reservations
+for another PR or an older base; these are outside the selected scope, never
+used as authorization and never emitted as this PR's expiry candidates. Exact
+scope duplicates and forged check provenance still reject. The native protected
+verifier retains ownership of its additional foreign-reservation checks.
+
 Legacy v3 reservations do not preserve the historical controller/ruleset
 binding required by a future protected writer. The sweep therefore explicitly
 reports `historical_controller_binding: unavailable-in-legacy-v3` and
