@@ -5270,6 +5270,52 @@ jobs:
             and .conclusion=="failure")}
           JQ
 
+      - name: Materialize native recovery ordering contract
+        run: |
+          set -euo pipefail
+          umask 077
+          ordering="${RUNNER_TEMP}/native-recovery-ordering.jq"
+          install -m 0600 /dev/null "${ordering}"
+          cat >"${ordering}" <<'JQ'
+          def epoch:
+            select(type == "string") as $value |
+            fromdateiso8601 | select(todateiso8601 == $value);
+          def positive_id:
+            type == "number" and . > 0 and floor == .;
+          select(type == "array" and length == 1) |
+          .[0] |
+          select(.total_count == 1 and (.jobs | type) == "array"
+            and (.jobs | length) == 1) |
+          .jobs[0] |
+          select((.id | positive_id)
+            and .run_id == $refresh.id and .run_attempt == 1
+            and .head_sha == $head
+            and .name == "Refresh canonical Copilot review gate"
+            and .status == "completed" and .conclusion == "success"
+            and (.steps | type) == "array") |
+          . as $job |
+          [.steps[] | select(.name == "Rerun the canonical protected gate when needed")] |
+          select(length == 1) | .[0] |
+          select(.status == "completed" and .conclusion == "success"
+            and .number == 2) |
+          ($failed_at | epoch) as $failed |
+          ($refresh.created_at | epoch) as $created |
+          ($refresh.updated_at | epoch) as $updated |
+          ($producer_started_at | epoch) as $producer_started |
+          ($job.started_at | epoch) as $job_started |
+          ($job.completed_at | epoch) as $job_completed |
+          (.started_at | epoch) as $step_started |
+          (.completed_at | epoch) as $step_completed |
+          $created >= $failed
+          and $created <= $job_started
+          and $job_started <= $step_started
+          and $step_started > $failed
+          and $step_started <= $producer_started
+          and $step_started <= $step_completed
+          and $step_completed <= $job_completed
+          and $job_completed <= $updated
+          JQ
+
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
         if: >-
@@ -6599,8 +6645,10 @@ jobs:
               jq -e \
                 --arg actor "${author}" \
                 --arg head_ref "${head_ref}" \
-                --arg head_sha "${EVENT_HEAD}" '
-                  .event == "pull_request_target"
+                --arg head_sha "${EVENT_HEAD}" \
+                --argjson run_id "${producer_run_id}" '
+                  .id == $run_id
+                  and .event == "pull_request_target"
                   and .run_attempt == 1
                   and .status == "completed"
                   and .conclusion == "failure"
@@ -6619,9 +6667,12 @@ jobs:
                   select(.run_attempt == 1 and .status == "completed"
                     and .conclusion == "success")] | length == 1
               ' <<<"${attempt_one_jobs}" >/dev/null
-              first_verifier_completed_at="$(jq -er '
+              first_verifier_completed_at="$(jq -er \
+                --arg head "${EVENT_HEAD}" \
+                --argjson run_id "${producer_run_id}" '
                 [.[].jobs[]? |
                   select(.name == "Verify current revision policy") |
+                  select(.run_id == $run_id and .head_sha == $head) |
                   select(.run_attempt == 1 and .status == "completed"
                     and .conclusion == "failure") |
                   .completed_at] | select(length == 1) | .[0]
@@ -6669,6 +6720,8 @@ jobs:
                   <<<"${producer}")" \
                 --argjson pr_number "${PR_NUMBER}" '
                   [.[].workflow_runs[]? |
+                    select((.id | type) == "number" and .id > 0
+                      and (.id | floor) == .id) |
                     select(.event == "pull_request_review"
                       and .run_attempt == 1) |
                     select(.status == "completed" and .conclusion == "success") |
@@ -6678,7 +6731,7 @@ jobs:
                     select((.created_at | type) == "string") |
                     select((.updated_at | type) == "string") |
                     select((.created_at | fromdateiso8601?)
-                      > ($first_verifier_completed_at | fromdateiso8601)) |
+                      >= ($first_verifier_completed_at | fromdateiso8601)) |
                     select((.created_at | fromdateiso8601?)
                       >= ($review_submitted_at | fromdateiso8601)) |
                     select((.updated_at | fromdateiso8601?)
@@ -6702,6 +6755,24 @@ jobs:
                       == ($api_url + "/repos/" + $repository))]
                 ' <<<"${refresh_pages}")"
               test "$(jq 'length' <<<"${refresh_runs}")" -eq 1
+
+              # Run creation has only second precision. Equality is only a
+              # candidate, never ordering proof. Require the exact native job
+              # and rerun step to start strictly after the first failed verifier
+              # and no later than attempt two. A same-second step stays denied.
+              # No clock delay, new writer, or numeric run-ID ordering assumption.
+              refresh_run="$(jq -c '.[0]' <<<"${refresh_runs}")"
+              refresh_run_id="$(jq -er '.id' <<<"${refresh_run}")"
+              refresh_jobs="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs/${refresh_run_id}/attempts/1/jobs?per_page=100")"
+              jq -e \
+                --arg head "${EVENT_HEAD}" \
+                --arg failed_at "${first_verifier_completed_at}" \
+                --arg producer_started_at "$(jq -er '.run_started_at | strings' \
+                  <<<"${producer}")" \
+                --argjson refresh "${refresh_run}" \
+                -f "${RUNNER_TEMP}/native-recovery-ordering.jq" \
+                <<<"${refresh_jobs}" >/dev/null
 
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
               jq -e --arg actor "${author}" \
