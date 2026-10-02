@@ -8,9 +8,10 @@ escalate only if: ruleset, check identity, App identity, or provenance changes.
 
 The pure model in `scripts/required-review-state.py` specifies the asynchronous
 reservation lifecycle independently of GitHub credentials and workflow runners.
-It is not invoked by a workflow, does not publish checks, and does not change
-the existing protection. Its tests are design evidence, not protected reference
-run evidence or completion of LI-219. Production polling is unchanged.
+The default-off event adapter can invoke it for read-only shadow observations.
+It does not publish checks or change existing protection. Its tests are design
+and adapter evidence, not protected reference-run evidence or completion of
+LI-219. Production polling is unchanged.
 
 Admission creates a pending record. A later event is only a locator for two
 authoritative reads; complete matching evidence can propose one terminal
@@ -129,5 +130,77 @@ implemented and verified. Measure runner job seconds, request-to-review,
 review-to-verifier, total latency median/P95, and false negatives over matched
 before/after cohorts. No after-rollout measurement exists yet; local simulated
 time must never be reported as a live latency reduction.
+
+## Default-off event integration after PR 718
+
+The feature branch based on protected `develop@3d06b53e57e1209ce008453e24375ed9e7410b01`
+adds executable integration artifacts:
+
+- `required-review-event-shadow.yml` receives completed producer `workflow_run`
+  events. It checks out only `github.workflow_sha`, never a producer/PR head.
+- `required-review-sweeper-shadow.yml` independently audits native reservations
+  every six hours, with a bounded inventory and no waiting runner.
+- `scripts/required-review-events.py` reads GitHub REST and fixed read-only
+  GraphQL queries, performs independent snapshots, and emits JSON observations
+  to native Actions logs. Its fixed-origin transport refuses redirects, writes,
+  arbitrary queries, oversized responses, duplicate JSON keys, incomplete
+  pagination, and request/time-budget exhaustion. It makes no retry or sleep.
+- `.lit/required-review-events.json` ships with `lifecycle: inactive`.
+  Both workflows additionally require `LI219_EVENT_SHADOW == true`. Neither
+  switch is changed by this work. Setting lifecycle to `active` is rejected;
+  there is deliberately no writer mode.
+
+All workflow permissions are read-only; only the ephemeral read-scoped Actions
+token enters the digest-pinned container. No credential is stored. Ordinary
+hosted-runner bridge networking is the explicit minimum needed for GitHub API
+reads; the container is read-only, capability-dropped and socket-free. No PR
+content is executed, no check is published, and no AI endpoint is called.
+
+The first integration scope is `.github`, same-repository `litroc` ingress into
+`develop`, producer attempt one. Other identities, forks, bot exemptions,
+promotions, ambiguous native reservations, and unsupported run shapes reject
+closed. Existing native `v3` reservations do not freeze all new LI-219 bindings.
+The adapter therefore reconstructs **observational** bindings from two live
+reads; `would_finalize: success` means a shadow candidate, not admission proof,
+not complete legacy job-topology verification, and never write authorization.
+Every record explicitly includes `authority: none` and `writes: 0`.
+
+Read-back of PR 718 confirms the distinction: native reservation check
+`110916661461` points through its v3 external ID to admission run `37030434380`.
+That run reports `supplementary-current-revision-required.yml`, repository
+`1112629689`, `pull_request_target`, attempt one, and actor/triggering actor
+`litroc` (`76040632`). It is separate from the cross-repository ruleset workflow
+`dot-github-current-revision-required.yml`. The observer validates both roles
+without treating either one as a replacement for the other.
+
+The separate sweep covers current heads of at most 20 open `develop` PRs. It
+re-reads each exact expired check before reporting an expiry candidate. It does
+not claim a global ledger: abandoned heads and closed PRs require the future
+durable admission inventory. Its output explicitly sets
+`complete_global_inventory: false`. Inventory overflow is an error, not an
+empty-success result. No reservation is failed by this observer.
+
+Native-log telemetry includes request-to-review, review-to-neutral-result,
+neutral-result-to-observer, admission-to-observer, and terminal producer-job
+seconds/minutes. A preexisting/manual review may legitimately have no native
+request marker; request-based timings then remain `null`. Present markers must
+be unique and Actions-authored. Reviews need positive content even when an old
+native result already succeeded; empty, whitespace-only, transport-marker-only,
+and unavailability-marker content fails closed. Incomplete job timings remain
+`null`, never zero; skipped jobs use zero without requiring time fields. The pure
+`summarize` helper deduplicates operation keys, reports sample counts, median and
+nearest-rank P95, and flags native failures with currently ready evidence for
+investigation. Those flags are not verified false negatives; the measured false
+negative rate remains unknown. Validated-shadow-only cohorts are not a fleet
+population and cannot prove a before/after improvement.
+
+The adapter tests drive the real normalization and decision functions through
+bounded fake GitHub responses, including a 180-second delayed event, two-read
+drift, stale/foreign identities, status regression, critical-step failures,
+pagination rejection, event deduplication, read-only transport, inactive
+zero-call behavior and sweeper drift. Full live rollout remains blocked by the
+authority decision, durable admission/CAS storage, global sweep inventory,
+full producer-topology validation, and protected reference runs. This change
+does not remove any of those gates or assert production-ready finalization.
 
 [triggers]: https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#supported-event-triggers

@@ -1,0 +1,46 @@
+# Read-only integration canary. Activation also needs protected policy=shadow.
+# yamllint disable rule:truthy rule:line-length
+---
+name: Audit expired reservations (LI-219 shadow)
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: li219-shadow-${{ github.workflow }}-${{ github.event.workflow_run.id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.repository == 'lightning-it/.github' && vars.LI219_EVENT_SHADOW == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout immutable default-branch observer source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Read native GitHub evidence in the pinned Devtools image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVTOOLS_IMAGE: quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08
+        run: |
+          set -euo pipefail
+          docker run --rm --read-only --network bridge \
+            --cap-drop ALL --security-opt no-new-privileges=true \
+            --pids-limit 128 --user "$(id -u):$(id -g)" \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            -e GH_TOKEN -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            -v "${GITHUB_EVENT_PATH}:/event.json:ro" \
+            -w /workspace "${DEVTOOLS_IMAGE}" \
+            python3 scripts/required-review-events.py \
+              --event schedule --event-path /event.json
