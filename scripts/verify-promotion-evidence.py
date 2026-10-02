@@ -301,6 +301,21 @@ def git(arguments: list[str], repository: Path) -> str:
     return run(["git", *arguments], cwd=repository).strip()
 
 
+def git_blob(object_name: str, repository: Path) -> bytes:
+    """Read exact blob bytes, without whitespace or newline normalization."""
+    completed = subprocess.run(
+        ["git", "cat-file", "blob", object_name],
+        cwd=repository,
+        env=clean_environment(),
+        capture_output=True,
+        check=False,
+        timeout=90,
+    )
+    require(completed.returncode == 0, "git-blob-read-failed")
+    require(len(completed.stdout) <= MAX_API_BYTES, "command-output-too-large")
+    return completed.stdout
+
+
 def is_ancestor(repository: Path, ancestor: str, descendant: str) -> bool:
     completed = subprocess.run(
         ["git", "merge-base", "--is-ancestor", ancestor, descendant],
@@ -863,14 +878,15 @@ def validate_reviewed_release_baseline(
         git([*diff_options, expected_main, head_sha, "--", *sorted(metadata_paths)], repository_path) == "",
         "release-baseline-not-exact-main-metadata",
     )
-    previous_galaxy = git(["show", f"{previous}:galaxy.yml"], repository_path)
-    current_galaxy = git(["show", f"{head_sha}:galaxy.yml"], repository_path)
-    version_pattern = r"^version: [0-9]+\.[0-9]+\.[0-9]+$"
+    previous_galaxy = git_blob(f"{previous}:galaxy.yml", repository_path)
+    current_galaxy = git_blob(f"{head_sha}:galaxy.yml", repository_path)
+    # Leave the original LF/CRLF terminator outside the version substitution.
+    version_pattern = rb"^version: [0-9]+\.[0-9]+\.[0-9]+(?=\r?$)"
     require(
-        re.findall(version_pattern, current_galaxy, re.MULTILINE) == [f"version: {version}"]
+        re.findall(version_pattern, current_galaxy, re.MULTILINE) == [f"version: {version}".encode("ascii")]
         and len(re.findall(version_pattern, previous_galaxy, re.MULTILINE)) == 1
-        and re.sub(version_pattern, "version: <bound>", previous_galaxy, flags=re.MULTILINE)
-        == re.sub(version_pattern, "version: <bound>", current_galaxy, flags=re.MULTILINE),
+        and re.sub(version_pattern, b"version: <bound>", previous_galaxy, flags=re.MULTILINE)
+        == re.sub(version_pattern, b"version: <bound>", current_galaxy, flags=re.MULTILINE),
         "release-baseline-galaxy-not-version-only",
     )
 

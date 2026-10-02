@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify-promotion-evidence.py"
@@ -180,6 +181,36 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         self.head = self.git("rev-parse", "HEAD")
         with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-galaxy-not-version-only"):
             self.validate()
+
+    def test_galaxy_whitespace_changes_are_rejected_even_if_equal_to_main(self) -> None:
+        canonical = b"namespace: lit\nname: example\nversion: 1.14.0\n"
+        for content in (
+            b"\n" + canonical,
+            canonical + b"\n",
+            canonical.rstrip(b"\n"),
+            canonical + b" \t",
+            canonical.replace(b"\n", b"\r\n"),
+        ):
+            with self.subTest(content=content):
+                self.git("checkout", "--quiet", "main")
+                (self.repository / "galaxy.yml").write_bytes(content)
+                self.main = self.commit("change release whitespace")
+                self.git("checkout", "--quiet", "backsync")
+                self.git("merge", "--quiet", "--no-ff", self.main, "-m", "merge changed main")
+                self.head = self.git("rev-parse", "HEAD")
+                with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-galaxy-not-version-only"):
+                    self.validate()
+
+    def test_git_blob_preserves_bytes_and_fails_closed(self) -> None:
+        content = b"\r\nunchanged: \xff\r\n \t\n"
+        (self.repository / "bytes.yml").write_bytes(content)
+        revision = self.commit("byte-preserving fixture")
+        self.assertEqual(content, MODULE.git_blob(f"{revision}:bytes.yml", self.repository))
+        with self.assertRaisesRegex(MODULE.EvidenceError, "git-blob-read-failed"):
+            MODULE.git_blob(f"{revision}:missing.yml", self.repository)
+        with mock.patch.object(MODULE, "MAX_API_BYTES", len(content) - 1):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "command-output-too-large"):
+                MODULE.git_blob(f"{revision}:bytes.yml", self.repository)
 
 
 if __name__ == "__main__":
