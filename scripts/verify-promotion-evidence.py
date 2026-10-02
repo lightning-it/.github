@@ -5,8 +5,8 @@ The verifier intentionally does not review the cumulative promotion diff again.
 It proves that the protected develop first-parent history in the promotion range
 consists only of GitHub merge commits whose exact PR heads already carry one
 successful, bound ``Current revision review`` result and no unresolved review
-conversations. The existing main tip is bound through exactly one separately
-validated ancestry boundary.
+conversations. The existing main tip is bound through one separately validated
+ancestry boundary or a metadata-only release backsync with ordinary native review.
 """
 
 from __future__ import annotations
@@ -768,6 +768,88 @@ def classify_ingress_position(index: int, baseline_boundary: int) -> tuple[bool,
         "baseline-boundary-index",
     )
     return index == baseline_boundary, index > baseline_boundary
+
+
+def validate_reviewed_release_baseline(
+    repository_path: Path,
+    *,
+    repository: str,
+    expected_main: str,
+    merge: JSON,
+    pull: JSON,
+) -> None:
+    """Bind a metadata-only backsync; this never grants an AI-review exemption."""
+
+    head = exact_object(pull.get("head"), "release-baseline-head")
+    reference = text(head.get("ref"), "release-baseline-ref")
+    match = re.fullmatch(
+        r"backsync/release-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-to-develop",
+        reference,
+    )
+    require(match is not None, "release-baseline-ref")
+    assert match is not None
+    version = match.group(1)
+    require(
+        pull.get("title") == f"chore(release): sync v{version} back to develop",
+        "release-baseline-title",
+    )
+    require(
+        expected_evidence_kind(pull, repository=repository) in {"copilot", "release-app"},
+        "release-baseline-review-kind",
+    )
+    previous = sha(merge.get("base_sha"), "release-baseline-previous")
+    head_sha = sha(merge.get("head_sha"), "release-baseline-head-sha")
+    merge_sha = sha(merge.get("merge_sha"), "release-baseline-merge-sha")
+    require(
+        not is_ancestor(repository_path, expected_main, previous)
+        and is_ancestor(repository_path, expected_main, head_sha)
+        and is_ancestor(repository_path, previous, head_sha),
+        "release-baseline-main-introduction",
+    )
+    require(
+        git(["rev-parse", f"{merge_sha}^{{tree}}"], repository_path)
+        == git(["rev-parse", f"{head_sha}^{{tree}}"], repository_path),
+        "release-baseline-merge-tree-differs",
+    )
+    diff_options = ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only"]
+    changed = git([*diff_options, previous, head_sha, "--"], repository_path).splitlines()
+    metadata_paths = {
+        "galaxy.yml",
+        "CHANGELOG.rst",
+        "changelogs/changelog.yaml",
+        "changelogs/.plugin-cache.yaml",
+        "changelogs/release-preparation.json",
+    }
+    require("galaxy.yml" in changed, "release-baseline-version-missing")
+    for path in changed:
+        fragment = re.fullmatch(r"changelogs/fragments/[A-Za-z0-9_-]+\.ya?ml", path)
+        require(path in metadata_paths or fragment is not None, "release-baseline-content-scope")
+        entry = git(["ls-tree", head_sha, "--", path], repository_path)
+        if fragment is not None:
+            require(not entry, "release-baseline-fragment-not-removed")
+        else:
+            fields = entry.split()
+            require(
+                len(fields) == 4
+                and fields[:2] == ["100644", "blob"]
+                and SHA.fullmatch(fields[2]) is not None
+                and fields[3] == path,
+                "release-baseline-metadata-mode",
+            )
+    require(
+        git([*diff_options, expected_main, head_sha, "--", *changed], repository_path) == "",
+        "release-baseline-not-exact-main-metadata",
+    )
+    previous_galaxy = git(["show", f"{previous}:galaxy.yml"], repository_path)
+    current_galaxy = git(["show", f"{head_sha}:galaxy.yml"], repository_path)
+    version_pattern = r"^version: [0-9]+\.[0-9]+\.[0-9]+$"
+    require(
+        re.findall(version_pattern, current_galaxy, re.MULTILINE) == [f"version: {version}"]
+        and len(re.findall(version_pattern, previous_galaxy, re.MULTILINE)) == 1
+        and re.sub(version_pattern, "version: <bound>", previous_galaxy, flags=re.MULTILINE)
+        == re.sub(version_pattern, "version: <bound>", current_galaxy, flags=re.MULTILINE),
+        "release-baseline-galaxy-not-version-only",
+    )
 
 
 def review_summary(check: JSON) -> JSON:
@@ -2093,6 +2175,26 @@ def verify(arguments: argparse.Namespace) -> JSON:
             previous_develop=merge["base_sha"],
         )
     ]
+    reviewed_release_boundary: int | None = None
+    if not baseline_candidates:
+        # A protected release-metadata PR can introduce main without using the
+        # ancestry-only controller. Keep its normal review and thread evidence.
+        baseline_candidates = [
+            index
+            for index, (merge, _pull) in enumerate(ingress_inventory)
+            if not is_ancestor(repository_path, expected_base, merge["base_sha"])
+            and is_ancestor(repository_path, expected_base, merge["head_sha"])
+        ]
+        require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
+        reviewed_release_boundary = baseline_candidates[0]
+        release_merge, release_pull = ingress_inventory[reviewed_release_boundary]
+        validate_reviewed_release_baseline(
+            repository_path,
+            repository=arguments.repository,
+            expected_main=expected_base,
+            merge=release_merge,
+            pull=release_pull,
+        )
     require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
     baseline_boundary = baseline_candidates[0]
 
@@ -2119,7 +2221,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
         )
         structural_boundaries[index] = historical_main
     require(
-        structural_boundaries.get(baseline_boundary) == expected_base,
+        structural_boundaries.get(baseline_boundary) == expected_base
+        or reviewed_release_boundary == baseline_boundary,
         "baseline-reconciliation-not-structural",
     )
 
@@ -2222,6 +2325,14 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 == item["merged_at"],
                 "ingress-merge-mutated-during-verification",
             )
+            if reviewed_release_boundary is not None and number == ingress[reviewed_release_boundary]["pull_request"]:
+                validate_reviewed_release_baseline(
+                    repository_path,
+                    repository=arguments.repository,
+                    expected_main=expected_base,
+                    merge=item,
+                    pull=refreshed_pull,
+                )
             if ancestry_boundary:
                 historical_main = ancestry_merge_main(
                     repository_path,
