@@ -24,6 +24,7 @@ class TransportTests(unittest.TestCase):
         self.reader = TRANSPORT.GitHubReader()
         self.response = mock.MagicMock()
         self.response.__enter__.return_value.status = 200
+        self.response.__enter__.return_value.length = 0
         self.response.__enter__.return_value.read.return_value = b'{"id":7,"number":7}'
         self.reader.opener.open = mock.Mock(return_value=self.response)
         self.env = mock.patch.dict(TRANSPORT.os.environ, {"GH_TOKEN": "unit-test-placeholder"})
@@ -102,6 +103,51 @@ class TransportTests(unittest.TestCase):
             with self.assertRaisesRegex(TRANSPORT.ReadFailure, "^read-failed$"):
                 self.reader.read("pull", 7)
         self.assertEqual(5, self.reader.opener.open.call_count)  # no retry
+
+    def test_real_http_response_premature_eof_cannot_be_accepted(self):
+        class Socket:
+            def __init__(self, data):
+                self.data = data
+            def makefile(self, mode):
+                return io.BytesIO(self.data)
+        body = b'{"number":7}'
+        for declared in (len(body), 100):
+            wire = b"HTTP/1.1 200 OK\r\nContent-Length: " + str(declared).encode() + b"\r\n\r\n" + body
+            response = http.client.HTTPResponse(Socket(wire))
+            response.begin()
+            self.reader.opener.open.return_value = response
+            if declared == len(body):
+                self.assertEqual({"number": 7}, self.reader.read("pull", 7))
+            else:
+                with self.assertRaisesRegex(TRANSPORT.ReadFailure, "response-incomplete"):
+                    self.reader.read("pull", 7)
+            self.assertTrue(response.isclosed())
+
+    def test_blocked_alarm_rejects_before_io_without_changing_mask(self):
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        expected_mask = old_mask | {signal.SIGALRM}
+        completed = []
+        self.reader.expires = time.monotonic() + .05
+        def dribble(size):
+            end = time.monotonic() + .2
+            while time.monotonic() < end:
+                time.sleep(.005)
+            completed.append(True)
+            return b'{"number":7}'
+        self.response.__enter__.return_value.read.side_effect = dribble
+        try:
+            with self.assertRaisesRegex(TRANSPORT.ReadFailure, "deadline-blocked"):
+                self.reader.read("pull", 7)
+            self.reader.opener.open.assert_not_called()
+            self.assertEqual([], completed)
+            self.assertEqual(expected_mask, signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+        finally:
+            # Safely clean the pre-fix reproduction's pending alarm before
+            # restoring the caller mask; the corrected path never arms it.
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            if signal.SIGALRM in signal.sigpending():
+                signal.sigwait({signal.SIGALRM})
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
     def test_cli_truncated_response_is_structured_and_never_leaks_input(self):
         self.response.__enter__.return_value.read.side_effect = http.client.IncompleteRead(b"private-partial")

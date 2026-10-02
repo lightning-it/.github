@@ -27,14 +27,17 @@ an importer can reuse a reader for multiple requests within the same budget.
 Linux/POSIX main-thread execution is mandatory. An absolute process real-time
 signal timer actively interrupts connect, continuously progressing body reads
 and JSON parsing; it is not merely a socket idle timeout. Missing signal
-support, a worker thread, a competing active timer or exhausted budget fails
-closed before network access. The previous signal handler is restored and the
+support, a worker thread, a blocked SIGALRM, a competing active timer or exhausted
+budget fails closed before network access. The caller's signal mask is never
+changed. The previous signal handler is restored and the
 timer disarmed on success, ordinary errors and control-signal propagation.
 The caller must not share the process timer or signal handler while a read is
 in progress. This API is deliberately not a concurrent transport.
 
 Malformed/truncated responses, including `http.client.IncompleteRead`, become
-source-owned `ReadFailure` identifiers. Duplicate JSON keys, non-finite numbers,
+source-owned `ReadFailure` identifiers. A known Content-Length must be completely
+consumed before the response is closed; a short bounded read cannot pass merely
+because its prefix is valid JSON. Duplicate JSON keys, non-finite numbers,
 response size overflow and identity drift reject. Ordinary exceptions at the
 CLI boundary produce `li219-readonly-rejection/v1`, exit 1, no traceback and no
 external error body/path. `BaseException` control signals remain unmasked.

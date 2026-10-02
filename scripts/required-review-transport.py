@@ -46,7 +46,11 @@ def number(raw):
 @contextmanager
 def deadline(expires):
     require(all(hasattr(signal, name) for name in (
-        "SIGALRM", "ITIMER_REAL", "getitimer", "setitimer")), "deadline-unavailable")
+        "SIGALRM", "ITIMER_REAL", "getitimer", "setitimer", "pthread_sigmask",
+        "SIG_BLOCK")), "deadline-unavailable")
+    # Blocking an empty set only reads the caller's mask; never unblock its signals.
+    require(signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, set()),
+            "deadline-blocked")
     require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "deadline-in-use")
     def expired(signum, frame):
         raise ReadFailure("time-budget-exhausted")
@@ -102,7 +106,12 @@ class GitHubReader:
                 with self.opener.open(request, timeout=min(10, remaining)) as response:
                     require(response.status == 200, "unexpected-http-status")
                     raw = response.read(self.max_bytes + 1)
-                require(len(raw) <= self.max_bytes, "response-byte-limit")
+                    require(len(raw) <= self.max_bytes, "response-byte-limit")
+                    # HTTPResponse.read(amt) can silently return a short body on EOF.
+                    remaining_length = response.length
+                    require(remaining_length is None or
+                            (type(remaining_length) is int and remaining_length == 0),
+                            "response-incomplete")
                 payload = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant,
                                      parse_float=number)
                 require(type(payload) is dict and type(payload.get(identity)) is int
