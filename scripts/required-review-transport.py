@@ -53,6 +53,9 @@ def deadline(expires):
             "deadline-blocked")
     require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0), "deadline-in-use")
     def expired(signum, frame):
+        # Expiration may interrupt the outer finally before it can restore state.
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
         raise ReadFailure("time-budget-exhausted")
     try:
         previous = signal.signal(signal.SIGALRM, expired)

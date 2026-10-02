@@ -244,6 +244,27 @@ class TransportTests(unittest.TestCase):
         self.assertEqual((0.0, 0.0), signal.getitimer(signal.ITIMER_REAL))
         self.assertEqual(previous, signal.getsignal(signal.SIGALRM))
 
+    def test_real_alarm_during_cleanup_restores_previous_handler(self):
+        previous = signal.getsignal(signal.SIGALRM)
+        real_setitimer = signal.setitimer
+        cleanup_entered = []
+        def delayed_disarm(which, seconds, *args):
+            if seconds == 0 and not cleanup_entered:
+                cleanup_entered.append(True)
+                time.sleep(.2)
+            return real_setitimer(which, seconds, *args)
+        try:
+            with mock.patch.object(signal, "setitimer", side_effect=delayed_disarm):
+                with self.assertRaisesRegex(TRANSPORT.ReadFailure, "time-budget-exhausted"):
+                    with TRANSPORT.deadline(time.monotonic() + .05):
+                        pass
+            self.assertTrue(cleanup_entered)
+            self.assertEqual((0.0, 0.0), signal.getitimer(signal.ITIMER_REAL))
+            self.assertEqual(previous, signal.getsignal(signal.SIGALRM))
+        finally:
+            real_setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+
 
 if __name__ == "__main__":
     unittest.main()

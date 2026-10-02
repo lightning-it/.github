@@ -31,6 +31,8 @@ support, a worker thread, a blocked SIGALRM, a competing active timer or exhaust
 budget fails closed before network access. The caller's signal mask is never
 changed. The previous signal handler is restored and the
 timer disarmed on success, ordinary errors and control-signal propagation.
+The expiration handler also disarms and restores state before raising, including
+when the timer interrupts the normal cleanup itself.
 The caller must not share the process timer or signal handler while a read is
 in progress. This API is deliberately not a concurrent transport.
 
