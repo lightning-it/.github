@@ -49,12 +49,17 @@ head/base, protected develop tip, controller ancestry, required-workflow rule,
 actor, admission run, native neutral result, current-head Copilot review,
 complete resolved threads and critical job steps. Webhook identity fields must
 match a fresh native run. Review bodies and edit timestamps must agree across
-REST/GraphQL; findings, unavailable/empty content, post-evidence edits, stale
+REST/GraphQL; unresolved findings, unavailable/empty content, post-evidence edits, stale
 heads, reruns, pagination gaps, duplicate IDs and snapshot drift reject. A
 missing request marker is valid for a pre-existing review; corresponding
 request-based latency stays null. Existing terminal native reservations are
 observed, never overwritten. Later native failure observations remain visible
 through LI-226's failure-OR deduplication even when earlier latency is retained.
+
+Overview finding counts and recommendations may be historical after resolution;
+they are not an additional rejection gate. As in the native v6 producer, live
+thread resolution is authoritative. Substantive content, unavailable-review
+markers, REST/GraphQL agreement and post-evidence edit checks remain mandatory.
 
 The pure state contract supplies a deterministic operation key/evidence digest
 and permits only monotonic job visibility. No durable CAS or exactly-once

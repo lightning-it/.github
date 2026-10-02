@@ -398,15 +398,29 @@ class EventAdapterTests(unittest.TestCase):
         self.assertEqual(3, result["metrics"]["producer_job_minutes"])
 
 
-    def test_previous_missed_and_post_success_edits_fail_closed(self):
+    def test_historical_overview_counts_use_live_thread_resolution(self):
         path = f"{self.prefix}/pulls/7/reviews?per_page=100&page=1"
-        for body in ("**Findings:** None\\n<strong>Previously missed (1)</strong>",
-                     "**Findings:** None\\n<strong>Open (2)</strong>"):
+        for body in ("**Findings:** None\n<strong>Previously missed (1)</strong>",
+                     "**Findings:** 1\n<strong>Open (1)</strong>",
+                     "Changes recommended\n**Findings:** 2\n<strong>Open (2)</strong>"):
             api = self.api()
             api.responses = deepcopy(self.responses)
             api.responses[path][0]["body"] = body
-            with self.assertRaisesRegex(ValueError, "review-findings"):
+            graph = api.responses["graphql"]["data"]["repository"]["pullRequest"]
+            graph["reviews"]["nodes"][0]["body"] = body
+            graph["reviewThreads"].update(totalCount=1, nodes=[{
+                "id": "T1", "isResolved": True, "comments": {
+                    "totalCount": 1, "pageInfo": {"hasNextPage": False},
+                    "nodes": [{"id": "C1", "body": "Historical finding",
+                               "updatedAt": "2026-10-02T00:00:10Z"}]}}])
+            with self.subTest(body=body):
+                self.assertEqual("success", EVENTS.observe(
+                    api, self.policy, 200, 7, self.now)["would_finalize"])
+            graph["reviewThreads"]["nodes"][0]["isResolved"] = False
+            with self.assertRaisesRegex(ValueError, "unresolved-thread"):
                 EVENTS.observe(api, self.policy, 200, 7, self.now)
+
+    def test_post_success_review_edits_fail_closed(self):
         graph = self.responses["graphql"]["data"]["repository"]["pullRequest"]["reviews"]
         graph["nodes"][0]["lastEditedAt"] = "2026-10-02T00:00:21Z"
         with self.assertRaisesRegex(ValueError, "review-edited-after-evidence"):

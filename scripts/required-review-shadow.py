@@ -230,10 +230,8 @@ def snapshot(api, policy, run_id, number):
     # marker cannot by itself constitute a substantive review.
     require(any(re.sub(r"<!--.*?-->", "", value, flags=re.DOTALL).strip()
                 for value in texts), "review-content-empty")
-    require("**Findings:** None" in review["body"]
-            and "Changes recommended" not in review["body"]
-            and re.search(r"(?:Open|Previously missed)\s*\([1-9][0-9]*\)",
-                          review["body"], re.IGNORECASE) is None, "review-findings")
+    # Overview counts/recommendations are historical, not live resolution
+    # authority. The complete bound GraphQL thread inventory below decides.
     require(epoch(review["submitted_at"]) <= epoch(neutral["completed_at"]), "review-chronology")
     issue_comments = api.inventory(f"{prefix}/issues/{number}/comments")
     marker = f"<!-- mlx90-copilot-request head={head} -->"
