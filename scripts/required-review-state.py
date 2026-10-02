@@ -166,6 +166,11 @@ def finalize(reservation, event_identity, first_read, final_read, policy_step, n
     evidence(first_read, identity, policy_step)
     evidence(final_read, identity, policy_step)
     # Terminal job visibility may advance between reads without evidence drift.
+    first_state = (first_read["job"]["status"], first_read["job"]["conclusion"])
+    final_state = (final_read["job"]["status"], final_read["job"]["conclusion"])
+    require(first_state == final_state or (first_state == ("in_progress", None)
+            and final_state == ("completed", "success")), "job-visibility-regressed")
+
     def stable(value):
         normalized = deepcopy(value)
         normalized["job"].pop("status")

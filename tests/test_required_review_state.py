@@ -64,6 +64,15 @@ class RequiredReviewStateTests(unittest.TestCase):
         terminal = deepcopy(self.proof)
         terminal["job"].update(status="completed", conclusion="success")
         self.assertEqual(self.finish(), self.finish(final_read=terminal))
+        self.assertEqual(self.finish(), self.finish(terminal, final_read=terminal))
+
+    def test_terminal_visibility_cannot_regress_between_reads(self):
+        terminal = deepcopy(self.proof)
+        terminal["job"].update(status="completed", conclusion="success")
+        original = deepcopy(self.reservation)
+        with self.assertRaisesRegex(ValueError, "job-visibility-regressed"):
+            self.finish(terminal, final_read=self.proof)
+        self.assertEqual(original, self.reservation)
 
     def test_duplicate_and_out_of_order_events_are_absorbing(self):
         first = self.finish()
