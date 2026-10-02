@@ -1371,7 +1371,7 @@ def validate_producer_run(
         require(run.get("head_sha") == head_sha, "producer-head")
         if run.get("conclusion") != "success":
             require(
-                evidence_kind == "copilot"
+                evidence_kind in {"copilot", "managed-sync"}
                 and evidence_version == "v6"
                 and attempt == 1
                 and run.get("conclusion") == "failure",
@@ -1393,15 +1393,22 @@ def validate_producer_run(
                 type(total_count) is int and total_count == len(jobs) == 5,
                 "producer-run-job-count",
             )
+            # A managed sync publishes deterministic native evidence instead of
+            # requesting Copilot. Its separate finalizer handoff must succeed;
+            # only the later verifier helper may account for a failed producer.
             expected_jobs = {
-                "Request Copilot review for current revision": "success",
+                "Request Copilot review for current revision": (
+                    "skipped" if evidence_kind == "managed-sync" else "success"
+                ),
                 "Verify current revision policy": "success",
                 "Classify protected main trust-root handoff": "skipped",
                 (
                     "Request protected verifier re-evaluation / "
                     "Re-run the one protected verifier attempt"
                 ): "failure",
-                "Dispatch protected managed-sync finalizer re-evaluation": "skipped",
+                "Dispatch protected managed-sync finalizer re-evaluation": (
+                    "success" if evidence_kind == "managed-sync" else "skipped"
+                ),
             }
             observed_jobs: dict[str, JSON] = {}
             job_ids: list[int] = []
