@@ -363,6 +363,32 @@ class EventAdapterTests(unittest.TestCase):
             self.assertEqual("POST", request.method)
             self.assertEqual(EVENTS.THREAD_QUERY, json.loads(request.data)["query"])
 
+    def test_transport_rejects_response_read_or_parse_past_deadline(self):
+        for stage in ("read", "parse"):
+            for elapsed in (89, 90, 91):
+                with self.subTest(stage=stage, elapsed=elapsed):
+                    clock = [0]
+                    response = mock.MagicMock()
+                    def read_body(size):
+                        if stage == "read":
+                            clock[0] = elapsed
+                        return b'{}'
+                    def parse_body(raw):
+                        if stage == "parse":
+                            clock[0] = elapsed
+                        return json.loads(raw)
+                    response.__enter__.return_value.read.side_effect = read_body
+                    with mock.patch.object(EVENTS.time, "monotonic", side_effect=lambda: clock[0]), \
+                            mock.patch.object(EVENTS, "parsed", side_effect=parse_body), \
+                            mock.patch.dict(EVENTS.os.environ, {"GH_TOKEN": "test-token"}):
+                        api = EVENTS.API(self.policy)
+                        api.opener.open = mock.Mock(return_value=response)
+                        if elapsed < self.policy["max_seconds"]:
+                            self.assertEqual({}, api.read(self.prefix))
+                        else:
+                            with self.assertRaisesRegex(ValueError, "api-budget-exhausted"):
+                                api.read(self.prefix)
+
     def test_workflows_are_default_off_read_only_and_use_protected_source(self):
         import yaml
         for filename in ("required-review-event-shadow.yml", "required-review-sweeper-shadow.yml"):

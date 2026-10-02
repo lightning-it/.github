@@ -129,8 +129,13 @@ class API:
                 raw = response.read(2 * 1024 * 1024 + 1)
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ValueError("api-read-failed") from exc
+        require(time.monotonic() - self.started < self.policy["max_seconds"],
+                "api-budget-exhausted")
         require(len(raw) <= 2 * 1024 * 1024, "api-response-too-large")
-        return parsed(raw)
+        result = parsed(raw)
+        require(time.monotonic() - self.started < self.policy["max_seconds"],
+                "api-budget-exhausted")
+        return result
 
     def inventory(self, path, field=None):
         records = []
