@@ -52,11 +52,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         *,
         runs: list[dict[str, object]],
         jobs: dict[int, list[dict[str, object]]],
+        attempt_one_jobs: dict[int, list[dict[str, object]]] | None = None,
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
         mode: str = "copilot",
     ) -> subprocess.CompletedProcess[str]:
         normalized_jobs: dict[int, list[dict[str, object]]] = {}
+        normalized_attempt_one_jobs: dict[int, list[dict[str, object]]] = {}
         for run_id, records in jobs.items():
             normalized_jobs[run_id] = list(records)
             if not any(
@@ -68,6 +70,18 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 normalized_jobs[run_id].append(
                     self._producer_request_job(run_id, request_attempt)
                 )
+            original_records = (
+                list(attempt_one_jobs[run_id])
+                if attempt_one_jobs is not None and run_id in attempt_one_jobs
+                else [dict(record, run_attempt=1) for record in records]
+            )
+            if not any(
+                record.get("name")
+                == "Request Copilot review for current revision"
+                for record in original_records
+            ):
+                original_records.append(self._producer_request_job(run_id, 1))
+            normalized_attempt_one_jobs[run_id] = original_records
         bash = self._test_tool("bash")
         jq = self._test_tool("jq")
         script = (
@@ -92,9 +106,12 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "  fi\n"
             "  if [[ \"${endpoint}\" =~ /actions/runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then\n"
             "    local run_id=\"${BASH_REMATCH[1]}\"\n"
+            "    local run_attempt=\"${BASH_REMATCH[2]}\"\n"
             "    case \"${run_id}\" in\n"
             + "".join(
-                f"      {run_id}) printf '%s' \"${{JOBS_{run_id}}}\" ;;\n"
+                f"      {run_id}) if [ \"${{run_attempt}}\" -eq 1 ]; then "
+                f"printf '%s' \"${{JOBS_{run_id}_ATTEMPT_1}}\"; else "
+                f"printf '%s' \"${{JOBS_{run_id}}}\"; fi ;;\n"
                 for run_id in sorted(normalized_jobs)
             )
             + "      *) return 92 ;;\n"
@@ -130,6 +147,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 {
                     f"JOBS_{run_id}": json.dumps([{"jobs": records}])
                     for run_id, records in normalized_jobs.items()
+                }
+            )
+            environment.update(
+                {
+                    f"JOBS_{run_id}_ATTEMPT_1": json.dumps(
+                        [{"jobs": records}]
+                    )
+                    for run_id, records in normalized_attempt_one_jobs.items()
                 }
             )
             return subprocess.run(
@@ -398,6 +423,42 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             conditional=True,
         )
         self.assertNotEqual(0, malformed.returncode)
+
+    def test_human_verification_and_original_request_attempt_keep_owner(
+        self,
+    ) -> None:
+        skipped_request = self._producer_request_job(101)
+        skipped_request.update(status="completed", conclusion="skipped")
+        verification_only = self._run_producer_owner_guard(
+            runs=[self._producer_run(101)],
+            jobs={101: [self._producer_job(101), skipped_request]},
+            mode="verification",
+            conditional=True,
+        )
+        self.assertEqual(
+            0, verification_only.returncode, verification_only.stderr
+        )
+        self.assertEqual("101", verification_only.stdout)
+
+        rerun_policy = self._producer_job(101, attempt=2)
+        rerun_request = self._producer_request_job(101, attempt=2)
+        rerun_request.update(status="completed", conclusion="skipped")
+        immutable = self._run_producer_owner_guard(
+            runs=[self._producer_run(101, attempt=2), self._producer_run(102)],
+            jobs={
+                101: [rerun_policy, rerun_request],
+                102: [self._producer_job(102)],
+            },
+            attempt_one_jobs={
+                101: [
+                    self._producer_job(101),
+                    self._producer_request_job(101),
+                ]
+            },
+            conditional=True,
+        )
+        self.assertEqual(0, immutable.returncode, immutable.stderr)
+        self.assertEqual("101", immutable.stdout)
 
     def test_helper_reuses_guard_and_revalidates_owner_before_dispatch(
         self,

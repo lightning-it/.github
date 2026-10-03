@@ -150,7 +150,10 @@ jobs:
             echo 'Release-App review evidence is owned by its dedicated producer; Copilot refresh is not applicable.'
             exit 0
           fi
-          PRODUCER_OWNER_MODE=copilot
+          PRODUCER_OWNER_MODE=verification
+          if [ "${PR_AUTHOR}" = litroc ]; then
+            PRODUCER_OWNER_MODE=copilot
+          fi
           if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
               && [[ "${HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; } \
             || { [ "${PR_AUTHOR}" = "renovate[bot]" ] \
@@ -185,8 +188,9 @@ jobs:
 
           elect_producer_owner_once() {
             local candidate_attempt candidate_id candidates candidate_rows
-            local eligible job_pages policy_jobs requester_jobs run_pages
-            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|deterministic)$ ]] \
+            local current_requester_jobs eligible job_pages original_job_pages
+            local policy_jobs requester_jobs run_pages
+            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] \
               || return 1
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
@@ -283,7 +287,7 @@ jobs:
                 continue
               fi
               if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
-                requester_jobs="$(jq -ce \
+                current_requester_jobs="$(jq -ce \
                   --arg head "${EVENT_HEAD}" \
                   --argjson attempt "${candidate_attempt}" \
                   --argjson run_id "${candidate_id}" '
@@ -295,6 +299,51 @@ jobs:
                     | if length > 1 then error("producer-owner-requester-duplicate")
                       else . end
                   ' <<<"${job_pages}")" || return 1
+                if [ "$(jq 'length' <<<"${current_requester_jobs}")" -eq 0 ]; then
+                  return 1
+                fi
+                jq -e '
+                  .[0] as $job
+                  | (($job.status | IN(
+                      "requested", "waiting", "pending", "queued", "in_progress"))
+                      and $job.conclusion == null)
+                    or ($job.status == "completed"
+                      and ($job.conclusion | IN(
+                        "success", "failure", "neutral", "cancelled",
+                        "timed_out", "action_required", "stale",
+                        "startup_failure", "skipped")))
+                  ' <<<"${current_requester_jobs}" >/dev/null || return 1
+                if [ "${candidate_attempt}" -eq 1 ]; then
+                  original_job_pages="${job_pages}"
+                else
+                  original_job_pages="$(owner_api_read --paginate --slurp \
+                    "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/1/jobs?filter=all&per_page=100")" \
+                    || return 1
+                  jq -e '
+                    type == "array" and length > 0 and length <= 10
+                    and all(.[]; type == "object" and (.jobs | type) == "array")
+                    and all(.[].jobs[]?;
+                      type == "object"
+                      and (.id | type) == "number" and .id > 0
+                      and (.name | type) == "string"
+                      and (.run_id | type) == "number" and .run_id > 0
+                      and (.run_attempt | type) == "number"
+                      and (.head_sha | type) == "string"
+                      and (.status | type) == "string"
+                      and has("conclusion"))
+                    ' <<<"${original_job_pages}" >/dev/null || return 1
+                fi
+                requester_jobs="$(jq -ce \
+                  --arg head "${EVENT_HEAD}" \
+                  --argjson run_id "${candidate_id}" '
+                    [.[].jobs[] |
+                      select(.name == "Request Copilot review for current revision") |
+                      select(.run_id == $run_id) |
+                      select(.run_attempt == 1) |
+                      select(.head_sha == $head)]
+                    | if length > 1 then error("producer-owner-original-requester-duplicate")
+                      else . end
+                  ' <<<"${original_job_pages}")" || return 1
                 if [ "$(jq 'length' <<<"${requester_jobs}")" -eq 0 ]; then
                   return 1
                 fi
