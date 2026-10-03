@@ -267,6 +267,52 @@ class EventAdapterTests(unittest.TestCase):
                         self.assertEqual(100, api.requests)
                 self.assertEqual(api.requests, api.opener.open.call_count)
 
+    def test_sweeper_malformed_base_rejects_before_reservation_inventory(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        invalid = ("", "a" * 39, "a" * 41, "g" * 40, "A" * 40,
+                   "a" * 39 + "B", self.base + "\n", " " + self.base,
+                   "\u0430" * 40, None, False, 0, 1.5, [], {}, [self.base])
+        for base in invalid:
+            for checks in ([], [self.check]):
+                with self.subTest(base=base, reservations=len(checks)):
+                    api = self.api()
+                    api.responses = deepcopy(self.responses)
+                    api.responses[path] = {"total_count": len(checks), "check_runs": checks}
+                    api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+                        0]["base"]["sha"] = base
+                    with self.assertRaisesRegex(EVENTS.ShadowRejected, "^sweeper-base$"):
+                        EVENTS.sweep(api, self.policy, self.now + 86400)
+                    self.assertEqual(1, api.requests)
+
+    def test_sweeper_missing_base_sha_still_rejects(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        for checks in ([], [self.check]):
+            with self.subTest(reservations=len(checks)):
+                api = self.api()
+                api.responses = deepcopy(self.responses)
+                api.responses[path] = {"total_count": len(checks), "check_runs": checks}
+                del api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+                    0]["base"]["sha"]
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^sweeper-base$"):
+                    EVENTS.sweep(api, self.policy, self.now + 86400)
+                self.assertEqual(1, api.requests)
+
+    def test_sweeper_valid_base_scopes_reservations_including_empty_inventory(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        for base in (self.base, "0123456789abcdef" * 2 + "01234567"):
+            for checks in ([], [self.check]):
+                with self.subTest(base=base, reservations=len(checks)):
+                    api = self.api()
+                    api.responses = deepcopy(self.responses)
+                    api.responses[path] = {"total_count": len(checks), "check_runs": checks}
+                    api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+                        0]["base"]["sha"] = base
+                    result = EVENTS.sweep(api, self.policy, self.now + 86400)
+                    expected = [300] if checks and base == self.base else []
+                    self.assertEqual(expected, [item["check_id"] for item in result["expired"]])
+                    self.assertEqual(0, result["writes"])
+                    self.assertEqual(6 if expected else 2, api.requests)
+
     def test_terminal_foreign_reservations_do_not_poison_exact_scope(self):
         path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
         for foreign_pr, foreign_base in ((8, self.base), (7, "c" * 40)):

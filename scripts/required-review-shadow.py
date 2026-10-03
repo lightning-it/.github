@@ -381,11 +381,13 @@ def sweep(api, policy, now):
                 "sweeper-pull-state")
         head = pull["head"]["sha"]
         require(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head), "sweeper-head")
+        base = pull["base"].get("sha")
+        require(type(base) is str and re.fullmatch(r"[0-9a-f]{40}", base), "sweeper-base")
         checks = api.inventory(f"{prefix}/commits/{head}/check-runs?filter=all", "check_runs")
-        for check in scoped_reservations(checks, pull["number"], pull["base"]["sha"], head):
+        for check in scoped_reservations(checks, pull["number"], base, head):
             match = RESERVATION.fullmatch(check.get("external_id") or "")
             require(check.get("head_sha") == head and match[4] == head
-                    and match[3] == pull["base"]["sha"]
+                    and match[3] == base
                     and int(match[2]) == pull["number"]
                     and check.get("app", {}).get("id") == 15368
                     and check["app"].get("slug") == "github-actions", "sweeper-binding")

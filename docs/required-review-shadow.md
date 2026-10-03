@@ -69,12 +69,21 @@ simulation, never authorization to publish success.
 
 ## Bounded sweeper and explicit legacy limits
 
-The sweeper inventories only current heads of open develop PRs (at most 20).
+The sweeper inventories only current heads of open develop PRs (at most 14).
+The worst case uses 99 requests: one PR inventory page plus 14 PRs times three
+check inventory pages and four revalidation reads. A fifteenth PR rejects
+immediately after PR inventory, before per-PR reads; the transport's existing
+100-request cap still applies.
 For an expired pending v3 reservation it binds check app, PR, head, base and
 admission run/attempt/actor/repository, then independently re-reads the check,
 current PR and admission run. Drift rejects the whole result. Terminal checks
 are never expiry candidates. Its advisory expiry results include reservation
 and admission digests; it cannot finalize anything.
+
+The sweeper requires head and base SHAs to be strings containing exactly 40
+lowercase hexadecimal characters before reading check inventories or selecting
+reservations. Missing or malformed base evidence rejects even when there are no
+reservations; a valid base with no matching reservation yields no expiry.
 
 Both paths select the exact PR/base/head reservation scope before uniqueness
 and provenance validation. Commit inventories can contain terminal reservations
