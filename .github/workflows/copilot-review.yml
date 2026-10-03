@@ -1598,6 +1598,7 @@ jobs:
           EVENT_BASE="${EXPECTED_BASE}"
           EVENT_HEAD="${EXPECTED_HEAD}"
           EVENT_HEAD_REF="${EXPECTED_HEAD_REF}"
+          export EVENT_BASE EVENT_HEAD EVENT_HEAD_REF
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           umask 077
           cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
