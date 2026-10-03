@@ -364,8 +364,8 @@ jobs:
                 and $live.status == $expected.status
                 and $live.conclusion == $expected.conclusion
                 and $live.details_url == $expected.details_url
-                and ($live.updated_at | type) == "string"
-                and $live.updated_at == $expected.updated_at
+                and ($live.completed_at | type) == "string"
+                and $live.completed_at == $expected.completed_at
                 and $live.output.title == $expected.output.title
                 and $live.output.summary == $expected.output.summary
                 ' <<<"${fresh}" >/dev/null || return 1

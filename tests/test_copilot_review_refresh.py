@@ -387,6 +387,140 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
         return textwrap.dedent(workflow[start:end])
 
+    @staticmethod
+    def _copilot_review_verification_script() -> str:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            '          cat >"${verification_script}" '
+            "<<'VERIFY_COPILOT_REVIEW'\n"
+        )
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index("\n          VERIFY_COPILOT_REVIEW", start)
+        return textwrap.dedent(workflow[start:end])
+
+    def test_review_revalidation_rejects_successor_head(self) -> None:
+        bound_head = "b" * 40
+
+        def evaluate(live_head: str) -> subprocess.CompletedProcess[str]:
+            review_page = {
+                "errors": [],
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": live_head,
+                            "reviews": {
+                                "pageInfo": {
+                                    "hasPreviousPage": False,
+                                    "startCursor": None,
+                                },
+                                "nodes": [
+                                    {
+                                        "id": "REVIEW_1",
+                                        "author": {
+                                            "login": "copilot-pull-request-reviewer"
+                                        },
+                                        "commit": {"oid": live_head},
+                                        "state": "COMMENTED",
+                                    }
+                                ],
+                            },
+                        }
+                    }
+                },
+            }
+            comments_page = {
+                "errors": [],
+                "data": {
+                    "node": {
+                        "body": "Review complete.",
+                        "commit": {"oid": live_head},
+                        "pullRequest": {"headRefOid": live_head},
+                        "comments": {
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                            "nodes": [],
+                        },
+                    }
+                },
+            }
+            threads_page = {
+                "errors": [],
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "headRefOid": live_head,
+                            "reviewThreads": {
+                                "pageInfo": {
+                                    "hasNextPage": False,
+                                    "endCursor": None,
+                                },
+                                "nodes": [],
+                            },
+                        }
+                    }
+                },
+            }
+            with tempfile.TemporaryDirectory() as temporary:
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        "sleep() { :; }",
+                        "gh() {",
+                        "  local calls=0",
+                        '  if [ -f "${CALL_COUNTER}" ]; then calls="$(cat "${CALL_COUNTER}")"; fi',
+                        "  calls=$((calls + 1))",
+                        '  printf "%s" "${calls}" >"${CALL_COUNTER}"',
+                        '  case "${calls}" in',
+                        '    1) printf "%s" "${REVIEW_PAGE}" ;;',
+                        '    2) printf "%s" "${COMMENTS_PAGE}" ;;',
+                        '    3) printf "%s" "${THREADS_PAGE}" ;;',
+                        "    *) return 91 ;;",
+                        "  esac",
+                        "}",
+                        self._copilot_review_verification_script(),
+                    )
+                )
+                return subprocess.run(
+                    [self._test_tool("bash"), "-c", script],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "CALL_COUNTER": str(Path(temporary) / "calls"),
+                        "COMMENTS_PAGE": json.dumps(comments_page),
+                        "COPILOT_REVIEWER_LOGIN": (
+                            "copilot-pull-request-reviewer"
+                        ),
+                        "EVENT_HEAD": bound_head,
+                        "NO_FILES_REVIEW_MARKER": (
+                            "was not able to review any files"
+                        ),
+                        "PR_NUMBER": "123",
+                        "QUOTA_EXCEEDED_MARKER": "quota exceeded",
+                        "QUOTA_EXHAUSTED_MARKER": "quota exhausted",
+                        "REPOSITORY": "lightning-it/.github",
+                        "REVIEW_PAGE": json.dumps(review_page),
+                        "SUPPRESSED_COMMENTS_MARKER": "suppressed comments",
+                        "THREADS_PAGE": json.dumps(threads_page),
+                        "UNABLE_REVIEW_MARKER": (
+                            "unable to review this pull request"
+                        ),
+                    },
+                )
+
+        current = evaluate(bound_head)
+        self.assertEqual(0, current.returncode, current.stderr)
+        successor = evaluate("c" * 40)
+        self.assertNotEqual(
+            0,
+            successor.returncode,
+            f"stdout={successor.stdout!r} stderr={successor.stderr!r}",
+        )
+        self.assertIn("producer-bound head", successor.stderr)
+
     def test_refresh_jointly_revalidates_owner_and_exact_check_snapshot(
         self,
     ) -> None:
@@ -399,7 +533,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "status": "completed",
             "conclusion": "success",
             "details_url": "https://github.example/runs/42",
-            "updated_at": "2026-10-03T12:00:00Z",
+            "completed_at": "2026-10-03T12:00:00Z",
             "output": {"title": "passed", "summary": "evidence"},
         }
 
@@ -526,7 +660,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 temporary_path = Path(temporary)
                 verifier = temporary_path / "verify-current-copilot-review.sh"
                 verifier.write_text(
-                    '#!/usr/bin/env bash\nprintf V >>"${VERIFY_LOG}"\n'
+                    '#!/usr/bin/env bash\nprintf "verification log\\n"\n'
+                    'printf V >>"${VERIFY_LOG}"\n'
                     'exit "${VERIFY_EXIT}"\n',
                     encoding="utf-8",
                 )
@@ -541,7 +676,6 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                         '  if [ "${reads}" -eq 1 ]; then printf "%s" "${SNAPSHOT}"; else printf "%s" "${SNAPSHOT_AFTER}"; fi',
                         "}",
                         "revalidate_producer_owner() { :; }",
-                        "recovery_revalidated=''",
                         self._publish_shell_function("validate_bound_check"),
                         'validate_bound_check 42 "${EXTERNAL_ID}" '
                         '"Current revision review" "${DETAILS_URL}"',
@@ -587,7 +721,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "external_id": external_id,
             "status": "completed",
             "details_url": details_url,
-            "updated_at": "2026-10-03T12:00:00Z",
+            "completed_at": "2026-10-03T12:00:00Z",
         }
         success = {
             **common,
@@ -616,6 +750,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             accepted_invalidation.stderr,
         )
         self.assertEqual(1, invalidation_revalidations)
+        self.assertEqual("", accepted_invalidation.stdout)
+        self.assertIn("verification log", accepted_invalidation.stderr)
 
         failed_revalidation, attempts = evaluate(
             invalidated, verifier_exit=1
@@ -624,7 +760,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(1, attempts)
         changed_after = {
             **invalidated,
-            "updated_at": "2026-10-03T12:00:01Z",
+            "completed_at": "2026-10-03T12:00:01Z",
         }
         changed_during_revalidation, attempts = evaluate(
             invalidated, snapshot_after=changed_after

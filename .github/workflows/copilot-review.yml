@@ -834,6 +834,7 @@ jobs:
           steps.trusted-automation.outputs.trusted != 'true' &&
           github.event.pull_request.user.login != 'lightning-it-release-automation[bot]'
         env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
@@ -1034,6 +1035,10 @@ jobs:
               page_head_sha="$(jq -r '.data.repository.pullRequest.headRefOid // empty' <<<"${response}")"
               if [ -z "${page_head_sha}" ]; then
                 echo "Unable to determine the pull request head SHA." >&2
+                exit 1
+              fi
+              if [ "${page_head_sha}" != "${EVENT_HEAD}" ]; then
+                echo "Pull request head no longer matches the producer-bound head ${EVENT_HEAD}." >&2
                 exit 1
               fi
               if [ -n "${head_sha}" ] && [ "${head_sha}" != "${page_head_sha}" ]; then
@@ -1273,7 +1278,6 @@ jobs:
             test "${live_owner}" = "${OWNER_RUN_ID}"
             test "${live_owner}" = "${GITHUB_RUN_ID}"
           }
-          recovery_revalidated=''
           validate_bound_check() {
             local check_id="$1" external_id="$2" check_name="$3"
             local expected_details_url="$4" recovery_evidence recovery_identity
@@ -1325,48 +1329,46 @@ jobs:
                 and .external_id == $external_id
                 and .status == "completed"
                 and ($details_url == "" or .details_url == $details_url)
-                and (.updated_at | type) == "string"
+                and (.completed_at | type) == "string"
                 and .conclusion == "failure"
                 and .output.title == "Current revision review invalidated"
                 and .output.summary == $recovery_evidence
               ' <<<"${snapshot}" >/dev/null || return 1
             recovery_identity="$(jq -cer \
-              '[.id,.updated_at,.external_id,.output.summary] | @json' \
+              '[.id,.completed_at,.external_id,.output.summary] | @json' \
               <<<"${snapshot}")" || return 1
-            if [ "${recovery_revalidated}" != "${recovery_identity}" ]; then
-              test -f "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
-                || return 1
-              test ! -L "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
-                || return 1
-              bash "${RUNNER_TEMP}/verify-current-copilot-review.sh" || return 1
-              revalidate_producer_owner || return 1
-              snapshot="$(api_read \
-                "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
-              jq -e \
-                --arg check_name "${check_name}" \
-                --arg details_url "${expected_details_url}" \
-                --arg external_id "${external_id}" \
-                --arg head "${EVENT_HEAD}" \
-                --arg recovery_evidence "${recovery_evidence}" \
-                --arg recovery_identity "${recovery_identity}" \
-                --argjson check_id "${check_id}" '
-                  .id == $check_id
-                  and .name == $check_name
-                  and .app.id == 15368
-                  and .app.slug == "github-actions"
-                  and .head_sha == $head
-                  and .external_id == $external_id
-                  and .status == "completed"
-                  and ($details_url == "" or .details_url == $details_url)
-                  and (.updated_at | type) == "string"
-                  and .conclusion == "failure"
-                  and .output.title == "Current revision review invalidated"
-                  and .output.summary == $recovery_evidence
-                  and ([.id,.updated_at,.external_id,.output.summary] | @json)
-                    == $recovery_identity
-                ' <<<"${snapshot}" >/dev/null || return 1
-              recovery_revalidated="${recovery_identity}"
-            fi
+            test -f "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
+              || return 1
+            test ! -L "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
+              || return 1
+            bash "${RUNNER_TEMP}/verify-current-copilot-review.sh" >&2 \
+              || return 1
+            revalidate_producer_owner || return 1
+            snapshot="$(api_read \
+              "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
+            jq -e \
+              --arg check_name "${check_name}" \
+              --arg details_url "${expected_details_url}" \
+              --arg external_id "${external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg recovery_evidence "${recovery_evidence}" \
+              --arg recovery_identity "${recovery_identity}" \
+              --argjson check_id "${check_id}" '
+                .id == $check_id
+                and .name == $check_name
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .head_sha == $head
+                and .external_id == $external_id
+                and .status == "completed"
+                and ($details_url == "" or .details_url == $details_url)
+                and (.completed_at | type) == "string"
+                and .conclusion == "failure"
+                and .output.title == "Current revision review invalidated"
+                and .output.summary == $recovery_evidence
+                and ([.id,.completed_at,.external_id,.output.summary] | @json)
+                  == $recovery_identity
+              ' <<<"${snapshot}" >/dev/null || return 1
           }
           api_patch_bound() {
             local check_id="$1" external_id="$2" check_name="$3"
