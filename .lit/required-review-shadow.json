@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "lifecycle": "inactive",
+  "repository": "lightning-it/.github",
+  "repository_id": 1112629689,
+  "controller_ref": "develop",
+  "max_pages": 3,
+  "max_requests": 100,
+  "max_seconds": 90,
+  "reservation_ttl_seconds": 86400
+}
