@@ -518,7 +518,7 @@ jobs:
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
                 continue
               fi
-              jq -e '
+              if jq -e '
                 .[0] as $job
                 | (($job.status | IN(
                     "requested", "waiting", "pending", "queued", "in_progress"))
@@ -526,7 +526,16 @@ jobs:
                   or ($job.status == "completed"
                     and ($job.conclusion | type) == "string"
                     and $job.conclusion != "skipped")
-                ' <<<"${policy_jobs}" >/dev/null || return 1
+                  ' <<<"${policy_jobs}" >/dev/null; then
+                :
+              elif jq -e '
+                  .[0].status == "completed"
+                  and .[0].conclusion == "skipped"
+                  ' <<<"${policy_jobs}" >/dev/null; then
+                continue
+              else
+                return 1
+              fi
               eligible="$(jq -cn \
                 --argjson current "${eligible}" \
                 --argjson id "${candidate_id}" \
@@ -1697,7 +1706,7 @@ jobs:
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
                 continue
               fi
-              jq -e '
+              if jq -e '
                 .[0] as $job
                 | (($job.status | IN(
                     "requested", "waiting", "pending", "queued", "in_progress"))
@@ -1705,7 +1714,16 @@ jobs:
                   or ($job.status == "completed"
                     and ($job.conclusion | type) == "string"
                     and $job.conclusion != "skipped")
-                ' <<<"${policy_jobs}" >/dev/null || return 1
+                  ' <<<"${policy_jobs}" >/dev/null; then
+                :
+              elif jq -e '
+                  .[0].status == "completed"
+                  and .[0].conclusion == "skipped"
+                  ' <<<"${policy_jobs}" >/dev/null; then
+                continue
+              else
+                return 1
+              fi
               eligible="$(jq -cn \
                 --argjson current "${eligible}" \
                 --argjson id "${candidate_id}" \

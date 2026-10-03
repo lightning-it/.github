@@ -232,6 +232,34 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotEqual(0, changed.returncode)
         self.assertIn("changed between stable reads", changed.stderr)
 
+    def test_draft_opened_is_ineligible_but_ready_for_review_can_own(
+        self,
+    ) -> None:
+        draft_job = self._producer_job(101)
+        draft_job.update(status="completed", conclusion="skipped")
+        ready = self._run_producer_owner_guard(
+            runs=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [draft_job],
+                102: [self._producer_job(102)],
+            },
+            conditional=True,
+        )
+        self.assertEqual(0, ready.returncode, ready.stderr)
+        self.assertEqual("102", ready.stdout)
+
+        malformed_job = self._producer_job(101)
+        malformed_job.update(status="completed", conclusion={"bad": True})
+        malformed = self._run_producer_owner_guard(
+            runs=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [malformed_job],
+                102: [self._producer_job(102)],
+            },
+            conditional=True,
+        )
+        self.assertNotEqual(0, malformed.returncode)
+
     def test_helper_reuses_guard_and_revalidates_owner_before_dispatch(
         self,
     ) -> None:
