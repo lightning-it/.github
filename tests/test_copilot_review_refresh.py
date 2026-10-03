@@ -324,6 +324,58 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertNotEqual("102", result.stdout)
 
+    def test_owner_inventory_rejects_malformed_or_ambiguous_pr_tuple(
+        self,
+    ) -> None:
+        guards = self._producer_owner_guards()
+        guards.append(self._refresh_producer_owner_guard())
+        self.assertEqual(3, len(guards))
+
+        original = self._producer_run(101)
+        exact_tuple = original["pull_requests"][0]
+        malformed_runs: list[dict[str, object]] = []
+        for field in (
+            "event",
+            "path",
+            "name",
+            "head_branch",
+            "head_sha",
+            "repository",
+            "head_repository",
+        ):
+            malformed = json.loads(json.dumps(original))
+            malformed[field] = None
+            malformed_runs.append(malformed)
+        for pull_requests in (
+            None,
+            [],
+            [exact_tuple, exact_tuple],
+            [{**exact_tuple, "number": None}],
+            [{**exact_tuple, "base": {"sha": None}}],
+            [{**exact_tuple, "head": {"sha": None, "ref": None}}],
+        ):
+            malformed = json.loads(json.dumps(original))
+            malformed["pull_requests"] = pull_requests
+            malformed_runs.append(malformed)
+        missing = json.loads(json.dumps(original))
+        del missing["pull_requests"]
+        malformed_runs.append(missing)
+
+        for guard_index, guard in enumerate(guards):
+            for case_index, malformed in enumerate(malformed_runs):
+                with self.subTest(guard=guard_index, case=case_index):
+                    result = self._run_producer_owner_guard(
+                        guard=guard,
+                        runs=[malformed, self._producer_run(102)],
+                        jobs={
+                            101: [self._producer_job(101)],
+                            102: [self._producer_job(102)],
+                        },
+                        conditional=True,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertNotEqual("102", result.stdout)
+
     def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
         self,
     ) -> None:
@@ -4447,6 +4499,40 @@ sleep() { :; }''',
                 self.assertNotEqual(0, evaluate(drift).returncode)
         self.assertNotEqual(0, evaluate(check, elected_owner="78").returncode)
 
+        renovate_summary = {
+            **summary,
+            "review_path": "deterministic policy-bound Renovate exemption",
+        }
+        renovate = [{
+            **check[0],
+            "external_id": (
+                "mlx90-current-revision:renovate:v6:123:77:"
+                f"{previous_base}:{head}"
+            ),
+            "output": {"summary": json.dumps(renovate_summary)},
+        }]
+        renovate_result = subprocess.run(
+            [self._test_tool("bash"), "-c", script],
+            text=True,
+            capture_output=True,
+            check=False,
+            env={
+                "PATH": TEST_TOOL_PATH,
+                "BASE_SHA": current_base,
+                "CHECK": json.dumps(renovate),
+                "CHECK_URL": "https://github.example/runs/42",
+                "ELECTED_PREVIOUS_OWNER": "77",
+                "EXPECTED_PREVIOUS_BASE": previous_base,
+                "HEAD_SHA": head,
+                "PR_AUTHOR": "renovate[bot]",
+                "PR_NUMBER": "123",
+                "current_external_kind": "renovate",
+            },
+        )
+        self.assertEqual(
+            0, renovate_result.returncode, renovate_result.stderr
+        )
+
         refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         self.assertEqual(
             3, refresh.count('-f "external_id=${current_external_id}"')
@@ -4894,6 +4980,17 @@ sleep() { :; }''',
         head = "b" * 40
         release_app = "lightning-it-release-automation[bot]"
         sync_app = "lightning-it-shared-assets-sync[bot]"
+        refresh_workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        renovate_route = (
+            'if [ "${PR_AUTHOR}" = "renovate[bot]" ] \\\n'
+            '            && [[ "${HEAD_REF}" == renovate/* ]]; then\n'
+            "            current_external_kind=renovate"
+        )
+        self.assertIn(renovate_route, refresh_workflow)
+        self.assertLess(
+            refresh_workflow.index(renovate_route),
+            refresh_workflow.index("current_external_kind=managed-sync"),
+        )
         cases = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (
@@ -4918,6 +5015,11 @@ sleep() { :; }''',
                 None,
             ),
             (release_app, f"mlx90-current-revision:v4:77:{'c' * 64}", None),
+            (
+                "renovate[bot]",
+                f"mlx90-current-revision:renovate:v6:123:77:{base}:{head}",
+                123,
+            ),
         )
         for author, external_id, pull_request_number in cases:
             with self.subTest(external_id=external_id):
@@ -4925,6 +5027,11 @@ sleep() { :; }''',
                     author=author,
                     external_id=external_id,
                     pull_request_number=pull_request_number,
+                    review_path=(
+                        "deterministic policy-bound Renovate exemption"
+                        if author == "renovate[bot]"
+                        else None
+                    ),
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
 
@@ -4973,6 +5080,11 @@ sleep() { :; }''',
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (
+                "renovate[bot]",
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
             (
                 "litroc",
                 f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",

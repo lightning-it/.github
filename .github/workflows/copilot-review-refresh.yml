@@ -204,7 +204,34 @@ jobs:
                 type == "object"
                 and (.id | type) == "number" and .id > 0
                 and (.run_attempt | type) == "number"
-                and (.pull_requests | type) == "array")
+                and (.event | type) == "string" and (.event | length) > 0
+                and (.path | type) == "string" and (.path | length) > 0
+                and (.name | type) == "string" and (.name | length) > 0
+                and (.head_branch | type) == "string"
+                and (.head_branch | length) > 0
+                and (.head_sha | type) == "string"
+                and (.head_sha | length) == 40
+                and (.repository | type) == "object"
+                and (.repository.full_name | type) == "string"
+                and (.repository.full_name | length) > 0
+                and (.head_repository | type) == "object"
+                and (.head_repository.full_name | type) == "string"
+                and (.head_repository.full_name | length) > 0
+                and (.pull_requests | type) == "array"
+                and (.pull_requests | length) == 1
+                and all(.pull_requests[];
+                  type == "object"
+                  and (.number | type) == "number" and .number > 0
+                  and (.base | type) == "object"
+                  and (.base.sha | type) == "string"
+                  and (.base.sha | length) == 40
+                  and (.head | type) == "object"
+                  and (.head.sha | type) == "string"
+                  and (.head.sha | length) == 40
+                  and (.head.ref | type) == "string"
+                  and (.head.ref | length) > 0))
+              and ([.[].workflow_runs[].id] | length)
+                == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
             candidates="$(jq -ce \
               --arg base "${EVENT_BASE}" \
@@ -428,7 +455,10 @@ jobs:
           done
           [[ "${owner_run_id}" =~ ^[1-9][0-9]*$ ]]
           current_external_kind=copilot
-          if [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
+          if [ "${PR_AUTHOR}" = "renovate[bot]" ] \
+            && [[ "${HEAD_REF}" == renovate/* ]]; then
+            current_external_kind=renovate
+          elif [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
             && [[ "${HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; then
             current_external_kind=managed-sync
           elif { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
@@ -513,8 +543,8 @@ jobs:
                 .[0] as $check
                 | ($check.output.summary | fromjson) as $summary
                 | ($check.external_id |
-                    if test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:[1-9][0-9]*:[1-9][0-9]*:[0-9a-f]{40}:[0-9a-f]{40}$")
-                    then capture("^mlx90-current-revision:(?<kind>copilot|managed-sync|ancestry-backmerge):v6:(?<pr>[1-9][0-9]*):(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                    if test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:[1-9][0-9]*:[1-9][0-9]*:[0-9a-f]{40}:[0-9a-f]{40}$")
+                    then capture("^mlx90-current-revision:(?<kind>copilot|managed-sync|ancestry-backmerge|renovate):v6:(?<pr>[1-9][0-9]*):(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
                       | {version:"v6",kind:.kind,pr:(.pr|tonumber),
                           owner:(.owner|tonumber),base:.base,head:.head}
                     elif test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:[0-9a-f]{40}:[0-9a-f]{40}$")
@@ -546,12 +576,17 @@ jobs:
                     if $binding.kind == "copilot" then
                       ($author != "lightning-it-release-automation[bot]"
                         and $author != "lightning-it-shared-assets-sync[bot]"
+                        and $author != "renovate[bot]"
                         and $summary.review_path
                           == "applicable Copilot or governed automation exemption")
                     elif $binding.kind == "managed-sync" then
                       ($author == "lightning-it-shared-assets-sync[bot]"
                         and $summary.review_path
                           == "deterministic provenance-bound managed distribution exemption")
+                    elif $binding.kind == "renovate" then
+                      ($author == "renovate[bot]"
+                        and $summary.review_path
+                          == "deterministic policy-bound Renovate exemption")
                     else
                       (($author == "lightning-it-release-automation[bot]"
                           or $author == "lightning-it-shared-assets-sync[bot]")
@@ -649,7 +684,8 @@ jobs:
                   (
                     (
                       (($author != "lightning-it-release-automation[bot]"
-                        and $author != "lightning-it-shared-assets-sync[bot]")
+                        and $author != "lightning-it-shared-assets-sync[bot]"
+                        and $author != "renovate[bot]")
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v6:" + $pr
                             + ":" + $owner_run_id + ":" + $base + ":" + $head + "$")))
@@ -659,6 +695,13 @@ jobs:
                           == "deterministic provenance-bound managed distribution exemption"
                         and ($check.external_id |
                           test("^mlx90-current-revision:managed-sync:v6:" + $pr
+                            + ":" + $owner_run_id + ":" + $base + ":" + $head + "$")))
+                      or
+                      ($author == "renovate[bot]"
+                        and $summary.review_path
+                          == "deterministic policy-bound Renovate exemption"
+                        and ($check.external_id |
+                          test("^mlx90-current-revision:renovate:v6:" + $pr
                             + ":" + $owner_run_id + ":" + $base + ":" + $head + "$")))
                       or
                       (($author == "lightning-it-release-automation[bot]"
@@ -674,7 +717,8 @@ jobs:
                   (
                     (
                       (($author != "lightning-it-release-automation[bot]"
-                        and $author != "lightning-it-shared-assets-sync[bot]")
+                        and $author != "lightning-it-shared-assets-sync[bot]"
+                        and $author != "renovate[bot]")
                         and ($check.external_id |
                           test("^mlx90-current-revision:copilot:v5:" + $owner_run_id + ":"
                             + $base + ":" + $head + "$")))

@@ -474,7 +474,34 @@ jobs:
                 type == "object"
                 and (.id | type) == "number" and .id > 0
                 and (.run_attempt | type) == "number"
-                and (.pull_requests | type) == "array")
+                and (.event | type) == "string" and (.event | length) > 0
+                and (.path | type) == "string" and (.path | length) > 0
+                and (.name | type) == "string" and (.name | length) > 0
+                and (.head_branch | type) == "string"
+                and (.head_branch | length) > 0
+                and (.head_sha | type) == "string"
+                and (.head_sha | length) == 40
+                and (.repository | type) == "object"
+                and (.repository.full_name | type) == "string"
+                and (.repository.full_name | length) > 0
+                and (.head_repository | type) == "object"
+                and (.head_repository.full_name | type) == "string"
+                and (.head_repository.full_name | length) > 0
+                and (.pull_requests | type) == "array"
+                and (.pull_requests | length) == 1
+                and all(.pull_requests[];
+                  type == "object"
+                  and (.number | type) == "number" and .number > 0
+                  and (.base | type) == "object"
+                  and (.base.sha | type) == "string"
+                  and (.base.sha | length) == 40
+                  and (.head | type) == "object"
+                  and (.head.sha | type) == "string"
+                  and (.head.sha | length) == 40
+                  and (.head.ref | type) == "string"
+                  and (.head.ref | length) > 0))
+              and ([.[].workflow_runs[].id] | length)
+                == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
             candidates="$(jq -ce \
               --arg base "${EVENT_BASE}" \
@@ -1848,7 +1875,34 @@ jobs:
                 type == "object"
                 and (.id | type) == "number" and .id > 0
                 and (.run_attempt | type) == "number"
-                and (.pull_requests | type) == "array")
+                and (.event | type) == "string" and (.event | length) > 0
+                and (.path | type) == "string" and (.path | length) > 0
+                and (.name | type) == "string" and (.name | length) > 0
+                and (.head_branch | type) == "string"
+                and (.head_branch | length) > 0
+                and (.head_sha | type) == "string"
+                and (.head_sha | length) == 40
+                and (.repository | type) == "object"
+                and (.repository.full_name | type) == "string"
+                and (.repository.full_name | length) > 0
+                and (.head_repository | type) == "object"
+                and (.head_repository.full_name | type) == "string"
+                and (.head_repository.full_name | length) > 0
+                and (.pull_requests | type) == "array"
+                and (.pull_requests | length) == 1
+                and all(.pull_requests[];
+                  type == "object"
+                  and (.number | type) == "number" and .number > 0
+                  and (.base | type) == "object"
+                  and (.base.sha | type) == "string"
+                  and (.base.sha | length) == 40
+                  and (.head | type) == "object"
+                  and (.head.sha | type) == "string"
+                  and (.head.sha | length) == 40
+                  and (.head.ref | type) == "string"
+                  and (.head.ref | length) > 0))
+              and ([.[].workflow_runs[].id] | length)
+                == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
             candidates="$(jq -ce \
               --arg base "${EVENT_BASE}" \
