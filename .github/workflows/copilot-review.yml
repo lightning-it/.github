@@ -465,22 +465,25 @@ jobs:
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
-            jq -e '
+            jq -e --argjson number "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
                 and (.workflow_runs | type) == "array")
               and all(.[].workflow_runs[]?;
-                type == "object"
+                . as $run
+                | type == "object"
                 and (.id | type) == "number" and .id > 0
-                and (.run_attempt | type) == "number"
+                and .id == (.id | floor)
+                and (.run_attempt | type) == "number" and .run_attempt > 0
+                and .run_attempt == (.run_attempt | floor)
                 and (.event | type) == "string" and (.event | length) > 0
                 and (.path | type) == "string" and (.path | length) > 0
                 and (.name | type) == "string" and (.name | length) > 0
                 and (.head_branch | type) == "string"
                 and (.head_branch | length) > 0
                 and (.head_sha | type) == "string"
-                and (.head_sha | length) == 40
+                and (.head_sha | test("^[0-9a-f]{40}$"))
                 and (.repository | type) == "object"
                 and (.repository.full_name | type) == "string"
                 and (.repository.full_name | length) > 0
@@ -492,14 +495,18 @@ jobs:
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
+                  and .number == (.number | floor)
+                  and .number == $number
                   and (.base | type) == "object"
                   and (.base.sha | type) == "string"
-                  and (.base.sha | length) == 40
+                  and (.base.sha | test("^[0-9a-f]{40}$"))
                   and (.head | type) == "object"
                   and (.head.sha | type) == "string"
-                  and (.head.sha | length) == 40
+                  and (.head.sha | test("^[0-9a-f]{40}$"))
+                  and .head.sha == $run.head_sha
                   and (.head.ref | type) == "string"
-                  and (.head.ref | length) > 0))
+                  and (.head.ref | length) > 0
+                  and .head.ref == $run.head_branch))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
@@ -1866,22 +1873,25 @@ jobs:
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
-            jq -e '
+            jq -e --argjson number "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
                 and (.workflow_runs | type) == "array")
               and all(.[].workflow_runs[]?;
-                type == "object"
+                . as $run
+                | type == "object"
                 and (.id | type) == "number" and .id > 0
-                and (.run_attempt | type) == "number"
+                and .id == (.id | floor)
+                and (.run_attempt | type) == "number" and .run_attempt > 0
+                and .run_attempt == (.run_attempt | floor)
                 and (.event | type) == "string" and (.event | length) > 0
                 and (.path | type) == "string" and (.path | length) > 0
                 and (.name | type) == "string" and (.name | length) > 0
                 and (.head_branch | type) == "string"
                 and (.head_branch | length) > 0
                 and (.head_sha | type) == "string"
-                and (.head_sha | length) == 40
+                and (.head_sha | test("^[0-9a-f]{40}$"))
                 and (.repository | type) == "object"
                 and (.repository.full_name | type) == "string"
                 and (.repository.full_name | length) > 0
@@ -1893,14 +1903,18 @@ jobs:
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
+                  and .number == (.number | floor)
+                  and .number == $number
                   and (.base | type) == "object"
                   and (.base.sha | type) == "string"
-                  and (.base.sha | length) == 40
+                  and (.base.sha | test("^[0-9a-f]{40}$"))
                   and (.head | type) == "object"
                   and (.head.sha | type) == "string"
-                  and (.head.sha | length) == 40
+                  and (.head.sha | test("^[0-9a-f]{40}$"))
+                  and .head.sha == $run.head_sha
                   and (.head.ref | type) == "string"
-                  and (.head.ref | length) > 0))
+                  and (.head.ref | length) > 0
+                  and .head.ref == $run.head_branch))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1

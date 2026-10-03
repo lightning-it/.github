@@ -195,22 +195,25 @@ jobs:
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
-            jq -e '
+            jq -e --argjson number "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
                 and (.workflow_runs | type) == "array")
               and all(.[].workflow_runs[]?;
-                type == "object"
+                . as $run
+                | type == "object"
                 and (.id | type) == "number" and .id > 0
-                and (.run_attempt | type) == "number"
+                and .id == (.id | floor)
+                and (.run_attempt | type) == "number" and .run_attempt > 0
+                and .run_attempt == (.run_attempt | floor)
                 and (.event | type) == "string" and (.event | length) > 0
                 and (.path | type) == "string" and (.path | length) > 0
                 and (.name | type) == "string" and (.name | length) > 0
                 and (.head_branch | type) == "string"
                 and (.head_branch | length) > 0
                 and (.head_sha | type) == "string"
-                and (.head_sha | length) == 40
+                and (.head_sha | test("^[0-9a-f]{40}$"))
                 and (.repository | type) == "object"
                 and (.repository.full_name | type) == "string"
                 and (.repository.full_name | length) > 0
@@ -222,14 +225,18 @@ jobs:
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
+                  and .number == (.number | floor)
+                  and .number == $number
                   and (.base | type) == "object"
                   and (.base.sha | type) == "string"
-                  and (.base.sha | length) == 40
+                  and (.base.sha | test("^[0-9a-f]{40}$"))
                   and (.head | type) == "object"
                   and (.head.sha | type) == "string"
-                  and (.head.sha | length) == 40
+                  and (.head.sha | test("^[0-9a-f]{40}$"))
+                  and .head.sha == $run.head_sha
                   and (.head.ref | type) == "string"
-                  and (.head.ref | length) > 0))
+                  and (.head.ref | length) > 0
+                  and .head.ref == $run.head_branch))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
@@ -603,6 +610,47 @@ jobs:
               elect_producer_owner)" || return 1
             test "${verified_owner}" = "${previous_owner}"
           }
+
+          validate_refresh_binding_authority() {
+            local check_json="$1"
+            jq -e \
+              --arg author "${PR_AUTHOR}" \
+              --arg base "${BASE_SHA}" \
+              --arg current_external_id "${current_external_id}" \
+              --arg current_kind "${current_external_kind}" \
+              --arg head "${HEAD_SHA}" \
+              --arg owner_run_id "${owner_run_id}" '
+                .[0].external_id as $external_id
+                | ($external_id | type) == "string"
+                and (
+                  $external_id == $current_external_id
+                  or (
+                    $current_kind == "copilot"
+                    and ($author != "lightning-it-release-automation[bot]")
+                    and ($author != "lightning-it-shared-assets-sync[bot]")
+                    and ($author != "renovate[bot]")
+                    and $external_id
+                      == ("mlx90-current-revision:copilot:v5:"
+                        + $owner_run_id + ":" + $base + ":" + $head)
+                  )
+                  or (
+                    $current_kind == "ancestry-backmerge"
+                    and ($author == "lightning-it-release-automation[bot]"
+                      or $author == "lightning-it-shared-assets-sync[bot]")
+                    and $external_id
+                      == ("mlx90-current-revision:ancestry-backmerge:v5:"
+                        + $owner_run_id + ":" + $base + ":" + $head)
+                  )
+                  or (
+                    $current_kind == "ancestry-backmerge"
+                    and $author == "lightning-it-release-automation[bot]"
+                    and ($external_id | test(
+                      "^mlx90-current-revision:v4:" + $owner_run_id
+                        + ":[0-9a-f]{64}$"))
+                  )
+                )
+              ' <<<"${check_json}" >/dev/null
+          }
           neutral="$(read_refresh_checks)"
           neutral_count="$(jq 'length' <<<"${neutral}")"
           refresh_expected_count="${neutral_count}"
@@ -611,26 +659,7 @@ jobs:
             refresh_expected_snapshot="$(jq -c '.[0]' <<<"${neutral}")"
             check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${neutral}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
-            if ! jq -e \
-              --arg base "${BASE_SHA}" \
-              --arg current_external_id "${current_external_id}" \
-              --arg head "${HEAD_SHA}" \
-              --arg owner_run_id "${owner_run_id}" \
-              --arg pr "${PR_NUMBER}" '
-                .[0].external_id as $external_id
-                | ($external_id | type) == "string"
-                and (
-                  ($external_id | IN(
-                    $current_external_id,
-                    "mlx90-current-revision:copilot:v5:" + $owner_run_id + ":"
-                      + $base + ":" + $head,
-                    "mlx90-current-revision:ancestry-backmerge:v5:"
-                      + $owner_run_id + ":" + $base + ":" + $head))
-                  or ($external_id | test(
-                    "^mlx90-current-revision:v4:" + $owner_run_id
-                      + ":[0-9a-f]{64}$"))
-                )
-              ' <<<"${neutral}" >/dev/null; then
+            if ! validate_refresh_binding_authority "${neutral}"; then
               validate_previous_tuple_handoff "${neutral}" "${check_url}" \
                 || {
                   echo 'The protected review check has neither the current binding nor a verified previous-tuple binding; refusing to mutate it.' >&2

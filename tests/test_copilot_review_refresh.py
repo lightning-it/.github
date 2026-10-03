@@ -135,7 +135,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 "REPOSITORY": "lightning-it/shared-assets-lit",
                 "PR_NUMBER": "2334",
                 "EVENT_BASE": "b" * 40,
-                "EVENT_HEAD": "h" * 40,
+                "EVENT_HEAD": "c" * 40,
                 "EVENT_HEAD_REF": "feature/li179",
                 "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(temporary) / "reads"),
@@ -176,14 +176,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "name": "Current revision review gate",
             "run_attempt": attempt,
             "head_branch": "feature/li179",
-            "head_sha": "h" * 40,
+            "head_sha": "c" * 40,
             "repository": {"full_name": repository},
             "head_repository": {"full_name": repository},
             "pull_requests": [
                 {
                     "number": 2334,
                     "base": {"sha": "b" * 40},
-                    "head": {"sha": "h" * 40, "ref": "feature/li179"},
+                    "head": {"sha": "c" * 40, "ref": "feature/li179"},
                 }
             ],
         }
@@ -195,7 +195,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "name": "Verify current revision policy",
             "run_id": run_id,
             "run_attempt": attempt,
-            "head_sha": "h" * 40,
+            "head_sha": "c" * 40,
             "status": "in_progress",
             "conclusion": None,
         }
@@ -213,7 +213,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "name": "Request Copilot review for current revision",
             "run_id": run_id,
             "run_attempt": attempt,
-            "head_sha": "h" * 40,
+            "head_sha": "c" * 40,
             "status": status,
             "conclusion": conclusion,
         }
@@ -360,6 +360,27 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         missing = json.loads(json.dumps(original))
         del missing["pull_requests"]
         malformed_runs.append(missing)
+        for key, value in (
+            ("number", 123.5),
+            ("number", 999),
+            ("base_sha", "z" * 40),
+            ("head_sha", "z" * 40),
+            ("head_mismatch", "d" * 40),
+        ):
+            malformed = json.loads(json.dumps(original))
+            association = malformed["pull_requests"][0]
+            if key == "number":
+                association["number"] = value
+            elif key == "base_sha":
+                association["base"]["sha"] = value
+            else:
+                association["head"]["sha"] = value
+            malformed_runs.append(malformed)
+
+        for field, value in (("id", 101.5), ("run_attempt", 1.5)):
+            malformed = json.loads(json.dumps(original))
+            malformed[field] = value
+            malformed_runs.append(malformed)
 
         for guard_index, guard in enumerate(guards):
             for case_index, malformed in enumerate(malformed_runs):
@@ -5140,6 +5161,61 @@ sleep() { :; }''',
                     repository="lightning-it/website",
                 )
                 self.assertNotEqual(0, result.returncode)
+
+    def test_renovate_refresh_rejects_legacy_copilot_binding_before_patch(
+        self,
+    ) -> None:
+        base = "a" * 40
+        head = "b" * 40
+        owner = "77"
+        current = (
+            f"mlx90-current-revision:renovate:v6:123:{owner}:{base}:{head}"
+        )
+        script = "\n".join((
+            "set -euo pipefail",
+            self._refresh_shell_function(
+                "validate_refresh_binding_authority"
+            ),
+            "gh() { : >\"${PATCH_FILE}\"; }",
+            'if validate_refresh_binding_authority "${CHECK}"; then',
+            "  gh api --method PATCH",
+            "else",
+            "  exit 73",
+            "fi",
+        ))
+
+        def evaluate(external_id: str) -> tuple[int, bool]:
+            with tempfile.TemporaryDirectory() as temporary:
+                patch_file = Path(temporary) / "patch"
+                result = subprocess.run(
+                    [self._test_tool("bash"), "-c", script],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "BASE_SHA": base,
+                        "CHECK": json.dumps([{"external_id": external_id}]),
+                        "HEAD_SHA": head,
+                        "PATCH_FILE": str(patch_file),
+                        "PR_AUTHOR": "renovate[bot]",
+                        "current_external_id": current,
+                        "current_external_kind": "renovate",
+                        "owner_run_id": owner,
+                    },
+                )
+                return result.returncode, patch_file.exists()
+
+        returncode, patched = evaluate(current)
+        self.assertEqual(0, returncode)
+        self.assertTrue(patched)
+
+        legacy_copilot = (
+            f"mlx90-current-revision:copilot:v5:{owner}:{base}:{head}"
+        )
+        returncode, patched = evaluate(legacy_copilot)
+        self.assertEqual(73, returncode)
+        self.assertFalse(patched)
 
     def test_rerun_managed_sync_is_bound_to_develop_and_sync_actor(self) -> None:
         guard = "set -euo pipefail\n" + self._rerun_evidence_kind_guard()
