@@ -524,8 +524,10 @@ jobs:
                     "requested", "waiting", "pending", "queued", "in_progress"))
                     and $job.conclusion == null)
                   or ($job.status == "completed"
-                    and ($job.conclusion | type) == "string"
-                    and $job.conclusion != "skipped")
+                    and ($job.conclusion | IN(
+                      "success", "failure", "neutral", "cancelled",
+                      "timed_out", "action_required", "stale",
+                      "startup_failure")))
                   ' <<<"${policy_jobs}" >/dev/null; then
                 :
               elif jq -e '
@@ -1712,8 +1714,10 @@ jobs:
                     "requested", "waiting", "pending", "queued", "in_progress"))
                     and $job.conclusion == null)
                   or ($job.status == "completed"
-                    and ($job.conclusion | type) == "string"
-                    and $job.conclusion != "skipped")
+                    and ($job.conclusion | IN(
+                      "success", "failure", "neutral", "cancelled",
+                      "timed_out", "action_required", "stale",
+                      "startup_failure")))
                   ' <<<"${policy_jobs}" >/dev/null; then
                 :
               elif jq -e '

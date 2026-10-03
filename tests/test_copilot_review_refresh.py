@@ -248,6 +248,35 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(0, ready.returncode, ready.stderr)
         self.assertEqual("102", ready.stdout)
 
+        completed_job = self._producer_job(101)
+        completed_job.update(status="completed", conclusion="failure")
+        completed = self._run_producer_owner_guard(
+            runs=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [completed_job],
+                102: [self._producer_job(102)],
+            },
+            conditional=True,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual("101", completed.stdout)
+
+        for conclusion in ("", "unknown", "skipped ", "SUCCESS"):
+            with self.subTest(conclusion=conclusion):
+                unknown_job = self._producer_job(101)
+                unknown_job.update(
+                    status="completed", conclusion=conclusion
+                )
+                unknown = self._run_producer_owner_guard(
+                    runs=[self._producer_run(101), self._producer_run(102)],
+                    jobs={
+                        101: [unknown_job],
+                        102: [self._producer_job(102)],
+                    },
+                    conditional=True,
+                )
+                self.assertNotEqual(0, unknown.returncode)
+
         malformed_job = self._producer_job(101)
         malformed_job.update(status="completed", conclusion={"bad": True})
         malformed = self._run_producer_owner_guard(
