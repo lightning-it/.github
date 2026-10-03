@@ -74,6 +74,15 @@ def one(values, reason):
     return values[0]
 
 
+def valid_head_ref(value):
+    """Bounded ASCII subset of Git branch refs, without normalization."""
+    return (type(value) is str and 1 <= len(value) <= 255 and value != "HEAD"
+            and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._/-]*", value) is not None
+            and ".." not in value and not value.endswith(".")
+            and all(part and not part.startswith(".") and not part.endswith(".lock")
+                    for part in value.split("/")))
+
+
 def reservation_state(check):
     # The native v3 writer admits pending checks and publishes success/failure.
     require((check.get("status"), check.get("conclusion")) in (
@@ -138,12 +147,33 @@ def producer(api, policy, run_id):
     return run
 
 
-def admission_run(api, policy, run_id, head):
+def admission_run(api, policy, run_id, number, base, head, head_ref):
+    require(STATE.positive(number), "admission-pr-number")
+    for side, sha in (("base", base), ("head", head)):
+        require(type(sha) is str and re.fullmatch(r"[0-9a-f]{40}", sha), "admission-" + side)
+    require(valid_head_ref(head_ref), "admission-head-ref")
     admission = api.read(f"repos/{policy['repository']}/actions/runs/{run_id}")
     require(type(admission.get("id")) is int and admission["id"] == run_id
             and admission.get("path") == ADMISSION_PATH
             and admission.get("event") == "pull_request_target"
             and admission.get("head_sha") == head, "admission-provenance")
+    require(type(admission.get("display_title")) is str
+            and admission["display_title"] in (
+                f"Protected current revision PR #{number} {action} {head}"
+                for action in ("opened", "synchronize", "reopened", "ready_for_review", "edited")),
+            "admission-title")
+    association = one(admission.get("pull_requests"), "admission-pr-association")
+    require(type(association) is dict and STATE.positive(association.get("number"))
+            and association["number"] == number, "admission-pr-association")
+    for side, sha, ref in (("base", base, "develop"), ("head", head, head_ref)):
+        bound = association.get(side)
+        require(type(bound) is dict and bound.get("sha") == sha and bound.get("ref") == ref
+                and type(bound.get("repo")) is dict
+                and type(bound["repo"].get("id")) is int
+                and bound["repo"].get("id") == policy["repository_id"]
+                and bound["repo"].get("url") == f"{TRANSPORT.ORIGIN}/repos/{policy['repository']}",
+                "admission-pr-binding")
+    require(admission.get("head_branch") == head_ref, "admission-head-ref")
     for key in ("repository", "head_repository"):
         require(admission.get(key, {}).get("id") == policy["repository_id"]
                 and admission[key].get("full_name") == policy["repository"],
@@ -211,7 +241,7 @@ def snapshot(api, policy, run_id, number):
             and reservation.get("app", {}).get("id") == 15368
             and reservation["app"].get("slug") == "github-actions", "reservation-binding")
     admission_id = int(bound[1])
-    admission = admission_run(api, policy, admission_id, head)
+    admission = admission_run(api, policy, admission_id, number, base, head, pull["head"]["ref"])
     reviews = api.inventory(f"{prefix}/pulls/{number}/reviews")
     review = one([item for item in reviews if item.get("commit_id") == head
                   and item.get("user", {}).get("id") == 175728472
@@ -398,9 +428,8 @@ def sweep(api, policy, now):
             require(age >= 0, "sweeper-clock")
             if age < policy["reservation_ttl_seconds"]:
                 continue
-            admission = admission_run(api, policy, int(match[1]), head)
-            require(admission.get("head_branch") == pull["head"]["ref"],
-                    "sweeper-admission-branch")
+            admission = admission_run(api, policy, int(match[1]), pull["number"],
+                                      base, head, pull["head"]["ref"])
             refreshed = api.read(f"{prefix}/check-runs/{check['id']}")
             require(refreshed == check, "sweeper-reservation-drift")
             current = api.read(f"{prefix}/pulls/{pull['number']}")
@@ -408,7 +437,8 @@ def sweep(api, policy, now):
                     and current.get("number") == pull["number"]
                     and current.get("base") == pull["base"]
                     and current.get("head") == pull["head"], "sweeper-pull-drift")
-            require(admission_run(api, policy, int(match[1]), head) == admission,
+            require(admission_run(api, policy, int(match[1]), pull["number"],
+                                  base, head, pull["head"]["ref"]) == admission,
                     "sweeper-admission-drift")
             results.append({"check_id": check["id"], "head": head,
                             "reservation_digest": STATE.digest(check), "age_seconds": age,

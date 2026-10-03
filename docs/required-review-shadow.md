@@ -56,6 +56,24 @@ request-based latency stays null. Existing terminal native reservations are
 observed, never overwritten. Later native failure observations remain visible
 through LI-226's failure-OR deduplication even when earlier latency is retained.
 
+Both observer and sweeper require the admission run's exact native display title
+`Protected current revision PR #<number> <action> <head>`, with a positive integer
+PR number and one of the protected workflow's `opened`, `synchronize`, `reopened`,
+`ready_for_review` or `edited` actions. This is the native workflow run-name
+binding, not the editable pull-request title. Independently, the same run read
+must include exactly one numeric `pull_requests` association matching the PR
+number, base/head SHA, base/head ref and both repository IDs/API URLs. Missing,
+empty, ambiguous or mismatched associations reject; there is no title-only
+fallback. These checks add no requests and preserve the 99-request sweep bound.
+The admission helper validates both expected SHAs as exactly 40 lowercase hex
+characters and the expected head ref before reading the run. Head refs use a
+conservative 1–255 character ASCII subset: an initial letter, digit or underscore,
+followed by letters, digits, underscores, dots, hyphens or slashes. Empty path
+components, dot-prefixed components, `.lock` suffixes, `..`, a final dot and the
+exact reserved name `HEAD` reject; lowercase and mixed-case variants remain valid.
+This also excludes controls, whitespace, `@{` and Git's special ref characters;
+no trimming, coercion or normalization is performed.
+
 Overview finding counts and recommendations may be historical after resolution;
 they are not an additional rejection gate. As in the native v6 producer, live
 thread resolution is authoritative. Substantive content, unavailable-review

@@ -48,6 +48,14 @@ class EventAdapterTests(unittest.TestCase):
                      "title": "Test", "body": "Body", "labels": [],
                      "head": {"sha": self.head, "ref": "feature", "repo": self.repo_object},
                      "base": {"sha": self.base, "ref": "develop", "repo": self.repo_object}}
+        association = {"number": 7}
+        for side in ("base", "head"):
+            association[side] = {**self.pull[side], "repo": {
+                "id": self.policy["repository_id"],
+                "url": f"{EVENTS.TRANSPORT.ORIGIN}/repos/{self.repo}"}}
+        self.admission = {**self.run, "id": 201, "path": EVENTS.ADMISSION_PATH,
+                          "display_title": f"Protected current revision PR #7 opened {self.head}",
+                          "pull_requests": [association]}
         app = {"id": 15368, "slug": "github-actions"}
         summary = {"schema": 4, "base_sha": self.base, "head_sha": self.head,
                    "producer_run_id": 200, "pull_request_number": 7, "controller_sha": self.base,
@@ -71,7 +79,7 @@ class EventAdapterTests(unittest.TestCase):
                               for name in (EVENTS.POLICY_STEP, "Publish bound neutral result")]}
         self.responses = {
             f"{self.prefix}/actions/runs/200": self.run,
-            f"{self.prefix}/actions/runs/201": {**self.run, "id": 201, "path": EVENTS.ADMISSION_PATH},
+            f"{self.prefix}/actions/runs/201": self.admission,
             f"{self.prefix}/pulls/7": self.pull,
             f"{self.prefix}/branches/develop": {"protected": True, "commit": {"sha": self.base}},
             f"{self.prefix}/rules/branches/develop": [{"ruleset_id": 21200954, "type": "workflows",
@@ -230,9 +238,12 @@ class EventAdapterTests(unittest.TestCase):
                         responses[path + f"&per_page=100&page={page}"] = {
                             "total_count": len(checks),
                             "check_runs": checks[(page - 1) * 100:page * 100]}
-                    responses[f"{self.prefix}/actions/runs/{200 + number}"] = {
-                        **self.run, "id": 200 + number, "path": EVENTS.ADMISSION_PATH,
-                        "head_sha": head}
+                    admission = deepcopy(self.admission)
+                    admission.update(id=200 + number, head_sha=head, display_title=
+                                     f"Protected current revision PR #{number} opened {head}")
+                    admission["pull_requests"][0]["number"] = number
+                    admission["pull_requests"][0]["head"]["sha"] = head
+                    responses[f"{self.prefix}/actions/runs/{200 + number}"] = admission
                     responses[f"{self.prefix}/check-runs/{check['id']}"] = check
                     responses[f"{self.prefix}/pulls/{number}"] = pull
                 responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"] = pulls
@@ -361,6 +372,164 @@ class EventAdapterTests(unittest.TestCase):
         self.responses[f"{self.prefix}/check-runs/300"] = {**self.check, "head_sha": "c" * 40}
         with self.assertRaisesRegex(ValueError, "sweeper-reservation-drift"):
             EVENTS.sweep(self.api(), self.policy, self.now + 86400)
+
+    def assert_admission_rejected(self, admission, reason):
+        for operation in ("observer", "sweeper"):
+            with self.subTest(operation=operation):
+                api = self.api()
+                api.responses = deepcopy(self.responses)
+                api.responses[f"{self.prefix}/actions/runs/201"] = deepcopy(admission)
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^" + reason + "$"):
+                    if operation == "observer":
+                        EVENTS.observe(api, self.policy, 200, 7, self.now)
+                    else:
+                        EVENTS.sweep(api, self.policy, self.now + 86400)
+
+    def test_admission_all_native_actions_bind_both_paths(self):
+        for action in ("opened", "synchronize", "reopened", "ready_for_review", "edited"):
+            with self.subTest(action=action):
+                self.admission["display_title"] = (
+                    f"Protected current revision PR #7 {action} {self.head}")
+                self.assertEqual("success", EVENTS.observe(
+                    self.api(), self.policy, 200, 7, self.now)["would_finalize"])
+                self.assertEqual([300], [item["check_id"] for item in EVENTS.sweep(
+                    self.api(), self.policy, self.now + 86400)["expired"]])
+
+    def test_admission_expected_pr_requires_positive_integer_before_read(self):
+        for number in (None, False, True, 0, -1, 7.0, "7", "07", "", [], {}):
+            with self.subTest(number=number):
+                api = self.api()
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-pr-number$"):
+                    EVENTS.admission_run(api, self.policy, 201, number,
+                                         self.base, self.head, "feature")
+                self.assertEqual(0, api.requests)
+
+    def test_admission_title_must_match_exact_native_scope(self):
+        title = self.admission["display_title"]
+        for value in (None, "", False, [], {}, title + "\n", " " + title,
+                      title.replace("#7", "#8"), title.replace("#7", "#07"),
+                      title.replace("#7", "#+7"), title.replace("opened", "closed"),
+                      title.replace("opened", "converted_to_draft"),
+                      title.replace("opened", "Opened"), title.replace(" opened ", "  opened "),
+                      title.replace(self.head, "c" * 40), title.replace(self.head, self.head.upper()),
+                      "lightning-it/other " + title):
+            with self.subTest(title=value):
+                admission = {**self.admission, "display_title": value}
+                self.assert_admission_rejected(admission, "admission-title")
+        admission = deepcopy(self.admission)
+        del admission["display_title"]
+        self.assert_admission_rejected(admission, "admission-title")
+
+    def test_admission_expected_shas_are_canonical_before_read(self):
+        for side in ("base", "head"):
+            for value in (None, False, 0, [], {}, "", "a" * 39, "a" * 41,
+                          "g" * 40, "A" * 40, self.head + "\n"):
+                with self.subTest(side=side, value=value):
+                    api = self.api()
+                    base, head = (value, self.head) if side == "base" else (self.base, value)
+                    with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-" + side + "$"):
+                        EVENTS.admission_run(api, self.policy, 201, 7, base, head, "feature")
+                    self.assertEqual(0, api.requests)
+
+    def test_admission_malformed_head_ref_rejects_even_when_all_evidence_agrees(self):
+        for value in (None, False, True, 0, [], {}, "", "HEAD", "a" * 256, "-feature", "/feature",
+                      "feature/", "feature//x", ".feature", "feature/.hidden", "feature..x",
+                      "feature.", "feature.lock", "feature.lock/x", "feature@{x}", "@",
+                      "feature x", "feature\t", "feature\n", "feature\x00", "feature\x7f",
+                      "feature~x", "feature^x", "feature:x", "feature?x", "feature*x",
+                      "feature[x", "feature\\x", "f\u00e9ature"):
+            with self.subTest(ref=value):
+                self.pull["head"]["ref"] = value
+                self.run["head_branch"] = value
+                self.admission["head_branch"] = value
+                self.admission["pull_requests"][0]["head"]["ref"] = value
+                api = self.api()
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-head-ref$"):
+                    EVENTS.admission_run(api, self.policy, 201, 7, self.base, self.head, value)
+                self.assertEqual(0, api.requests)
+                self.assert_admission_rejected(self.admission, "admission-head-ref")
+
+    def test_admission_supported_head_refs_bind_both_paths(self):
+        for value in ("feature", "feat/li-219-shadow-integration", "renovate/python-3.x",
+                      "_feature", "head", "HeAd", "a" * 255):
+            with self.subTest(ref=value):
+                self.pull["head"]["ref"] = value
+                self.run["head_branch"] = value
+                self.admission["head_branch"] = value
+                self.admission["pull_requests"][0]["head"]["ref"] = value
+                self.assertEqual("success", EVENTS.observe(
+                    self.api(), self.policy, 200, 7, self.now)["would_finalize"])
+                self.assertEqual([300], [item["check_id"] for item in EVENTS.sweep(
+                    self.api(), self.policy, self.now + 86400)["expired"]])
+
+    def test_admission_requires_one_native_numeric_pr_association(self):
+        association = self.admission["pull_requests"][0]
+        for value in (None, {}, "", [], [None], [association, association]):
+            with self.subTest(associations=value):
+                admission = {**self.admission, "pull_requests": value}
+                self.assert_admission_rejected(admission, "admission-pr-association")
+        admission = deepcopy(self.admission)
+        del admission["pull_requests"]
+        self.assert_admission_rejected(admission, "admission-pr-association")
+        for number in (None, False, True, 0, -1, 7.0, "7", "07", 8):
+            with self.subTest(number=number):
+                admission = deepcopy(self.admission)
+                admission["pull_requests"][0]["number"] = number
+                self.assert_admission_rejected(admission, "admission-pr-association")
+        admission = deepcopy(self.admission)
+        del admission["pull_requests"][0]["number"]
+        self.assert_admission_rejected(admission, "admission-pr-association")
+
+    def test_same_head_other_pr_admission_cannot_authorize_reservation(self):
+        admission = deepcopy(self.admission)
+        admission["display_title"] = f"Protected current revision PR #8 opened {self.head}"
+        admission["pull_requests"][0]["number"] = 8
+        self.assert_admission_rejected(admission, "admission-title")
+
+    def test_admission_association_binds_both_shas_refs_and_repositories(self):
+        for side in ("base", "head"):
+            for field, value in (("sha", "c" * 40), ("sha", None), ("ref", "other"),
+                                 ("repo", None), ("repo", {"id": 42}),
+                                 ("repo", {"id": float(self.policy["repository_id"]),
+                                           "url": f"{EVENTS.TRANSPORT.ORIGIN}/repos/{self.repo}"}),
+                                 ("repo", {"id": self.policy["repository_id"],
+                                           "url": "https://api.github.com/repos/other/repo"})):
+                with self.subTest(side=side, field=field, value=value):
+                    admission = deepcopy(self.admission)
+                    admission["pull_requests"][0][side][field] = value
+                    self.assert_admission_rejected(admission, "admission-pr-binding")
+            admission = deepcopy(self.admission)
+            del admission["pull_requests"][0][side]
+            self.assert_admission_rejected(admission, "admission-pr-binding")
+
+    def test_admission_existing_provenance_checks_apply_to_both_paths(self):
+        for field, value, reason in (
+                ("path", EVENTS.RUN_PATH, "admission-provenance"),
+                ("event", "workflow_dispatch", "admission-provenance"),
+                ("head_sha", "c" * 40, "admission-provenance"),
+                ("head_branch", "other", "admission-head-ref"),
+                ("repository", {"id": 42}, "admission-repository"),
+                ("head_repository", {"id": 42}, "admission-repository"),
+                ("actor", {"id": 42}, "admission-actor-attempt"),
+                ("triggering_actor", {"id": 42}, "admission-actor-attempt"),
+                ("run_attempt", 2, "admission-actor-attempt")):
+            with self.subTest(field=field):
+                self.assert_admission_rejected({**self.admission, field: value}, reason)
+
+    def test_admission_association_is_revalidated_on_both_paths(self):
+        for operation in ("observer", "sweeper"):
+            with self.subTest(operation=operation):
+                api = self.api()
+                def drift(path, value, occurrence):
+                    if path == f"{self.prefix}/actions/runs/201" and occurrence == 2:
+                        value["pull_requests"][0]["number"] = 8
+                    return value
+                api.transform = drift
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-pr-association$"):
+                    if operation == "observer":
+                        EVENTS.observe(api, self.policy, 200, 7, self.now)
+                    else:
+                        EVENTS.sweep(api, self.policy, self.now + 86400)
 
     def test_sweeper_admission_actor_attempt_repository_and_drift_reject(self):
         path = f"{self.prefix}/actions/runs/201"
