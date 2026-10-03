@@ -140,8 +140,7 @@ def producer(api, policy, run_id):
                 and actor.get("type") == "User", "run-actor")
     require(run.get("path") == RUN_PATH and run.get("event") == "pull_request_target"
             and run.get("name") == "Current revision review gate", "run-workflow")
-    require((run.get("status"), run.get("conclusion")) in (
-        ("in_progress", None), ("completed", "success")), "run-state")
+    require(run.get("status") == "completed" and run.get("conclusion") == "success", "run-state")
     require(type(run.get("head_sha")) is str and re.fullmatch(
         r"[0-9a-f]{40}", run["head_sha"]), "run-head")
     return run
@@ -223,7 +222,16 @@ def snapshot(api, policy, run_id, number):
             and neutral["app"].get("slug") == "github-actions"
             and neutral.get("head_sha") == head, "neutral-provenance")
     summary = parsed(neutral["output"]["summary"])
-    require(summary.get("schema") == 4 and summary.get("base_sha") == base
+    require(type(summary) is dict and set(summary) == {
+        "schema", "base_sha", "head_sha", "controller_sha", "pull_request_number",
+        "producer_run_id", "review_path", "run_url",
+    }, "neutral-summary-shape")
+    require(type(summary["schema"]) is int and summary["schema"] == 4, "neutral-summary-schema")
+    require(all(STATE.positive(summary[key]) for key in ("producer_run_id", "pull_request_number")),
+            "neutral-summary-integer")
+    require(summary["review_path"] == "applicable Copilot or governed automation exemption",
+            "neutral-summary-path")
+    require(summary.get("base_sha") == base
             and summary.get("head_sha") == head and summary.get("producer_run_id") == run_id
             and summary.get("pull_request_number") == number
             and summary.get("run_url") == f"https://github.com/{repo}/actions/runs/{run_id}",
@@ -248,8 +256,6 @@ def snapshot(api, policy, run_id, number):
                   and item["user"].get("login") == "copilot-pull-request-reviewer[bot]"
                   and item["user"].get("type") == "Bot"], "review-not-unique")
     require(review.get("state") in ("COMMENTED", "APPROVED"), "review-state")
-    if "review_id" in summary:
-        require(summary["review_id"] == review.get("node_id"), "review-id-binding")
     comments = api.inventory(f"{prefix}/pulls/{number}/reviews/{review['id']}/comments")
     texts = [review.get("body")] + [item.get("body") for item in comments]
     require(all(type(value) is str for value in texts), "review-body")

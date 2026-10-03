@@ -56,6 +56,20 @@ request-based latency stays null. Existing terminal native reservations are
 observed, never overwritten. Later native failure observations remain visible
 through LI-226's failure-OR deduplication even when earlier latency is retained.
 
+The completed `workflow_run` path requires producer `completed/success` on the
+dispatch read and both independent observation reads; a regression to queued or
+in-progress rejects. Job visibility may still lag by at least 180 seconds:
+successful critical job steps remain usable while their enclosing job is not
+yet terminal. Run completion and job visibility are validated separately.
+
+Neutral summaries accept exactly the protected producer's eight legacy-v6 keys:
+`schema`, `base_sha`, `head_sha`, `controller_sha`, `pull_request_number`,
+`producer_run_id`, `review_path` and `run_url`. Schema is integer `4`, PR/run IDs
+are positive integers, and `review_path` must be exactly
+`applicable Copilot or governed automation exemption`. Missing/extra keys,
+numeric floats, booleans, alternate paths and expanded summaries reject.
+Supporting another producer schema requires a separate verified contract change.
+
 Both observer and sweeper require the admission run's exact native display title
 `Protected current revision PR #<number> <action> <head>`, with a positive integer
 PR number and one of the protected workflow's `opened`, `synchronize`, `reopened`,

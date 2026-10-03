@@ -59,6 +59,7 @@ class EventAdapterTests(unittest.TestCase):
         app = {"id": 15368, "slug": "github-actions"}
         summary = {"schema": 4, "base_sha": self.base, "head_sha": self.head,
                    "producer_run_id": 200, "pull_request_number": 7, "controller_sha": self.base,
+                   "review_path": "applicable Copilot or governed automation exemption",
                    "run_url": f"https://github.com/{self.repo}/actions/runs/200"}
         self.check = {"id": 300, "name": "Protected current-revision verifier",
                       "external_id": f"rep60-required-workflow:v3:201:7:{self.base}:{self.head}",
@@ -122,8 +123,93 @@ class EventAdapterTests(unittest.TestCase):
         self.assertEqual(0, result["writes"])
         self.assertEqual("none", result["authority"])
         self.assertEqual(2, api.paths.count(f"{self.prefix}/pulls/7"))
+        self.assertEqual(3, api.paths.count(f"{self.prefix}/actions/runs/200"))
+        self.assertEqual("in_progress", self.job["status"])
+        self.assertEqual(0, result["metrics"]["producer_jobs_terminal"])
+        self.assertIsNone(result["metrics"]["producer_job_seconds"])
         duplicate = EVENTS.dispatch(self.api(), self.policy, "workflow_run", self.event(), self.now)
         self.assertEqual(result, duplicate)
+
+    def test_producer_requires_terminal_success_at_every_read(self):
+        for operation, reads in (("dispatch", 3), ("observe", 2)):
+            for selected in range(1, reads + 1):
+                for status, conclusion in (("in_progress", None), ("queued", None),
+                                           ("completed", "failure"), ("completed", None)):
+                    with self.subTest(operation=operation, read=selected, status=status,
+                                      conclusion=conclusion):
+                        api = self.api()
+                        def regress(path, value, occurrence):
+                            if path == f"{self.prefix}/actions/runs/200" and occurrence == selected:
+                                value.update(status=status, conclusion=conclusion)
+                            return value
+                        api.transform = regress
+                        with self.assertRaisesRegex(EVENTS.ShadowRejected, "^run-state$"):
+                            if operation == "dispatch":
+                                EVENTS.dispatch(api, self.policy, "workflow_run", self.event(), self.now)
+                            else:
+                                EVENTS.observe(api, self.policy, 200, 7, self.now)
+                        self.assertEqual(selected, api.paths.count(f"{self.prefix}/actions/runs/200"))
+
+    def assert_summary_rejected(self, summary, reason):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        for selected in (1, 2):
+            with self.subTest(read=selected):
+                api = self.api()
+                def malformed(endpoint, value, occurrence):
+                    if endpoint == path and occurrence == selected:
+                        value["check_runs"][1]["output"]["summary"] = json.dumps(summary)
+                    return value
+                api.transform = malformed
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "^" + reason + "$"):
+                    EVENTS.observe(api, self.policy, 200, 7, self.now)
+
+    def test_neutral_summary_requires_exact_legacy_v6_key_set(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        for key in summary:
+            with self.subTest(missing=key):
+                self.assert_summary_rejected({k: v for k, v in summary.items() if k != key},
+                                             "neutral-summary-shape")
+        for extra in ({"unexpected": True}, {"review_id": "R500"},
+                      {"controller_ref": "develop", "head_repository": self.repo,
+                       "pull_request_labels_sha256": "c" * 64,
+                       "pull_request_last_edited_at": None, "review_id": "R500"}):
+            with self.subTest(extra=extra):
+                self.assert_summary_rejected({**summary, **extra}, "neutral-summary-shape")
+        for value in (None, [], 4, "summary"):
+            with self.subTest(shape=value):
+                self.assert_summary_rejected(value, "neutral-summary-shape")
+
+    def test_neutral_summary_integer_types_and_values_are_strict(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        for key in ("schema", "producer_run_id", "pull_request_number"):
+            reason = "neutral-summary-schema" if key == "schema" else "neutral-summary-integer"
+            for value in (float(summary[key]), str(summary[key]), True, False, None, 0, -1, [], {}):
+                with self.subTest(field=key, value=value):
+                    self.assert_summary_rejected({**summary, key: value}, reason)
+            self.assert_summary_rejected({**summary, key: summary[key] + 1},
+                                         "neutral-summary-schema" if key == "schema" else "neutral-binding")
+
+    def test_neutral_summary_requires_exact_copilot_path(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        for value in (None, "", False, 0, [], {}, "copilot",
+                      "deterministic provenance-bound managed distribution exemption",
+                      "deterministic evidence-bound ancestry exemption",
+                      "deterministic policy-bound Renovate exemption",
+                      summary["review_path"] + "\n", summary["review_path"].upper()):
+            with self.subTest(path=value):
+                self.assert_summary_rejected({**summary, "review_path": value}, "neutral-summary-path")
+
+    def test_neutral_summary_identity_fields_reject_malformed_or_mismatched_values(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        for key in ("base_sha", "head_sha", "controller_sha", "run_url"):
+            for value in (None, "", False, 0, [], {}, "x" * 40):
+                with self.subTest(field=key, value=value):
+                    self.assert_summary_rejected({**summary, key: value},
+                                                 "controller" if key == "controller_sha" else "neutral-binding")
 
     def test_second_read_job_regression_rejects(self):
         api = self.api()
