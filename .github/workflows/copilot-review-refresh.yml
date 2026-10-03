@@ -68,6 +68,7 @@ jobs:
       - name: Rerun the canonical protected gate when needed
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -144,6 +145,23 @@ jobs:
           [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          if [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+            && [[ "${HEAD_REF}" != backmerge/*-main ]]; then
+            echo 'Release-App review evidence is owned by its dedicated producer; Copilot refresh is not applicable.'
+            exit 0
+          fi
+          PRODUCER_OWNER_MODE=copilot
+          if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
+              && [[ "${HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; } \
+            || { [ "${PR_AUTHOR}" = "renovate[bot]" ] \
+              && [[ "${HEAD_REF}" == renovate/* ]]; } \
+            || { { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+                || [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; } \
+              && [[ "${HEAD_REF}" == backmerge/*-main ]]; }; then
+            test "${BASE_REF}" = develop
+            PRODUCER_OWNER_MODE=deterministic
+          fi
+          export PRODUCER_OWNER_MODE
           export EVENT_BASE="${BASE_SHA}"
           export EVENT_HEAD="${HEAD_SHA}"
           export EVENT_HEAD_REF="${HEAD_REF}"
@@ -166,9 +184,10 @@ jobs:
           }
 
           elect_producer_owner_once() {
-            local candidate_attempt candidate_class candidate_id candidates
-            local candidate_rows eligible fallback job_pages policy_jobs primary
-            local run_pages
+            local candidate_attempt candidate_id candidates candidate_rows
+            local eligible job_pages policy_jobs requester_jobs run_pages
+            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|deterministic)$ ]] \
+              || return 1
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
@@ -208,8 +227,7 @@ jobs:
                     then error("producer-owner-run-duplicate")
                   else sort_by(.id) end
               ' <<<"${run_pages}")" || return 1
-            primary='[]'
-            fallback='[]'
+            eligible='[]'
             candidate_rows="$(jq -er \
               '.[] | [.id, .run_attempt] | @tsv' <<<"${candidates}")" \
               || return 1
@@ -247,46 +265,63 @@ jobs:
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
                 continue
               fi
-              candidate_class="$(jq -er '
+              jq -e '
                 .[0] as $job
-                | if (($job.status | IN(
+                | (($job.status | IN(
                     "requested", "waiting", "pending", "queued", "in_progress"))
                     and $job.conclusion == null)
                   or ($job.status == "completed"
                     and ($job.conclusion | IN(
-                      "success", "neutral"))) then "primary"
-                  elif $job.status == "completed"
-                    and ($job.conclusion | IN(
-                      "failure", "cancelled", "timed_out",
-                      "action_required", "stale", "startup_failure"))
-                    then "fallback"
-                  elif $job.status == "completed"
-                    and $job.conclusion == "skipped" then "ineligible"
-                  else error("producer-owner-job-shape") end
-                  ' <<<"${policy_jobs}")" || return 1
-              if [ "${candidate_class}" = ineligible ]; then
+                      "success", "failure", "neutral", "cancelled",
+                      "timed_out", "action_required", "stale",
+                      "startup_failure", "skipped")))
+                ' <<<"${policy_jobs}" >/dev/null || return 1
+              if jq -e '
+                  .[0].status == "completed"
+                  and .[0].conclusion == "skipped"
+                  ' <<<"${policy_jobs}" >/dev/null; then
                 continue
               fi
-              if [ "${candidate_class}" = primary ]; then
-                primary="$(jq -cn \
-                  --argjson current "${primary}" \
-                  --argjson id "${candidate_id}" \
+              if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
+                requester_jobs="$(jq -ce \
+                  --arg head "${EVENT_HEAD}" \
                   --argjson attempt "${candidate_attempt}" \
-                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
-              else
-                test "${candidate_class}" = fallback || return 1
-                fallback="$(jq -cn \
-                  --argjson current "${fallback}" \
-                  --argjson id "${candidate_id}" \
-                  --argjson attempt "${candidate_attempt}" \
-                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+                  --argjson run_id "${candidate_id}" '
+                    [.[].jobs[] |
+                      select(.name == "Request Copilot review for current revision") |
+                      select(.run_id == $run_id) |
+                      select(.run_attempt == $attempt) |
+                      select(.head_sha == $head)]
+                    | if length > 1 then error("producer-owner-requester-duplicate")
+                      else . end
+                  ' <<<"${job_pages}")" || return 1
+                if [ "$(jq 'length' <<<"${requester_jobs}")" -eq 0 ]; then
+                  return 1
+                fi
+                jq -e '
+                  .[0] as $job
+                  | (($job.status | IN(
+                      "requested", "waiting", "pending", "queued", "in_progress"))
+                      and $job.conclusion == null)
+                    or ($job.status == "completed"
+                      and ($job.conclusion | IN(
+                        "success", "failure", "neutral", "cancelled",
+                        "timed_out", "action_required", "stale",
+                        "startup_failure", "skipped")))
+                  ' <<<"${requester_jobs}" >/dev/null || return 1
+                if jq -e '
+                    .[0].status == "completed"
+                    and .[0].conclusion == "skipped"
+                    ' <<<"${requester_jobs}" >/dev/null; then
+                  continue
+                fi
               fi
+              eligible="$(jq -cn \
+                --argjson current "${eligible}" \
+                --argjson id "${candidate_id}" \
+                --argjson attempt "${candidate_attempt}" \
+                '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
             done <<<"${candidate_rows}"
-            eligible="$(jq -cn \
-              --argjson primary "${primary}" \
-              --argjson fallback "${fallback}" \
-              '$primary | if length > 0 then . else $fallback end')" \
-              || return 1
             jq -er '
               if length == 0 then error("producer-owner-eligible-missing")
               elif ([.[].id] | unique | length) != length

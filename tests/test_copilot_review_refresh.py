@@ -54,7 +54,20 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         jobs: dict[int, list[dict[str, object]]],
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
+        mode: str = "copilot",
     ) -> subprocess.CompletedProcess[str]:
+        normalized_jobs: dict[int, list[dict[str, object]]] = {}
+        for run_id, records in jobs.items():
+            normalized_jobs[run_id] = list(records)
+            if not any(
+                record.get("name")
+                == "Request Copilot review for current revision"
+                for record in records
+            ):
+                request_attempt = int(records[0].get("run_attempt", 1))
+                normalized_jobs[run_id].append(
+                    self._producer_request_job(run_id, request_attempt)
+                )
         bash = self._test_tool("bash")
         jq = self._test_tool("jq")
         script = (
@@ -82,7 +95,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "    case \"${run_id}\" in\n"
             + "".join(
                 f"      {run_id}) printf '%s' \"${{JOBS_{run_id}}}\" ;;\n"
-                for run_id in sorted(jobs)
+                for run_id in sorted(normalized_jobs)
             )
             + "      *) return 92 ;;\n"
             "    esac\n"
@@ -106,6 +119,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 "EVENT_BASE": "b" * 40,
                 "EVENT_HEAD": "h" * 40,
                 "EVENT_HEAD_REF": "feature/li179",
+                "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(temporary) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
                 "RUN_PAGES_SECOND": json.dumps(
@@ -115,7 +129,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             environment.update(
                 {
                     f"JOBS_{run_id}": json.dumps([{"jobs": records}])
-                    for run_id, records in jobs.items()
+                    for run_id, records in normalized_jobs.items()
                 }
             )
             return subprocess.run(
@@ -160,7 +174,25 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "conclusion": None,
         }
 
-    def test_same_head_synchronize_then_ready_keeps_first_producer_owner(
+    @staticmethod
+    def _producer_request_job(
+        run_id: int,
+        attempt: int = 1,
+        *,
+        status: str = "completed",
+        conclusion: str | None = "success",
+    ) -> dict[str, object]:
+        return {
+            "id": run_id * 10 + 1,
+            "name": "Request Copilot review for current revision",
+            "run_id": run_id,
+            "run_attempt": attempt,
+            "head_sha": "h" * 40,
+            "status": status,
+            "conclusion": conclusion,
+        }
+
+    def test_two_review_capable_runs_keep_first_producer_owner(
         self,
     ) -> None:
         result = self._run_producer_owner_guard(
@@ -216,6 +248,28 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         self.assertNotEqual(0, duplicate_attempt_job.returncode)
 
+        duplicate_request_job = self._run_producer_owner_guard(
+            runs=[self._producer_run(101)],
+            jobs={
+                101: [
+                    self._producer_job(101),
+                    self._producer_request_job(101),
+                    self._producer_request_job(101),
+                ]
+            },
+        )
+        self.assertNotEqual(0, duplicate_request_job.returncode)
+
+        skipped_request = self._producer_request_job(101)
+        skipped_request.update(status="completed", conclusion="skipped")
+        deterministic = self._run_producer_owner_guard(
+            runs=[self._producer_run(101)],
+            jobs={101: [self._producer_job(101), skipped_request]},
+            mode="deterministic",
+        )
+        self.assertEqual(0, deterministic.returncode, deterministic.stderr)
+        self.assertEqual("101", deterministic.stdout)
+
     def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
         self,
     ) -> None:
@@ -267,7 +321,47 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             conditional=True,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual("102", completed.stdout)
+        self.assertEqual("101", completed.stdout)
+
+        synchronize_request = self._producer_request_job(101)
+        synchronize_request.update(status="completed", conclusion="skipped")
+        ready_request = self._producer_request_job(
+            102, status="in_progress", conclusion=None
+        )
+        synchronize_then_ready = self._run_producer_owner_guard(
+            runs=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [completed_job, synchronize_request],
+                102: [self._producer_job(102), ready_request],
+            },
+            conditional=True,
+        )
+        self.assertEqual(
+            0, synchronize_then_ready.returncode, synchronize_then_ready.stderr
+        )
+        self.assertEqual("102", synchronize_then_ready.stdout)
+
+        live_sync_policy = self._producer_job(37155519577)
+        live_sync_policy.update(status="completed", conclusion="failure")
+        live_sync_request = self._producer_request_job(37155519577)
+        live_sync_request.update(status="completed", conclusion="skipped")
+        live_ready_policy = self._producer_job(37156339900)
+        live_ready_policy.update(status="completed", conclusion="failure")
+        live_ready_request = self._producer_request_job(37156339900)
+        live_ready_request.update(status="completed", conclusion="success")
+        live_pr737 = self._run_producer_owner_guard(
+            runs=[
+                self._producer_run(37155519577),
+                self._producer_run(37156339900),
+            ],
+            jobs={
+                37155519577: [live_sync_policy, live_sync_request],
+                37156339900: [live_ready_policy, live_ready_request],
+            },
+            conditional=True,
+        )
+        self.assertEqual(0, live_pr737.returncode, live_pr737.stderr)
+        self.assertEqual("37156339900", live_pr737.stdout)
 
         fallback = self._run_producer_owner_guard(
             runs=[self._producer_run(101)],
@@ -313,6 +407,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(guards[0], guards[1])
         self.assertEqual(guards[0], self._refresh_producer_owner_guard())
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split(
+            "      - name: Publish bound neutral result\n", 1
+        )[1]
         dispatch = workflow.split(
             "      - name: Dispatch the protected re-evaluation helper ", 1
         )[1]
@@ -345,6 +442,26 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             refresh.index(rerun),
         )
         self.assertLess(refresh.index(retry_budget), refresh.index(rerun))
+        release_route = (
+            "Release-App review evidence is owned by its dedicated producer"
+        )
+        self.assertIn(release_route, refresh)
+        self.assertLess(
+            refresh.index(release_route),
+            refresh.index('owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"'),
+        )
+        self.assertIn(
+            "producer_owner_mode: ${{ steps.producer-owner.outputs.owner_mode }}",
+            workflow,
+        )
+        self.assertIn(
+            "PRODUCER_OWNER_MODE: ${{ steps.producer-owner.outputs.owner_mode }}",
+            publish,
+        )
+        self.assertIn(
+            "needs.verify-current-revision-policy.outputs.producer_owner_mode",
+            dispatch,
+        )
 
     def test_neutral_mutation_revalidates_owner_check_id_and_external_id(
         self,
@@ -655,16 +772,19 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             *,
             snapshot_after: dict[str, object] | None = None,
             verifier_exit: int = 0,
+            trusted_kind: str = "none",
+            create_verifier: bool = True,
         ) -> tuple[subprocess.CompletedProcess[str], int]:
             with tempfile.TemporaryDirectory() as temporary:
                 temporary_path = Path(temporary)
                 verifier = temporary_path / "verify-current-copilot-review.sh"
-                verifier.write_text(
-                    '#!/usr/bin/env bash\nprintf "verification log\\n"\n'
-                    'printf V >>"${VERIFY_LOG}"\n'
-                    'exit "${VERIFY_EXIT}"\n',
-                    encoding="utf-8",
-                )
+                if create_verifier:
+                    verifier.write_text(
+                        '#!/usr/bin/env bash\nprintf "verification log\\n"\n'
+                        'printf V >>"${VERIFY_LOG}"\n'
+                        'exit "${VERIFY_EXIT}"\n',
+                        encoding="utf-8",
+                    )
                 script = "\n".join(
                     (
                         "set -euo pipefail",
@@ -703,6 +823,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                         ),
                         "VERIFY_EXIT": str(verifier_exit),
                         "VERIFY_LOG": str(verify_log),
+                        "TRUSTED_KIND": trusted_kind,
                         "evidence": evidence,
                     },
                 )
@@ -752,6 +873,20 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(1, invalidation_revalidations)
         self.assertEqual("", accepted_invalidation.stdout)
         self.assertIn("verification log", accepted_invalidation.stderr)
+
+        deterministic_recovery, attempts = evaluate(
+            invalidated,
+            trusted_kind="shared-assets",
+            create_verifier=False,
+        )
+        self.assertEqual(
+            0, deterministic_recovery.returncode, deterministic_recovery.stderr
+        )
+        self.assertEqual(0, attempts)
+        self.assertIn(
+            "Deterministic shared-assets evidence was revalidated",
+            deterministic_recovery.stderr,
+        )
 
         failed_revalidation, attempts = evaluate(
             invalidated, verifier_exit=1
