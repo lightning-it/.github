@@ -7,14 +7,14 @@ writer. Every output declares `authority: none` and `writes: 0`.
 
 ## Default-off execution boundary
 
-The committed `.lit/required-review-shadow.json` remains `lifecycle: inactive`.
-An inactive CLI invocation performs zero API requests, does not read the event
-file and does not instantiate a credential-bearing reader. Both workflows also
-require the repository variable `LI219_EVENT_SHADOW` to equal `true`; the active
-CLI independently requires that same value. This change neither sets the
-variable nor changes the protected policy to `shadow`. Activation requires a
-separate decision and protected change. Unknown lifecycle values, including a
-writer mode, reject.
+The committed `.lit/required-review-shadow.json` is `lifecycle: shadow`, while
+the repository variable `LI219_EVENT_SHADOW` remains absent. Both workflow jobs
+therefore stay skipped, and the CLI rejects before it reads the event file,
+instantiates a credential-bearing reader or performs an API request. The policy
+change alone neither starts observation nor transfers required-check authority:
+every output remains `authority: none` and `writes: 0`. Observation requires a
+separately authorized repository-variable change. Unknown lifecycle values,
+including a writer mode, reject.
 
 The workflow-run observer and six-hour scheduled sweeper check out the immutable
 default-branch workflow SHA, never a PR head. Their existing GitHub token has

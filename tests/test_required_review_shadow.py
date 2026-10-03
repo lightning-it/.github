@@ -939,6 +939,20 @@ class EventAdapterTests(unittest.TestCase):
             api.assert_not_called()
         self.assertEqual(0, json.loads(output.getvalue())["api_requests"])
 
+    def test_shadow_cli_without_enable_variable_never_constructs_client_or_reads_event(self):
+        with mock.patch("sys.argv", ["observer", "--event", "workflow_run", "--event-path", "missing"]), \
+                mock.patch.object(EVENTS, "read_file", return_value=self.policy) as read, \
+                mock.patch.dict(EVENTS.os.environ, {}, clear=True), \
+                mock.patch.object(EVENTS, "API") as api, \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(1, EVENTS.main())
+            read.assert_called_once_with(ROOT / ".lit/required-review-shadow.json", 16384)
+            api.assert_not_called()
+        self.assertEqual({
+            "schema": "li219-shadow-rejection/v1", "authority": "none",
+            "writes": 0, "reason": "shadow-not-enabled",
+        }, json.loads(output.getvalue()))
+
     def test_transport_uses_accepted_kernel_and_closed_read_routes(self):
         import http.client
         api = EVENTS.API(self.policy)
@@ -979,6 +993,14 @@ class EventAdapterTests(unittest.TestCase):
                 self.assertEqual(1, EVENTS.main())
             self.assertEqual("invalid-evidence", json.loads(output.getvalue())["reason"])
             self.assertNotIn("private", output.getvalue())
+
+    def test_documented_execution_boundary_matches_committed_policy(self):
+        policy = json.loads((ROOT / ".lit/required-review-shadow.json").read_text())
+        documentation = (ROOT / "docs/required-review-shadow.md").read_text()
+        self.assertEqual("shadow", policy["lifecycle"])
+        self.assertIn("is `lifecycle: shadow`", documentation)
+        self.assertIn("`LI219_EVENT_SHADOW` remains absent", documentation)
+        self.assertIn("every output remains `authority: none` and `writes: 0`", documentation)
 
     def test_workflows_are_default_off_read_only_and_use_protected_source(self):
         import yaml

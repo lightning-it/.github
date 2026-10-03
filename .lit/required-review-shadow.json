@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "lifecycle": "inactive",
+  "lifecycle": "shadow",
   "repository": "lightning-it/.github",
   "repository_id": 1112629689,
   "controller_ref": "develop",
