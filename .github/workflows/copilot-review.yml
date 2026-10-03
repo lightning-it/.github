@@ -486,7 +486,6 @@ jobs:
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
                   select(.name == "Current revision review gate") |
-                  select(.run_attempt == 1 or .run_attempt == 2) |
                   select(.head_branch == $head_ref and .head_sha == $head) |
                   select(.repository.full_name == $repository) |
                   select(.head_repository.full_name == $repository) |
@@ -1861,7 +1860,6 @@ jobs:
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
                   select(.name == "Current revision review gate") |
-                  select(.run_attempt == 1 or .run_attempt == 2) |
                   select(.head_branch == $head_ref and .head_sha == $head) |
                   select(.repository.full_name == $repository) |
                   select(.head_repository.full_name == $repository) |

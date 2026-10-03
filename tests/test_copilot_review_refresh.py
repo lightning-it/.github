@@ -52,6 +52,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         *,
         runs: list[dict[str, object]],
         jobs: dict[int, list[dict[str, object]]],
+        guard: str | None = None,
         attempt_one_jobs: dict[int, list[dict[str, object]]] | None = None,
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
@@ -120,7 +121,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "  fi\n"
             "  return 93\n"
             "}\n"
-            + self._producer_owner_guard()
+            + (guard or self._producer_owner_guard())
             + (
                 "\nif owner=\"$(elect_producer_owner)\"; then "
                 "printf '%s' \"${owner}\"; else exit 71; fi\n"
@@ -294,6 +295,34 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         self.assertEqual(0, deterministic.returncode, deterministic.stderr)
         self.assertEqual("101", deterministic.stdout)
+
+    def test_attempt_three_owner_never_transfers_to_later_run(self) -> None:
+        guards = self._producer_owner_guards()
+        guards.append(self._refresh_producer_owner_guard())
+        self.assertEqual(3, len(guards))
+
+        for index, guard in enumerate(guards):
+            with self.subTest(guard=index):
+                result = self._run_producer_owner_guard(
+                    guard=guard,
+                    runs=[
+                        self._producer_run(101, attempt=3),
+                        self._producer_run(102),
+                    ],
+                    jobs={
+                        101: [self._producer_job(101, attempt=3)],
+                        102: [self._producer_job(102)],
+                    },
+                    attempt_one_jobs={
+                        101: [
+                            self._producer_job(101),
+                            self._producer_request_job(101),
+                        ]
+                    },
+                    conditional=True,
+                )
+                self.assertNotEqual(0, result.returncode)
+                self.assertNotEqual("102", result.stdout)
 
     def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
         self,
