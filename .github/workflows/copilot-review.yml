@@ -439,8 +439,9 @@ jobs:
           }
 
           elect_producer_owner_once() {
-            local candidate_attempt candidate_id candidates eligible job_pages
-            local candidate_rows policy_jobs run_pages
+            local candidate_attempt candidate_class candidate_id candidates
+            local candidate_rows eligible fallback job_pages policy_jobs primary
+            local run_pages
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
@@ -480,7 +481,8 @@ jobs:
                     then error("producer-owner-run-duplicate")
                   else sort_by(.id) end
               ' <<<"${run_pages}")" || return 1
-            eligible='[]'
+            primary='[]'
+            fallback='[]'
             candidate_rows="$(jq -er \
               '.[] | [.id, .run_attempt] | @tsv' <<<"${candidates}")" \
               || return 1
@@ -518,32 +520,46 @@ jobs:
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
                 continue
               fi
-              if jq -e '
+              candidate_class="$(jq -er '
                 .[0] as $job
-                | (($job.status | IN(
+                | if (($job.status | IN(
                     "requested", "waiting", "pending", "queued", "in_progress"))
                     and $job.conclusion == null)
                   or ($job.status == "completed"
                     and ($job.conclusion | IN(
-                      "success", "failure", "neutral", "cancelled",
-                      "timed_out", "action_required", "stale",
-                      "startup_failure")))
-                  ' <<<"${policy_jobs}" >/dev/null; then
-                :
-              elif jq -e '
-                  .[0].status == "completed"
-                  and .[0].conclusion == "skipped"
-                  ' <<<"${policy_jobs}" >/dev/null; then
+                      "success", "neutral"))) then "primary"
+                  elif $job.status == "completed"
+                    and ($job.conclusion | IN(
+                      "failure", "cancelled", "timed_out",
+                      "action_required", "stale", "startup_failure"))
+                    then "fallback"
+                  elif $job.status == "completed"
+                    and $job.conclusion == "skipped" then "ineligible"
+                  else error("producer-owner-job-shape") end
+                  ' <<<"${policy_jobs}")" || return 1
+              if [ "${candidate_class}" = ineligible ]; then
                 continue
-              else
-                return 1
               fi
-              eligible="$(jq -cn \
-                --argjson current "${eligible}" \
-                --argjson id "${candidate_id}" \
-                --argjson attempt "${candidate_attempt}" \
-                '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              if [ "${candidate_class}" = primary ]; then
+                primary="$(jq -cn \
+                  --argjson current "${primary}" \
+                  --argjson id "${candidate_id}" \
+                  --argjson attempt "${candidate_attempt}" \
+                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              else
+                test "${candidate_class}" = fallback || return 1
+                fallback="$(jq -cn \
+                  --argjson current "${fallback}" \
+                  --argjson id "${candidate_id}" \
+                  --argjson attempt "${candidate_attempt}" \
+                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              fi
             done <<<"${candidate_rows}"
+            eligible="$(jq -cn \
+              --argjson primary "${primary}" \
+              --argjson fallback "${fallback}" \
+              '$primary | if length > 0 then . else $fallback end')" \
+              || return 1
             jq -er '
               if length == 0 then error("producer-owner-eligible-missing")
               elif ([.[].id] | unique | length) != length
@@ -1236,7 +1252,17 @@ jobs:
           }
           validate_bound_check() {
             local check_id="$1" external_id="$2" check_name="$3"
-            local expected_details_url="$4" snapshot
+            local expected_details_url="$4" recovery_evidence snapshot
+            recovery_evidence="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --argjson check_run_id "${check_id}" \
+              --argjson producer_run_id "${OWNER_RUN_ID}" '
+                {schema:4,base_sha:$base,head_sha:$head,
+                  producer_run_id:$producer_run_id,
+                  invalidated_check_run_id:$check_run_id,
+                  reason:"canonical refresh invalidation"}
+              ')" || return 1
             snapshot="$(api_read \
               "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
             jq -e \
@@ -1245,6 +1271,7 @@ jobs:
               --arg evidence "${evidence}" \
               --arg external_id "${external_id}" \
               --arg head "${EVENT_HEAD}" \
+              --arg recovery_evidence "${recovery_evidence}" \
               --argjson check_id "${check_id}" '
                 .id == $check_id
                 and .name == $check_name
@@ -1253,9 +1280,18 @@ jobs:
                 and .head_sha == $head
                 and .external_id == $external_id
                 and .status == "completed"
-                and .conclusion == "success"
-                and .output.summary == $evidence
                 and ($details_url == "" or .details_url == $details_url)
+                and (
+                  (
+                    .conclusion == "success"
+                    and .output.summary == $evidence
+                  )
+                  or (
+                    .conclusion == "failure"
+                    and .output.title == "Current revision review invalidated"
+                    and .output.summary == $recovery_evidence
+                  )
+                )
               ' <<<"${snapshot}" >/dev/null
           }
           api_patch_bound() {
@@ -1629,8 +1665,9 @@ jobs:
           }
 
           elect_producer_owner_once() {
-            local candidate_attempt candidate_id candidates eligible job_pages
-            local candidate_rows policy_jobs run_pages
+            local candidate_attempt candidate_class candidate_id candidates
+            local candidate_rows eligible fallback job_pages policy_jobs primary
+            local run_pages
             run_pages="$(owner_api_read --paginate --slurp \
               "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
               || return 1
@@ -1670,7 +1707,8 @@ jobs:
                     then error("producer-owner-run-duplicate")
                   else sort_by(.id) end
               ' <<<"${run_pages}")" || return 1
-            eligible='[]'
+            primary='[]'
+            fallback='[]'
             candidate_rows="$(jq -er \
               '.[] | [.id, .run_attempt] | @tsv' <<<"${candidates}")" \
               || return 1
@@ -1708,32 +1746,46 @@ jobs:
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
                 continue
               fi
-              if jq -e '
+              candidate_class="$(jq -er '
                 .[0] as $job
-                | (($job.status | IN(
+                | if (($job.status | IN(
                     "requested", "waiting", "pending", "queued", "in_progress"))
                     and $job.conclusion == null)
                   or ($job.status == "completed"
                     and ($job.conclusion | IN(
-                      "success", "failure", "neutral", "cancelled",
-                      "timed_out", "action_required", "stale",
-                      "startup_failure")))
-                  ' <<<"${policy_jobs}" >/dev/null; then
-                :
-              elif jq -e '
-                  .[0].status == "completed"
-                  and .[0].conclusion == "skipped"
-                  ' <<<"${policy_jobs}" >/dev/null; then
+                      "success", "neutral"))) then "primary"
+                  elif $job.status == "completed"
+                    and ($job.conclusion | IN(
+                      "failure", "cancelled", "timed_out",
+                      "action_required", "stale", "startup_failure"))
+                    then "fallback"
+                  elif $job.status == "completed"
+                    and $job.conclusion == "skipped" then "ineligible"
+                  else error("producer-owner-job-shape") end
+                  ' <<<"${policy_jobs}")" || return 1
+              if [ "${candidate_class}" = ineligible ]; then
                 continue
-              else
-                return 1
               fi
-              eligible="$(jq -cn \
-                --argjson current "${eligible}" \
-                --argjson id "${candidate_id}" \
-                --argjson attempt "${candidate_attempt}" \
-                '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              if [ "${candidate_class}" = primary ]; then
+                primary="$(jq -cn \
+                  --argjson current "${primary}" \
+                  --argjson id "${candidate_id}" \
+                  --argjson attempt "${candidate_attempt}" \
+                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              else
+                test "${candidate_class}" = fallback || return 1
+                fallback="$(jq -cn \
+                  --argjson current "${fallback}" \
+                  --argjson id "${candidate_id}" \
+                  --argjson attempt "${candidate_attempt}" \
+                  '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
+              fi
             done <<<"${candidate_rows}"
+            eligible="$(jq -cn \
+              --argjson primary "${primary}" \
+              --argjson fallback "${fallback}" \
+              '$primary | if length > 0 then . else $fallback end')" \
+              || return 1
             jq -er '
               if length == 0 then error("producer-owner-eligible-missing")
               elif ([.[].id] | unique | length) != length

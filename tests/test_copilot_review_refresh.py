@@ -39,6 +39,14 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def _producer_owner_guard(cls) -> str:
         return cls._producer_owner_guards()[0]
 
+    @staticmethod
+    def _refresh_producer_owner_guard() -> str:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
+        return workflow[start:end]
+
     def _run_producer_owner_guard(
         self,
         *,
@@ -259,7 +267,15 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             conditional=True,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual("101", completed.stdout)
+        self.assertEqual("102", completed.stdout)
+
+        fallback = self._run_producer_owner_guard(
+            runs=[self._producer_run(101)],
+            jobs={101: [completed_job]},
+            conditional=True,
+        )
+        self.assertEqual(0, fallback.returncode, fallback.stderr)
+        self.assertEqual("101", fallback.stdout)
 
         for conclusion in ("", "unknown", "skipped ", "SUCCESS"):
             with self.subTest(conclusion=conclusion):
@@ -295,6 +311,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         guards = self._producer_owner_guards()
         self.assertEqual(2, len(guards))
         self.assertEqual(guards[0], guards[1])
+        self.assertEqual(guards[0], self._refresh_producer_owner_guard())
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         dispatch = workflow.split(
             "      - name: Dispatch the protected re-evaluation helper ", 1
@@ -305,6 +322,25 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn('test "${live_owner}" = "${OWNER_RUN_ID}"', dispatch)
         self.assertIn('test "${live_owner}" = "${PRODUCER_RUN_ID}"', dispatch)
         self.assertLess(dispatch.index(revalidation), dispatch.index(mutation))
+
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("sort_by(.run_number)", refresh)
+        self.assertIn(
+            '"repos/${REPOSITORY}/actions/runs/${owner_run_id}/rerun"',
+            refresh,
+        )
+        self.assertIn(
+            'test "${live_owner}" = "${owner_run_id}"', refresh
+        )
+        self.assertEqual(5, refresh.count("revalidate_refresh_owner"))
+        rerun = (
+            '"repos/${REPOSITORY}/actions/runs/'
+            '${owner_run_id}/rerun"'
+        )
+        self.assertLess(
+            refresh.rindex("revalidate_refresh_owner"),
+            refresh.index(rerun),
+        )
 
     def test_neutral_mutation_revalidates_owner_check_id_and_external_id(
         self,
@@ -318,6 +354,147 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotIn("api_patch()", publish)
         self.assertIn("api_patch_bound", publish)
         self.assertIn('and .external_id == $external_id', publish)
+        recovery_contract = (
+            "{schema:4,base_sha:$base,head_sha:$head,\n"
+            "                  producer_run_id:$producer_run_id,\n"
+            "                  invalidated_check_run_id:$check_run_id,\n"
+            '                  reason:"canonical refresh invalidation"}'
+        )
+        self.assertIn(recovery_contract, workflow)
+        self.assertIn(
+            recovery_contract,
+            REFRESH_WORKFLOW.read_text(encoding="utf-8"),
+        )
+
+    @staticmethod
+    def _publish_shell_function(name: str) -> str:
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.index("      - name: Publish bound neutral result\n")
+        marker = f"          {name}() {{\n"
+        start = workflow.index(marker, publish)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        return textwrap.dedent(workflow[start:end])
+
+    def test_bound_publisher_accepts_only_exact_refresh_invalidation(
+        self,
+    ) -> None:
+        base = "a" * 40
+        head = "b" * 40
+        check_id = 42
+        owner_run_id = 77
+        external_id = (
+            "mlx90-current-revision:copilot:v6:123:77:"
+            f"{base}:{head}"
+        )
+        details_url = "https://github.example/runs/42"
+        evidence = json.dumps(
+            {
+                "schema": 4,
+                "base_sha": base,
+                "head_sha": head,
+                "producer_run_id": owner_run_id,
+            },
+            separators=(",", ":"),
+        )
+        recovery_evidence = json.dumps(
+            {
+                "schema": 4,
+                "base_sha": base,
+                "head_sha": head,
+                "producer_run_id": owner_run_id,
+                "invalidated_check_run_id": check_id,
+                "reason": "canonical refresh invalidation",
+            },
+            separators=(",", ":"),
+        )
+
+        def evaluate(
+            snapshot: dict[str, object]
+        ) -> subprocess.CompletedProcess[str]:
+            script = "\n".join(
+                (
+                    "set -euo pipefail",
+                    'api_read() { printf "%s" "${SNAPSHOT}"; }',
+                    self._publish_shell_function("validate_bound_check"),
+                    'validate_bound_check 42 "${EXTERNAL_ID}" '
+                    '"Current revision review" "${DETAILS_URL}"',
+                )
+            )
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "DETAILS_URL": details_url,
+                    "EVENT_BASE": base,
+                    "EVENT_HEAD": head,
+                    "EXTERNAL_ID": external_id,
+                    "OWNER_RUN_ID": str(owner_run_id),
+                    "REPOSITORY": "lightning-it/.github",
+                    "SNAPSHOT": json.dumps(snapshot, separators=(",", ":")),
+                    "evidence": evidence,
+                },
+            )
+
+        common: dict[str, object] = {
+            "id": check_id,
+            "name": "Current revision review",
+            "app": {"id": 15368, "slug": "github-actions"},
+            "head_sha": head,
+            "external_id": external_id,
+            "status": "completed",
+            "details_url": details_url,
+        }
+        success = {
+            **common,
+            "conclusion": "success",
+            "output": {"summary": evidence, "title": "passed"},
+        }
+        invalidated = {
+            **common,
+            "conclusion": "failure",
+            "output": {
+                "summary": recovery_evidence,
+                "title": "Current revision review invalidated",
+            },
+        }
+        accepted_success = evaluate(success)
+        self.assertEqual(
+            0, accepted_success.returncode, accepted_success.stderr
+        )
+        accepted_invalidation = evaluate(invalidated)
+        self.assertEqual(
+            0,
+            accepted_invalidation.returncode,
+            accepted_invalidation.stderr,
+        )
+
+        rejected = (
+            {**invalidated, "external_id": "foreign"},
+            {
+                **invalidated,
+                "output": {
+                    **invalidated["output"],
+                    "title": "Current revision review invalidated ",
+                },
+            },
+            {
+                **invalidated,
+                "output": {
+                    **invalidated["output"],
+                    "summary": recovery_evidence.replace(
+                        '"invalidated_check_run_id":42',
+                        '"invalidated_check_run_id":43',
+                    ),
+                },
+            },
+            {**invalidated, "conclusion": "neutral"},
+        )
+        for snapshot in rejected:
+            with self.subTest(snapshot=snapshot):
+                self.assertNotEqual(0, evaluate(snapshot).returncode)
 
     def test_copilot_dispatcher_matches_the_rerun_helper_contract(self) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -368,8 +545,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     @staticmethod
     def _refresh_validation_filter() -> str:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        branch = workflow.index("            elif ! jq -e \\\n")
         marker = '              --arg url "${check_url}" \'\n'
-        start = workflow.index(marker) + len(marker)
+        start = workflow.index(marker, branch) + len(marker)
         end = workflow.index('\n              \' <<<"${neutral}"', start)
         return workflow[start:end]
 
@@ -1150,6 +1328,7 @@ gh() {
             "schema": 4,
             "base_sha": base,
             "head_sha": head,
+            "producer_run_id": 77,
         }
         if pull_request_number is not None:
             summary["pull_request_number"] = pull_request_number
@@ -1185,6 +1364,9 @@ gh() {
                     "--argjson",
                     "pr_number",
                     "123",
+                    "--arg",
+                    "owner_run_id",
+                    "77",
                     "--arg",
                     "url",
                     "https://github.example/runs/42",
