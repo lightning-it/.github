@@ -210,6 +210,63 @@ class EventAdapterTests(unittest.TestCase):
         self.assertEqual(0, result["writes"])
         self.assertEqual([], EVENTS.sweep(self.api(), self.policy, self.now)["expired"])
 
+    def test_sweeper_worst_case_request_budget_boundary(self):
+        for count in (14, 15):
+            with self.subTest(pulls=count):
+                pulls, responses = [], {}
+                for number in range(1, count + 1):
+                    head = f"{number:040x}"
+                    pull = deepcopy(self.pull)
+                    pull.update(id=number, number=number)
+                    pull["head"]["sha"] = head
+                    pulls.append(pull)
+                    check = {**self.check, "id": 300 + number, "head_sha": head,
+                             "external_id":
+                             f"rep60-required-workflow:v3:{200 + number}:{number}:{self.base}:{head}"}
+                    checks = [{"id": 1000 + index, "name": "Unrelated check"}
+                              for index in range(200)] + [check]
+                    for page in range(1, 4):
+                        path = f"{self.prefix}/commits/{head}/check-runs?filter=all"
+                        responses[path + f"&per_page=100&page={page}"] = {
+                            "total_count": len(checks),
+                            "check_runs": checks[(page - 1) * 100:page * 100]}
+                    responses[f"{self.prefix}/actions/runs/{200 + number}"] = {
+                        **self.run, "id": 200 + number, "path": EVENTS.ADMISSION_PATH,
+                        "head_sha": head}
+                    responses[f"{self.prefix}/check-runs/{check['id']}"] = check
+                    responses[f"{self.prefix}/pulls/{number}"] = pull
+                responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"] = pulls
+                api = EVENTS.API(self.policy)
+
+                def respond(request, timeout):
+                    self.assertEqual("GET", request.method)
+                    path = request.full_url.removeprefix(EVENTS.READS.TRANSPORT.ORIGIN + "/")
+                    response = mock.MagicMock()
+                    response.__enter__.return_value.status = 200
+                    response.__enter__.return_value.length = 0
+                    response.__enter__.return_value.read.return_value = json.dumps(
+                        responses[path]).encode()
+                    return response
+
+                api.opener.open = mock.Mock(side_effect=respond)
+                with mock.patch.dict(EVENTS.os.environ, {"GH_TOKEN": "test-token"}):
+                    if count == 15:
+                        with self.assertRaisesRegex(ValueError, "^sweeper-pull-budget$"):
+                            EVENTS.sweep(api, self.policy, self.now + 86400)
+                        self.assertEqual(1, api.requests)
+                    else:
+                        result = EVENTS.sweep(api, self.policy, self.now + 86400)
+                        self.assertEqual(list(range(301, 315)),
+                                         [item["check_id"] for item in result["expired"]])
+                        self.assertEqual(0, result["writes"])
+                        self.assertEqual(99, api.requests)
+                        api.read(f"{self.prefix}/pulls/1")
+                        with self.assertRaisesRegex(EVENTS.READS.TRANSPORT.ReadFailure,
+                                                    "^request-budget-exhausted$"):
+                            api.read(f"{self.prefix}/pulls/1")
+                        self.assertEqual(100, api.requests)
+                self.assertEqual(api.requests, api.opener.open.call_count)
+
     def test_terminal_foreign_reservations_do_not_poison_exact_scope(self):
         path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
         for foreign_pr, foreign_base in ((8, self.base), (7, "c" * 40)):

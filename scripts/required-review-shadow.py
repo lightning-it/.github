@@ -369,7 +369,8 @@ def sweep(api, policy, now):
     """Audit current heads of open PRs; not a global durable-reservation ledger."""
     prefix = "repos/" + policy["repository"]
     pulls = api.inventory(prefix + "/pulls?state=open&base=develop")
-    require(len(pulls) <= 20, "sweeper-pull-budget")
+    # One pull page + 14 * (three check pages + four revalidation reads) = 99.
+    require(len(pulls) <= 14, "sweeper-pull-budget")
     results = []
     for pull in pulls:
         require(STATE.positive(pull.get("number")) and pull.get("state") == "open"
