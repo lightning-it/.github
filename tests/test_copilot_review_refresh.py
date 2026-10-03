@@ -332,15 +332,19 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertIn(
             'test "${live_owner}" = "${owner_run_id}"', refresh
         )
-        self.assertEqual(5, refresh.count("revalidate_refresh_owner"))
+        self.assertIn("revalidate_refresh_state", refresh)
         rerun = (
             '"repos/${REPOSITORY}/actions/runs/'
             '${owner_run_id}/rerun"'
         )
+        retry_budget = 'if [ "${run_attempt}" -ne 1 ]; then'
+        self.assertIn(retry_budget, refresh)
+        self.assertIn('and .run_attempt == 1', refresh)
         self.assertLess(
-            refresh.rindex("revalidate_refresh_owner"),
+            refresh.rindex("revalidate_refresh_state"),
             refresh.index(rerun),
         )
+        self.assertLess(refresh.index(retry_budget), refresh.index(rerun))
 
     def test_neutral_mutation_revalidates_owner_check_id_and_external_id(
         self,
@@ -374,6 +378,110 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         start = workflow.index(marker, publish)
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
         return textwrap.dedent(workflow[start:end])
+
+    @staticmethod
+    def _refresh_shell_function(name: str) -> str:
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = f"          {name}() {{\n"
+        start = workflow.index(marker)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        return textwrap.dedent(workflow[start:end])
+
+    def test_refresh_jointly_revalidates_owner_and_exact_check_snapshot(
+        self,
+    ) -> None:
+        expected = {
+            "id": 42,
+            "name": "Current revision review",
+            "app": {"id": 15368, "slug": "github-actions"},
+            "head_sha": "b" * 40,
+            "external_id": "bound-owner-77",
+            "status": "completed",
+            "conclusion": "success",
+            "details_url": "https://github.example/runs/42",
+            "updated_at": "2026-10-03T12:00:00Z",
+            "output": {"title": "passed", "summary": "evidence"},
+        }
+
+        def evaluate(
+            live: list[dict[str, object]], owners: tuple[int, int]
+        ) -> subprocess.CompletedProcess[str]:
+            with tempfile.TemporaryDirectory() as temporary:
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        "elect_producer_owner() {",
+                        "  local reads=0",
+                        '  if [ -f "${OWNER_COUNTER}" ]; then reads="$(cat "${OWNER_COUNTER}")"; fi',
+                        "  reads=$((reads + 1))",
+                        '  printf "%s" "${reads}" >"${OWNER_COUNTER}"',
+                        '  if [ "${reads}" -eq 1 ]; then printf "%s" "${OWNER_BEFORE}"; else printf "%s" "${OWNER_AFTER}"; fi',
+                        "}",
+                        'read_refresh_checks() { printf "%s" "${LIVE}"; }',
+                        self._refresh_shell_function(
+                            "revalidate_refresh_state"
+                        ),
+                        'revalidate_refresh_state 1 "${EXPECTED}"',
+                    )
+                )
+                return subprocess.run(
+                    [self._test_tool("bash"), "-c", script],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "EXPECTED": json.dumps(expected, separators=(",", ":")),
+                        "LIVE": json.dumps(live, separators=(",", ":")),
+                        "OWNER_AFTER": str(owners[1]),
+                        "OWNER_BEFORE": str(owners[0]),
+                        "OWNER_COUNTER": str(Path(temporary) / "owners"),
+                        "owner_run_id": "77",
+                    },
+                )
+
+        stable = evaluate([expected], (77, 77))
+        self.assertEqual(0, stable.returncode, stable.stderr)
+        changed_binding = evaluate(
+            [{**expected, "external_id": "foreign"}], (77, 77)
+        )
+        self.assertNotEqual(0, changed_binding.returncode)
+        duplicate = evaluate([expected, expected], (77, 77))
+        self.assertNotEqual(0, duplicate.returncode)
+        owner_drift = evaluate([expected], (77, 78))
+        self.assertNotEqual(0, owner_drift.returncode)
+
+    def test_refresh_rerun_budget_rejects_completed_attempt_two(self) -> None:
+        script = "\n".join(
+            (
+                "set -euo pipefail",
+                self._refresh_shell_function("assert_refresh_rerun_budget"),
+                'assert_refresh_rerun_budget "${RUN}"',
+            )
+        )
+
+        def evaluate(attempt: int) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "RUN": json.dumps(
+                        {
+                            "id": 77,
+                            "status": "completed",
+                            "run_attempt": attempt,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "owner_run_id": "77",
+                },
+            )
+
+        self.assertEqual(0, evaluate(1).returncode)
+        self.assertNotEqual(0, evaluate(2).returncode)
 
     def test_bound_publisher_accepts_only_exact_refresh_invalidation(
         self,
@@ -409,34 +517,67 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
 
         def evaluate(
-            snapshot: dict[str, object]
-        ) -> subprocess.CompletedProcess[str]:
-            script = "\n".join(
-                (
-                    "set -euo pipefail",
-                    'api_read() { printf "%s" "${SNAPSHOT}"; }',
-                    self._publish_shell_function("validate_bound_check"),
-                    'validate_bound_check 42 "${EXTERNAL_ID}" '
-                    '"Current revision review" "${DETAILS_URL}"',
+            snapshot: dict[str, object],
+            *,
+            snapshot_after: dict[str, object] | None = None,
+            verifier_exit: int = 0,
+        ) -> tuple[subprocess.CompletedProcess[str], int]:
+            with tempfile.TemporaryDirectory() as temporary:
+                temporary_path = Path(temporary)
+                verifier = temporary_path / "verify-current-copilot-review.sh"
+                verifier.write_text(
+                    '#!/usr/bin/env bash\nprintf V >>"${VERIFY_LOG}"\n'
+                    'exit "${VERIFY_EXIT}"\n',
+                    encoding="utf-8",
                 )
-            )
-            return subprocess.run(
-                [self._test_tool("bash"), "-c", script],
-                text=True,
-                capture_output=True,
-                check=False,
-                env={
-                    "PATH": TEST_TOOL_PATH,
-                    "DETAILS_URL": details_url,
-                    "EVENT_BASE": base,
-                    "EVENT_HEAD": head,
-                    "EXTERNAL_ID": external_id,
-                    "OWNER_RUN_ID": str(owner_run_id),
-                    "REPOSITORY": "lightning-it/.github",
-                    "SNAPSHOT": json.dumps(snapshot, separators=(",", ":")),
-                    "evidence": evidence,
-                },
-            )
+                script = "\n".join(
+                    (
+                        "set -euo pipefail",
+                        "api_read() {",
+                        "  local reads=0",
+                        '  if [ -f "${READ_COUNTER}" ]; then reads="$(cat "${READ_COUNTER}")"; fi',
+                        "  reads=$((reads + 1))",
+                        '  printf "%s" "${reads}" >"${READ_COUNTER}"',
+                        '  if [ "${reads}" -eq 1 ]; then printf "%s" "${SNAPSHOT}"; else printf "%s" "${SNAPSHOT_AFTER}"; fi',
+                        "}",
+                        "revalidate_producer_owner() { :; }",
+                        "recovery_revalidated=''",
+                        self._publish_shell_function("validate_bound_check"),
+                        'validate_bound_check 42 "${EXTERNAL_ID}" '
+                        '"Current revision review" "${DETAILS_URL}"',
+                    )
+                )
+                verify_log = temporary_path / "verified"
+                result = subprocess.run(
+                    [self._test_tool("bash"), "-c", script],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "DETAILS_URL": details_url,
+                        "EVENT_BASE": base,
+                        "EVENT_HEAD": head,
+                        "EXTERNAL_ID": external_id,
+                        "OWNER_RUN_ID": str(owner_run_id),
+                        "READ_COUNTER": str(temporary_path / "reads"),
+                        "REPOSITORY": "lightning-it/.github",
+                        "RUNNER_TEMP": temporary,
+                        "SNAPSHOT": json.dumps(snapshot, separators=(",", ":")),
+                        "SNAPSHOT_AFTER": json.dumps(
+                            snapshot_after or snapshot, separators=(",", ":")
+                        ),
+                        "VERIFY_EXIT": str(verifier_exit),
+                        "VERIFY_LOG": str(verify_log),
+                        "evidence": evidence,
+                    },
+                )
+                verification_count = (
+                    len(verify_log.read_text(encoding="utf-8"))
+                    if verify_log.exists()
+                    else 0
+                )
+                return result, verification_count
 
         common: dict[str, object] = {
             "id": check_id,
@@ -446,6 +587,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "external_id": external_id,
             "status": "completed",
             "details_url": details_url,
+            "updated_at": "2026-10-03T12:00:00Z",
         }
         success = {
             **common,
@@ -460,16 +602,35 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 "title": "Current revision review invalidated",
             },
         }
-        accepted_success = evaluate(success)
+        accepted_success, success_revalidations = evaluate(success)
         self.assertEqual(
             0, accepted_success.returncode, accepted_success.stderr
         )
-        accepted_invalidation = evaluate(invalidated)
+        self.assertEqual(0, success_revalidations)
+        accepted_invalidation, invalidation_revalidations = evaluate(
+            invalidated
+        )
         self.assertEqual(
             0,
             accepted_invalidation.returncode,
             accepted_invalidation.stderr,
         )
+        self.assertEqual(1, invalidation_revalidations)
+
+        failed_revalidation, attempts = evaluate(
+            invalidated, verifier_exit=1
+        )
+        self.assertNotEqual(0, failed_revalidation.returncode)
+        self.assertEqual(1, attempts)
+        changed_after = {
+            **invalidated,
+            "updated_at": "2026-10-03T12:00:01Z",
+        }
+        changed_during_revalidation, attempts = evaluate(
+            invalidated, snapshot_after=changed_after
+        )
+        self.assertNotEqual(0, changed_during_revalidation.returncode)
+        self.assertEqual(1, attempts)
 
         rejected = (
             {**invalidated, "external_id": "foreign"},
@@ -494,7 +655,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         for snapshot in rejected:
             with self.subTest(snapshot=snapshot):
-                self.assertNotEqual(0, evaluate(snapshot).returncode)
+                result, _ = evaluate(snapshot)
+                self.assertNotEqual(0, result.returncode)
 
     def test_copilot_dispatcher_matches_the_rerun_helper_contract(self) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
