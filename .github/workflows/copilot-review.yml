@@ -537,7 +537,7 @@ jobs:
                     else . end
                 ' <<<"${job_pages}")" || return 1
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
-                continue
+                return 1
               fi
               jq -e '
                 .[0] as $job
@@ -1912,7 +1912,7 @@ jobs:
                     else . end
                 ' <<<"${job_pages}")" || return 1
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
-                continue
+                return 1
               fi
               jq -e '
                 .[0] as $job

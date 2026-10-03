@@ -267,7 +267,7 @@ jobs:
                     else . end
                 ' <<<"${job_pages}")" || return 1
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
-                continue
+                return 1
               fi
               jq -e '
                 .[0] as $job
@@ -393,6 +393,29 @@ jobs:
           PRODUCER_OWNER_GUARD
           # shellcheck source=/dev/null
           source "${owner_guard}"
+          validate_live_pr_tuple() {
+            local live_pr
+            live_pr="$(owner_api_read \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
+            jq -e \
+              --arg author "${PR_AUTHOR}" \
+              --arg base_ref "${BASE_REF}" \
+              --arg base_sha "${BASE_SHA}" \
+              --arg head_ref "${HEAD_REF}" \
+              --arg head_sha "${HEAD_SHA}" \
+              --arg repository "${REPOSITORY}" '
+                .state == "open"
+                and .draft == false
+                and .user.login == $author
+                and .base.ref == $base_ref
+                and .base.sha == $base_sha
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head_sha
+                and .head.repo.full_name == $repository
+              ' <<<"${live_pr}" >/dev/null
+          }
+          validate_live_pr_tuple
           owner_run_id=''
           for owner_attempt in $(seq 1 10); do
             if owner_run_id="$(elect_producer_owner)"; then
@@ -405,6 +428,16 @@ jobs:
             sleep 6
           done
           [[ "${owner_run_id}" =~ ^[1-9][0-9]*$ ]]
+          current_external_kind=copilot
+          if [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
+            && [[ "${HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; then
+            current_external_kind=managed-sync
+          elif { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+              || [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; } \
+            && [[ "${HEAD_REF}" == backmerge/*-main ]]; then
+            current_external_kind=ancestry-backmerge
+          fi
+          current_external_id="mlx90-current-revision:${current_external_kind}:v6:${PR_NUMBER}:${owner_run_id}:${BASE_SHA}:${HEAD_SHA}"
           revalidate_refresh_owner() {
             local live_owner
             live_owner="$(elect_producer_owner)" || return 1
@@ -431,6 +464,7 @@ jobs:
             local expected_count="$1" expected_snapshot="${2:-}"
             local fresh live_owner_after live_owner_before
             [[ "${expected_count}" =~ ^(0|1)$ ]] || return 1
+            validate_live_pr_tuple || return 1
             live_owner_before="$(elect_producer_owner)" || return 1
             test "${live_owner_before}" = "${owner_run_id}" || return 1
             fresh="$(read_refresh_checks)" || return 1
@@ -455,7 +489,8 @@ jobs:
                 ' <<<"${fresh}" >/dev/null || return 1
             fi
             live_owner_after="$(elect_producer_owner)" || return 1
-            test "${live_owner_after}" = "${owner_run_id}"
+            test "${live_owner_after}" = "${owner_run_id}" || return 1
+            validate_live_pr_tuple
           }
           assert_refresh_rerun_budget() {
             local run="$1"
@@ -465,6 +500,74 @@ jobs:
                 and .status == "completed"
                 and .run_attempt == 1
               ' <<<"${run}" >/dev/null
+          }
+          validate_previous_tuple_handoff() {
+            local check_json="$1" expected_url="$2"
+            local binding previous_base previous_owner verified_owner
+            binding="$(jq -cer \
+              --arg author "${PR_AUTHOR}" \
+              --arg current_base "${BASE_SHA}" \
+              --arg current_kind "${current_external_kind}" \
+              --arg head "${HEAD_SHA}" \
+              --arg url "${expected_url}" \
+              --argjson pr "${PR_NUMBER}" '
+                .[0] as $check
+                | ($check.output.summary | fromjson) as $summary
+                | ($check.external_id |
+                    if test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:[1-9][0-9]*:[1-9][0-9]*:[0-9a-f]{40}:[0-9a-f]{40}$")
+                    then capture("^mlx90-current-revision:(?<kind>copilot|managed-sync|ancestry-backmerge):v6:(?<pr>[1-9][0-9]*):(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                      | {version:"v6",kind:.kind,pr:(.pr|tonumber),
+                          owner:(.owner|tonumber),base:.base,head:.head}
+                    elif test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:[0-9a-f]{40}:[0-9a-f]{40}$")
+                    then capture("^mlx90-current-revision:(?<kind>copilot|ancestry-backmerge):v5:(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                      | {version:"v5",kind:.kind,pr:null,
+                          owner:(.owner|tonumber),base:.base,head:.head}
+                    else error("previous-tuple-external-id") end
+                  ) as $binding
+                | select($check.status == "completed")
+                | select($check.conclusion == "success")
+                | select(($check.completed_at | type) == "string")
+                | select($check.details_url == $url)
+                | select($binding.kind == $current_kind)
+                | select($binding.base != $current_base)
+                | select($binding.head == $head)
+                | select($binding.version == "v5" or $binding.pr == $pr)
+                | select($summary.schema == 4)
+                | select($summary.base_sha == $binding.base)
+                | select($summary.head_sha == $binding.head)
+                | select($summary.producer_run_id == $binding.owner)
+                | select(
+                    if $binding.version == "v6" then
+                      $summary.pull_request_number == $pr
+                    else
+                      (($summary | has("pull_request_number")) | not)
+                      or $summary.pull_request_number == $pr
+                    end)
+                | select(
+                    if $binding.kind == "copilot" then
+                      ($author != "lightning-it-release-automation[bot]"
+                        and $author != "lightning-it-shared-assets-sync[bot]"
+                        and $summary.review_path
+                          == "applicable Copilot or governed automation exemption")
+                    elif $binding.kind == "managed-sync" then
+                      ($author == "lightning-it-shared-assets-sync[bot]"
+                        and $summary.review_path
+                          == "deterministic provenance-bound managed distribution exemption")
+                    else
+                      (($author == "lightning-it-release-automation[bot]"
+                          or $author == "lightning-it-shared-assets-sync[bot]")
+                        and $summary.review_path
+                          == "deterministic evidence-bound ancestry exemption")
+                    end)
+                | $binding
+              ' <<<"${check_json}")" || return 1
+            previous_base="$(jq -er '.base' <<<"${binding}")" || return 1
+            previous_owner="$(jq -er '.owner' <<<"${binding}")" || return 1
+            [[ "${previous_base}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "${previous_owner}" =~ ^[1-9][0-9]*$ ]] || return 1
+            verified_owner="$(EVENT_BASE="${previous_base}" \
+              elect_producer_owner)" || return 1
+            test "${verified_owner}" = "${previous_owner}"
           }
           neutral="$(read_refresh_checks)"
           neutral_count="$(jq 'length' <<<"${neutral}")"
@@ -476,6 +579,7 @@ jobs:
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
             if ! jq -e \
               --arg base "${BASE_SHA}" \
+              --arg current_external_id "${current_external_id}" \
               --arg head "${HEAD_SHA}" \
               --arg owner_run_id "${owner_run_id}" \
               --arg pr "${PR_NUMBER}" '
@@ -483,12 +587,7 @@ jobs:
                 | ($external_id | type) == "string"
                 and (
                   ($external_id | IN(
-                    "mlx90-current-revision:copilot:v6:" + $pr + ":"
-                      + $owner_run_id + ":" + $base + ":" + $head,
-                    "mlx90-current-revision:managed-sync:v6:" + $pr + ":"
-                      + $owner_run_id + ":" + $base + ":" + $head,
-                    "mlx90-current-revision:ancestry-backmerge:v6:" + $pr + ":"
-                      + $owner_run_id + ":" + $base + ":" + $head,
+                    $current_external_id,
                     "mlx90-current-revision:copilot:v5:" + $owner_run_id + ":"
                       + $base + ":" + $head,
                     "mlx90-current-revision:ancestry-backmerge:v5:"
@@ -498,8 +597,12 @@ jobs:
                       + ":[0-9a-f]{64}$"))
                 )
               ' <<<"${neutral}" >/dev/null; then
-              echo 'The protected review check is not bound to the immutable producer owner; refusing to mutate it.' >&2
-              exit 1
+              validate_previous_tuple_handoff "${neutral}" "${check_url}" \
+                || {
+                  echo 'The protected review check has neither the current binding nor a verified previous-tuple binding; refusing to mutate it.' >&2
+                  exit 1
+                }
+              echo 'Verified one exact previous-base tuple and its immutable producer owner; bounded handoff required.'
             fi
             recovery_evidence="$(jq -cn \
               --arg base "${BASE_SHA}" \
@@ -602,11 +705,12 @@ jobs:
                 -f status=completed \
                 -f conclusion=failure \
                 -f "details_url=${check_url}" \
+                -f "external_id=${current_external_id}" \
                 -f 'output[title]=Current revision review invalidated' \
                 -f "output[summary]=${recovery_evidence}")"
               jq -e \
                 --arg evidence "${recovery_evidence}" \
-                --arg external_id "$(jq -r '.[0].external_id' <<<"${neutral}")" \
+                --arg external_id "${current_external_id}" \
                 --arg head "${HEAD_SHA}" \
                 --arg url "${check_url}" \
                 --argjson check_id "${check_id}" '
@@ -652,11 +756,12 @@ jobs:
                 -f status=completed \
                 -f conclusion=failure \
                 -f "details_url=${check_url}" \
+                -f "external_id=${current_external_id}" \
                 -f 'output[title]=Current revision review invalidated' \
                 -f "output[summary]=${recovery_evidence}")"
               jq -e \
                 --arg evidence "${recovery_evidence}" \
-                --arg external_id "$(jq -r '.external_id' <<<"${refresh_expected_snapshot}")" \
+                --arg external_id "${current_external_id}" \
                 --arg head "${HEAD_SHA}" \
                 --arg url "${check_url}" \
                 --argjson check_id "${check_id}" '
@@ -687,11 +792,12 @@ jobs:
                 -f status=completed \
                 -f conclusion=failure \
                 -f "details_url=${check_url}" \
+                -f "external_id=${current_external_id}" \
                 -f 'output[title]=Current revision review invalidated' \
                 -f "output[summary]=${recovery_evidence}")"
               jq -e \
                 --arg evidence "${recovery_evidence}" \
-                --arg external_id "$(jq -r '.external_id' <<<"${refresh_expected_snapshot}")" \
+                --arg external_id "${current_external_id}" \
                 --arg head "${HEAD_SHA}" \
                 --arg url "${check_url}" \
                 --argjson check_id "${check_id}" '

@@ -319,6 +319,17 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotEqual(0, changed.returncode)
         self.assertIn("changed between stable reads", changed.stderr)
 
+        missing_earlier_policy = self._run_producer_owner_guard(
+            runs=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [self._producer_request_job(101)],
+                102: [self._producer_job(102)],
+            },
+            conditional=True,
+        )
+        self.assertNotEqual(0, missing_earlier_policy.returncode)
+        self.assertNotEqual("102", missing_earlier_policy.stdout)
+
     def test_draft_opened_is_ineligible_but_ready_for_review_can_own(
         self,
     ) -> None:
@@ -729,6 +740,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                         '  printf "%s" "${reads}" >"${OWNER_COUNTER}"',
                         '  if [ "${reads}" -eq 1 ]; then printf "%s" "${OWNER_BEFORE}"; else printf "%s" "${OWNER_AFTER}"; fi',
                         "}",
+                        "validate_live_pr_tuple() { :; }",
                         'read_refresh_checks() { printf "%s" "${LIVE}"; }',
                         self._refresh_shell_function(
                             "revalidate_refresh_state"
@@ -4306,6 +4318,7 @@ sleep() { :; }''',
         )
         rejected, attempts = run_with_retry([[completed_attempt_two, newer]])
         self.assertNotEqual(0, rejected.returncode)
+
         self.assertEqual(1, attempts)
 
         failed_attempt_two = self._cross_run(
@@ -4317,6 +4330,99 @@ sleep() { :; }''',
         rejected, attempts = run_with_retry([[failed_attempt_two]])
         self.assertNotEqual(0, rejected.returncode)
         self.assertEqual(1, attempts)
+
+    def test_previous_base_same_head_handoff_requires_exact_old_owner(
+        self,
+    ) -> None:
+        current_base = "a" * 40
+        previous_base = "c" * 40
+        head = "b" * 40
+        summary = {
+            "schema": 4,
+            "base_sha": previous_base,
+            "head_sha": head,
+            "producer_run_id": 77,
+            "pull_request_number": 123,
+            "review_path": (
+                "applicable Copilot or governed automation exemption"
+            ),
+        }
+        check = [{
+            "status": "completed",
+            "conclusion": "success",
+            "completed_at": "2026-10-03T20:00:00Z",
+            "details_url": "https://github.example/runs/42",
+            "external_id": (
+                "mlx90-current-revision:copilot:v6:123:77:"
+                f"{previous_base}:{head}"
+            ),
+            "output": {"summary": json.dumps(summary)},
+        }]
+        script = "\n".join((
+            "set -euo pipefail",
+            "elect_producer_owner() {",
+            '  test "${EVENT_BASE}" = "${EXPECTED_PREVIOUS_BASE}"',
+            '  printf "%s" "${ELECTED_PREVIOUS_OWNER}"',
+            "}",
+            self._refresh_shell_function(
+                "validate_previous_tuple_handoff"
+            ),
+            'validate_previous_tuple_handoff "${CHECK}" "${CHECK_URL}"',
+        ))
+
+        def evaluate(
+            candidate: list[dict[str, object]], *, elected_owner: str = "77"
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "BASE_SHA": current_base,
+                    "CHECK": json.dumps(candidate),
+                    "CHECK_URL": "https://github.example/runs/42",
+                    "ELECTED_PREVIOUS_OWNER": elected_owner,
+                    "EXPECTED_PREVIOUS_BASE": previous_base,
+                    "HEAD_SHA": head,
+                    "PR_AUTHOR": "litroc",
+                    "PR_NUMBER": "123",
+                    "current_external_kind": "copilot",
+                },
+            )
+
+        accepted = evaluate(check)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+
+        for drift in (
+            [{**check[0], "external_id": "foreign"}],
+            [{
+                **check[0],
+                "output": {"summary": json.dumps({
+                    **summary, "base_sha": "d" * 40
+                })},
+            }],
+            [{
+                **check[0],
+                "external_id": (
+                    "mlx90-current-revision:copilot:v6:123:77:"
+                    f"{current_base}:{head}"
+                ),
+                "output": {"summary": json.dumps({
+                    **summary, "base_sha": current_base
+                })},
+            }],
+        ):
+            with self.subTest(drift=drift):
+                self.assertNotEqual(0, evaluate(drift).returncode)
+        self.assertNotEqual(0, evaluate(check, elected_owner="78").returncode)
+
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(
+            3, refresh.count('-f "external_id=${current_external_id}"')
+        )
+        self.assertGreaterEqual(refresh.count("validate_live_pr_tuple"), 4)
 
     def test_cross_success_converges_transient_detail_and_job_reads(
         self,
