@@ -23,18 +23,29 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 class CopilotReviewRefreshTests(unittest.TestCase):
     @staticmethod
-    def _producer_owner_guard() -> str:
+    def _producer_owner_guards() -> list[str]:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
-        start = workflow.index(marker) + len(marker)
-        end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
-        return workflow[start:end]
+        guards: list[str] = []
+        cursor = 0
+        while marker in workflow[cursor:]:
+            start = workflow.index(marker, cursor) + len(marker)
+            end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
+            guards.append(workflow[start:end])
+            cursor = end + 1
+        return guards
+
+    @classmethod
+    def _producer_owner_guard(cls) -> str:
+        return cls._producer_owner_guards()[0]
 
     def _run_producer_owner_guard(
         self,
         *,
         runs: list[dict[str, object]],
         jobs: dict[int, list[dict[str, object]]],
+        runs_second: list[dict[str, object]] | None = None,
+        conditional: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         bash = self._test_tool("bash")
         jq = self._test_tool("jq")
@@ -47,7 +58,15 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "    case \"${argument}\" in repos/*) endpoint=\"${argument}\" ;; esac\n"
             "  done\n"
             "  if [[ \"${endpoint}\" == *'/actions/runs?'* ]]; then\n"
-            "    printf '%s' \"${RUN_PAGES}\"\n"
+            "    local reads=0\n"
+            "    if [ -f \"${COUNTER_FILE}\" ]; then reads=\"$(cat \"${COUNTER_FILE}\")\"; fi\n"
+            "    reads=$((reads + 1))\n"
+            "    printf '%s' \"${reads}\" >\"${COUNTER_FILE}\"\n"
+            "    if [ \"${reads}\" -eq 1 ]; then\n"
+            "      printf '%s' \"${RUN_PAGES}\"\n"
+            "    else\n"
+            "      printf '%s' \"${RUN_PAGES_SECOND}\"\n"
+            "    fi\n"
             "    return 0\n"
             "  fi\n"
             "  if [[ \"${endpoint}\" =~ /actions/runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then\n"
@@ -64,30 +83,40 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "  return 93\n"
             "}\n"
             + self._producer_owner_guard()
-            + "\nelect_producer_owner\n"
+            + (
+                "\nif owner=\"$(elect_producer_owner)\"; then "
+                "printf '%s' \"${owner}\"; else exit 71; fi\n"
+                if conditional
+                else "\nelect_producer_owner\n"
+            )
         )
-        environment = {
-            "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
-            "REPOSITORY": "lightning-it/shared-assets-lit",
-            "PR_NUMBER": "2334",
-            "EVENT_BASE": "b" * 40,
-            "EVENT_HEAD": "h" * 40,
-            "EVENT_HEAD_REF": "feature/li179",
-            "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
-        }
-        environment.update(
-            {
-                f"JOBS_{run_id}": json.dumps([{"jobs": records}])
-                for run_id, records in jobs.items()
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {
+                "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
+                "REPOSITORY": "lightning-it/shared-assets-lit",
+                "PR_NUMBER": "2334",
+                "EVENT_BASE": "b" * 40,
+                "EVENT_HEAD": "h" * 40,
+                "EVENT_HEAD_REF": "feature/li179",
+                "COUNTER_FILE": str(Path(temporary) / "reads"),
+                "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
+                "RUN_PAGES_SECOND": json.dumps(
+                    [{"workflow_runs": runs_second or runs}]
+                ),
             }
-        )
-        return subprocess.run(
-            [bash, "-c", script],
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+            environment.update(
+                {
+                    f"JOBS_{run_id}": json.dumps([{"jobs": records}])
+                    for run_id, records in jobs.items()
+                }
+            )
+            return subprocess.run(
+                [bash, "-c", script],
+                env=environment,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
 
     @staticmethod
     def _producer_run(run_id: int, attempt: int = 1) -> dict[str, object]:
@@ -178,6 +207,47 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             },
         )
         self.assertNotEqual(0, duplicate_attempt_job.returncode)
+
+    def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
+        self,
+    ) -> None:
+        malformed = self._producer_run(101)
+        malformed["run_attempt"] = "1"
+        conditional = self._run_producer_owner_guard(
+            runs=[malformed],
+            jobs={101: [self._producer_job(101)]},
+            conditional=True,
+        )
+        self.assertNotEqual(0, conditional.returncode)
+
+        changed = self._run_producer_owner_guard(
+            runs=[self._producer_run(102)],
+            runs_second=[self._producer_run(101), self._producer_run(102)],
+            jobs={
+                101: [self._producer_job(101)],
+                102: [self._producer_job(102)],
+            },
+            conditional=True,
+        )
+        self.assertNotEqual(0, changed.returncode)
+        self.assertIn("changed between stable reads", changed.stderr)
+
+    def test_helper_reuses_guard_and_revalidates_owner_before_dispatch(
+        self,
+    ) -> None:
+        guards = self._producer_owner_guards()
+        self.assertEqual(2, len(guards))
+        self.assertEqual(guards[0], guards[1])
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        dispatch = workflow.split(
+            "      - name: Dispatch the protected re-evaluation helper ", 1
+        )[1]
+        revalidation = 'live_owner="$(elect_producer_owner)" || exit 1'
+        mutation = "actions/workflows/current-revision-rerun.yml/dispatches"
+        self.assertIn(revalidation, dispatch)
+        self.assertIn('test "${live_owner}" = "${OWNER_RUN_ID}"', dispatch)
+        self.assertIn('test "${live_owner}" = "${PRODUCER_RUN_ID}"', dispatch)
+        self.assertLess(dispatch.index(revalidation), dispatch.index(mutation))
 
     def test_neutral_mutation_revalidates_owner_check_id_and_external_id(
         self,
