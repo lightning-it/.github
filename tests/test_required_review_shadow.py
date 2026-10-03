@@ -980,6 +980,14 @@ class EventAdapterTests(unittest.TestCase):
             self.assertEqual("invalid-evidence", json.loads(output.getvalue())["reason"])
             self.assertNotIn("private", output.getvalue())
 
+    def test_documented_execution_boundary_matches_committed_policy(self):
+        policy = json.loads((ROOT / ".lit/required-review-shadow.json").read_text())
+        documentation = (ROOT / "docs/required-review-shadow.md").read_text()
+        self.assertEqual("shadow", policy["lifecycle"])
+        self.assertIn("is `lifecycle: shadow`", documentation)
+        self.assertIn("`LI219_EVENT_SHADOW` remains absent", documentation)
+        self.assertIn("every output remains `authority: none` and `writes: 0`", documentation)
+
     def test_workflows_are_default_off_read_only_and_use_protected_source(self):
         import yaml
         for filename in ("required-review-event-shadow.yml", "required-review-sweeper-shadow.yml"):
