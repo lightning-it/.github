@@ -44,6 +44,13 @@ LI-227's private bounded I/O kernel, including redirect/proxy refusal, active
 POSIX absolute transport deadline, truncated-body checks and sanitized errors.
 The public LI-227 single-object CLI and route contract are unchanged.
 
+Numeric identity bindings use one strict positive-integer predicate for native
+run/attempt, PR, repository, actor, ruleset, workflow-source repository, App,
+reviewer and job IDs, including webhook and sweeper rereads. Floating-point,
+boolean, string, null, zero and negative values reject before they can compare
+equal to an expected ID. Native list record IDs are also checked by the bounded
+inventory reader. Opaque GraphQL node IDs remain separately validated strings.
+
 Two uncached authoritative snapshots bind the producer run/attempt, exact PR
 head/base, protected develop tip, controller ancestry, required-workflow rule,
 actor, admission run, native neutral result, current-head Copilot review,

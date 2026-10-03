@@ -150,6 +150,141 @@ class EventAdapterTests(unittest.TestCase):
                                 EVENTS.observe(api, self.policy, 200, 7, self.now)
                         self.assertEqual(selected, api.paths.count(f"{self.prefix}/actions/runs/200"))
 
+    def assert_identity_matrix(self, endpoint, fields, operation, reads):
+        for field in fields:
+            original = self.responses[endpoint]
+            for key in field:
+                original = original[key]
+            for invalid in (float(original), True, False, str(original), None, 0, -1):
+                for selected in range(1, reads + 1):
+                    with self.subTest(endpoint=endpoint, field=field, value=invalid,
+                                      operation=operation, read=selected):
+                        api = self.api()
+                        def mutate(path, payload, occurrence):
+                            if path == endpoint and occurrence == selected:
+                                target = payload
+                                for key in field[:-1]:
+                                    target = target[key]
+                                target[field[-1]] = invalid
+                            return payload
+                        api.transform = mutate
+                        with self.assertRaises((EVENTS.ShadowRejected,
+                                                EVENTS.READS.TRANSPORT.ReadFailure)):
+                            if operation == "dispatch":
+                                EVENTS.dispatch(api, self.policy, "workflow_run", self.event(), self.now)
+                            elif operation == "observer":
+                                EVENTS.observe(api, self.policy, 200, 7, self.now)
+                            else:
+                                EVENTS.sweep(api, self.policy, self.now + 86400)
+                        self.assertEqual(selected, api.paths.count(endpoint))
+
+    def test_producer_identity_matrix_at_all_dispatch_reads(self):
+        self.assert_identity_matrix(f"{self.prefix}/actions/runs/200", (
+            ("id",), ("run_attempt",), ("repository", "id"), ("head_repository", "id"),
+            ("actor", "id"), ("triggering_actor", "id")), "dispatch", 3)
+
+    def test_admission_identity_matrix_on_both_paths_and_reads(self):
+        fields = (("id",), ("run_attempt",), ("repository", "id"), ("head_repository", "id"),
+                  ("actor", "id"), ("triggering_actor", "id"), ("pull_requests", 0, "number"),
+                  ("pull_requests", 0, "base", "repo", "id"),
+                  ("pull_requests", 0, "head", "repo", "id"))
+        for operation in ("observer", "sweeper"):
+            self.assert_identity_matrix(f"{self.prefix}/actions/runs/201", fields, operation, 2)
+
+    def test_observer_identity_matrix_on_both_snapshots(self):
+        review_comments = f"{self.prefix}/pulls/7/reviews/500/comments?per_page=100&page=1"
+        self.responses[review_comments] = [{"id": 701, "body": "Reviewed code"}]
+        cases = (
+            (f"{self.prefix}/pulls/7", (("id",), ("number",), ("user", "id"),
+                                      ("base", "repo", "id"), ("head", "repo", "id"))),
+            (f"{self.prefix}/rules/branches/develop", ((0, "ruleset_id"),
+                 (0, "parameters", "workflows", 0, "repository_id"))),
+            (f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1", (
+                ("check_runs", 0, "id"), ("check_runs", 0, "app", "id"),
+                ("check_runs", 1, "id"), ("check_runs", 1, "app", "id"))),
+            (f"{self.prefix}/pulls/7/reviews?per_page=100&page=1", ((0, "id"), (0, "user", "id"))),
+            (review_comments, ((0, "id"),)),
+            (f"{self.prefix}/issues/7/comments?per_page=100&page=1", ((0, "id"), (0, "user", "id"))),
+            ("graphql", (("data", "repository", "pullRequest", "number"),)),
+            (f"{self.prefix}/actions/runs/200/jobs?filter=all&per_page=100&page=1", (
+                ("jobs", 0, "id"), ("jobs", 0, "run_id"), ("jobs", 0, "run_attempt"))),
+        )
+        for endpoint, fields in cases:
+            self.assert_identity_matrix(endpoint, fields, "observer", 2)
+
+    def test_controller_ancestry_requires_integer_zero_on_both_reads(self):
+        endpoint = f"{self.prefix}/compare/{self.base}...{self.base}"
+        self.responses[endpoint] = {"status": "ahead", "behind_by": 0,
+                                    "merge_base_commit": {"sha": self.base}}
+        self.assertEqual("success", EVENTS.observe(
+            self.api(), self.policy, 200, 7, self.now)["would_finalize"])
+        for invalid in (0.0, False, True, "0", None, -1, 1):
+            for selected in (1, 2):
+                with self.subTest(value=invalid, read=selected):
+                    api = self.api()
+                    def mutate(path, payload, occurrence):
+                        if path == endpoint and occurrence == selected:
+                            payload["behind_by"] = invalid
+                        return payload
+                    api.transform = mutate
+                    with self.assertRaisesRegex(EVENTS.ShadowRejected, "^controller-ancestry$"):
+                        EVENTS.observe(api, self.policy, 200, 7, self.now)
+                    self.assertEqual(selected, api.paths.count(endpoint))
+
+    def test_sweeper_identity_matrix_covers_inventory_and_revalidation(self):
+        cases = (
+            (f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1", (
+                (0, "id"), (0, "number"), (0, "user", "id"),
+                (0, "base", "repo", "id"), (0, "head", "repo", "id"))),
+            (f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1", (
+                ("check_runs", 0, "id"), ("check_runs", 0, "app", "id"))),
+            (f"{self.prefix}/check-runs/300", (("id",), ("app", "id"))),
+            (f"{self.prefix}/pulls/7", (("id",), ("number",), ("user", "id"),
+                                      ("base", "repo", "id"), ("head", "repo", "id"))),
+        )
+        for endpoint, fields in cases:
+            self.assert_identity_matrix(endpoint, fields, "sweeper", 1)
+
+    def test_event_identity_matrix_rejects_malformed_numeric_evidence(self):
+        for field in (("repository", "id"), ("workflow_run", "id"),
+                      ("workflow_run", "run_attempt"), ("workflow_run", "actor", "id"),
+                      ("workflow_run", "triggering_actor", "id"),
+                      ("workflow_run", "repository", "id"),
+                      ("workflow_run", "head_repository", "id")):
+            original = self.event()
+            for key in field:
+                original = original[key]
+            for invalid in (float(original), True, False, str(original), None, 0, -1):
+                with self.subTest(field=field, value=invalid):
+                    event = deepcopy(self.event())
+                    target = event
+                    for key in field[:-1]:
+                        target = target[key]
+                    target[field[-1]] = invalid
+                    with self.assertRaises(EVENTS.ShadowRejected):
+                        EVENTS.dispatch(self.api(), self.policy, "workflow_run", event, self.now)
+
+    def test_identity_inputs_and_predicate_reject_coercible_values(self):
+        for expected in (1, 7, 200, 1112629689):
+            self.assertTrue(EVENTS.id_matches(expected, expected))
+            for invalid in (float(expected), True, False, str(expected), None, 0, -1):
+                with self.subTest(expected=expected, value=invalid):
+                    self.assertFalse(EVENTS.id_matches(invalid, expected))
+                    self.assertFalse(EVENTS.id_matches(expected, invalid))
+        for value in (200.0, True, False, "200", None, 0, -1):
+            for operation in ("producer", "admission", "snapshot"):
+                with self.subTest(operation=operation, value=value):
+                    api = self.api()
+                    with self.assertRaises(EVENTS.ShadowRejected):
+                        if operation == "producer":
+                            EVENTS.producer(api, self.policy, value)
+                        elif operation == "admission":
+                            EVENTS.admission_run(api, self.policy, value, 7,
+                                                 self.base, self.head, "feature")
+                        else:
+                            EVENTS.snapshot(api, self.policy, 200, value)
+                    self.assertEqual(0, api.requests)
+
     def assert_summary_rejected(self, summary, reason):
         path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
         for selected in (1, 2):

@@ -42,6 +42,11 @@ def require(condition, reason):
         raise ShadowRejected(reason)
 
 
+def id_matches(value, expected):
+    """Compare native numeric identities without bool/float coercion."""
+    return STATE.positive(value) and STATE.positive(expected) and value == expected
+
+
 RUN_PATH = ".github/workflows/copilot-review.yml"
 ADMISSION_PATH = ".github/workflows/supplementary-current-revision-required.yml"
 POLICY_STEP = "Verify current Copilot review and resolved findings"
@@ -116,8 +121,7 @@ def validate_policy(policy):
     require(type(policy["schema"]) is int and policy["schema"] == 1, "policy-schema")
     require(policy["lifecycle"] in ("inactive", "shadow"), "writer-not-supported")
     require(policy["repository"] == "lightning-it/.github"
-            and type(policy["repository_id"]) is int
-            and policy["repository_id"] == 1112629689
+            and id_matches(policy["repository_id"], 1112629689)
             and policy["controller_ref"] == "develop", "policy-scope")
     for key, maximum in (("max_pages", 3), ("max_requests", 100),
                          ("max_seconds", 90), ("reservation_ttl_seconds", 86400)):
@@ -128,15 +132,15 @@ def validate_policy(policy):
 def producer(api, policy, run_id):
     require(STATE.positive(run_id), "run-id")
     run = api.read(f"repos/{policy['repository']}/actions/runs/{run_id}")
-    require(run.get("id") == run_id and type(run.get("run_attempt")) is int
-            and run["run_attempt"] == 1, "run-attempt")
+    require(id_matches(run.get("id"), run_id) and id_matches(run.get("run_attempt"), 1),
+            "run-attempt")
     for key in ("repository", "head_repository"):
-        require(run.get(key, {}).get("id") == policy["repository_id"]
+        require(id_matches(run.get(key, {}).get("id"), policy["repository_id"])
                 and run[key].get("full_name") == policy["repository"], "run-repository")
     for key in ("actor", "triggering_actor"):
         actor = run.get(key)
-        require(type(actor) is dict and type(actor.get("id")) is int
-                and actor["id"] == 76040632 and actor.get("login") == "litroc"
+        require(type(actor) is dict and id_matches(actor.get("id"), 76040632)
+                and actor.get("login") == "litroc"
                 and actor.get("type") == "User", "run-actor")
     require(run.get("path") == RUN_PATH and run.get("event") == "pull_request_target"
             and run.get("name") == "Current revision review gate", "run-workflow")
@@ -147,12 +151,13 @@ def producer(api, policy, run_id):
 
 
 def admission_run(api, policy, run_id, number, base, head, head_ref):
+    require(STATE.positive(run_id), "admission-run-id")
     require(STATE.positive(number), "admission-pr-number")
     for side, sha in (("base", base), ("head", head)):
         require(type(sha) is str and re.fullmatch(r"[0-9a-f]{40}", sha), "admission-" + side)
     require(valid_head_ref(head_ref), "admission-head-ref")
     admission = api.read(f"repos/{policy['repository']}/actions/runs/{run_id}")
-    require(type(admission.get("id")) is int and admission["id"] == run_id
+    require(id_matches(admission.get("id"), run_id)
             and admission.get("path") == ADMISSION_PATH
             and admission.get("event") == "pull_request_target"
             and admission.get("head_sha") == head, "admission-provenance")
@@ -162,25 +167,23 @@ def admission_run(api, policy, run_id, number, base, head, head_ref):
                 for action in ("opened", "synchronize", "reopened", "ready_for_review", "edited")),
             "admission-title")
     association = one(admission.get("pull_requests"), "admission-pr-association")
-    require(type(association) is dict and STATE.positive(association.get("number"))
-            and association["number"] == number, "admission-pr-association")
+    require(type(association) is dict and id_matches(association.get("number"), number),
+            "admission-pr-association")
     for side, sha, ref in (("base", base, "develop"), ("head", head, head_ref)):
         bound = association.get(side)
         require(type(bound) is dict and bound.get("sha") == sha and bound.get("ref") == ref
                 and type(bound.get("repo")) is dict
-                and type(bound["repo"].get("id")) is int
-                and bound["repo"].get("id") == policy["repository_id"]
+                and id_matches(bound["repo"].get("id"), policy["repository_id"])
                 and bound["repo"].get("url") == f"{TRANSPORT.ORIGIN}/repos/{policy['repository']}",
                 "admission-pr-binding")
     require(admission.get("head_branch") == head_ref, "admission-head-ref")
     for key in ("repository", "head_repository"):
-        require(admission.get(key, {}).get("id") == policy["repository_id"]
+        require(id_matches(admission.get(key, {}).get("id"), policy["repository_id"])
                 and admission[key].get("full_name") == policy["repository"],
                 "admission-repository")
-    require(type(admission.get("run_attempt")) is int and admission["run_attempt"] == 1
+    require(id_matches(admission.get("run_attempt"), 1)
             and all(type(admission.get(key)) is dict
-                    and type(admission[key].get("id")) is int
-                    and admission[key]["id"] == 76040632
+                    and id_matches(admission[key].get("id"), 76040632)
                     and admission[key].get("login") == "litroc"
                     and admission[key].get("type") == "User"
                     for key in ("actor", "triggering_actor")), "admission-actor-attempt")
@@ -188,17 +191,19 @@ def admission_run(api, policy, run_id, number, base, head, head_ref):
 
 
 def snapshot(api, policy, run_id, number):
+    require(STATE.positive(number), "pull-number")
     repo = policy["repository"]
     prefix = "repos/" + repo
     run = producer(api, policy, run_id)
     pull = api.read(f"{prefix}/pulls/{number}")
-    require(pull.get("number") == number and pull.get("state") == "open"
+    require(STATE.positive(pull.get("id")) and id_matches(pull.get("number"), number)
+            and pull.get("state") == "open"
             and pull.get("draft") is False, "pull-state")
-    require(pull.get("user", {}).get("id") == 76040632
+    require(id_matches(pull.get("user", {}).get("id"), 76040632)
             and pull["user"].get("login") == "litroc"
             and pull["user"].get("type") == "User", "pull-author")
     for side in ("base", "head"):
-        require(pull[side]["repo"]["id"] == policy["repository_id"]
+        require(id_matches(pull[side]["repo"].get("id"), policy["repository_id"])
                 and pull[side]["repo"]["full_name"] == repo, "pull-repository")
     head, base = pull["head"]["sha"], pull["base"]["sha"]
     require(head == run["head_sha"] and pull["head"]["ref"] == run["head_branch"]
@@ -208,17 +213,18 @@ def snapshot(api, policy, run_id, number):
             "protected-base-drift")
     rules = api.read(f"{prefix}/rules/branches/develop")
     require(type(rules) is list and all(type(rule) is dict for rule in rules), "rules-shape")
-    require(any(rule.get("ruleset_id") == 21200954
+    require(any(id_matches(rule.get("ruleset_id"), 21200954)
         and rule.get("type") == "workflows" and rule.get("parameters", {}).get(
             "workflows") == [{"path": ".github/workflows/dot-github-current-revision-required.yml",
                               "ref": "refs/heads/main", "repository_id": 1103407173}]
+        and id_matches(rule["parameters"]["workflows"][0]["repository_id"], 1103407173)
         for rule in rules), "required-workflow-authority")
     checks = api.inventory(f"{prefix}/commits/{head}/check-runs?filter=all", "check_runs")
     expected = f"mlx90-current-revision:copilot:v6:{number}:{run_id}:{base}:{head}"
     neutral = one([check for check in checks if check.get("name") == "Current revision review"
                    and check.get("external_id") == expected], "neutral-not-unique")
     require(neutral.get("status") == "completed" and neutral.get("conclusion") == "success"
-            and neutral.get("app", {}).get("id") == 15368
+            and id_matches(neutral.get("app", {}).get("id"), 15368)
             and neutral["app"].get("slug") == "github-actions"
             and neutral.get("head_sha") == head, "neutral-provenance")
     summary = parsed(neutral["output"]["summary"])
@@ -232,27 +238,27 @@ def snapshot(api, policy, run_id, number):
     require(summary["review_path"] == "applicable Copilot or governed automation exemption",
             "neutral-summary-path")
     require(summary.get("base_sha") == base
-            and summary.get("head_sha") == head and summary.get("producer_run_id") == run_id
-            and summary.get("pull_request_number") == number
+            and summary.get("head_sha") == head and id_matches(summary.get("producer_run_id"), run_id)
+            and id_matches(summary.get("pull_request_number"), number)
             and summary.get("run_url") == f"https://github.com/{repo}/actions/runs/{run_id}",
             "neutral-binding")
     controller = summary.get("controller_sha")
     require(type(controller) is str and re.fullmatch(r"[0-9a-f]{40}", controller), "controller")
     ancestry = api.read(f"{prefix}/compare/{controller}...{base}")
     require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
-            and ancestry.get("behind_by") == 0
+            and type(ancestry.get("behind_by")) is int and ancestry["behind_by"] == 0
             and ancestry.get("merge_base_commit", {}).get("sha") == controller), "controller-ancestry")
     reservation = one(scoped_reservations(checks, number, base, head), "reservation-not-unique")
     bound = RESERVATION.fullmatch(reservation["external_id"])
     require(bound.groups()[1:] == (str(number), base, head)
             and reservation.get("head_sha") == head
-            and reservation.get("app", {}).get("id") == 15368
+            and id_matches(reservation.get("app", {}).get("id"), 15368)
             and reservation["app"].get("slug") == "github-actions", "reservation-binding")
     admission_id = int(bound[1])
     admission = admission_run(api, policy, admission_id, number, base, head, pull["head"]["ref"])
     reviews = api.inventory(f"{prefix}/pulls/{number}/reviews")
     review = one([item for item in reviews if item.get("commit_id") == head
-                  and item.get("user", {}).get("id") == 175728472
+                  and id_matches(item.get("user", {}).get("id"), 175728472)
                   and item["user"].get("login") == "copilot-pull-request-reviewer[bot]"
                   and item["user"].get("type") == "Bot"], "review-not-unique")
     require(review.get("state") in ("COMMENTED", "APPROVED"), "review-state")
@@ -277,7 +283,7 @@ def snapshot(api, policy, run_id, number):
     requested = None
     if requests:
         request = requests[0]
-        require(request.get("user", {}).get("id") == 41898282
+        require(id_matches(request.get("user", {}).get("id"), 41898282)
                 and request["user"].get("login") == "github-actions[bot]"
                 and request["user"].get("type") == "Bot", "request-marker-provenance")
         requested = epoch(request["created_at"])
@@ -286,7 +292,7 @@ def snapshot(api, policy, run_id, number):
     threads = api.read("graphql", {"owner": owner, "name": name, "number": number})
     require(not threads.get("errors"), "threads-api-errors")
     graph = threads["data"]["repository"]["pullRequest"]
-    require(graph.get("number") == number and graph.get("headRefOid") == head
+    require(id_matches(graph.get("number"), number) and graph.get("headRefOid") == head
             and graph.get("baseRefOid") == base and "lastEditedAt" in graph, "thread-pull-drift")
     graph_reviews = graph["reviews"]
     require(type(graph_reviews.get("totalCount")) is int
@@ -326,8 +332,8 @@ def snapshot(api, policy, run_id, number):
                     for item in items["nodes"]), "thread-edited-after-evidence")
     jobs = api.inventory(f"{prefix}/actions/runs/{run_id}/jobs?filter=all", "jobs")
     for item in jobs:
-        require(item.get("run_id") == run_id and type(item.get("run_attempt")) is int
-                and item["run_attempt"] == 1 and item.get("head_sha") == head,
+        require(id_matches(item.get("run_id"), run_id) and id_matches(item.get("run_attempt"), 1)
+                and item.get("head_sha") == head,
                 "job-inventory-binding")
         require((item.get("status"), item.get("conclusion")) in (
             ("completed", "success"), ("completed", "skipped"), ("in_progress", None),
@@ -409,9 +415,10 @@ def sweep(api, policy, now):
     require(len(pulls) <= 14, "sweeper-pull-budget")
     results = []
     for pull in pulls:
-        require(STATE.positive(pull.get("number")) and pull.get("state") == "open"
+        require(STATE.positive(pull.get("number"))
+                and STATE.positive(pull.get("user", {}).get("id")) and pull.get("state") == "open"
                 and pull["base"]["ref"] == "develop"
-                and all(pull[side]["repo"]["id"] == policy["repository_id"]
+                and all(id_matches(pull[side]["repo"].get("id"), policy["repository_id"])
                         and pull[side]["repo"]["full_name"] == policy["repository"]
                         for side in ("head", "base")),
                 "sweeper-pull-state")
@@ -424,8 +431,8 @@ def sweep(api, policy, now):
             match = RESERVATION.fullmatch(check.get("external_id") or "")
             require(check.get("head_sha") == head and match[4] == head
                     and match[3] == base
-                    and int(match[2]) == pull["number"]
-                    and check.get("app", {}).get("id") == 15368
+                    and id_matches(int(match[2]), pull["number"])
+                    and id_matches(check.get("app", {}).get("id"), 15368)
                     and check["app"].get("slug") == "github-actions", "sweeper-binding")
             reservation_state(check)
             if check["status"] == "completed":
@@ -437,10 +444,16 @@ def sweep(api, policy, now):
             admission = admission_run(api, policy, int(match[1]), pull["number"],
                                       base, head, pull["head"]["ref"])
             refreshed = api.read(f"{prefix}/check-runs/{check['id']}")
-            require(refreshed == check, "sweeper-reservation-drift")
+            require(id_matches(refreshed.get("id"), check["id"])
+                    and id_matches(refreshed.get("app", {}).get("id"), 15368)
+                    and refreshed == check, "sweeper-reservation-drift")
             current = api.read(f"{prefix}/pulls/{pull['number']}")
             require(type(current) is dict and current.get("state") == "open"
-                    and current.get("number") == pull["number"]
+                    and id_matches(current.get("id"), pull["id"])
+                    and id_matches(current.get("number"), pull["number"])
+                    and id_matches(current.get("user", {}).get("id"), pull["user"]["id"])
+                    and all(id_matches(current.get(side, {}).get("repo", {}).get("id"),
+                                       policy["repository_id"]) for side in ("base", "head"))
                     and current.get("base") == pull["base"]
                     and current.get("head") == pull["head"], "sweeper-pull-drift")
             require(admission_run(api, policy, int(match[1]), pull["number"],
@@ -462,7 +475,7 @@ def dispatch(api, policy, event_name, event, now):
     if policy["lifecycle"] == "inactive":
         return {"schema": "li219-shadow-disabled/v1", "authority": "none", "writes": 0}
     require(type(event) is dict and type(event.get("repository")) is dict, "event-shape")
-    require(event.get("repository", {}).get("id") == policy["repository_id"]
+    require(id_matches(event.get("repository", {}).get("id"), policy["repository_id"])
             and event["repository"].get("full_name") == policy["repository"], "event-repository")
     if event_name == "schedule":
         return sweep(api, policy, now)
@@ -470,14 +483,16 @@ def dispatch(api, policy, event_name, event, now):
     delivered = event["workflow_run"]
     require(type(delivered) is dict, "event-run-shape")
     run = producer(api, policy, delivered.get("id"))
-    require(all(delivered.get(key) == run.get(key) for key in (
-        "id", "run_attempt", "head_sha", "path", "event", "status", "conclusion",
+    require(all(id_matches(delivered.get(key), run.get(key)) for key in ("id", "run_attempt"))
+            and all(delivered.get(key) == run.get(key) for key in (
+        "head_sha", "path", "event", "status", "conclusion",
     )), "event-run-drift")
-    for field, keys in (("actor", ("id", "login", "type")),
-                        ("triggering_actor", ("id", "login", "type")),
-                        ("repository", ("id", "full_name")),
-                        ("head_repository", ("id", "full_name"))):
+    for field, keys in (("actor", ("login", "type")),
+                        ("triggering_actor", ("login", "type")),
+                        ("repository", ("full_name",)),
+                        ("head_repository", ("full_name",))):
         require(type(delivered.get(field)) is dict
+                and id_matches(delivered[field].get("id"), run[field].get("id"))
                 and all(delivered[field].get(key) == run[field].get(key) for key in keys),
                 "event-identity-drift")
     require(run["status"] == "completed" and run["conclusion"] == "success", "event-terminal")
