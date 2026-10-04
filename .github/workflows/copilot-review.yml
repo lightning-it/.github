@@ -434,7 +434,7 @@ jobs:
             local pj rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
-            jq -e --argjson n "${PR_NUMBER}" '
+            jq -e --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
@@ -466,7 +466,7 @@ jobs:
                 and (.head_repository.full_name | type) == "string"
                 and (.head_repository.full_name | length) > 0
                 and (.pull_requests | type) == "array"
-                and (.pull_requests | length) == 1
+                and (.pull_requests | length) <= 10
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
@@ -480,7 +480,14 @@ jobs:
                   and .head.sha == $r.head_sha
                   and (.head.ref | type) == "string"
                   and (.head.ref | length) > 0
-                  and .head.ref == $r.head_branch))
+                  and .head.ref == $r.head_branch)
+                and (if .event == "pull_request_target"
+                    and .path == ".github/workflows/copilot-review.yml"
+                    and .name == "Current revision review gate"
+                    and .head_sha == $h
+                    and .repository.full_name == $repo
+                    and .head_repository.full_name == $repo
+                  then (.pull_requests | length) == 1 else true end))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${rpages}" >/dev/null || return 1

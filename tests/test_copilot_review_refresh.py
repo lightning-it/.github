@@ -337,6 +337,26 @@ gh() {
                 self._owner(None, guard=guard,
                     runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
                     fpulls={999: bad}, cond=True)
+    def test_unrelated_run_associations(self):
+        unrelated = self._run(100)
+        unrelated["path"] = ".github/workflows/repository-quality.yml"
+        first = unrelated["pull_requests"][0]
+        second = json.loads(json.dumps(first))
+        second["number"] = 999
+        second["base"]["sha"] = "d" * 40
+        for associations in ([], [first, second]):
+            candidate = json.loads(json.dumps(unrelated))
+            candidate["pull_requests"] = associations
+            for guard in self._guards():
+                self._owner("101", guard=guard,
+                    runs=[candidate, self._run(101)],
+                    jobs={101: [self._job(101)]}, cond=True)
+        malformed = json.loads(json.dumps(unrelated))
+        malformed["pull_requests"] = [{**first, "number": 123.5}]
+        for guard in self._guards():
+            self._owner(None, guard=guard,
+                runs=[malformed, self._run(101)],
+                jobs={101: [self._job(101)]}, cond=True)
     def test_owner_rename(self):
         guards = self._guards()
         original = self._run(101)
@@ -566,7 +586,7 @@ read_refresh_checks() { printf %s "${LIVE}"; }
 ''' + self._rfn("revalidate_refresh_state") + \
                     '\nrevalidate_refresh_state 1 "${EXPECTED}"\n'
                 return self._run_bash(script, {
-                    "EXPECTED": json.dumps(want, separators=(",", ":")),
+                    "EXPECTED": json.dumps([want], separators=(",", ":")),
                     "LIVE": json.dumps(live, separators=(",", ":")),
                     "OWNER_AFTER": str(owners[1]), "OWNER_BEFORE": str(owners[0]),
                     "OWNER_COUNTER": str(Path(tmp) / "owners"),
@@ -577,6 +597,77 @@ read_refresh_checks() { printf %s "${LIVE}"; }
                              ([want, want], (77, 77)),
                              ([want], (77, 78))):
             self.assertNotEqual(0, evaluate(live, owners).returncode)
+    def test_duplicate_refresh_checks_are_invalidated_in_id_order(self):
+        base, head, owner = "b" * 40, "c" * 40, 77
+        binding = f"mlx90-current-revision:copilot:v6:2334:{owner}:{base}:{head}"
+        def check(check_id, external_id=binding):
+            return {"id": check_id, "name": "Current revision review",
+                "app": {"id": 15368, "slug": "github-actions"},
+                "head_sha": head, "external_id": external_id,
+                "status": "completed", "conclusion": "success",
+                "details_url": f"https://github.example/lightning-it/.github/runs/{check_id}",
+                "completed_at": "2026-10-04T12:00:00Z",
+                "output": {"title": "PASS", "summary": "evidence"}}
+        functions = "".join(self._rfn(name) for name in (
+            "read_refresh_checks", "revalidate_refresh_state", "va",
+            "invalidate_refresh_check", "invalidate_duplicate_refresh_checks"))
+        def evaluate(checks):
+            with tempfile.TemporaryDirectory() as tmp:
+                state, log = Path(tmp) / "state", Path(tmp) / "patches"
+                state.write_text(json.dumps(checks), encoding="utf-8")
+                script = r'''set -euo pipefail
+oa() { gh api "$@"; }
+eo() { printf %s "${owner_run_id}"; }
+validate_live_pr_tuple() { :; }
+read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,"unresolved":0}'; }
+gh() {
+  local arg endpoint='' id updated
+  for arg in "$@"; do case "${arg}" in repos/*) endpoint="${arg}";; esac; done
+  if [[ " $* " != *" --method PATCH "* ]]; then
+    jq -cn --slurpfile state "${STATE}" '[{check_runs:$state[0]}]'
+    return
+  fi
+  id="${endpoint##*/}"
+  updated="$(jq -ce --arg evidence "${recovery_evidence}" \
+    --arg external "${current_external_id}" --arg url "${check_url}" \
+    --argjson id "${id}" '.[] | select(.id == $id) |
+      .status="completed" | .conclusion="failure" | .external_id=$external |
+      .details_url=$url | .completed_at="2026-10-04T12:01:00Z" |
+      .output={title:"Current revision review invalidated",summary:$evidence}' "${STATE}")" || return 1
+  jq -c --argjson updated "${updated}" --argjson id "${id}" \
+    'map(if .id == $id then $updated else . end)' "${STATE}" >"${STATE}.new"
+  mv "${STATE}.new" "${STATE}"
+  printf '%s\n' "${id}" >>"${LOG}"
+  printf %s "${updated}"
+}
+''' + functions + r'''
+neutral="$(read_refresh_checks)"
+neutral_count="$(jq 'length' <<<"${neutral}")"
+refresh_expected_count="${neutral_count}"
+refresh_expected_snapshot=null
+if invalidate_duplicate_refresh_checks; then exit 90; fi
+jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
+'''
+                res = self._run_bash(script, {"BASE_SHA": base, "HEAD_SHA": head,
+                    "GITHUB_SERVER_URL": "https://github.example",
+                    "LOG": str(log), "PR_AUTHOR": "litroc", "PR_NUMBER": "2334",
+                    "REPOSITORY": "lightning-it/.github", "STATE": str(state),
+                    "current_external_id": binding, "current_external_kind": "copilot",
+                    "owner_run_id": str(owner)})
+                return res, log.read_text() if log.exists() else ""
+        result, log = evaluate([check(43), check(42)])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("43\n42\n", log)
+        rejected, log = evaluate([check(42), check(43, "foreign")])
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("", log)
+        malformed_cases = ([check(42), check(42)],
+                           [check(42), {**check(43), "external_id": None}],
+                           [check(index) for index in range(1, 22)])
+        for checks in malformed_cases:
+            rejected, log = evaluate(checks)
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual("", log)
     def test_attempt2_rerun(self):
         script = "\n".join(
             (
