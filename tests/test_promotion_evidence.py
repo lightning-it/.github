@@ -2726,6 +2726,27 @@ class PromotionEvidenceTests(unittest.TestCase):
                             base_sha=BASE, head_sha=HEAD,
                         )
 
+        review["body"] += "\nEncountered an error"
+        delegate = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=pull, pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
             "number": 17,
