@@ -1513,6 +1513,45 @@ def validate_producer_run(
             )
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
             merged_at = timestamp(pull.get("merged_at"), "producer-pull-merged-at")
+            # A completed run's updated_at can briefly lag its terminal job
+            # snapshot across GitHub API replicas. Recover only that one
+            # ordering gap, with two identical read-only terminal run reads.
+            # Every other run field must remain identical.
+            if (
+                policy_completed <= handoff_started <= handoff_completed
+                and policy_completed <= check_completed <= merged_at
+                and handoff_completed > run_updated
+                and run_updated <= merged_at
+            ):
+                original_binding = canonical(
+                    {key: value for key, value in run.items() if key != "updated_at"}
+                )
+                stable_update = None
+                for _ in range(2):
+                    refreshed_run = exact_object(
+                        gh_json(["api", f"repos/{repository}/actions/runs/{producer_run_id}"]),
+                        "producer-run-convergence",
+                    )
+                    require(
+                        canonical(
+                            {
+                                key: value
+                                for key, value in refreshed_run.items()
+                                if key != "updated_at"
+                            }
+                        )
+                        == original_binding,
+                        "producer-run-convergence-identity",
+                    )
+                    refreshed_update = timestamp(
+                        refreshed_run.get("updated_at"), "producer-run-convergence-updated-at"
+                    )
+                    require(refreshed_update >= run_updated, "producer-run-convergence-rollback")
+                    if stable_update is not None:
+                        require(refreshed_update == stable_update, "producer-run-convergence-unstable")
+                    stable_update = refreshed_update
+                require(stable_update is not None, "producer-run-convergence-missing")
+                run_updated = stable_update
             require(
                 policy_completed
                 <= handoff_started
