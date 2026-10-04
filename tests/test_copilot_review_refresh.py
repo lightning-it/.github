@@ -22,12 +22,12 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
-    def test_producer_run_title_binds_event_tuple_and_unpredictable_run_id(self):
+    def test_producer_step_binds_event_tuple_and_unpredictable_run_id(self):
         self.assertIn(
-            "run-name: 'Current revision PR #${{ github.event.pull_request.number }} "
-            'base ${{ github.event.pull_request.base.sha }} '
-            'head ${{ github.event.pull_request.head.sha }} '
-            "run ${{ github.run_id }}'",
+            "name: 'Event binding #${{ github.event.pull_request.number }}:"
+            "${{ github.event.pull_request.base.sha }}:"
+            "${{ github.event.pull_request.head.sha }}:"
+            "${{ github.run_id }}'",
             COPILOT_WORKFLOW.read_text(encoding="utf-8"),
         )
     def _run_bash(self, script, env):
@@ -167,8 +167,6 @@ gh() {
         return {"id": run_id, "event": "pull_request_target",
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate", "run_attempt": attempt,
-            "display_title": "Current revision PR #2334 base " + "b" * 40
-                + " head " + "c" * 40 + " run " + str(run_id),
             "status": "in_progress", "conclusion": None,
             "head_branch": "feature/li179", "head_sha": "c" * 40,
             "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
@@ -178,6 +176,8 @@ gh() {
     def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
         return {"id": run_id * 10, "name": "Verify current revision policy",
             "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
+            "steps": [{"name": "Event binding #2334:" + "b" * 40
+                       + ":" + "c" * 40 + ":" + str(run_id)}],
             "status": status, "conclusion": conclusion}
     @staticmethod
     def _req(run_id, attempt=1, *, status="completed", conclusion="success"):
@@ -397,18 +397,22 @@ gh() {
                         jobs={101: [self._job(101)]}, cond=True)
             old_base = self._run(100)
             old_base["pull_requests"] = []
-            old_base["display_title"] = (
-                "Current revision PR #2334 base " + "d" * 40
-                + " head " + "c" * 40 + " run 100")
+            old_job = self._job(100)
+            old_job["steps"][0]["name"] = (
+                "Event binding #2334:" + "d" * 40 + ":" + "c" * 40 + ":100")
             self._owner("101", guard=guard,
                         runs=[old_base, unassociated],
-                        jobs={101: [self._job(101)]}, cond=True)
+                        jobs={100: [old_job], 101: [self._job(101)]},
+                        cond=True)
             spoofed_title = self._run(100)
             spoofed_title["pull_requests"] = []
-            spoofed_title["display_title"] = unassociated["display_title"]
+            spoofed_job = self._job(100)
+            spoofed_job["steps"][0]["name"] = (
+                "Event binding #2334:" + "b" * 40 + ":" + "c" * 40 + ":101")
             self._owner("101", guard=guard,
                         runs=[spoofed_title, unassociated],
-                        jobs={101: [self._job(101)]}, cond=True)
+                        jobs={100: [spoofed_job], 101: [self._job(101)]},
+                        cond=True)
             self._owner("101", guard=guard, runs=[unassociated],
                         jobs={101: [self._job(101)]},
                         branch_pulls=[closed_pull, current_pull], cond=True)
@@ -973,10 +977,6 @@ oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))"
         self.assertNotEqual(0, evaluate(unassociated))
         unassociated["head_branch"] = "feature/renamed"
         self.assertEqual(0, evaluate(unassociated))
-        unassociated["display_title"] = (
-            "Current revision PR #2334 base " + "d" * 40
-            + " head " + "c" * 40 + " run 77")
-        self.assertNotEqual(0, evaluate(unassociated))
     def test_invalidation(self):
         base, head, check_id, owner = "a" * 40, "b" * 40, 42, 77
         binding = f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}"

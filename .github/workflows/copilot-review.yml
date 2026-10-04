@@ -4,7 +4,6 @@
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
-run-name: 'Current revision PR #${{ github.event.pull_request.number }} base ${{ github.event.pull_request.base.sha }} head ${{ github.event.pull_request.head.sha }} run ${{ github.run_id }}'
 
 on:
   pull_request_target:
@@ -406,7 +405,7 @@ jobs:
 
     steps:
       - &materialize-producer-owner-guard
-        name: Materialize immutable producer-owner guard
+        name: 'Event binding #${{ github.event.pull_request.number }}:${{ github.event.pull_request.base.sha }}:${{ github.event.pull_request.head.sha }}:${{ github.run_id }}'
         run: |
           set -euo pipefail
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
@@ -432,10 +431,10 @@ jobs:
             local crj e fbase fhead
             local flive fpr frows
             local jpages ojp
-            local pj pp rj rpages
+            local cassoc pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
-            jq -e --arg h "${EVENT_HEAD}" --arg head_ref "${EVENT_HEAD_REF}" \
+            jq -e --arg h "${EVENT_HEAD}" \
               --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
@@ -489,9 +488,7 @@ jobs:
                     and .head_sha == $h
                     and .repository.full_name == $repo
                     and .head_repository.full_name == $repo
-                  then ((.pull_requests | length) == 1
-                    or ((.pull_requests | length) == 0
-                      and (.display_title | type) == "string"))
+                  then (.pull_requests | length) <= 1
                   else true end))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
@@ -524,9 +521,8 @@ jobs:
                   and .head.repo.full_name == $repo
                 ' <<<"${flive}" >/dev/null || return 1
             done <<<"${frows}"
-            if jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
-              --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
-              --argjson n "${PR_NUMBER}" '
+            if jq -e --arg h "${EVENT_HEAD}" \
+              --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" '
                 any(.[].workflow_runs[]?;
                   .event == "pull_request_target"
                   and .path == ".github/workflows/copilot-review.yml"
@@ -535,9 +531,7 @@ jobs:
                   and .head_branch == $ref
                   and .repository.full_name == $repo
                   and .head_repository.full_name == $repo
-                  and .pull_requests == []
-                  and .display_title == ("Current revision PR #" + ($n | tostring)
-                    + " base " + $b + " head " + $h + " run " + (.id | tostring)))
+                  and .pull_requests == [])
               ' <<<"${rpages}" >/dev/null; then
               pp="$(oa --method GET --paginate --slurp \
                 -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
@@ -569,10 +563,7 @@ jobs:
                     .number == $n
                     and .base.sha == $b
                     and .head.sha == $h)
-                    or (.pull_requests == [] and .head_branch == $ref
-                      and .display_title == ("Current revision PR #"
-                        + ($n | tostring) + " base " + $b + " head " + $h
-                        + " run " + (.id | tostring))))]
+                    or (.pull_requests == [] and .head_branch == $ref))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
                   elif ([.[].id] | unique | length) != length
@@ -580,8 +571,8 @@ jobs:
                   else sort_by(.id) end
               ' <<<"${rpages}")" || return 1
             e='[]'
-            crows="$(jq -er '.[] | [.id, .run_attempt, .status] | @tsv' <<<"${cands}")" || return 1
-            while IFS=$'\t' read -r cid ca cstate; do
+            crows="$(jq -er '.[] | [.id, .run_attempt, .status, (.pull_requests | length)] | @tsv' <<<"${cands}")" || return 1
+            while IFS=$'\t' read -r cid ca cstate cassoc; do
               [[ "${cid}" =~ ^[1-9][0-9]*$ ]] || return 1
               [[ "${ca}" =~ ^(1|2)$ ]] || return 1
               [[ "${cstate}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]] || return 1
@@ -626,6 +617,13 @@ jobs:
                   and .[0].conclusion == "skipped"
                   ' <<<"${pj}" >/dev/null; then
                 continue
+              fi
+              if [ "${cassoc}" -eq 0 ]; then
+                jq -e --arg binding "Event binding #${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}:${cid}" '
+                    (.[0].steps | type) == "array"
+                    and all(.[0].steps[]; (.name | type) == "string")
+                    and ([.[0].steps[] | select(.name == $binding)] | length) == 1
+                  ' <<<"${pj}" >/dev/null || continue
               fi
               if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
                 crj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
