@@ -431,10 +431,11 @@ jobs:
             local crj e fbase fhead
             local flive fpr frows
             local jpages ojp
-            local pj rj rpages
+            local pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
-            jq -e --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            jq -e --arg h "${EVENT_HEAD}" --arg head_ref "${EVENT_HEAD_REF}" \
+              --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
@@ -487,18 +488,23 @@ jobs:
                     and .head_sha == $h
                     and .repository.full_name == $repo
                     and .head_repository.full_name == $repo
-                  then (.pull_requests | length) == 1 else true end))
+                  then ((.pull_requests | length) == 1
+                    or ((.pull_requests | length) == 0
+                      and .head_branch == $head_ref))
+                  else true end))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${rpages}" >/dev/null || return 1
-            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[]
                   | select(.event == "pull_request_target")
                   | select(.path == ".github/workflows/copilot-review.yml")
                   | select(.name == "Current revision review gate")
                   | select(.head_sha == $h)
+                  | select(.head_branch == $ref)
                   | select(.repository.full_name == $repo)
                   | select(.head_repository.full_name == $repo)
+                  | select((.pull_requests | length) == 1)
                   | .pull_requests[0]
                   | select(.number != $n)
                   | [.number, .base.sha, .head.sha]]
@@ -517,7 +523,37 @@ jobs:
                   and .head.repo.full_name == $repo
                 ' <<<"${flive}" >/dev/null || return 1
             done <<<"${frows}"
-            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            if jq -e --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
+              --arg repo "${REPOSITORY}" '
+                any(.[].workflow_runs[]?;
+                  .event == "pull_request_target"
+                  and .path == ".github/workflows/copilot-review.yml"
+                  and .name == "Current revision review gate"
+                  and .head_sha == $h
+                  and .head_branch == $ref
+                  and .repository.full_name == $repo
+                  and .head_repository.full_name == $repo
+                  and .pull_requests == [])
+              ' <<<"${rpages}" >/dev/null; then
+              pp="$(oa --method GET --paginate --slurp \
+                -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
+                -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
+              jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
+                --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
+                --argjson n "${PR_NUMBER}" '
+                  type == "array" and length > 0 and length <= 10
+                  and all(.[]; type == "array")
+                  and ([.[][]] | length) == 1
+                  and .[0][0].number == $n
+                  and .[0][0].state == "open"
+                  and .[0][0].base.sha == $b
+                  and .[0][0].base.repo.full_name == $repo
+                  and .[0][0].head.ref == $ref
+                  and .[0][0].head.sha == $h
+                  and .[0][0].head.repo.full_name == $repo
+                ' <<<"${pp}" >/dev/null || return 1
+            fi
+            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
@@ -525,10 +561,11 @@ jobs:
                   select(.head_sha == $h) |
                   select(.repository.full_name == $repo) |
                   select(.head_repository.full_name == $repo) |
-                  select(any(.pull_requests[];
+                  select(any(.pull_requests[]?;
                     .number == $n
                     and .base.sha == $b
-                    and .head.sha == $h))]
+                    and .head.sha == $h)
+                    or (.pull_requests == [] and .head_branch == $ref))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
                   elif ([.[].id] | unique | length) != length

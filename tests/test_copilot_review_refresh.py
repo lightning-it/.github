@@ -67,7 +67,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
         return workflow[start:end]
     def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
-        event_ref="feature/li179", fpulls=None,
+        event_ref="feature/li179", fpulls=None, branch_pulls=None,
         runs2=None, cond=False, mode="copilot",
         add_req=True):
         njobs, ojobs = {}, {}
@@ -103,6 +103,9 @@ gh() {
   elif [[ "${endpoint}" =~ /actions/runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then
     run_id="${BASH_REMATCH[1]}"; run_attempt="${BASH_REMATCH[2]}"
     case "${run_id}" in __JOB_CASES__ *) return 92;; esac
+  elif [[ "${endpoint}" =~ /pulls$ ]]; then
+    [[ " $* " == *" state=open "* ]] || return 96
+    jq -c '[.[] | map(select(.state == "open"))]' <<<"${BRANCH_PULL_PAGES}"
   elif [[ "${endpoint}" =~ /pulls/([0-9]+)$ ]]; then
     case "${BASH_REMATCH[1]}" in __PULL_CASES__ *) return 94;; esac
   else return 93; fi
@@ -115,6 +118,13 @@ gh() {
             else "\neo\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
+            current_pull = {
+                "number": 2334, "state": "open",
+                "base": {"sha": "b" * 40,
+                         "repo": {"full_name": "lightning-it/shared-assets-lit"}},
+                "head": {"ref": event_ref, "sha": "c" * 40,
+                         "repo": {"full_name": "lightning-it/shared-assets-lit"}},
+            }
             env = {
                 "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
                 "REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
@@ -122,7 +132,10 @@ gh() {
                 "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(tmp) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
-                "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}])}
+                "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}]),
+                "BRANCH_PULL_PAGES": json.dumps([
+                    branch_pulls if branch_pulls is not None else [current_pull]
+                ])}
             def pages(records):
                 return json.dumps([{"jobs": [record]} for record in records]
                                   or [{"jobs": []}])
@@ -268,7 +281,7 @@ gh() {
             malformed = json.loads(json.dumps(original))
             malformed[field] = None
             bad_runs.append(malformed)
-        for pull_requests in (None, [], [tuple, tuple],
+        for pull_requests in (None, [tuple, tuple],
                               [{**tuple, "number": None}],
                               [{**tuple, "base": {"sha": None}}],
                               [{**tuple, "head": {"sha": None,
@@ -357,6 +370,35 @@ gh() {
             self._owner(None, guard=guard,
                 runs=[malformed, self._run(101)],
                 jobs={101: [self._job(101)]}, cond=True)
+    def test_empty_association_uses_unique_open_branch_binding(self):
+        unassociated = self._run(101)
+        unassociated["pull_requests"] = []
+        repo = "lightning-it/shared-assets-lit"
+        current_pull = {
+            "number": 2334, "state": "open",
+            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
+            "head": {"ref": "feature/li179", "sha": "c" * 40,
+                     "repo": {"full_name": repo}},
+        }
+        closed_pull = {**current_pull, "number": 12, "state": "closed",
+                       "head": {**current_pull["head"], "sha": "d" * 40}}
+        for guard in self._guards():
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]}, cond=True)
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]},
+                        branch_pulls=[closed_pull, current_pull], cond=True)
+            for branch_pulls in ([], [current_pull, current_pull],
+                                 [{**current_pull, "number": 999}],
+                                 [{**current_pull, "head": {
+                                     **current_pull["head"], "sha": "d" * 40}}]):
+                self._owner(None, guard=guard, runs=[unassociated],
+                            jobs={101: [self._job(101)]},
+                            branch_pulls=branch_pulls, cond=True)
+            wrong_ref = json.loads(json.dumps(unassociated))
+            wrong_ref["head_branch"] = "feature/other"
+            self._owner(None, guard=guard, runs=[wrong_ref],
+                        jobs={101: [self._job(101)]}, cond=True)
     def test_owner_rename(self):
         guards = self._guards()
         original = self._run(101)
@@ -902,6 +944,11 @@ oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))"
         inconsistent = json.loads(json.dumps(run))
         inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
         self.assertNotEqual(0, evaluate(inconsistent))
+        unassociated = json.loads(json.dumps(run))
+        unassociated["pull_requests"] = []
+        self.assertNotEqual(0, evaluate(unassociated))
+        unassociated["head_branch"] = "feature/renamed"
+        self.assertEqual(0, evaluate(unassociated))
     def test_invalidation(self):
         base, head, check_id, owner = "a" * 40, "b" * 40, 42, 77
         binding = f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}"
