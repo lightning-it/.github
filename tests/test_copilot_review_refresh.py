@@ -22,6 +22,14 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def test_producer_step_binds_event_tuple_and_unpredictable_run_id(self):
+        self.assertIn(
+            "name: 'Event binding #${{ github.event.pull_request.number }}:"
+            "${{ github.event.pull_request.base.sha }}:"
+            "${{ github.event.pull_request.head.sha }}:"
+            "${{ github.run_id }}'",
+            COPILOT_WORKFLOW.read_text(encoding="utf-8"),
+        )
     def _run_bash(self, script, env):
         return subprocess.run([self._test_tool("bash"), "-c", script],
             text=True, capture_output=True, check=False,
@@ -168,6 +176,8 @@ gh() {
     def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
         return {"id": run_id * 10, "name": "Verify current revision policy",
             "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
+            "steps": [{"name": "Event binding #2334:" + "b" * 40
+                       + ":" + "c" * 40 + ":" + str(run_id)}],
             "status": status, "conclusion": conclusion}
     @staticmethod
     def _req(run_id, attempt=1, *, status="completed", conclusion="success"):
@@ -385,6 +395,24 @@ gh() {
         for guard in self._guards():
             self._owner("101", guard=guard, runs=[unassociated],
                         jobs={101: [self._job(101)]}, cond=True)
+            old_base = self._run(100)
+            old_base["pull_requests"] = []
+            old_job = self._job(100)
+            old_job["steps"][0]["name"] = (
+                "Event binding #2334:" + "d" * 40 + ":" + "c" * 40 + ":100")
+            self._owner("101", guard=guard,
+                        runs=[old_base, unassociated],
+                        jobs={100: [old_job], 101: [self._job(101)]},
+                        cond=True)
+            spoofed_title = self._run(100)
+            spoofed_title["pull_requests"] = []
+            spoofed_job = self._job(100)
+            spoofed_job["steps"][0]["name"] = (
+                "Event binding #2334:" + "b" * 40 + ":" + "c" * 40 + ":101")
+            self._owner("101", guard=guard,
+                        runs=[spoofed_title, unassociated],
+                        jobs={100: [spoofed_job], 101: [self._job(101)]},
+                        cond=True)
             self._owner("101", guard=guard, runs=[unassociated],
                         jobs={101: [self._job(101)]},
                         branch_pulls=[closed_pull, current_pull], cond=True)
