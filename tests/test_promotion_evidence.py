@@ -277,6 +277,7 @@ def evidence_api(
                         "submitted_at": "2026-09-27T00:04:00Z",
                         "body": (
                             "<!-- ccr-overview-v2 -->\n\n"
+                            "## Copilot review overview\n\n"
                             "### 🟢 Approval recommended\n\n"
                             "**Findings:** None\n"
                         ),
@@ -938,6 +939,21 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        late_success_check = check_run(external_id, v6_summary())
+        late_success_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [late_success_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
         early_check = check_run(external_id, v6_summary())
         early_check["completed_at"] = "2026-09-27T00:03:00Z"
         with mock.patch.object(
@@ -1000,6 +1016,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** None\n"
             ),
@@ -1984,6 +2001,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": "Verify current revision policy",
                 "status": "completed",
                 "conclusion": "success",
+                "started_at": "2026-09-27T00:04:20Z",
+                "completed_at": "2026-09-27T00:04:29Z",
             },
             {
                 "id": 3,
@@ -2033,6 +2052,63 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # GitHub may publish the neutral check after the failed handoff and
+        # even after the producer run closes. The verified policy job, rather
+        # than the asynchronous check publication, orders the handoff.
+        delayed_check = check_run(external_id, v6_summary())
+        delayed_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+        ):
+            delayed = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed["producer_run_id"])
+
+        empty_association_run = dict(run)
+        empty_association_run["pull_requests"] = []
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(empty_association_run, jobs=exact_jobs),
+        ):
+            delayed_without_association = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed_without_association["producer_run_id"])
+
+        for completed_at in (
+            "2026-09-27T00:04:28Z",
+            "2026-09-27T00:06:01Z",
+        ):
+            invalid_check = check_run(external_id, v6_summary())
+            invalid_check["completed_at"] = completed_at
+            with self.subTest(completed_at=completed_at):
+                with mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+                ):
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-post-evidence-failure-order"
+                    ):
+                        MODULE.bound_review_check(
+                            [{"check_runs": [invalid_check]}],
+                            repository="lightning-it/example",
+                            pull=ingress_pull(),
+                            pull_number=17,
+                            base_sha=BASE,
+                            head_sha=HEAD,
+                        )
+
         for mutate, reason in (
             (
                 lambda candidate: candidate[1].update({"conclusion": "failure"}),
@@ -2051,8 +2127,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "producer-run-job-binding",
             ),
             (
-                lambda candidate: candidate[3].update(
-                    {"started_at": "2026-09-27T00:04:29Z"}
+                lambda candidate: candidate[1].update(
+                    {"completed_at": "2026-09-27T00:04:32Z"}
                 ),
                 "producer-post-evidence-failure-order",
             ),
@@ -2123,8 +2199,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": name,
                 "status": "completed",
                 "conclusion": conclusion,
-                "started_at": "2026-09-27T00:04:31Z",
-                "completed_at": "2026-09-27T00:04:40Z",
+                "started_at": (
+                    "2026-09-27T00:04:20Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:31Z"
+                ),
+                "completed_at": (
+                    "2026-09-27T00:04:29Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:40Z"
+                ),
             }
             for index, (name, conclusion) in enumerate(outcomes, start=1)
         ]
@@ -2146,6 +2230,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("managed-sync", evidence["evidence_kind"])
         self.assertEqual(88, evidence["producer_run_id"])
 
+        check["completed_at"] = "2026-09-27T00:05:01Z"
+        self.assertEqual(88, verify(exact_jobs)["producer_run_id"])
+        check["completed_at"] = "2026-09-27T00:04:30Z"
+
         for index, field, value, reason in (
             (0, "conclusion", "success", "producer-run-job-binding"),
             (1, "conclusion", "failure", "producer-run-job-binding"),
@@ -2159,9 +2247,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             (4, "name", "Unexpected job", "producer-run-job-binding"),
             (4, "name", outcomes[0][0], "producer-run-job-binding"),
             (
-                3,
-                "started_at",
-                "2026-09-27T00:04:29Z",
+                1,
+                "completed_at",
+                "2026-09-27T00:04:32Z",
                 "producer-post-evidence-failure-order",
             ),
         ):
@@ -2549,6 +2637,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** 1\n\n"
                 "<details open><summary><strong>Open (1)</strong></summary>"
@@ -2580,6 +2669,83 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual("copilot", evidence["evidence_kind"])
         self.assertEqual(0, comment_calls)
+
+    def test_expanded_positive_findings_require_native_thread_coverage(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, expanded_v6_summary())
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        delegate = evidence_api(run, review=review)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return delegate(arguments)
+
+        for nodes in ([], [{"id": "PRRT_1", "isResolved": True}]):
+            with (
+                self.subTest(nodes=nodes),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": nodes, "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if nodes:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=pull, pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        1, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=pull, pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+
+        review["body"] += "\nEncountered an error"
+        delegate = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=pull, pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
@@ -3042,6 +3208,218 @@ class PromotionEvidenceTests(unittest.TestCase):
                     "pageInfo": {"hasNextPage": False},
                 }
             )
+
+    def test_historical_copilot_overview_uses_live_thread_resolution(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, v6_summary())
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "### 🔵 Needs a closer look\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        run = producer_run()
+        run["pull_requests"] = []
+        remote = evidence_api(run, review=review)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return remote(arguments)
+
+        for resolved in (True, False):
+            with (
+                self.subTest(resolved=resolved),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [{"id": "PRRT_1", "isResolved": resolved}],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if resolved:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(["PRRT_1"],
+                                     result["threads"]["resolved_thread_ids"])
+                    self.assertEqual(88, result["review"]["producer_run_id"])
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "unresolved-review-thread"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+
+        valid_body = review["body"]
+        review["body"] = valid_body.replace(
+            "**Findings:** 1",
+            '**Findings:** 1 <picture><source media="(prefers-color-scheme: dark)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-dark.svg">'
+            '<source media="(prefers-color-scheme: light)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.svg">'
+            '<img src="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.png" alt="High severity" '
+            'width="62" height="18" align="texttop"></picture>',
+        )
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+        high_icon = review["body"].split("**Findings:** 1 ", 1)[1].split("\n", 1)[0]
+        medium_icon = high_icon.replace("high-v2", "medium-v2").replace(
+            "High severity", "Medium severity"
+        )
+        mixed_body = valid_body.replace(
+            "**Findings:** 1",
+            f"**Findings:** 2 {high_icon} · 1 {medium_icon}",
+        )
+        review["body"] = mixed_body
+        remote = evidence_api(run, review=review)
+        for thread_count in (3, 2):
+            with (
+                self.subTest(thread_count=thread_count),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [
+                            {"id": f"PRRT_{index}", "isResolved": True}
+                            for index in range(thread_count)
+                        ],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if thread_count == 3:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        3, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+        for invalid_body in (
+            valid_body.replace("**Findings:** 1", "**Findings:**"),
+            valid_body.replace("**Findings:** 1", "**Findings:** arbitrary"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 0"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 1 extra"),
+            valid_body.replace(
+                "**Findings:** 1",
+                '**Findings:** 1 <picture><source x><source y><img z></picture>',
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1 {high_icon}",
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1",
+            ),
+            valid_body + "\n**Findings:** None",
+            valid_body + "\nprefix **Findings:** None",
+            valid_body + "\nprefix ## Copilot review overview",
+            valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
+        ):
+            with (
+                self.subTest(invalid_body=invalid_body),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                review["body"] = invalid_body
+                remote = evidence_api(run, review=review)
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "producer-review-binding"
+                ):
+                    MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+
+        review["body"] = valid_body
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-thread-coverage"
+            ):
+                MODULE.collect_bound_ingress_evidence(
+                    repository="lightning-it/example",
+                    pull=ingress_pull(), pull_number=17,
+                    base_sha=BASE, head_sha=HEAD,
+                )
+
+        review["body"] = valid_body.replace(
+            "**Findings:** 1", "**Findings:** None"
+        ).replace("<strong>Open (1)</strong>", "")
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            result = MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+            self.assertEqual(0, result["review"]["historical_findings_count"])
 
     def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
         accepted = MODULE.validate_review_threads(
