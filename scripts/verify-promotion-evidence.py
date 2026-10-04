@@ -1451,6 +1451,10 @@ def validate_producer_run(
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt"
             ]
+            policy_completed = timestamp(
+                observed_jobs["Verify current revision policy"].get("completed_at"),
+                "producer-policy-completed-at",
+            )
             check_completed = timestamp(
                 check.get("completed_at"), "candidate-check-completed-at"
             )
@@ -1465,11 +1469,12 @@ def validate_producer_run(
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
             merged_at = timestamp(pull.get("merged_at"), "producer-pull-merged-at")
             require(
-                check_completed
+                policy_completed
                 <= handoff_started
                 <= handoff_completed
                 <= run_updated
-                <= merged_at,
+                <= merged_at
+                and policy_completed <= check_completed <= merged_at,
                 "producer-post-evidence-failure-order",
             )
         if evidence_kind == "copilot" and "review_id" in summary:
