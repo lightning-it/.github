@@ -1732,9 +1732,8 @@ def validate_producer_run(
                             normalized_review_text(value) for value in review_texts
                         ]
                         require(
-                            "**Findings:** None" in body
-                            and "Changes recommended" not in body
-                            and "<strong>Open (" not in body
+                            "## Copilot review overview" in body
+                            and "**Findings:**" in body
                             and not any(
                                 marker in normalized
                                 for normalized in normalized_texts
@@ -1742,6 +1741,9 @@ def validate_producer_run(
                             ),
                             "producer-review-binding",
                         )
+                        # Historical overview counts are a submission-time
+                        # snapshot. The caller separately validates every
+                        # live review thread after this exact review binding.
                     # Expanded v6 evidence binds the exact native review ID in
                     # the protected producer result. Its overview counts are a
                     # historical rendering and may still mention a finding

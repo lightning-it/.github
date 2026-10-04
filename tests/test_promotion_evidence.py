@@ -277,6 +277,7 @@ def evidence_api(
                         "submitted_at": "2026-09-27T00:04:00Z",
                         "body": (
                             "<!-- ccr-overview-v2 -->\n\n"
+                            "## Copilot review overview\n\n"
                             "### 🟢 Approval recommended\n\n"
                             "**Findings:** None\n"
                         ),
@@ -1015,6 +1016,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** None\n"
             ),
@@ -3128,6 +3130,60 @@ class PromotionEvidenceTests(unittest.TestCase):
                     "pageInfo": {"hasNextPage": False},
                 }
             )
+
+    def test_historical_copilot_overview_uses_live_thread_resolution(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, v6_summary())
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "### 🔵 Needs a closer look\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        remote = evidence_api(producer_run(), review=review)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return remote(arguments)
+
+        for resolved in (True, False):
+            with (
+                self.subTest(resolved=resolved),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [{"id": "PRRT_1", "isResolved": resolved}],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if resolved:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(["PRRT_1"],
+                                     result["threads"]["resolved_thread_ids"])
+                    self.assertEqual(88, result["review"]["producer_run_id"])
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "unresolved-review-thread"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
 
     def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
         accepted = MODULE.validate_review_threads(
