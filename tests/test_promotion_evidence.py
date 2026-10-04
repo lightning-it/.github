@@ -3294,6 +3294,49 @@ class PromotionEvidenceTests(unittest.TestCase):
                 pull=ingress_pull(), pull_number=17,
                 base_sha=BASE, head_sha=HEAD,
             )
+        high_icon = review["body"].split("**Findings:** 1 ", 1)[1].split("\n", 1)[0]
+        medium_icon = high_icon.replace("high-v2", "medium-v2").replace(
+            "High severity", "Medium severity"
+        )
+        mixed_body = valid_body.replace(
+            "**Findings:** 1",
+            f"**Findings:** 2 {high_icon} · 1 {medium_icon}",
+        )
+        review["body"] = mixed_body
+        remote = evidence_api(run, review=review)
+        for thread_count in (3, 2):
+            with (
+                self.subTest(thread_count=thread_count),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [
+                            {"id": f"PRRT_{index}", "isResolved": True}
+                            for index in range(thread_count)
+                        ],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if thread_count == 3:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        3, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
         for invalid_body in (
             valid_body.replace("**Findings:** 1", "**Findings:**"),
             valid_body.replace("**Findings:** 1", "**Findings:** arbitrary"),
@@ -3302,6 +3345,14 @@ class PromotionEvidenceTests(unittest.TestCase):
             valid_body.replace(
                 "**Findings:** 1",
                 '**Findings:** 1 <picture><source x><source y><img z></picture>',
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1 {high_icon}",
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1",
             ),
             valid_body + "\n**Findings:** None",
             valid_body + "\nprefix **Findings:** None",

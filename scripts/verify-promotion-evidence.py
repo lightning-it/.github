@@ -236,27 +236,40 @@ def historical_copilot_findings_count(body: str) -> int:
     require(len(fields) == 1, "producer-review-binding")
     if fields[0] == "**Findings:** None":
         return 0
-    match = re.fullmatch(
-        r"\*\*Findings:\*\* (?P<count>[1-9][0-9]*)"
-        r"(?: (?P<icon><picture>.*</picture>))?",
-        fields[0],
+    require(
+        fields[0].startswith("**Findings:** "), "producer-review-binding"
     )
-    require(match is not None, "producer-review-binding")
-    icon = match.group("icon")
-    if icon is not None:
-        prefix = "https://github.githubassets.com/static/images/icons/copilot-code-review/"
-        supported_icons = {
-            '<picture><source media="(prefers-color-scheme: dark)" '
-            f'srcset="{prefix}{severity}-v2-dark.svg">'
-            '<source media="(prefers-color-scheme: light)" '
-            f'srcset="{prefix}{severity}-v2-light.svg">'
-            f'<img src="{prefix}{severity}-v2-light.png" '
-            f'alt="{severity.title()} severity" width="62" height="18" '
-            'align="texttop"></picture>'
-            for severity in ("high", "medium", "low")
-        }
-        require(icon in supported_icons, "producer-review-binding")
-    return int(match.group("count"))
+    groups = fields[0].removeprefix("**Findings:** ").split(" · ")
+    require(1 <= len(groups) <= 3, "producer-review-binding")
+    prefix = "https://github.githubassets.com/static/images/icons/copilot-code-review/"
+    supported_icons = {
+        '<picture><source media="(prefers-color-scheme: dark)" '
+        f'srcset="{prefix}{severity}-v2-dark.svg">'
+        '<source media="(prefers-color-scheme: light)" '
+        f'srcset="{prefix}{severity}-v2-light.svg">'
+        f'<img src="{prefix}{severity}-v2-light.png" '
+        f'alt="{severity.title()} severity" width="62" height="18" '
+        'align="texttop"></picture>'
+        for severity in ("high", "medium", "low")
+    }
+    count = 0
+    observed_icons: set[str] = set()
+    for group in groups:
+        match = re.fullmatch(
+            r"(?P<count>[1-9][0-9]*)(?: (?P<icon><picture>.*</picture>))?",
+            group,
+        )
+        require(match is not None, "producer-review-binding")
+        icon = match.group("icon")
+        require(
+            (icon is None and len(groups) == 1)
+            or (icon in supported_icons and icon not in observed_icons),
+            "producer-review-binding",
+        )
+        if icon is not None:
+            observed_icons.add(icon)
+        count += int(match.group("count"))
+    return count
 
 
 def integer(value: Any, label: str) -> int:
