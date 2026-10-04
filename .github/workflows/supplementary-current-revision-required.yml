@@ -6505,6 +6505,10 @@ jobs:
             fi
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
+            validate_recorded_ref() {
+              jq -e '.head_branch as $r|($r|strings|length)>0
+                and $r==(.pull_requests[0].head.ref|strings)' <<<"$1" >/dev/null
+            }
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${summary}")"
             controller_branch="$(jq -er \
@@ -6616,10 +6620,10 @@ jobs:
                 sleep 1
               done
             fi
+            validate_recorded_ref "${producer}"
             if [ "${producer_run_attempt}" -eq 1 ]; then
               jq -e \
                 --arg actor "${author}" \
-                --arg head_ref "${head_ref}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --argjson evidence_ready "${producer_evidence_ready}" \
                 --argjson recovery_dispatch_failed \
@@ -6633,7 +6637,6 @@ jobs:
                   )
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
-                  and .head_branch == $head_ref
                   and .head_sha == $head_sha
                   and .actor.login == $actor
                   and .triggering_actor.login == $actor
@@ -6642,9 +6645,9 @@ jobs:
               test "${producer_kind}" = copilot
               attempt_one="$(gh api \
                 "repos/${REPOSITORY}/actions/runs/${producer_run_id}/attempts/1")"
+              validate_recorded_ref "${attempt_one}"
               jq -e \
                 --arg actor "${author}" \
-                --arg head_ref "${head_ref}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --argjson run_id "${producer_run_id}" '
                   .id == $run_id
@@ -6654,7 +6657,6 @@ jobs:
                   and .conclusion == "failure"
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
-                  and .head_branch == $head_ref
                   and .head_sha == $head_sha
                   and .actor.login == $actor
                   and .triggering_actor.login == $actor
@@ -6710,7 +6712,6 @@ jobs:
                 --arg author "${author}" \
                 --arg base_ref "${base_ref}" \
                 --arg base_sha "${EVENT_BASE}" \
-                --arg head_ref "${head_ref}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --arg first_verifier_completed_at \
                   "${first_verifier_completed_at}" \
@@ -6727,7 +6728,7 @@ jobs:
                     select(.status == "completed" and .conclusion == "success") |
                     select(.path == ".github/workflows/copilot-review-refresh.yml") |
                     select(.name == "Refresh Copilot review gate") |
-                    select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                    select(.head_sha == $head_sha) |
                     select((.created_at | type) == "string") |
                     select((.updated_at | type) == "string") |
                     select((.created_at | fromdateiso8601?)
@@ -6749,18 +6750,16 @@ jobs:
                     select(.pull_requests[0].base.sha == $base_sha) |
                     select(.pull_requests[0].base.repo.url
                       == ($api_url + "/repos/" + $repository)) |
-                    select(.pull_requests[0].head.ref == $head_ref) |
+                    select((.head_branch|strings) as $ref |
+                      ($ref|length)>0
+                      and $ref==(.pull_requests[0].head.ref|strings)) |
                     select(.pull_requests[0].head.sha == $head_sha) |
                     select(.pull_requests[0].head.repo.url
                       == ($api_url + "/repos/" + $repository))]
                 ' <<<"${refresh_pages}")"
               test "$(jq 'length' <<<"${refresh_runs}")" -eq 1
 
-              # Run creation has only second precision. Equality is only a
-              # candidate, never ordering proof. Require the exact native job
-              # and rerun step to start strictly after the first failed verifier
-              # and no later than attempt two. A same-second step stays denied.
-              # No clock delay, new writer, or numeric run-ID ordering assumption.
+              # Native job/step times prove strict order; same-second stays denied.
               refresh_run="$(jq -c '.[0]' <<<"${refresh_runs}")"
               refresh_run_id="$(jq -er '.id' <<<"${refresh_run}")"
               refresh_jobs="$(gh api --paginate --slurp \
@@ -6782,7 +6781,6 @@ jobs:
                 <<<"${tl}" >/dev/null
               jq -e \
                 --arg actor "${author}" \
-                --arg head_ref "${head_ref}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --arg refresh_actor "github-actions[bot]" '
                   .event == "pull_request_target"
@@ -6791,7 +6789,6 @@ jobs:
                   and .conclusion == "success"
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
-                  and .head_branch == $head_ref
                   and .head_sha == $head_sha
                   and .actor.login == $actor
                   and .triggering_actor.login == $refresh_actor

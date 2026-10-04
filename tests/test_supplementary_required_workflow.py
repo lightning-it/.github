@@ -3203,7 +3203,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         repository = "lightning-it/.github"
         api_url = "https://api.github.com"
         author = "litroc"
-        head_ref = "fix/li-218-late-review-refresh-binding"
+        head_ref = "fix/original"
+        live_head_ref = "fix/renamed"
         producer_created_at = "2026-09-27T23:42:20Z"
         verifier_completed_at = "2026-09-27T23:45:00Z"
         review_submitted_at = "2026-09-27T23:45:56Z"
@@ -3303,7 +3304,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             base,
             "--arg",
             "head_ref",
-            head_ref,
+            live_head_ref,
             "--arg",
             "head_sha",
             head,
@@ -3383,6 +3384,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         missing_updated = {
             key: value for key, value in valid_refresh.items() if key != "updated_at"
         }
+        malformed_equal_refs = []
+        for value in (None, "", 7):
+            candidate = copy.deepcopy(valid_refresh)
+            candidate["head_branch"] = value
+            candidate["pull_requests"][0]["head"]["ref"] = value
+            malformed_equal_refs.append(candidate)
         rejected_refreshes = (
             {**valid_refresh, "id": 0},
             {**valid_refresh, "id": "37071643656"},
@@ -3402,6 +3409,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {**valid_refresh, "created_at": "2026-09-27T23:45:55Z"},
             {**valid_refresh, "updated_at": "2026-09-27T23:46:31Z"},
             {**valid_refresh, "head_sha": "c" * 40},
+            {
+                **valid_refresh,
+                "pull_requests": [{
+                    **valid_refresh["pull_requests"][0],
+                    "head": {
+                        **valid_refresh["pull_requests"][0]["head"],
+                        "ref": "fix/other",
+                    },
+                }],
+            },
+            *malformed_equal_refs,
             {**valid_refresh, "triggering_actor": {"login": "other"}},
             {**valid_refresh, "pull_requests": []},
         )
@@ -4373,9 +4391,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '[[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]', human_path
         )
         self.assertIn("compare/${controller_sha}...${controller_head}", human_path)
-        self.assertIn('--arg head_ref "${head_ref}"', human_path)
+        self.assertIn('validate_recorded_ref "${producer}"', human_path)
+        self.assertIn('validate_recorded_ref "${attempt_one}"', human_path)
+        final_ref_check = human_path.index(
+            'validate_recorded_ref "${producer}"'
+        )
+        self.assertLess(
+            human_path.rindex("              done", 0, final_ref_check),
+            final_ref_check,
+        )
+        self.assertLess(
+            final_ref_check,
+            human_path.index(
+                'if [ "${producer_run_attempt}" -eq 1 ]',
+                final_ref_check,
+            ),
+        )
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
-        self.assertIn(".head_branch == $head_ref", human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
         self.assertIn("and .controller_sha == $controller", human_path)
         self.assertIn(".base.ref == $base_ref", human_path)
@@ -5989,6 +6021,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n                \' <<<"${producer}" >/dev/null',
             1,
         )[0]
+        validator_start = permanent.index("            validate_recorded_ref() {")
+        validator_end = permanent.index("\n            }", validator_start)
+        validator = textwrap.dedent(
+            permanent[validator_start : validator_end + len("\n            }")]
+        )
         jq = self._test_tool("jq")
         head = "a" * 40
         payload = {
@@ -5996,10 +6033,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "run_attempt": 1,
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate",
-            "head_branch": "feature/li139",
+            "head_branch": "feature/original",
             "head_sha": head,
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "litroc"},
+            "pull_requests": [{"head": {"ref": "feature/original"}}],
         }
 
         def accepts(
@@ -6008,36 +6046,40 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             *,
             evidence_ready: bool,
             include_conclusion: bool = True,
+            nested_ref: str = "feature/original",
         ) -> bool:
-            candidate = dict(payload)
+            candidate = copy.deepcopy(payload)
+            candidate["pull_requests"][0]["head"]["ref"] = nested_ref
             candidate.update(status=status, conclusion=conclusion)
             if not include_conclusion:
                 candidate.pop("conclusion")
+            script = "\n".join((
+                "set -euo pipefail",
+                validator,
+                'validate_recorded_ref "${CANDIDATE}"',
+                'jq -e '
+                    + " ".join([
+                    "--arg",
+                    "actor", "litroc",
+                    "--arg",
+                    "head_sha", '"${HEAD}"',
+                    "--argjson",
+                    "evidence_ready", str(evidence_ready).lower(),
+                    "--argjson",
+                    "recovery_dispatch_failed", "false",
+                ]) + ' "${FILTER}" <<<"${CANDIDATE}"',
+            ))
             result = subprocess.run(
-                [
-                    jq,
-                    "-e",
-                    "--arg",
-                    "actor",
-                    "litroc",
-                    "--arg",
-                    "head_ref",
-                    "feature/li139",
-                    "--arg",
-                    "head_sha",
-                    head,
-                    "--argjson",
-                    "evidence_ready",
-                    str(evidence_ready).lower(),
-                    "--argjson",
-                    "recovery_dispatch_failed",
-                    "false",
-                    producer_filter,
-                ],
-                input=json.dumps(candidate),
+                [self._test_tool("bash"), "-c", script],
                 text=True,
                 capture_output=True,
                 check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "CANDIDATE": json.dumps(candidate),
+                    "FILTER": producer_filter,
+                    "HEAD": head,
+                },
             )
             return result.returncode == 0
 
@@ -6069,6 +6111,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertFalse(
             accepts("completed", "success", evidence_ready=False)
+        )
+        self.assertFalse(
+            accepts(
+                "completed",
+                "success",
+                evidence_ready=True,
+                nested_ref="feature/other",
+            )
         )
 
     def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
