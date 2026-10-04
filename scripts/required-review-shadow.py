@@ -54,6 +54,18 @@ RESERVATION = re.compile(
     r"rep60-required-workflow:v3:([1-9][0-9]*):([1-9][0-9]*):"
     r"([0-9a-f]{40}):([0-9a-f]{40})"
 )
+ADMISSION_ACTORS = (
+    (76040632, "litroc", "User"),
+    (307342877, "lightning-it-shared-assets-sync[bot]", "Bot"),
+)
+
+
+def admission_actor(actor):
+    return (type(actor) is dict
+            and STATE.positive(actor.get("id"))
+            and (actor.get("id"), actor.get("login"), actor.get("type"))
+            in ADMISSION_ACTORS)
+
 
 def parsed(raw):
     return json.loads(raw, object_pairs_hook=TRANSPORT.pairs,
@@ -150,12 +162,13 @@ def producer(api, policy, run_id):
     return run
 
 
-def admission_run(api, policy, run_id, number, base, head, head_ref):
+def admission_run(api, policy, run_id, number, base, head, head_ref, expected_actor):
     require(STATE.positive(run_id), "admission-run-id")
     require(STATE.positive(number), "admission-pr-number")
     for side, sha in (("base", base), ("head", head)):
         require(type(sha) is str and re.fullmatch(r"[0-9a-f]{40}", sha), "admission-" + side)
     require(valid_head_ref(head_ref), "admission-head-ref")
+    require(admission_actor(expected_actor), "admission-actor-attempt")
     admission = api.read(f"repos/{policy['repository']}/actions/runs/{run_id}")
     require(id_matches(admission.get("id"), run_id)
             and admission.get("path") == ADMISSION_PATH
@@ -183,9 +196,9 @@ def admission_run(api, policy, run_id, number, base, head, head_ref):
                 "admission-repository")
     require(id_matches(admission.get("run_attempt"), 1)
             and all(type(admission.get(key)) is dict
-                    and id_matches(admission[key].get("id"), 76040632)
-                    and admission[key].get("login") == "litroc"
-                    and admission[key].get("type") == "User"
+                    and id_matches(admission[key].get("id"), expected_actor["id"])
+                    and admission[key].get("login") == expected_actor["login"]
+                    and admission[key].get("type") == expected_actor["type"]
                     for key in ("actor", "triggering_actor")), "admission-actor-attempt")
     return admission
 
@@ -255,7 +268,8 @@ def snapshot(api, policy, run_id, number):
             and id_matches(reservation.get("app", {}).get("id"), 15368)
             and reservation["app"].get("slug") == "github-actions", "reservation-binding")
     admission_id = int(bound[1])
-    admission = admission_run(api, policy, admission_id, number, base, head, pull["head"]["ref"])
+    admission = admission_run(api, policy, admission_id, number, base, head,
+                              pull["head"]["ref"], pull["user"])
     reviews = api.inventory(f"{prefix}/pulls/{number}/reviews")
     review = one([item for item in reviews if item.get("commit_id") == head
                   and id_matches(item.get("user", {}).get("id"), 175728472)
@@ -422,6 +436,7 @@ def sweep(api, policy, now):
                         and pull[side]["repo"]["full_name"] == policy["repository"]
                         for side in ("head", "base")),
                 "sweeper-pull-state")
+        require(admission_actor(pull["user"]), "sweeper-actor")
         head = pull["head"]["sha"]
         require(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head), "sweeper-head")
         base = pull["base"].get("sha")
@@ -442,7 +457,7 @@ def sweep(api, policy, now):
             if age < policy["reservation_ttl_seconds"]:
                 continue
             admission = admission_run(api, policy, int(match[1]), pull["number"],
-                                      base, head, pull["head"]["ref"])
+                                      base, head, pull["head"]["ref"], pull["user"])
             refreshed = api.read(f"{prefix}/check-runs/{check['id']}")
             require(id_matches(refreshed.get("id"), check["id"])
                     and id_matches(refreshed.get("app", {}).get("id"), 15368)
@@ -452,12 +467,14 @@ def sweep(api, policy, now):
                     and id_matches(current.get("id"), pull["id"])
                     and id_matches(current.get("number"), pull["number"])
                     and id_matches(current.get("user", {}).get("id"), pull["user"]["id"])
+                    and current["user"].get("login") == pull["user"]["login"]
+                    and current["user"].get("type") == pull["user"]["type"]
                     and all(id_matches(current.get(side, {}).get("repo", {}).get("id"),
                                        policy["repository_id"]) for side in ("base", "head"))
                     and current.get("base") == pull["base"]
                     and current.get("head") == pull["head"], "sweeper-pull-drift")
             require(admission_run(api, policy, int(match[1]), pull["number"],
-                                  base, head, pull["head"]["ref"]) == admission,
+                                  base, head, pull["head"]["ref"], pull["user"]) == admission,
                     "sweeper-admission-drift")
             results.append({"check_id": check["id"], "head": head,
                             "reservation_digest": STATE.digest(check), "age_seconds": age,

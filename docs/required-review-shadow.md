@@ -86,6 +86,12 @@ must include exactly one numeric `pull_requests` association matching the PR
 number, base/head SHA, base/head ref and both repository IDs/API URLs. Missing,
 empty, ambiguous or mismatched associations reject; there is no title-only
 fallback. These checks add no requests and preserve the 99-request sweep bound.
+The observer remains restricted to the exact `litroc` user identity. The sweeper
+binds each admission actor and triggering actor to the current PR author and
+admits only that owner identity or the already governed
+`lightning-it-shared-assets-sync[bot]` App identity. A mismatch, an unknown actor
+or a different attempt rejects the whole sweep; the App identity receives no
+authority because the adapter remains read-only and advisory.
 The admission helper validates both expected SHAs as exactly 40 lowercase hex
 characters and the expected head ref before reading the run. Head refs use a
 conservative 1–255 character ASCII subset: an initial letter, digit or underscore,
