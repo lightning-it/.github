@@ -3190,8 +3190,15 @@ class PromotionEvidenceTests(unittest.TestCase):
         valid_body = review["body"]
         review["body"] = valid_body.replace(
             "**Findings:** 1",
-            '**Findings:** 1 <picture><source media="dark">'
-            '<source media="light"><img alt="High"></picture>',
+            '**Findings:** 1 <picture><source media="(prefers-color-scheme: dark)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-dark.svg">'
+            '<source media="(prefers-color-scheme: light)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.svg">'
+            '<img src="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.png" alt="High severity" '
+            'width="62" height="18" align="texttop"></picture>',
         )
         remote = evidence_api(run, review=review)
         with (
@@ -3214,6 +3221,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             valid_body.replace("**Findings:** 1", "**Findings:** arbitrary"),
             valid_body.replace("**Findings:** 1", "**Findings:** 0"),
             valid_body.replace("**Findings:** 1", "**Findings:** 1 extra"),
+            valid_body.replace(
+                "**Findings:** 1",
+                '**Findings:** 1 <picture><source x><source y><img z></picture>',
+            ),
             valid_body + "\n**Findings:** None",
             valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
         ):
@@ -3238,6 +3249,46 @@ class PromotionEvidenceTests(unittest.TestCase):
                         pull=ingress_pull(), pull_number=17,
                         base_sha=BASE, head_sha=HEAD,
                     )
+
+        review["body"] = valid_body
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-thread-coverage"
+            ):
+                MODULE.collect_bound_ingress_evidence(
+                    repository="lightning-it/example",
+                    pull=ingress_pull(), pull_number=17,
+                    base_sha=BASE, head_sha=HEAD,
+                )
+
+        review["body"] = valid_body.replace(
+            "**Findings:** 1", "**Findings:** None"
+        ).replace("<strong>Open (1)</strong>", "")
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            result = MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+            self.assertEqual(0, result["review"]["historical_findings_count"])
 
     def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
         accepted = MODULE.validate_review_threads(
