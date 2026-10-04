@@ -77,6 +77,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
         event_ref="feature/li179", fpulls=None, branch_pulls=None,
         runs2=None, cond=False, mode="copilot",
+        event_base=None, live_base=None,
         add_req=True):
         njobs, ojobs = {}, {}
         for run_id, records in jobs.items():
@@ -136,7 +137,9 @@ gh() {
             env = {
                 "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
                 "REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
-                "EVENT_BASE": "b" * 40, "EVENT_HEAD": "c" * 40,
+                "EVENT_BASE": event_base or "b" * 40,
+                "LIVE_BASE": live_base or "b" * 40,
+                "EVENT_HEAD": "c" * 40,
                 "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(tmp) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
@@ -427,6 +430,26 @@ gh() {
             wrong_ref["head_branch"] = "feature/other"
             self._owner(None, guard=guard, runs=[wrong_ref],
                         jobs={101: [self._job(101)]}, cond=True)
+
+    def test_previous_base_unassociated_owner_uses_current_live_pull(self):
+        previous_base = "d" * 40
+        previous = self._run(100)
+        previous["pull_requests"] = []
+        previous_job = self._job(100)
+        previous_job["steps"][0]["name"] = (
+            "Event binding #2334:" + previous_base + ":" + "c" * 40 + ":100")
+        guard = self._refresh_guard()
+        self._owner("100", guard=guard, runs=[previous],
+                    jobs={100: [previous_job]},
+                    event_base=previous_base, cond=True)
+        self._owner(None, guard=guard, runs=[previous],
+                    jobs={100: [previous_job]},
+                    event_base=previous_base, live_base=previous_base,
+                    cond=True)
+        wrong_event_job = self._job(100)
+        self._owner(None, guard=guard, runs=[previous],
+                    jobs={100: [wrong_event_job]},
+                    event_base=previous_base, cond=True)
     def test_owner_rename(self):
         guards = self._guards()
         original = self._run(101)
