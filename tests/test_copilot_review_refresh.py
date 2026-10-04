@@ -236,6 +236,18 @@ gh() {
                     conditional=True,
                 )
 
+    def test_mixed_job_tuples_fail(self):
+        for guard in self._owner_guards():
+            good=lambda a:[self._job(101,a),self._request_job(101,a)]
+            for c in ({"run_id":999},{"run_attempt":9},{"head_sha":"d"*40}):
+                for orig in (False,True):
+                    a=1 if orig else 2
+                    m=[*good(a),dict(self._job(101,a),id=2020,**c)]
+                    self._assert_owner(None,guard=guard,runs=[self._run(101,2)],
+                        jobs={101:good(2) if orig else m},
+                        attempt_one_jobs={101:m if orig else good(1)},
+                        materialize_request_jobs=False,conditional=True)
+
     def test_attempt_three_holds_owner(self):
         guards = self._owner_guards()
         self.assertEqual(3, len(guards))

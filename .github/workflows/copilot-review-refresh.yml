@@ -313,19 +313,12 @@ jobs:
               job_pages="$(owner_api_read --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/${candidate_attempt}/jobs?filter=all&per_page=100")" \
                 || return 1
-              jq -e '
+              jq -e --arg head "${EVENT_HEAD}" --argjson attempt "${candidate_attempt}" --argjson run_id "${candidate_id}" '
                 type == "array" and length > 0 and length <= 10
                 and all(.[]; type == "object" and (.jobs | type) == "array")
                 and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
-                and all(.[].jobs[]?;
-                  type == "object"
-                  and (.id | type) == "number" and .id > 0
-                  and (.name | type) == "string"
-                  and (.run_id | type) == "number" and .run_id > 0
-                  and (.run_attempt | type) == "number"
-                  and (.head_sha | type) == "string"
-                  and (.status | type) == "string"
-                  and has("conclusion"))
+                and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
+                  and (.name|type)=="string" and .run_id==$run_id and .run_attempt==$attempt and .head_sha==$head and (.status|type)=="string" and has("conclusion"))
                 ' <<<"${job_pages}" >/dev/null || return 1
               policy_jobs="$(jq -ce \
                 --arg head "${EVENT_HEAD}" \
@@ -397,19 +390,12 @@ jobs:
                   original_job_pages="$(owner_api_read --paginate --slurp \
                     "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/1/jobs?filter=all&per_page=100")" \
                     || return 1
-                  jq -e '
+                  jq -e --arg head "${EVENT_HEAD}" --argjson run_id "${candidate_id}" '
                     type == "array" and length > 0 and length <= 10
                     and all(.[]; type == "object" and (.jobs | type) == "array")
                     and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
-                    and all(.[].jobs[]?;
-                      type == "object"
-                      and (.id | type) == "number" and .id > 0
-                      and (.name | type) == "string"
-                      and (.run_id | type) == "number" and .run_id > 0
-                      and (.run_attempt | type) == "number"
-                      and (.head_sha | type) == "string"
-                      and (.status | type) == "string"
-                      and has("conclusion"))
+                    and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
+                      and (.name|type)=="string" and .run_id==$run_id and .run_attempt==1 and .head_sha==$head and (.status|type)=="string" and has("conclusion"))
                     ' <<<"${original_job_pages}" >/dev/null || return 1
                 fi
                 requester_jobs="$(jq -ce \
