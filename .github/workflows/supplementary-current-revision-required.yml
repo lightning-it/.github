@@ -2328,7 +2328,10 @@ jobs:
                 and (.post_baseline | type == "boolean")
                 and (.ancestry_boundary or
                   ((.review | type == "object") and (.threads | type == "object"))))
-              and ([.ingress[] | select(.baseline_reconciliation)] | length) == 1
+              and (.ingress | to_entries as $entries
+                | [$entries[] | select(.value.baseline_reconciliation) | .key] as $baselines
+                | ($baselines | length) == 1
+                  and all($entries[]; .value.post_baseline == (.key > $baselines[0])))
               and (.post_baseline_ingress_count | type == "number" and . >= 0)
               and .post_baseline_ingress_count == ([.ingress[] | select(.post_baseline)] | length)
               and (.reviewed_change_ingress_count | type == "number" and . > 0)

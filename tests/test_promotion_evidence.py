@@ -2977,9 +2977,29 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         self.assertTrue(accepted(package))
         post_baseline = json.loads(json.dumps(package))
-        post_baseline["ingress"][0]["post_baseline"] = True
+        post_baseline["ingress"].reverse()
+        post_baseline["ingress"][1]["post_baseline"] = True
         post_baseline["post_baseline_ingress_count"] = 1
         self.assertTrue(accepted(post_baseline))
+        swapped_marker = json.loads(json.dumps(package))
+        swapped_marker["ingress"][0]["baseline_reconciliation"] = True
+        swapped_marker["ingress"][1]["baseline_reconciliation"] = False
+        self.assertFalse(accepted(swapped_marker))
+        for template, index, flag, count in (
+            (package, 0, True, 1),  # A pre-baseline change cannot be post-baseline.
+            (package, 1, True, 1),  # The baseline itself cannot be post-baseline.
+            (post_baseline, 1, False, 0),  # Later entries must be post-baseline.
+        ):
+            with self.subTest(position=index, post_baseline=flag):
+                inconsistent = json.loads(json.dumps(template))
+                inconsistent["ingress"][index]["post_baseline"] = flag
+                inconsistent["post_baseline_ingress_count"] = count
+                self.assertFalse(accepted(inconsistent))
+        for markers in ((False, False), (True, True)):
+            inconsistent = json.loads(json.dumps(package))
+            for item, marker in zip(inconsistent["ingress"], markers):
+                item["baseline_reconciliation"] = marker
+            self.assertFalse(accepted(inconsistent))
         for field, values in (
             ("post_baseline_ingress_count", (-1, 1, None, "0")),
             ("reviewed_change_ingress_count", (0, 2, None, "1")),
