@@ -22,11 +22,9 @@ env:
   SUPPRESSED_COMMENTS_MARKER: suppressed comments
 
 concurrency:
-  # A synchronize/reopened verifier run must never cancel the one-time
-  # opened/ready_for_review request run before that request is recorded. GitHub
-  # can otherwise leave an already successful required check in "expected".
-  group: copilot-review-${{ github.event.pull_request.number }}-${{ github.event.action }}
+  group: current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: false
+  queue: max
 
 # Release-App pull requests use only the protected MLX-90 §7.2 Exact-Revision
 # Codex check, except for a zero-diff ancestry merge proven deterministically
@@ -451,6 +449,12 @@ jobs:
                 and .id == (.id | floor)
                 and (.run_attempt | type) == "number" and .run_attempt > 0
                 and .run_attempt == (.run_attempt | floor)
+                and (.status | type) == "string"
+                and (((.status | IN("requested", "waiting", "pending", "queued", "in_progress"))
+                      and .conclusion == null)
+                  or (.status == "completed" and (.conclusion | IN("success", "failure",
+                    "neutral", "cancelled", "timed_out", "action_required", "stale",
+                    "startup_failure", "skipped"))))
                 and (.event | type) == "string" and (.event | length) > 0
                 and (.path | type) == "string" and (.path | length) > 0
                 and (.name | type) == "string" and (.name | length) > 0
@@ -541,11 +545,12 @@ jobs:
               ' <<<"${run_pages}")" || return 1
             eligible='[]'
             candidate_rows="$(jq -er \
-              '.[] | [.id, .run_attempt] | @tsv' <<<"${candidates}")" \
+              '.[] | [.id, .run_attempt, .status] | @tsv' <<<"${candidates}")" \
               || return 1
-            while IFS=$'\t' read -r candidate_id candidate_attempt; do
+            while IFS=$'\t' read -r candidate_id candidate_attempt candidate_status; do
               [[ "${candidate_id}" =~ ^[1-9][0-9]*$ ]] || return 1
               [[ "${candidate_attempt}" =~ ^(1|2)$ ]] || return 1
+              [[ "${candidate_status}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]] || return 1
               job_pages="$(owner_api_read --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/${candidate_attempt}/jobs?filter=all&per_page=100")" \
                 || return 1
@@ -575,6 +580,11 @@ jobs:
                     else . end
                 ' <<<"${job_pages}")" || return 1
               if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
+                if [[ "${candidate_status}" =~ ^(requested|waiting|pending|queued)$ ]] &&
+                  jq -e 'all(.[].jobs; length == 0)' <<<"${job_pages}" >/dev/null &&
+                  [ "$(jq 'length' <<<"${eligible}")" -gt 0 ]; then
+                  continue
+                fi
                 return 1
               fi
               jq -e '

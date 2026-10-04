@@ -22,6 +22,12 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def test_producer_and_refresh_serialize_every_mutation_for_one_pr(self) -> None:
+        group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
+        block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
+        for workflow in (COPILOT_WORKFLOW, REFRESH_WORKFLOW):
+            self.assertIn(block, workflow.read_text(encoding="utf-8"))
+
     @staticmethod
     def _producer_owner_guards() -> list[str]:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -63,12 +69,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
         mode: str = "copilot",
+        materialize_request_jobs: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         normalized_jobs: dict[int, list[dict[str, object]]] = {}
         normalized_attempt_one_jobs: dict[int, list[dict[str, object]]] = {}
         for run_id, records in jobs.items():
             normalized_jobs[run_id] = list(records)
-            if not any(
+            if materialize_request_jobs and not any(
                 record.get("name")
                 == "Request Copilot review for current revision"
                 for record in records
@@ -82,7 +89,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 if attempt_one_jobs is not None and run_id in attempt_one_jobs
                 else [dict(record, run_attempt=1) for record in records]
             )
-            if not any(
+            if materialize_request_jobs and not any(
                 record.get("name")
                 == "Request Copilot review for current revision"
                 for record in original_records
@@ -197,6 +204,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate",
             "run_attempt": attempt,
+            "status": "in_progress",
+            "conclusion": None,
             "head_branch": "feature/li179",
             "head_sha": "c" * 40,
             "repository": {"full_name": repository},
@@ -268,6 +277,29 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "== 'true'",
             dispatch,
         )
+
+    def test_serialized_queued_successor_cannot_block_or_take_owner(self) -> None:
+        owner = self._producer_run(101)
+        queued = self._producer_run(102)
+        queued.update(status="queued", conclusion=None)
+        o_jobs = [self._producer_job(101), self._producer_request_job(101)]
+        started = self._producer_run(102)
+        q_first = self._producer_run(100)
+        q_first.update(status="queued", conclusion=None)
+        s_jobs = [self._producer_job(102), self._producer_request_job(102)]
+        wrong_job = dict(self._producer_job(102), run_id=999)
+        cases = (
+            ([owner, queued], {101: o_jobs, 102: []}, "101"),
+            ([owner, started], {101: o_jobs, 102: s_jobs}, "101"),
+            ([owner, started], {101: o_jobs, 102: []}, None),
+            ([owner, queued], {101: o_jobs, 102: [wrong_job]}, None),
+            ([q_first, owner], {100: [], 101: o_jobs}, None),
+        )
+        for runs, jobs, expected in cases:
+            result = self._run_producer_owner_guard(runs=runs, jobs=jobs, materialize_request_jobs=False)
+            self.assertEqual(expected is not None, result.returncode == 0, result.stderr)
+            if expected is not None:
+                self.assertEqual(expected, result.stdout)
 
     def test_owner_election_rejects_attempt_duplicates_and_keeps_clone_stale(
         self,
