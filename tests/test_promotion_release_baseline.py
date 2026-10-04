@@ -89,6 +89,59 @@ class ReviewedReleaseBaselineTests(unittest.TestCase):
         self.assertIn("Preserved feature", self.git("show", f"{self.head}:roles/example/tasks/main.yml"))
         self.assertEqual("bugfixes: [not released yet]", self.git("show", f"{self.head}:changelogs/fragments/a.yaml"))
 
+    def use_release_app_title(self) -> None:
+        self.pull["title"] = "chore: sync v1.14.0 release back to develop"
+        self.pull["user"] = {
+            "login": MODULE.RELEASE_APP_LOGIN,
+            "id": MODULE.RELEASE_APP_ID,
+            "type": "Bot",
+        }
+
+    def test_release_controller_title_retains_exact_reviewed_baseline(self) -> None:
+        self.use_release_app_title()
+        self.validate()
+        self.assertEqual("release-app", MODULE.expected_evidence_kind(self.pull, repository="lightning-it/example"))
+
+    def test_release_controller_title_requires_exact_app_identity(self) -> None:
+        self.use_release_app_title()
+        for author, expected in (
+            ({"login": "litroc", "id": 76040632, "type": "User"}, "release-baseline-title-author"),
+            ({"login": MODULE.RELEASE_APP_LOGIN, "id": 123, "type": "Bot"}, "release-app-identity"),
+            ({"login": MODULE.RELEASE_APP_LOGIN, "id": MODULE.RELEASE_APP_ID, "type": "User"}, "release-app-identity"),
+            ({"login": "unknown[bot]", "id": MODULE.RELEASE_APP_ID, "type": "Bot"}, "copilot-ingress-author-type"),
+        ):
+            with self.subTest(author=author):
+                self.pull["user"] = author
+                with self.assertRaisesRegex(MODULE.EvidenceError, expected):
+                    self.validate()
+
+    def test_release_controller_title_remains_exact_and_version_bound(self) -> None:
+        self.use_release_app_title()
+        for title in (
+            "chore: sync v1.15.0 release back to develop",
+            "chore: sync v1.14.0 release back to develop ",
+            "chore: sync v1.14.0 release back to develop\nextra",
+            "chore: sync v1.14.0 release back to main",
+        ):
+            with self.subTest(title=title):
+                self.pull["title"] = title
+                with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-title"):
+                    self.validate()
+
+    def test_release_controller_title_does_not_allow_runtime_changes(self) -> None:
+        self.use_release_app_title()
+        self.write("roles/example/tasks/main.yml", "---\n[]\n")
+        self.head = self.commit("unrelated runtime change under controller title")
+        with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-content-scope"):
+            self.validate()
+
+    def test_release_controller_title_still_requires_exact_main_metadata(self) -> None:
+        self.use_release_app_title()
+        self.write("CHANGELOG.rst", "not the main release\n")
+        self.head = self.commit("incorrect release metadata under controller title")
+        with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-not-exact-main-metadata"):
+            self.validate()
+
     def test_retained_consumed_fragment_is_rejected_even_when_absent_from_diff(self) -> None:
         for fragment in self.fragments:
             with self.subTest(fragment=fragment):

@@ -810,14 +810,23 @@ def validate_reviewed_release_baseline(
     require(match is not None, "release-baseline-ref")
     assert match is not None
     version = match.group(1)
+    controller_title = f"chore: sync v{version} release back to develop"
     require(
-        pull.get("title") == f"chore(release): sync v{version} back to develop",
+        pull.get("title") in (
+            f"chore(release): sync v{version} back to develop",
+            controller_title,
+        ),
         "release-baseline-title",
     )
+    evidence_kind = expected_evidence_kind(pull, repository=repository)
     require(
-        expected_evidence_kind(pull, repository=repository) in {"copilot", "release-app"},
+        evidence_kind in {"copilot", "release-app"},
         "release-baseline-review-kind",
     )
+    # The existing release-back-sync producer uses this exact alternate title.
+    # It still needs the authenticated App identity and ordinary review proof.
+    if pull.get("title") == controller_title:
+        require(evidence_kind == "release-app", "release-baseline-title-author")
     previous = sha(merge.get("base_sha"), "release-baseline-previous")
     head_sha = sha(merge.get("head_sha"), "release-baseline-head-sha")
     merge_sha = sha(merge.get("merge_sha"), "release-baseline-merge-sha")
