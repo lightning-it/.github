@@ -22,6 +22,11 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def _run_bash(self, script, environment):
+        return subprocess.run([self._test_tool("bash"), "-c", script],
+            text=True, capture_output=True, check=False,
+            env={"PATH": TEST_TOOL_PATH, **environment})
+
     def test_pr_mutations_serialize(self):
         group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
@@ -29,7 +34,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             self.assertIn(block, workflow.read_text(encoding="utf-8"))
 
     @staticmethod
-    def _producer_owner_guards():
+    def _owner_guards():
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
         guards = []
@@ -39,66 +44,48 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
             guards.append(workflow[start:end])
             cursor = end + 1
-        if len(guards) != 1:
-            raise AssertionError("expected one anchored producer-owner guard")
+        if len(guards) != 1: raise AssertionError("expected one anchored owner guard")
         if workflow.count("*materialize-producer-owner-guard") != 1:
-            raise AssertionError("dispatch must reuse the anchored guard step")
-        return [guards[0], guards[0], CopilotReviewRefreshTests._refresh_producer_owner_guard()]
+            raise AssertionError("dispatch must reuse anchored guard")
+        return [guards[0], guards[0], CopilotReviewRefreshTests._refresh_owner_guard()]
 
     @classmethod
-    def _producer_owner_guard(cls):
-        return cls._producer_owner_guards()[0]
+    def _owner_guard(cls):
+        return cls._owner_guards()[0]
 
     @staticmethod
-    def _refresh_producer_owner_guard():
+    def _refresh_owner_guard():
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
         start = workflow.index(marker) + len(marker)
         end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
         return workflow[start:end]
 
-    def _run_producer_owner_guard(
-        self,
-        *,
-        runs, jobs, guard=None, attempt_one_jobs=None,
+    def _run_owner_guard(self, *, runs, jobs, guard=None, attempt_one_jobs=None,
         event_head_ref="feature/li179", foreign_pulls=None,
         runs_second=None, conditional=False, mode="copilot",
-        materialize_request_jobs=True,
-    ):
+        materialize_request_jobs=True):
         normalized_jobs, original_jobs = {}, {}
         for run_id, records in jobs.items():
             normalized_jobs[run_id] = list(records)
-            if materialize_request_jobs and not any(
-                record.get("name")
-                == "Request Copilot review for current revision"
-                for record in records
-            ):
+            if materialize_request_jobs and not any(record.get("name") ==
+                    "Request Copilot review for current revision" for record in records):
                 request_attempt = int(records[0].get("run_attempt", 1))
-                normalized_jobs[run_id].append(
-                    self._producer_request_job(run_id, request_attempt)
-                )
-            original_records = (
-                list(attempt_one_jobs[run_id])
-                if attempt_one_jobs is not None and run_id in attempt_one_jobs
-                else [dict(record, run_attempt=1) for record in records]
-            )
-            if materialize_request_jobs and not any(
-                record.get("name")
-                == "Request Copilot review for current revision"
-                for record in original_records
-            ):
-                original_records.append(self._producer_request_job(run_id, 1))
+                normalized_jobs[run_id].append(self._request_job(run_id, request_attempt))
+            original_records = (list(attempt_one_jobs[run_id]) if attempt_one_jobs
+                is not None and run_id in attempt_one_jobs else
+                [dict(record, run_attempt=1) for record in records])
+            if materialize_request_jobs and not any(record.get("name") ==
+                    "Request Copilot review for current revision" for record in original_records):
+                original_records.append(self._request_job(run_id, 1))
             original_jobs[run_id] = original_records
         bash = self._test_tool("bash")
         jq = self._test_tool("jq")
-        job_cases = "".join(
-            f'{run_id}) [ "${{run_attempt}}" -eq 1 ] && printf %s "${{JOBS_{run_id}_ATTEMPT_1}}" || printf %s "${{JOBS_{run_id}}}" ;;'
-            for run_id in sorted(normalized_jobs)
-        )
-        pull_cases = "".join(
-            f'{number}) printf %s "${{PULL_{number}}}" ;;'
-            for number in sorted(foreign_pulls or {})
-        )
+        job_cases = "".join(f'{i}) [ "${{run_attempt}}" -eq 1 ] && printf %s '
+            f'"${{JOBS_{i}_ATTEMPT_1}}" || printf %s "${{JOBS_{i}}}" ;;'
+            for i in sorted(normalized_jobs))
+        pull_cases = "".join(f'{i}) printf %s "${{PULL_{i}}}" ;;'
+                             for i in sorted(foreign_pulls or {}))
         script = r'''set -euo pipefail
 sleep() { :; }
 gh() {
@@ -116,7 +103,7 @@ gh() {
   else return 93; fi
 }
 '''.replace("__JOB_CASES__", job_cases).replace("__PULL_CASES__", pull_cases)
-        script += guard or self._producer_owner_guard()
+        script += guard or self._owner_guard()
         script += (
             '\nif owner="$(elect_producer_owner)"; then printf %s "${owner}"; else exit 71; fi\n'
             if conditional
@@ -134,22 +121,16 @@ gh() {
             def pages(records):
                 return json.dumps([{"jobs": [record]} for record in records]
                                   or [{"jobs": []}])
-            environment.update({f"JOBS_{run_id}": pages(records)
-                                for run_id, records in normalized_jobs.items()})
-            environment.update({f"PULL_{number}": json.dumps(pull)
-                                for number, pull in (foreign_pulls or {}).items()})
-            environment.update({f"JOBS_{run_id}_ATTEMPT_1": pages(records)
-                                for run_id, records in original_jobs.items()})
-            return subprocess.run(
-                [bash, "-c", script],
-                env=environment,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            environment.update({f"JOBS_{i}": pages(v) for i, v in normalized_jobs.items()})
+            environment.update({f"PULL_{i}": json.dumps(v)
+                                for i, v in (foreign_pulls or {}).items()})
+            environment.update({f"JOBS_{i}_ATTEMPT_1": pages(v)
+                                for i, v in original_jobs.items()})
+            return subprocess.run([bash, "-c", script], env=environment,
+                text=True, capture_output=True, check=False)
 
     def _assert_owner(self, expected, **kwargs):
-        result = self._run_producer_owner_guard(**kwargs)
+        result = self._run_owner_guard(**kwargs)
         if expected is None:
             self.assertNotEqual(0, result.returncode)
         else:
@@ -157,35 +138,25 @@ gh() {
             self.assertEqual(expected, result.stdout)
 
     @staticmethod
-    def _producer_run(run_id, attempt=1):
-        repository = "lightning-it/shared-assets-lit"
-        return {
-            "id": run_id, "event": "pull_request_target",
+    def _run(run_id, attempt=1):
+        repo = "lightning-it/shared-assets-lit"
+        return {"id": run_id, "event": "pull_request_target",
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate", "run_attempt": attempt,
             "status": "in_progress", "conclusion": None,
             "head_branch": "feature/li179", "head_sha": "c" * 40,
-            "repository": {"full_name": repository},
-            "head_repository": {"full_name": repository},
+            "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
             "pull_requests": [{"number": 2334, "base": {"sha": "b" * 40},
-                               "head": {"sha": "c" * 40,
-                                        "ref": "feature/li179"}}]}
+                "head": {"sha": "c" * 40, "ref": "feature/li179"}}]}
 
     @staticmethod
-    def _producer_job(run_id, attempt=1, *, status="in_progress", conclusion=None):
-        return {
-            "id": run_id * 10, "name": "Verify current revision policy",
+    def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
+        return {"id": run_id * 10, "name": "Verify current revision policy",
             "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
             "status": status, "conclusion": conclusion}
 
     @staticmethod
-    def _producer_request_job(
-        run_id,
-        attempt=1,
-        *,
-        status="completed",
-        conclusion="success",
-    ):
+    def _request_job(run_id, attempt=1, *, status="completed", conclusion="success"):
         return {
             "id": run_id * 10 + 1,
             "name": "Request Copilot review for current revision",
@@ -193,40 +164,25 @@ gh() {
             "status": status, "conclusion": conclusion}
 
     def test_first_review_run_remains_owner(self):
-        self._assert_owner(
-            "101",
-            runs=[self._producer_run(101), self._producer_run(102)],
-            jobs={
-                101: [self._producer_job(101)],
-                102: [self._producer_job(102)],
-            },
-        )
+        self._assert_owner("101", runs=[self._run(101), self._run(102)],
+                           jobs={101: [self._job(101)], 102: [self._job(102)]})
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
-        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
-            1
-        ]
-        dispatch = workflow.split(
-            "\n  request-protected-verifier-reevaluation:", 1
-        )[1]
-        self.assertIn(
-            "if: steps.producer-owner.outputs.owner == 'true'", publish
-        )
-        self.assertIn(
-            "needs['verify-current-revision-policy'].outputs.producer_owner "
-            "== 'true'",
-            dispatch,
-        )
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        dispatch = workflow.split("\n  request-protected-verifier-reevaluation:", 1)[1]
+        self.assertIn("if: steps.producer-owner.outputs.owner == 'true'", publish)
+        self.assertIn("needs['verify-current-revision-policy'].outputs.producer_owner "
+                      "== 'true'", dispatch)
 
     def test_queued_successor_keeps_owner(self):
-        owner = self._producer_run(101)
-        queued = self._producer_run(102)
+        owner = self._run(101)
+        queued = self._run(102)
         queued.update(status="queued", conclusion=None)
-        o_jobs = [self._producer_job(101), self._producer_request_job(101)]
-        started = self._producer_run(102)
-        q_first = self._producer_run(100)
+        o_jobs = [self._job(101), self._request_job(101)]
+        started = self._run(102)
+        q_first = self._run(100)
         q_first.update(status="queued", conclusion=None)
-        s_jobs = [self._producer_job(102), self._producer_request_job(102)]
-        wrong_job = dict(self._producer_job(102), run_id=999)
+        s_jobs = [self._job(102), self._request_job(102)]
+        wrong_job = dict(self._job(102), run_id=999)
         cases = (
             ([owner, queued], {101: o_jobs, 102: []}, "101"),
             ([owner, started], {101: o_jobs, 102: s_jobs}, "101"),
@@ -243,35 +199,35 @@ gh() {
     def test_duplicate_attempts_keep_clone_stale(self):
         self._assert_owner(
             "101",
-            runs=[self._producer_run(101), self._producer_run(102, attempt=2)],
+            runs=[self._run(101), self._run(102, attempt=2)],
             jobs={
-                101: [self._producer_job(101)],
-                102: [self._producer_job(102, attempt=2)],
+                101: [self._job(101)],
+                102: [self._job(102, attempt=2)],
             },
         )
         for runs, records in (
-            ([self._producer_run(101)] * 2, [self._producer_job(101)]),
-            ([self._producer_run(101)], [self._producer_job(101)] * 2),
-            ([self._producer_run(101)], [self._producer_job(101), *[self._producer_request_job(101)] * 2]),
+            ([self._run(101)] * 2, [self._job(101)]),
+            ([self._run(101)], [self._job(101)] * 2),
+            ([self._run(101)], [self._job(101), *[self._request_job(101)] * 2]),
         ):
             self._assert_owner(None, runs=runs, jobs={101: records})
 
-        skipped_request = self._producer_request_job(101)
+        skipped_request = self._request_job(101)
         skipped_request.update(status="completed", conclusion="skipped")
         self._assert_owner(
             "101",
-            runs=[self._producer_run(101)],
-            jobs={101: [self._producer_job(101), skipped_request]},
+            runs=[self._run(101)],
+            jobs={101: [self._job(101), skipped_request]},
             mode="deterministic",
         )
 
     def test_conflicting_job_ids_fail(self):
         cases = (
-            (self._producer_run(101), [self._producer_job(101), dict(self._producer_request_job(101), id=1010)], None),
-            (self._producer_run(101, attempt=2), [self._producer_job(101, 2), self._producer_request_job(101, 2)],
-             {101: [self._producer_request_job(101), dict(self._producer_job(101), id=1011)]}),
+            (self._run(101), [self._job(101), dict(self._request_job(101), id=1010)], None),
+            (self._run(101, attempt=2), [self._job(101, 2), self._request_job(101, 2)],
+             {101: [self._request_job(101), dict(self._job(101), id=1011)]}),
         )
-        for guard in self._producer_owner_guards():
+        for guard in self._owner_guards():
             for run, jobs, attempt_one in cases:
                 self._assert_owner(
                     None,
@@ -281,33 +237,18 @@ gh() {
                 )
 
     def test_attempt_three_holds_owner(self):
-        guards = self._producer_owner_guards()
+        guards = self._owner_guards()
         self.assertEqual(3, len(guards))
-
         for index, guard in enumerate(guards):
             with self.subTest(guard=index):
-                self._assert_owner(
-                    None,
-                    guard=guard,
-                    runs=[
-                        self._producer_run(101, attempt=3),
-                        self._producer_run(102),
-                    ],
-                    jobs={
-                        101: [self._producer_job(101, attempt=3)],
-                        102: [self._producer_job(102)],
-                    },
-                    attempt_one_jobs={
-                        101: [
-                            self._producer_job(101),
-                            self._producer_request_job(101),
-                        ]
-                    },
-                    conditional=True,
-                )
+                self._assert_owner(None, guard=guard,
+                    runs=[self._run(101, attempt=3), self._run(102)],
+                    jobs={101: [self._job(101, attempt=3)], 102: [self._job(102)]},
+                    attempt_one_jobs={101: [self._job(101), self._request_job(101)]},
+                    conditional=True)
 
     def test_reject_bad_pr_tuple(self):
-        original = self._producer_run(101)
+        original = self._run(101)
         exact_tuple = original["pull_requests"][0]
         malformed_runs = []
         for field in (
@@ -355,21 +296,21 @@ gh() {
             malformed[field] = value
             malformed_runs.append(malformed)
 
-        for guard in self._producer_owner_guards():
+        for guard in self._owner_guards():
             for malformed in malformed_runs:
                 with self.subTest(guard=guard[:20], malformed=malformed):
                     self._assert_owner(
                         None,
                         guard=guard,
-                        runs=[malformed, self._producer_run(102)],
-                        jobs={101: [self._producer_job(101)],
-                              102: [self._producer_job(102)]},
+                        runs=[malformed, self._run(102)],
+                        jobs={101: [self._job(101)],
+                              102: [self._job(102)]},
                         conditional=True,
                     )
 
     def test_exclude_only_verified_foreign_pr(self):
-        guards = self._producer_owner_guards()
-        foreign = self._producer_run(101)
+        guards = self._owner_guards()
+        foreign = self._run(101)
         foreign["pull_requests"][0]["number"] = 999
         foreign["pull_requests"][0]["base"]["sha"] = "d" * 40
         foreign_pull = {
@@ -387,160 +328,98 @@ gh() {
 
         for guard_index, guard in enumerate(guards):
             with self.subTest(guard=guard_index):
-                self._assert_owner(
-                    "102",
-                    guard=guard,
-                    runs=[foreign, self._producer_run(102)],
-                    jobs={102: [self._producer_job(102)]},
-                    foreign_pulls={999: foreign_pull},
-                    conditional=True,
-                )
-
+                self._assert_owner("102", guard=guard,
+                    runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
+                    foreign_pulls={999: foreign_pull}, conditional=True)
                 mismatched = json.loads(json.dumps(foreign_pull))
                 mismatched["head"]["sha"] = "e" * 40
-                self._assert_owner(
-                    None,
-                    guard=guard,
-                    runs=[foreign, self._producer_run(102)],
-                    jobs={102: [self._producer_job(102)]},
-                    foreign_pulls={999: mismatched},
-                    conditional=True,
-                )
+                self._assert_owner(None, guard=guard,
+                    runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
+                    foreign_pulls={999: mismatched}, conditional=True)
 
     def test_owner_survives_same_sha_rename(self):
-        guards = self._producer_owner_guards()
-        original = self._producer_run(101)
+        guards = self._owner_guards()
+        original = self._run(101)
         original["head_branch"] = "feature/original"
         original["pull_requests"][0]["head"]["ref"] = "feature/original"
-        renamed = self._producer_run(102)
+        renamed = self._run(102)
         renamed["head_branch"] = "feature/renamed"
         renamed["pull_requests"][0]["head"]["ref"] = "feature/renamed"
 
         for guard_index, guard in enumerate(guards):
             with self.subTest(guard=guard_index):
-                self._assert_owner(
-                    "101",
-                    guard=guard,
-                    event_head_ref="feature/renamed",
-                    runs=[original, renamed],
-                    jobs={
-                        101: [self._producer_job(101)],
-                        102: [self._producer_job(102)],
-                    },
-                    conditional=True,
-                )
+                self._assert_owner("101", guard=guard,
+                    event_head_ref="feature/renamed", runs=[original, renamed],
+                    jobs={101: [self._job(101)], 102: [self._job(102)]},
+                    conditional=True)
 
     def test_snapshot_drift_fails_closed(self):
-        malformed = self._producer_run(101)
+        malformed = self._run(101)
         malformed["run_attempt"] = "1"
-        self._assert_owner(
-            None,
-            runs=[malformed],
-            jobs={101: [self._producer_job(101)]},
-            conditional=True,
-        )
-        changed = self._run_producer_owner_guard(
-            runs=[self._producer_run(102)],
-            runs_second=[self._producer_run(101), self._producer_run(102)],
-            jobs={
-                101: [self._producer_job(101)],
-                102: [self._producer_job(102)],
-            },
-            conditional=True,
-        )
+        self._assert_owner(None, runs=[malformed], jobs={101: [self._job(101)]},
+                           conditional=True)
+        changed = self._run_owner_guard(runs=[self._run(102)],
+            runs_second=[self._run(101), self._run(102)],
+            jobs={101: [self._job(101)], 102: [self._job(102)]}, conditional=True)
         self.assertNotEqual(0, changed.returncode)
         self.assertIn("changed between stable reads", changed.stderr)
-
-        self._assert_owner(
-            None,
-            runs=[self._producer_run(101), self._producer_run(102)],
-            jobs={
-                101: [self._producer_request_job(101)],
-                102: [self._producer_job(102)],
-            },
-            conditional=True,
-        )
+        self._assert_owner(None, runs=[self._run(101), self._run(102)],
+            jobs={101: [self._request_job(101)], 102: [self._job(102)]},
+            conditional=True)
 
     def test_draft_ineligible_ready_can_own(self):
-        draft_job = self._producer_job(101, status="completed", conclusion="skipped")
-        completed_job = self._producer_job(101, status="completed", conclusion="failure")
-        synchronize_request = self._producer_request_job(
-            101, status="completed", conclusion="skipped")
-        ready_request = self._producer_request_job(102, status="in_progress",
-                                                   conclusion=None)
-        live_sync_policy = self._producer_job(
-            37155519577, status="completed", conclusion="failure")
-        live_sync_request = self._producer_request_job(
-            37155519577, status="completed", conclusion="skipped")
-        live_ready_policy = self._producer_job(
-            37156339900, status="completed", conclusion="failure")
-        live_ready_request = self._producer_request_job(
-            37156339900, status="completed", conclusion="success")
-        common_runs = [self._producer_run(101), self._producer_run(102)]
+        draft_job = self._job(101, status="completed", conclusion="skipped")
+        completed_job = self._job(101, status="completed", conclusion="failure")
+        synchronize_request = self._request_job(101, status="completed", conclusion="skipped")
+        ready_request = self._request_job(102, status="in_progress", conclusion=None)
+        live_sync_policy = self._job(37155519577, status="completed", conclusion="failure")
+        live_sync_request = self._request_job(37155519577, status="completed", conclusion="skipped")
+        live_ready_policy = self._job(37156339900, status="completed", conclusion="failure")
+        live_ready_request = self._request_job(37156339900, status="completed", conclusion="success")
+        common_runs = [self._run(101), self._run(102)]
         cases = (
-            ("102", common_runs, {101: [draft_job], 102: [self._producer_job(102)]}),
-            ("101", common_runs, {101: [completed_job], 102: [self._producer_job(102)]}),
+            ("102", common_runs, {101: [draft_job], 102: [self._job(102)]}),
+            ("101", common_runs, {101: [completed_job], 102: [self._job(102)]}),
             ("102", common_runs, {101: [completed_job, synchronize_request],
-                                  102: [self._producer_job(102), ready_request]}),
-            ("37156339900", [self._producer_run(37155519577),
-                             self._producer_run(37156339900)],
+                                  102: [self._job(102), ready_request]}),
+            ("37156339900", [self._run(37155519577), self._run(37156339900)],
              {37155519577: [live_sync_policy, live_sync_request],
               37156339900: [live_ready_policy, live_ready_request]}),
-            ("101", [self._producer_run(101)], {101: [completed_job]}),
+            ("101", [self._run(101)], {101: [completed_job]}),
         )
         for expected, runs, jobs in cases:
             self._assert_owner(expected, runs=runs, jobs=jobs, conditional=True)
 
         for conclusion in ("", "unknown", "skipped ", "SUCCESS"):
             with self.subTest(conclusion=conclusion):
-                unknown_job = self._producer_job(
-                    101, status="completed", conclusion=conclusion)
-                self._assert_owner(
-                    None, runs=common_runs,
-                    jobs={101: [unknown_job], 102: [self._producer_job(102)]},
-                    conditional=True,
-                )
+                unknown_job = self._job(101, status="completed", conclusion=conclusion)
+                self._assert_owner(None, runs=common_runs,
+                    jobs={101: [unknown_job], 102: [self._job(102)]},
+                    conditional=True)
 
-        malformed_job = self._producer_job(
-            101, status="completed", conclusion={"bad": True})
-        self._assert_owner(
-            None, runs=common_runs,
-            jobs={101: [malformed_job], 102: [self._producer_job(102)]},
-            conditional=True,
-        )
+        malformed_job = self._job(101, status="completed", conclusion={"bad": True})
+        self._assert_owner(None, runs=common_runs,
+            jobs={101: [malformed_job], 102: [self._job(102)]},
+            conditional=True)
 
     def test_original_attempt_keeps_owner(self):
-        skipped_request = self._producer_request_job(101)
+        skipped_request = self._request_job(101)
         skipped_request.update(status="completed", conclusion="skipped")
-        self._assert_owner(
-            "101",
-            runs=[self._producer_run(101)],
-            jobs={101: [self._producer_job(101), skipped_request]},
-            mode="verification",
-            conditional=True,
-        )
+        self._assert_owner("101", runs=[self._run(101)],
+            jobs={101: [self._job(101), skipped_request]},
+            mode="verification", conditional=True)
 
-        rerun_policy = self._producer_job(101, attempt=2)
-        rerun_request = self._producer_request_job(101, attempt=2)
+        rerun_policy = self._job(101, attempt=2)
+        rerun_request = self._request_job(101, attempt=2)
         rerun_request.update(status="completed", conclusion="skipped")
-        self._assert_owner(
-            "101",
-            runs=[self._producer_run(101, attempt=2), self._producer_run(102)],
-            jobs={
-                101: [rerun_policy, rerun_request],
-                102: [self._producer_job(102)],
-            },
-            attempt_one_jobs={
-                101: [
-                    self._producer_job(101),
-                    self._producer_request_job(101),
-                ]
-            },
-            conditional=True,
-        )
+        self._assert_owner("101",
+            runs=[self._run(101, attempt=2), self._run(102)],
+            jobs={101: [rerun_policy, rerun_request], 102: [self._job(102)]},
+            attempt_one_jobs={101: [self._job(101), self._request_job(101)]},
+            conditional=True)
 
     def test_helper_revalidates_owner(self):
-        guards = self._producer_owner_guards()
+        guards = self._owner_guards()
         self.assertEqual(3, len(guards))
         self.assertTrue(all(guard == guards[0] for guard in guards))
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -598,7 +477,7 @@ gh() {
         )
 
     @staticmethod
-    def _publish_shell_function(name):
+    def _publish_fn(name):
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         publish = workflow.index("      - name: Publish bound neutral result\n")
         marker = f"          {name}() {{\n"
@@ -615,7 +494,7 @@ gh() {
         return textwrap.dedent(workflow[start:end])
 
     @staticmethod
-    def _copilot_review_verification_script():
+    def _review_script():
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         marker = (
             '          cat >"${verification_script}" '
@@ -654,7 +533,7 @@ gh() {
   printf %s "$((calls + 1))" >"${CALL_COUNTER}"
   case "${calls}" in 0) printf %s "${PAGE_0}";; 1) printf %s "${PAGE_1}";; 2) printf %s "${PAGE_2}";; *) return 91;; esac
 }
-''' + self._copilot_review_verification_script()
+''' + self._review_script()
                 env = {"PATH": TEST_TOOL_PATH,
                        "CALL_COUNTER": str(Path(temporary) / "calls"),
                        "COPILOT_REVIEWER_LOGIN": "copilot-pull-request-reviewer",
@@ -667,9 +546,7 @@ gh() {
                        "UNABLE_REVIEW_MARKER": "unable to review this pull request"}
                 env.update({f"PAGE_{index}": json.dumps(page)
                             for index, page in enumerate(pages)})
-                return subprocess.run(
-                    [self._test_tool("bash"), "-c", script],
-                    text=True, capture_output=True, check=False, env=env)
+                return self._run_bash(script, env)
 
         current = evaluate(bound_head)
         self.assertEqual(0, current.returncode, current.stderr)
@@ -706,16 +583,12 @@ validate_live_pr_tuple() { :; }
 read_refresh_checks() { printf %s "${LIVE}"; }
 ''' + self._refresh_shell_function("revalidate_refresh_state") + \
                     '\nrevalidate_refresh_state 1 "${EXPECTED}"\n'
-                return subprocess.run(
-                    [self._test_tool("bash"), "-c", script],
-                    text=True, capture_output=True, check=False,
-                    env={
-                        "PATH": TEST_TOOL_PATH,
-                        "EXPECTED": json.dumps(expected, separators=(",", ":")),
-                        "LIVE": json.dumps(live, separators=(",", ":")),
-                        "OWNER_AFTER": str(owners[1]), "OWNER_BEFORE": str(owners[0]),
-                        "OWNER_COUNTER": str(Path(temporary) / "owners"),
-                        "owner_run_id": "77"})
+                return self._run_bash(script, {
+                    "EXPECTED": json.dumps(expected, separators=(",", ":")),
+                    "LIVE": json.dumps(live, separators=(",", ":")),
+                    "OWNER_AFTER": str(owners[1]), "OWNER_BEFORE": str(owners[0]),
+                    "OWNER_COUNTER": str(Path(temporary) / "owners"),
+                    "owner_run_id": "77"})
 
         stable = evaluate([expected], (77, 77))
         self.assertEqual(0, stable.returncode, stable.stderr)
@@ -734,24 +607,10 @@ read_refresh_checks() { printf %s "${LIVE}"; }
         )
 
         def evaluate(attempt):
-            return subprocess.run(
-                [self._test_tool("bash"), "-c", script],
-                text=True,
-                capture_output=True,
-                check=False,
-                env={
-                    "PATH": TEST_TOOL_PATH,
-                    "RUN": json.dumps(
-                        {
-                            "id": 77,
-                            "status": "completed",
-                            "run_attempt": attempt,
-                        },
-                        separators=(",", ":"),
-                    ),
-                    "owner_run_id": "77",
-                },
-            )
+            return self._run_bash(script, {
+                "RUN": json.dumps({"id": 77, "status": "completed",
+                                   "run_attempt": attempt}, separators=(",", ":")),
+                "owner_run_id": "77"})
 
         self.assertEqual(0, evaluate(1).returncode)
         self.assertNotEqual(0, evaluate(2).returncode)
@@ -776,9 +635,7 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
                        "STATE": json.dumps(state, separators=(",", ":")),
                        "owner_run_id": "77", "refresh_expected_count": "0",
                        "refresh_expected_snapshot": "null"}
-                result = subprocess.run([self._test_tool("bash"), "-c", script],
-                                        text=True, capture_output=True,
-                                        check=False, env=env)
+                result = self._run_bash(script, env)
                 return result.returncode, log_file.read_text() if log_file.exists() else ""
 
         unresolved = {"event_current": True, "incomplete": 0, "unresolved": 1}
@@ -807,12 +664,8 @@ read_refresh_review_state() { printf %s "${STATE}"; }
 revalidate_refresh_state() { printf R >>"${LOG}"; }
 gh() { printf P >>"${LOG}"; return 97; }
 ''' + function + '\ninvalidate_refresh_check "${REASON}"\n'
-                result = subprocess.run(
-                    [self._test_tool("bash"), "-c", script], text=True,
-                    capture_output=True, check=False,
-                    env={"PATH": TEST_TOOL_PATH, "LOG": str(log),
-                         "REASON": reason, "STATE": json.dumps(state)},
-                )
+                result = self._run_bash(script, {"LOG": str(log),
+                    "REASON": reason, "STATE": json.dumps(state)})
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertFalse(log.exists(), "stale evidence reached PATCH path")
         execute({"event_current": False, "incomplete": 0, "unresolved": 0},
@@ -848,9 +701,7 @@ gh() { printf P >>"${LOG}"; return 97; }
                        "COMMENT_PAGES": json.dumps(pages if pages is not None else []),
                        "PR_NUMBER": "737",
                        "REPOSITORY": "lightning-it/.github"}
-                return subprocess.run([self._test_tool("bash"), "-c", script],
-                                      text=True, capture_output=True,
-                                      check=False, env=env)
+                return self._run_bash(script, env)
 
         current = evaluate(event, live)
         self.assertEqual(0, current.returncode, current.stderr)
@@ -878,8 +729,51 @@ gh() { printf P >>"${LOG}"; return 97; }
         self.assertEqual("superseded", evaluate(
             deleted, {}, "pull_request_review_comment", [[comment]]).stdout)
 
+    def test_refresh_threads_paginate_fail_closed(self):
+        head = "c" * 40
+        def thread(index, resolved=True, oid=head):
+            comments = [] if resolved else [{"author": {"login": "copilot-pull-request-reviewer"},
+                "pullRequestReview": {"commit": {"oid": oid}}}]
+            return {"id": f"T{index}", "isResolved": resolved,
+                    "comments": {"pageInfo": {"hasNextPage": False}, "nodes": comments}}
+        def page(nodes=(), more=False, cursor=None, live=head, errors=None):
+            result = {"data": {"repository": {"pullRequest": {"headRefOid": live,
+                "reviewThreads": {"nodes": list(nodes), "pageInfo": {
+                    "hasNextPage": more, "endCursor": cursor}}}}}}
+            if errors is not None: result["errors"] = errors
+            return result
+        def run(pages, fail=-1, state="current"):
+            with tempfile.TemporaryDirectory() as tmp:
+                script = r'''set -euo pipefail
+validate_live_pr_tuple() { :; }
+refresh_event_record_state() { local n=0; [ ! -f "${EC}" ] || n="$(cat "${EC}")"; printf %s "$((n + 1))" >"${EC}"; [ "${n}" -eq 0 ] && printf current || printf %s "${FINAL_EVENT}"; }
+owner_api_read() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))" >"${PC}"; [ "${n}" -ne "${FAIL}" ] || return 97; jq -ce --argjson n "${n}" '.[$n]' <<<"${PAGES}"; }
+''' + self._refresh_shell_function("read_refresh_review_state") + \
+                    "\nread_refresh_review_state\n"
+                return self._run_bash(script, {"FINAL_EVENT": state, "FAIL": str(fail),
+                    "EC": str(Path(tmp) / "events"), "PC": str(Path(tmp) / "pages"),
+                    "HEAD_SHA": head, "PAGES": json.dumps(pages), "PR_NUMBER": "737",
+                    "REPOSITORY": "lightning-it/.github"})
+        first = [thread(index) for index in range(100)]
+        result = run([page(first, True, "C1"), page([thread(100)])])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual({"event_current": True, "incomplete": 0, "unresolved": 0},
+                         json.loads(result.stdout))
+        result = run([page(first, True, "C1"), page([thread(100, False)])])
+        self.assertEqual(1, json.loads(result.stdout)["unresolved"])
+        superseded = run([page(first, True, "C1"), page([thread(100)])], state="superseded")
+        self.assertFalse(json.loads(superseded.stdout)["event_current"])
+        bad = ([page(first, True)], [page(first, True, "C1"), page(more=True, cursor="C1")],
+               [page(first, True, "C1"), page(live="d" * 40)],
+               [page(first, True, "C1"), page(errors=[{"message": "bad"}])],
+               [page(first, True, "C1"), page([thread(0)])],
+               [page(more=True, cursor=f"C{i}") for i in range(10)])
+        for pages in bad:
+            with self.subTest(pages=len(pages)): self.assertNotEqual(0, run(pages).returncode)
+        self.assertNotEqual(0, run([page(first, True, "C1"), page()], fail=1).returncode)
+
     def test_refresh_ignores_branch_rename(self):
-        run = self._producer_run(77)
+        run = self._run(77)
         run["head_branch"] = "feature/original"
         run["pull_requests"][0]["head"]["ref"] = "feature/original"
         script = "\n".join((
@@ -889,22 +783,14 @@ gh() { printf P >>"${LOG}"; return 97; }
         ))
 
         def evaluate(candidate):
-            result = subprocess.run(
-                [self._test_tool("bash"), "-c", script],
-                text=True,
-                capture_output=True,
-                check=False,
-                env={
-                    "PATH": TEST_TOOL_PATH,
+            result = self._run_bash(script, {
                     "BASE_SHA": "b" * 40,
                     "HEAD_REF": "feature/renamed",
                     "HEAD_SHA": "c" * 40,
                     "PR_NUMBER": "2334",
                     "REPOSITORY": "lightning-it/shared-assets-lit",
                     "RUN": json.dumps(candidate),
-                    "owner_run_id": "77",
-                },
-            )
+                    "owner_run_id": "77"})
             return result.returncode
 
         self.assertEqual(0, evaluate(run))
@@ -936,7 +822,7 @@ gh() { printf P >>"${LOG}"; return 97; }
                 script = r'''set -euo pipefail
 api_read() { local reads=0; [ ! -f "${READ_COUNTER}" ] || reads="$(cat "${READ_COUNTER}")"; printf %s "$((reads + 1))" >"${READ_COUNTER}"; [ "${reads}" -eq 0 ] && printf %s "${SNAPSHOT}" || printf %s "${SNAPSHOT_AFTER}"; }
 revalidate_producer_owner() { :; }
-''' + self._publish_shell_function("validate_bound_check") + \
+''' + self._publish_fn("validate_bound_check") + \
                     '\nvalidate_bound_check 42 "${EXTERNAL_ID}" "Current revision review" "${DETAILS_URL}"\n'
                 env = {"PATH": TEST_TOOL_PATH, "DETAILS_URL": url,
                        "EVENT_BASE": base, "EVENT_HEAD": head,
@@ -947,9 +833,7 @@ revalidate_producer_owner() { :; }
                        "SNAPSHOT_AFTER": compact(after or snapshot),
                        "VERIFY_EXIT": str(vexit), "VERIFY_LOG": str(log),
                        "TRUSTED_KIND": kind, "evidence": evidence}
-                result = subprocess.run([self._test_tool("bash"), "-c", script],
-                                        text=True, capture_output=True,
-                                        check=False, env=env)
+                result = self._run_bash(script, env)
                 return result, len(log.read_text()) if log.exists() else 0
 
         common = {

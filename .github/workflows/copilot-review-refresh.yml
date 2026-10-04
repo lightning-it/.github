@@ -680,33 +680,55 @@ jobs:
             fi
           }
           read_refresh_review_state() {
-            local event_state name owner page query
+            local after='' cursors='[]' event_state event_state_after has_next
+            local name owner page query thread_page threads='[]'; local -a arguments
             validate_live_pr_tuple || return 1
             event_state="$(refresh_event_record_state)" || return 1
             [[ "${event_state}" =~ ^(current|superseded)$ ]] || return 1
             read -r owner name <<<"${REPOSITORY//\// }"
             # shellcheck disable=SC2016  # GraphQL variables stay literal.
-            query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login} pullRequestReview{commit{oid}}}}}}}}}'
-            page="$(owner_api_read graphql -f query="${query}" -F owner="${owner}" \
-              -F name="${name}" -F number="${PR_NUMBER}")" || return 1
+            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login} pullRequestReview{commit{oid}}}}}}}}}'
+            for thread_page in $(seq 1 10); do
+              arguments=(-f query="${query}" -F owner="${owner}" -F name="${name}"
+                -F number="${PR_NUMBER}")
+              [ -z "${after}" ] || arguments+=(-f after="${after}")
+              page="$(owner_api_read graphql "${arguments[@]}")" || return 1
+              jq -e --arg head "${HEAD_SHA}" '
+                select(((.errors // []) | type) == "array" and ((.errors // []) | length) == 0)
+                | .data.repository.pullRequest as $pr
+                | $pr.reviewThreads as $threads
+                | ($pr | type) == "object" and $pr.headRefOid == $head
+                and ($threads | type) == "object" and ($threads.nodes | type) == "array"
+                and ($threads.pageInfo.hasNextPage | type) == "boolean"
+                and all($threads.nodes[]?; (.id | type) == "string" and (.id | length) > 0
+                  and (.isResolved | type) == "boolean" and (.comments | type) == "object"
+                  and (.comments.nodes | type) == "array"
+                  and (.comments.pageInfo.hasNextPage | type) == "boolean"
+                  and all(.comments.nodes[]?; (.author.login | type) == "string"
+                    and (.pullRequestReview.commit.oid | test("^[0-9a-f]{40}$"))))
+                ' <<<"${page}" >/dev/null || return 1
+              threads="$(jq -ce --argjson prior "${threads}" '$prior +
+                .data.repository.pullRequest.reviewThreads.nodes |
+                select(([.[].id]|length) == ([.[].id]|unique|length))' <<<"${page}")" || return 1
+              has_next="$(jq -er '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage|tostring' <<<"${page}")" || return 1
+              [ "${has_next}" = true ] || break
+              [ "${thread_page}" -lt 10 ] || return 1
+              after="$(jq -er '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor|
+                select(type == "string" and length > 0)' <<<"${page}")" || return 1
+              cursors="$(jq -ce --arg c "${after}" 'select(index($c)|not)+[$c]' \
+                <<<"${cursors}")" || return 1
+            done
+            [ "${has_next}" = false ] || return 1
+            validate_live_pr_tuple || return 1
+            event_state_after="$(refresh_event_record_state)" || return 1
+            [[ "${event_state_after}" =~ ^(current|superseded)$ ]] || return 1
+            [ "${event_state}" = current ] && [ "${event_state_after}" = current ] || event_state=superseded
             jq -cn --arg event_state "${event_state}" --arg head "${HEAD_SHA}" \
-              --argjson page "${page}" '
-                ($page.data.repository.pullRequest) as $pr
-                | select((($page.errors // []) | length) == 0 and $pr.headRefOid == $head
-                  and ($pr.reviewThreads.nodes | type) == "array"
-                  and ($pr.reviewThreads.pageInfo.hasNextPage | type) == "boolean"
-                  and all($pr.reviewThreads.nodes[]?;
-                    (.isResolved | type) == "boolean" and (.comments.nodes | type) == "array"
-                    and (.comments.pageInfo.hasNextPage | type) == "boolean"
-                    and all(.comments.nodes[]?;
-                      (.author.login | type) == "string" and
-                      (.pullRequestReview.commit.oid | type) == "string")))
-                | ($pr.reviewThreads) as $threads
-                | {event_current:($event_state == "current"),
-                  incomplete:((if $threads.pageInfo.hasNextPage then 1 else 0 end) +
-                    ([$threads.nodes[] | select(.isResolved == false and
-                      .comments.pageInfo.hasNextPage)] | length)),
-                  unresolved:([$threads.nodes[] | select(.isResolved == false)
+              --argjson threads "${threads}" '
+                {event_current:($event_state == "current"),
+                  incomplete:([$threads[] | select(.isResolved == false and
+                    .comments.pageInfo.hasNextPage)] | length),
+                  unresolved:([$threads[] | select(.isResolved == false)
                     | select(any(.comments.nodes[];
                       (.author.login | IN("copilot-pull-request-reviewer",
                         "copilot-pull-request-reviewer[bot]"))
