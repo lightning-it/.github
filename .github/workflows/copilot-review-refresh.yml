@@ -316,6 +316,7 @@ jobs:
               jq -e '
                 type == "array" and length > 0 and length <= 10
                 and all(.[]; type == "object" and (.jobs | type) == "array")
+                and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
                 and all(.[].jobs[]?;
                   type == "object"
                   and (.id | type) == "number" and .id > 0
@@ -399,6 +400,7 @@ jobs:
                   jq -e '
                     type == "array" and length > 0 and length <= 10
                     and all(.[]; type == "object" and (.jobs | type) == "array")
+                    and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
                     and all(.[].jobs[]?;
                       type == "object"
                       and (.id | type) == "number" and .id > 0

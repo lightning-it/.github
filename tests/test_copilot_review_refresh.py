@@ -22,7 +22,7 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
-    def test_producer_and_refresh_serialize_every_mutation_for_one_pr(self) -> None:
+    def test_pr_mutations_serialize(self) -> None:
         group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
         for workflow in (COPILOT_WORKFLOW, REFRESH_WORKFLOW):
@@ -43,7 +43,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             raise AssertionError("expected one anchored producer-owner guard")
         if workflow.count("*materialize-producer-owner-guard") != 1:
             raise AssertionError("dispatch must reuse the anchored guard step")
-        return [guards[0], guards[0]]
+        return [guards[0], guards[0], CopilotReviewRefreshTests._refresh_producer_owner_guard()]
 
     @classmethod
     def _producer_owner_guard(cls) -> str:
@@ -169,7 +169,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             }
             environment.update(
                 {
-                    f"JOBS_{run_id}": json.dumps([{"jobs": records}])
+                    f"JOBS_{run_id}": json.dumps(
+                        [{"jobs": [record]} for record in records] or [{"jobs": []}]
+                    )
                     for run_id, records in normalized_jobs.items()
                 }
             )
@@ -182,7 +184,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             environment.update(
                 {
                     f"JOBS_{run_id}_ATTEMPT_1": json.dumps(
-                        [{"jobs": records}]
+                        [{"jobs": [record]} for record in records] or [{"jobs": []}]
                     )
                     for run_id, records in normalized_attempt_one_jobs.items()
                 }
@@ -249,7 +251,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "conclusion": conclusion,
         }
 
-    def test_two_review_capable_runs_keep_first_producer_owner(
+    def test_first_review_run_remains_owner(
         self,
     ) -> None:
         result = self._run_producer_owner_guard(
@@ -278,7 +280,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             dispatch,
         )
 
-    def test_serialized_queued_successor_cannot_block_or_take_owner(self) -> None:
+    def test_queued_successor_keeps_owner(self) -> None:
         owner = self._producer_run(101)
         queued = self._producer_run(102)
         queued.update(status="queued", conclusion=None)
@@ -301,7 +303,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             if expected is not None:
                 self.assertEqual(expected, result.stdout)
 
-    def test_owner_election_rejects_attempt_duplicates_and_keeps_clone_stale(
+    def test_duplicate_attempts_keep_clone_stale(
         self,
     ) -> None:
         clone = self._run_producer_owner_guard(
@@ -314,31 +316,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(0, clone.returncode, clone.stderr)
         self.assertEqual("101", clone.stdout)
 
-        duplicate_run = self._run_producer_owner_guard(
-            runs=[self._producer_run(101), self._producer_run(101)],
-            jobs={101: [self._producer_job(101)]},
-        )
-        self.assertNotEqual(0, duplicate_run.returncode)
-
-        duplicate_attempt_job = self._run_producer_owner_guard(
-            runs=[self._producer_run(101)],
-            jobs={
-                101: [self._producer_job(101), self._producer_job(101)]
-            },
-        )
-        self.assertNotEqual(0, duplicate_attempt_job.returncode)
-
-        duplicate_request_job = self._run_producer_owner_guard(
-            runs=[self._producer_run(101)],
-            jobs={
-                101: [
-                    self._producer_job(101),
-                    self._producer_request_job(101),
-                    self._producer_request_job(101),
-                ]
-            },
-        )
-        self.assertNotEqual(0, duplicate_request_job.returncode)
+        for runs, records in (
+            ([self._producer_run(101)] * 2, [self._producer_job(101)]),
+            ([self._producer_run(101)], [self._producer_job(101)] * 2),
+            ([self._producer_run(101)], [self._producer_job(101), *[self._producer_request_job(101)] * 2]),
+        ):
+            duplicate = self._run_producer_owner_guard(runs=runs, jobs={101: records})
+            self.assertNotEqual(0, duplicate.returncode)
 
         skipped_request = self._producer_request_job(101)
         skipped_request.update(status="completed", conclusion="skipped")
@@ -350,9 +334,23 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(0, deterministic.returncode, deterministic.stderr)
         self.assertEqual("101", deterministic.stdout)
 
-    def test_attempt_three_owner_never_transfers_to_later_run(self) -> None:
+    def test_conflicting_job_ids_fail(self) -> None:
+        cases = (
+            (self._producer_run(101), [self._producer_job(101), dict(self._producer_request_job(101), id=1010)], None),
+            (self._producer_run(101, attempt=2), [self._producer_job(101, 2), self._producer_request_job(101, 2)],
+             {101: [self._producer_request_job(101), dict(self._producer_job(101), id=1011)]}),
+        )
+        for guard in self._producer_owner_guards():
+            for run, jobs, attempt_one in cases:
+                result = self._run_producer_owner_guard(
+                    guard=guard, runs=[run], jobs={101: jobs}, attempt_one_jobs=attempt_one,
+                    materialize_request_jobs=False,
+                    conditional=True,
+                )
+                self.assertNotEqual(0, result.returncode)
+
+    def test_attempt_three_holds_owner(self) -> None:
         guards = self._producer_owner_guards()
-        guards.append(self._refresh_producer_owner_guard())
         self.assertEqual(3, len(guards))
 
         for index, guard in enumerate(guards):
@@ -378,11 +376,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertNotEqual("102", result.stdout)
 
-    def test_owner_inventory_rejects_malformed_or_ambiguous_pr_tuple(
+    def test_reject_bad_pr_tuple(
         self,
     ) -> None:
         guards = self._producer_owner_guards()
-        guards.append(self._refresh_producer_owner_guard())
         self.assertEqual(3, len(guards))
 
         original = self._producer_run(101)
@@ -454,11 +451,10 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     self.assertNotEqual(0, result.returncode)
                     self.assertNotEqual("102", result.stdout)
 
-    def test_owner_inventory_excludes_only_verified_other_pr_same_head(
+    def test_exclude_only_verified_foreign_pr(
         self,
     ) -> None:
         guards = self._producer_owner_guards()
-        guards.append(self._refresh_producer_owner_guard())
         foreign = self._producer_run(101)
         foreign["pull_requests"][0]["number"] = 999
         foreign["pull_requests"][0]["base"]["sha"] = "d" * 40
@@ -499,9 +495,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 self.assertNotEqual(0, rejected.returncode)
                 self.assertNotEqual("102", rejected.stdout)
 
-    def test_owner_identity_survives_same_sha_branch_rename(self) -> None:
+    def test_owner_survives_same_sha_rename(self) -> None:
         guards = self._producer_owner_guards()
-        guards.append(self._refresh_producer_owner_guard())
         original = self._producer_run(101)
         original["head_branch"] = "feature/original"
         original["pull_requests"][0]["head"]["ref"] = "feature/original"
@@ -524,7 +519,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual("101", result.stdout)
 
-    def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
+    def test_snapshot_drift_fails_closed(
         self,
     ) -> None:
         malformed = self._producer_run(101)
@@ -559,7 +554,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertNotEqual(0, missing_earlier_policy.returncode)
         self.assertNotEqual("102", missing_earlier_policy.stdout)
 
-    def test_draft_opened_is_ineligible_but_ready_for_review_can_own(
+    def test_draft_ineligible_ready_can_own(
         self,
     ) -> None:
         draft_job = self._producer_job(101)
@@ -664,7 +659,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         self.assertNotEqual(0, malformed.returncode)
 
-    def test_human_verification_and_original_request_attempt_keep_owner(
+    def test_original_attempt_keeps_owner(
         self,
     ) -> None:
         skipped_request = self._producer_request_job(101)
@@ -700,13 +695,13 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(0, immutable.returncode, immutable.stderr)
         self.assertEqual("101", immutable.stdout)
 
-    def test_helper_reuses_guard_and_revalidates_owner_before_dispatch(
+    def test_helper_revalidates_owner(
         self,
     ) -> None:
         guards = self._producer_owner_guards()
-        self.assertEqual(2, len(guards))
+        self.assertEqual(3, len(guards))
         self.assertEqual(guards[0], guards[1])
-        self.assertEqual(guards[0], self._refresh_producer_owner_guard())
+        self.assertEqual(guards[0], guards[2])
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         publish = workflow.split(
             "      - name: Publish bound neutral result\n", 1
@@ -764,7 +759,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             dispatch,
         )
 
-    def test_neutral_mutation_revalidates_owner_check_id_and_external_id(
+    def test_neutral_revalidates_binding(
         self,
     ) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -816,7 +811,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index("\n          VERIFY_COPILOT_REVIEW", start)
         return textwrap.dedent(workflow[start:end])
 
-    def test_review_revalidation_rejects_successor_head(self) -> None:
+    def test_reject_successor_head_review(self) -> None:
         bound_head = "b" * 40
 
         def evaluate(live_head: str) -> subprocess.CompletedProcess[str]:
@@ -939,7 +934,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         )
         self.assertIn("producer-bound head", successor.stderr)
 
-    def test_refresh_jointly_revalidates_owner_and_exact_check_snapshot(
+    def test_refresh_revalidates_binding(
         self,
     ) -> None:
         expected = {
@@ -1004,7 +999,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         owner_drift = evaluate([expected], (77, 78))
         self.assertNotEqual(0, owner_drift.returncode)
 
-    def test_refresh_rerun_budget_rejects_completed_attempt_two(self) -> None:
+    def test_reject_completed_attempt_two_rerun(self) -> None:
         script = "\n".join(
             (
                 "set -euo pipefail",
@@ -1036,7 +1031,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         self.assertEqual(0, evaluate(1).returncode)
         self.assertNotEqual(0, evaluate(2).returncode)
 
-    def test_refresh_owner_run_revalidation_ignores_live_branch_rename(
+    def test_refresh_ignores_branch_rename(
         self,
     ) -> None:
         run = self._producer_run(77)
@@ -1072,7 +1067,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
         self.assertNotEqual(0, evaluate(inconsistent))
 
-    def test_bound_publisher_accepts_only_exact_refresh_invalidation(
+    def test_exact_refresh_invalidation(
         self,
     ) -> None:
         base = "a" * 40
@@ -4599,7 +4594,7 @@ sleep() { :; }''',
         self.assertNotEqual(0, rejected.returncode)
         self.assertEqual(1, attempts)
 
-    def test_previous_base_same_head_handoff_requires_exact_old_owner(
+    def test_handoff_requires_exact_old_owner(
         self,
     ) -> None:
         current_base = "a" * 40
@@ -5328,7 +5323,7 @@ sleep() { :; }''',
                 )
                 self.assertNotEqual(0, result.returncode)
 
-    def test_renovate_refresh_rejects_legacy_copilot_binding_before_patch(
+    def test_renovate_rejects_copilot_binding(
         self,
     ) -> None:
         base = "a" * 40
