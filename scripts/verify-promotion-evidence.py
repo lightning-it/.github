@@ -230,8 +230,9 @@ def normalized_review_text(value: str) -> str:
 
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
-    require(lines.count("## Copilot review overview") == 1, "producer-review-binding")
-    fields = [line for line in lines if line.lstrip().startswith("**Findings:**")]
+    headings = [line for line in lines if "## Copilot review overview" in line]
+    require(headings == ["## Copilot review overview"], "producer-review-binding")
+    fields = [line for line in lines if "**Findings:**" in line]
     require(len(fields) == 1, "producer-review-binding")
     if fields[0] == "**Findings:** None":
         return 0

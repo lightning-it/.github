@@ -3226,6 +3226,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 '**Findings:** 1 <picture><source x><source y><img z></picture>',
             ),
             valid_body + "\n**Findings:** None",
+            valid_body + "\nprefix **Findings:** None",
+            valid_body + "\nprefix ## Copilot review overview",
             valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
         ):
             with (
