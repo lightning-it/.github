@@ -67,7 +67,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
         return workflow[start:end]
     def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
-        event_ref="feature/li179", fpulls=None,
+        event_ref="feature/li179", fpulls=None, branch_pulls=None,
         runs2=None, cond=False, mode="copilot",
         add_req=True):
         njobs, ojobs = {}, {}
@@ -103,6 +103,8 @@ gh() {
   elif [[ "${endpoint}" =~ /actions/runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then
     run_id="${BASH_REMATCH[1]}"; run_attempt="${BASH_REMATCH[2]}"
     case "${run_id}" in __JOB_CASES__ *) return 92;; esac
+  elif [[ "${endpoint}" =~ /pulls$ ]]; then
+    printf %s "${BRANCH_PULL_PAGES}"
   elif [[ "${endpoint}" =~ /pulls/([0-9]+)$ ]]; then
     case "${BASH_REMATCH[1]}" in __PULL_CASES__ *) return 94;; esac
   else return 93; fi
@@ -115,6 +117,13 @@ gh() {
             else "\neo\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
+            current_pull = {
+                "number": 2334, "state": "open",
+                "base": {"sha": "b" * 40,
+                         "repo": {"full_name": "lightning-it/shared-assets-lit"}},
+                "head": {"ref": event_ref, "sha": "c" * 40,
+                         "repo": {"full_name": "lightning-it/shared-assets-lit"}},
+            }
             env = {
                 "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
                 "REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
@@ -122,7 +131,10 @@ gh() {
                 "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(tmp) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
-                "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}])}
+                "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}]),
+                "BRANCH_PULL_PAGES": json.dumps([
+                    branch_pulls if branch_pulls is not None else [current_pull]
+                ])}
             def pages(records):
                 return json.dumps([{"jobs": [record]} for record in records]
                                   or [{"jobs": []}])
@@ -268,7 +280,7 @@ gh() {
             malformed = json.loads(json.dumps(original))
             malformed[field] = None
             bad_runs.append(malformed)
-        for pull_requests in (None, [], [tuple, tuple],
+        for pull_requests in (None, [tuple, tuple],
                               [{**tuple, "number": None}],
                               [{**tuple, "base": {"sha": None}}],
                               [{**tuple, "head": {"sha": None,
@@ -305,11 +317,43 @@ gh() {
                     self._owner(
                         None,
                         guard=guard,
-                        runs=[malformed, self._run(102)],
-                        jobs={101: [self._job(101)],
-                              102: [self._job(102)]},
+                        runs=[malformed],
+                        jobs={101: [self._job(101)]},
                         cond=True,
                     )
+            malformed_owner = self._run(101)
+            malformed_owner["event"] = None
+            self._owner(None, guard=guard,
+                        runs=[malformed_owner, self._run(102)],
+                        jobs={101: [self._job(101)],
+                              102: [self._job(102)]}, cond=True)
+    def test_empty_association_uses_unique_branch_binding(self):
+        unassociated = self._run(101)
+        unassociated["pull_requests"] = []
+        repo = "lightning-it/shared-assets-lit"
+        current_pull = {
+            "number": 2334, "state": "open",
+            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
+            "head": {"ref": "feature/li179", "sha": "c" * 40,
+                     "repo": {"full_name": repo}},
+        }
+        for guard in self._guards():
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]}, cond=True)
+            for branch_pulls in ([], [current_pull, current_pull],
+                                 [{**current_pull, "number": 999}],
+                                 [{**current_pull, "head": {
+                                     **current_pull["head"], "sha": "d" * 40}}]):
+                self._owner(None, guard=guard, runs=[unassociated],
+                            jobs={101: [self._job(101)]},
+                            branch_pulls=branch_pulls, cond=True)
+            unrelated = self._run(999)
+            unrelated["path"] = ".github/workflows/other.yml"
+            unrelated["name"] = "Other workflow"
+            unrelated["pull_requests"] = "malformed"
+            self._owner("101", guard=guard,
+                        runs=[unrelated, unassociated],
+                        jobs={101: [self._job(101)]}, cond=True)
     def test_foreign_pr(self):
         guards = self._guards()
         foreign = self._run(101)
@@ -577,6 +621,76 @@ read_refresh_checks() { printf %s "${LIVE}"; }
                              ([want, want], (77, 77)),
                              ([want], (77, 78))):
             self.assertNotEqual(0, evaluate(live, owners).returncode)
+    def test_duplicate_refresh_checks_are_all_invalidated(self):
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            'if [ "${neutral_count}" -gt 1 ]; then\n'
+            '            invalidate_duplicate_refresh_checks "${neutral}"',
+            refresh,
+        )
+        base, head, owner = "a" * 40, "b" * 40, 77
+        checks = [{
+            "id": check_id, "name": "Current revision review",
+            "app": {"id": 15368, "slug": "github-actions"},
+            "head_sha": head, "external_id": f"owner-{check_id}",
+            "status": "completed", "conclusion": "success",
+            "details_url": f"https://github.example/runs/{check_id}",
+            "output": {"title": "passed", "summary": "old"},
+        } for check_id in (41, 42)]
+        evidence = json.dumps({
+            "schema": 4, "base_sha": base, "head_sha": head,
+            "producer_run_id": owner,
+            "reason": "ambiguous duplicate protected review evidence",
+        }, separators=(",", ":"))
+        script = r'''set -euo pipefail
+validate_live_pr_tuple() { :; }
+revalidate_refresh_owner() { :; }
+read_refresh_checks() { cat "${STATE_FILE}"; }
+oa() {
+  local id="${1##*/}"
+  jq -c --argjson id "${id}" '.[] | select(.id == $id)' "${STATE_FILE}"
+}
+gh() {
+  local id="${4##*/}" updated
+  printf '%s\n' "${id}" >>"${PATCH_LOG}"
+  if [ "${FAIL_ID}" = "${id}" ]; then return 88; fi
+  updated="$(jq -c --argjson id "${id}" --arg evidence "${EVIDENCE}" \
+    --arg url "${URL}" 'map(if .id == $id then
+      .status = "completed" | .conclusion = "failure" |
+      .details_url = $url |
+      .output.title = "Current revision review invalidated" |
+      .output.summary = $evidence else . end)' "${STATE_FILE}")"
+  printf '%s' "${updated}" >"${STATE_FILE}"
+  jq -c --argjson id "${id}" '.[] | select(.id == $id)' "${STATE_FILE}"
+}
+''' + self._rfn("invalidate_duplicate_refresh_checks") + \
+            '\ninvalidate_duplicate_refresh_checks "${NEUTRAL}"\n'
+        for fail_id in ("", "41"):
+            with self.subTest(fail_id=fail_id), tempfile.TemporaryDirectory() as tmp:
+                state, log = Path(tmp) / "checks.json", Path(tmp) / "patches"
+                state.write_text(json.dumps(checks), encoding="utf-8")
+                result = self._run_bash(script, {
+                    "PATH": TEST_TOOL_PATH, "STATE_FILE": str(state),
+                    "PATCH_LOG": str(log), "FAIL_ID": fail_id,
+                    "EVIDENCE": evidence,
+                    "URL": "https://github.example/lightning-it/.github/actions/runs/900",
+                    "GITHUB_SERVER_URL": "https://github.example",
+                    "GITHUB_RUN_ID": "900", "REPOSITORY": "lightning-it/.github",
+                    "BASE_SHA": base, "HEAD_SHA": head,
+                    "owner_run_id": str(owner),
+                    "NEUTRAL": json.dumps(checks),
+                })
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(["41", "42"], log.read_text().splitlines())
+                updated = json.loads(state.read_text())
+                self.assertEqual(
+                    ["success" if fail_id == "41" else "failure", "failure"],
+                    [check["conclusion"] for check in updated],
+                )
+                self.assertIn(
+                    "incomplete" if fail_id else "terminally ambiguous",
+                    result.stderr,
+                )
     def test_attempt2_rerun(self):
         script = "\n".join(
             (
@@ -787,6 +901,12 @@ oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))"
         inconsistent = json.loads(json.dumps(run))
         inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
         self.assertNotEqual(0, evaluate(inconsistent))
+        unassociated = self._run(77)
+        unassociated["head_branch"] = "feature/renamed"
+        unassociated["pull_requests"] = []
+        self.assertEqual(0, evaluate(unassociated))
+        unassociated["head_branch"] = "feature/foreign"
+        self.assertNotEqual(0, evaluate(unassociated))
     def test_invalidation(self):
         base, head, check_id, owner = "a" * 40, "b" * 40, 42, 77
         binding = f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}"

@@ -206,15 +206,22 @@ jobs:
             local crj e fbase fhead
             local flive fpr frows
             local jpages ojp
-            local pj rj rpages
+            local pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
-            jq -e --argjson n "${PR_NUMBER}" '
+            jq -e --arg head_ref "${EVENT_HEAD_REF}" --arg h "${EVENT_HEAD}" \
+              --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
                 and (.workflow_runs | type) == "array")
-              and all(.[].workflow_runs[]?;
+              and all([.[].workflow_runs[]? |
+                select(.path == ".github/workflows/copilot-review.yml"
+                  or .name == "Current revision review gate")
+                | select(.head_sha == $h
+                  or any(.pull_requests[]?; .number == $n))
+                | select(.head_branch == $head_ref
+                  or any(.pull_requests[]?; .number == $n))][];
                 . as $r
                 | type == "object"
                 and (.id | type) == "number" and .id > 0
@@ -228,20 +235,26 @@ jobs:
                     "neutral", "cancelled", "timed_out", "action_required", "stale",
                     "startup_failure", "skipped"))))
                 and (.event | type) == "string" and (.event | length) > 0
+                and .event == "pull_request_target"
                 and (.path | type) == "string" and (.path | length) > 0
+                and .path == ".github/workflows/copilot-review.yml"
                 and (.name | type) == "string" and (.name | length) > 0
+                and .name == "Current revision review gate"
                 and (.head_branch | type) == "string"
                 and (.head_branch | length) > 0
                 and (.head_sha | type) == "string"
                 and (.head_sha | test("^[0-9a-f]{40}$"))
+                and .head_sha == $h
                 and (.repository | type) == "object"
                 and (.repository.full_name | type) == "string"
                 and (.repository.full_name | length) > 0
+                and .repository.full_name == $repo
                 and (.head_repository | type) == "object"
                 and (.head_repository.full_name | type) == "string"
                 and (.head_repository.full_name | length) > 0
+                and .head_repository.full_name == $repo
                 and (.pull_requests | type) == "array"
-                and (.pull_requests | length) == 1
+                and (.pull_requests | length) <= 1
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
@@ -256,17 +269,33 @@ jobs:
                   and (.head.ref | type) == "string"
                   and (.head.ref | length) > 0
                   and .head.ref == $r.head_branch))
-              and ([.[].workflow_runs[].id] | length)
-                == ([.[].workflow_runs[].id] | unique | length)
+              and ([.[].workflow_runs[]? |
+                select(.path == ".github/workflows/copilot-review.yml"
+                  or .name == "Current revision review gate")
+                | select(.head_sha == $h
+                  or any(.pull_requests[]?; .number == $n))
+                | select(.head_branch == $head_ref
+                  or any(.pull_requests[]?; .number == $n))
+                | .id] | length)
+                == ([.[].workflow_runs[]? |
+                  select(.path == ".github/workflows/copilot-review.yml"
+                    or .name == "Current revision review gate")
+                  | select(.head_sha == $h
+                    or any(.pull_requests[]?; .number == $n))
+                  | select(.head_branch == $head_ref
+                    or any(.pull_requests[]?; .number == $n))
+                  | .id] | unique | length)
               ' <<<"${rpages}" >/dev/null || return 1
-            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[]
                   | select(.event == "pull_request_target")
                   | select(.path == ".github/workflows/copilot-review.yml")
                   | select(.name == "Current revision review gate")
                   | select(.head_sha == $h)
+                  | select(.head_branch == $ref)
                   | select(.repository.full_name == $repo)
                   | select(.head_repository.full_name == $repo)
+                  | select((.pull_requests | type) == "array" and (.pull_requests | length) == 1)
                   | .pull_requests[0]
                   | select(.number != $n)
                   | [.number, .base.sha, .head.sha]]
@@ -285,7 +314,37 @@ jobs:
                   and .head.repo.full_name == $repo
                 ' <<<"${flive}" >/dev/null || return 1
             done <<<"${frows}"
-            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            if jq -e --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
+              --arg repo "${REPOSITORY}" '
+                any(.[].workflow_runs[]?;
+                  .event == "pull_request_target"
+                  and .path == ".github/workflows/copilot-review.yml"
+                  and .name == "Current revision review gate"
+                  and .head_sha == $h
+                  and .head_branch == $ref
+                  and .repository.full_name == $repo
+                  and .head_repository.full_name == $repo
+                  and .pull_requests == [])
+              ' <<<"${rpages}" >/dev/null; then
+              pp="$(oa --method GET --paginate --slurp \
+                -f state=all -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
+                -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
+              jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
+                --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
+                --argjson n "${PR_NUMBER}" '
+                  type == "array" and length > 0 and length <= 10
+                  and all(.[]; type == "array")
+                  and ([.[][]] | length) == 1
+                  and .[0][0].number == $n
+                  and .[0][0].state == "open"
+                  and .[0][0].base.sha == $b
+                  and .[0][0].base.repo.full_name == $repo
+                  and .[0][0].head.ref == $ref
+                  and .[0][0].head.sha == $h
+                  and .[0][0].head.repo.full_name == $repo
+                ' <<<"${pp}" >/dev/null || return 1
+            fi
+            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
@@ -293,10 +352,11 @@ jobs:
                   select(.head_sha == $h) |
                   select(.repository.full_name == $repo) |
                   select(.head_repository.full_name == $repo) |
-                  select(any(.pull_requests[];
+                  select(any(.pull_requests[]?;
                     .number == $n
                     and .base.sha == $b
-                    and .head.sha == $h))]
+                    and .head.sha == $h)
+                    or (.pull_requests == [] and .head_branch == $ref))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
                   elif ([.[].id] | unique | length) != length
@@ -508,7 +568,9 @@ jobs:
               select(.name == "Current revision review") |
               select(.app.id == 15368 and .app.slug == "github-actions") |
               select(.head_sha == $head)]
-            | if length > 1 then error("refresh-check-ambiguous") else . end
+            | if ([.[].id] | length) != ([.[].id] | unique | length)
+                or any(.[]; (.id | type) != "number" or .id <= 0 or .id != (.id | floor))
+              then error("refresh-check-inventory-invalid") else . end
             ' <<<"${pages}" || return 1
           }
           revalidate_refresh_state() {
@@ -557,6 +619,7 @@ jobs:
             jq -e \
               --arg base "${BASE_SHA}" \
               --arg head "${HEAD_SHA}" \
+              --arg head_ref "${HEAD_REF}" \
               --arg repository "${REPOSITORY}" \
               --argjson owner_run_id "${owner_run_id}" \
               --argjson pr "${PR_NUMBER}" '
@@ -571,13 +634,14 @@ jobs:
                 and .head_sha == $head
                 and .repository.full_name == $repository
                 and .head_repository.full_name == $repository
-                and any(.pull_requests[]?;
+                and (any(.pull_requests[]?;
                   .number == $pr
                   and .base.sha == $base
                   and .head.sha == $head
                   and (.head.ref | type) == "string"
                   and (.head.ref | length) > 0
                   and .head.ref == $run.head_branch)
+                  or (.pull_requests == [] and .head_branch == $head_ref))
               ' <<<"${run}" >/dev/null
           }
           refresh_event_record_state() {
@@ -836,6 +900,85 @@ jobs:
             exit 0
           fi
           neutral_count="$(jq 'length' <<<"${neutral}")"
+          invalidate_duplicate_refresh_checks() {
+            local neutral="$1" duplicate duplicate_evidence duplicate_id
+            local duplicate_url invalidated invalidation_failed live_duplicate verified
+            # Ambiguity must revoke every protected check, including a prior
+            # PASS. A workflow failure by itself does not revoke that PASS.
+            validate_live_pr_tuple
+            revalidate_refresh_owner
+            duplicate_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            duplicate_evidence="$(jq -cn --arg base "${BASE_SHA}" \
+              --arg head "${HEAD_SHA}" --argjson producer_run_id "${owner_run_id}" \
+              '{schema:4,base_sha:$base,head_sha:$head,
+                producer_run_id:$producer_run_id,
+                reason:"ambiguous duplicate protected review evidence"}')"
+            invalidation_failed=0
+            while IFS= read -r duplicate; do
+              duplicate_id="$(jq -er '.id' <<<"${duplicate}")" || { invalidation_failed=1; continue; }
+              validate_live_pr_tuple || { invalidation_failed=1; continue; }
+              revalidate_refresh_owner || { invalidation_failed=1; continue; }
+              if ! live_duplicate="$(oa "repos/${REPOSITORY}/check-runs/${duplicate_id}")"; then
+                invalidation_failed=1
+                continue
+              fi
+              if ! jq -e --argjson expected "${duplicate}" '
+                  .id == $expected.id
+                  and .name == $expected.name
+                  and .app.id == $expected.app.id
+                  and .app.slug == $expected.app.slug
+                  and .head_sha == $expected.head_sha
+                  and .external_id == $expected.external_id
+                  and .status == $expected.status
+                  and .conclusion == $expected.conclusion
+                ' <<<"${live_duplicate}" >/dev/null; then
+                invalidation_failed=1
+                continue
+              fi
+              if ! invalidated="$(gh api --method PATCH \
+                  "repos/${REPOSITORY}/check-runs/${duplicate_id}" \
+                  -f status=completed -f conclusion=failure \
+                  -f "details_url=${duplicate_url}" \
+                  -f 'output[title]=Current revision review invalidated' \
+                  -f "output[summary]=${duplicate_evidence}")"; then
+                invalidation_failed=1
+                continue
+              fi
+              if ! jq -e --arg evidence "${duplicate_evidence}" \
+                --arg head "${HEAD_SHA}" --arg url "${duplicate_url}" \
+                --argjson id "${duplicate_id}" '
+                  .id == $id and .name == "Current revision review"
+                  and .app.id == 15368 and .app.slug == "github-actions"
+                  and .head_sha == $head and .status == "completed"
+                  and .conclusion == "failure" and .details_url == $url
+                  and .output.title == "Current revision review invalidated"
+                  and .output.summary == $evidence
+                ' <<<"${invalidated}" >/dev/null; then
+                invalidation_failed=1
+              fi
+            done < <(jq -c '.[]' <<<"${neutral}")
+            if ! verified="$(read_refresh_checks)"; then
+              invalidation_failed=1
+            elif ! jq -e --arg evidence "${duplicate_evidence}" \
+              --arg url "${duplicate_url}" --argjson original "${neutral}" '
+                ([.[].id] | sort) == ([$original[].id] | sort)
+                and all(.[]; .status == "completed"
+                  and .conclusion == "failure"
+                  and .details_url == $url
+                  and .output.title == "Current revision review invalidated"
+                  and .output.summary == $evidence)
+              ' <<<"${verified}" >/dev/null; then
+              invalidation_failed=1
+            fi
+            if [ "${invalidation_failed}" -ne 0 ]; then
+              echo 'Duplicate protected check invalidation was incomplete.' >&2
+            fi
+            echo 'Multiple protected Current revision review checks remain terminally ambiguous.' >&2
+            return 1
+          }
+          if [ "${neutral_count}" -gt 1 ]; then
+            invalidate_duplicate_refresh_checks "${neutral}"
+          fi
           refresh_expected_count="${neutral_count}"
           refresh_expected_snapshot='null'
           invalidate_refresh_check() {
