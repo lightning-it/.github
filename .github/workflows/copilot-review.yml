@@ -4,6 +4,7 @@
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Current revision review gate
+run-name: 'Current revision PR #${{ github.event.pull_request.number }} base ${{ github.event.pull_request.base.sha }} head ${{ github.event.pull_request.head.sha }} run ${{ github.run_id }}'
 
 on:
   pull_request_target:
@@ -490,7 +491,7 @@ jobs:
                     and .head_repository.full_name == $repo
                   then ((.pull_requests | length) == 1
                     or ((.pull_requests | length) == 0
-                      and .head_branch == $head_ref))
+                      and (.display_title | type) == "string"))
                   else true end))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
@@ -523,8 +524,9 @@ jobs:
                   and .head.repo.full_name == $repo
                 ' <<<"${flive}" >/dev/null || return 1
             done <<<"${frows}"
-            if jq -e --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
-              --arg repo "${REPOSITORY}" '
+            if jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
+              --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
+              --argjson n "${PR_NUMBER}" '
                 any(.[].workflow_runs[]?;
                   .event == "pull_request_target"
                   and .path == ".github/workflows/copilot-review.yml"
@@ -533,7 +535,9 @@ jobs:
                   and .head_branch == $ref
                   and .repository.full_name == $repo
                   and .head_repository.full_name == $repo
-                  and .pull_requests == [])
+                  and .pull_requests == []
+                  and .display_title == ("Current revision PR #" + ($n | tostring)
+                    + " base " + $b + " head " + $h + " run " + (.id | tostring)))
               ' <<<"${rpages}" >/dev/null; then
               pp="$(oa --method GET --paginate --slurp \
                 -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
@@ -565,7 +569,10 @@ jobs:
                     .number == $n
                     and .base.sha == $b
                     and .head.sha == $h)
-                    or (.pull_requests == [] and .head_branch == $ref))]
+                    or (.pull_requests == [] and .head_branch == $ref
+                      and .display_title == ("Current revision PR #"
+                        + ($n | tostring) + " base " + $b + " head " + $h
+                        + " run " + (.id | tostring))))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
                   elif ([.[].id] | unique | length) != length
