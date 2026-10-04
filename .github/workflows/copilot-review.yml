@@ -411,7 +411,7 @@ jobs:
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           umask 077
           cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
-          owner_api_read() {
+          owner_read() {
             local attempt output
             for attempt in $(seq 1 5); do
               if output="$(gh api "$@")"; then
@@ -426,18 +426,15 @@ jobs:
             done
           }
 
-          elect_producer_owner_once() {
-            local candidate_attempt candidate_id candidates candidate_rows
-            local current_requester_jobs eligible foreign_base foreign_head
-            local foreign_live foreign_pr foreign_rows
-            local job_pages original_job_pages
-            local policy_jobs requester_jobs run_pages
-            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] \
-              || return 1
-            run_pages="$(owner_api_read --paginate --slurp \
-              "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
-              || return 1
-            jq -e --argjson number "${PR_NUMBER}" '
+          elect_once() {
+            local ca cid cands crows
+            local crj e fbase fhead
+            local flive fpr frows
+            local jpages ojp
+            local pj rj rpages
+            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
+            rpages="$(owner_read --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
+            jq -e --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
@@ -486,97 +483,78 @@ jobs:
                   and .head.ref == $run.head_branch))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
-              ' <<<"${run_pages}" >/dev/null || return 1
-            foreign_rows="$(jq -cer \
-              --arg head "${EVENT_HEAD}" \
-              --arg repository "${REPOSITORY}" \
-              --argjson number "${PR_NUMBER}" '
+              ' <<<"${rpages}" >/dev/null || return 1
+            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[]
                   | select(.event == "pull_request_target")
                   | select(.path == ".github/workflows/copilot-review.yml")
                   | select(.name == "Current revision review gate")
-                  | select(.head_sha == $head)
-                  | select(.repository.full_name == $repository)
-                  | select(.head_repository.full_name == $repository)
+                  | select(.head_sha == $h)
+                  | select(.repository.full_name == $repo)
+                  | select(.head_repository.full_name == $repo)
                   | .pull_requests[0]
-                  | select(.number != $number)
+                  | select(.number != $n)
                   | [.number, .base.sha, .head.sha]]
                 | unique
                 | if length > 10 then error("foreign-pr-inventory-unbounded")
                   else map(@tsv) | join("\n") end
-              ' <<<"${run_pages}")" || return 1
-            while IFS=$'\t' read -r foreign_pr foreign_base foreign_head; do
-              [ -n "${foreign_pr}" ] || continue
-              foreign_live="$(owner_api_read \
-                "repos/${REPOSITORY}/pulls/${foreign_pr}")" || return 1
-              jq -e \
-                --arg base "${foreign_base}" \
-                --arg head "${foreign_head}" \
-                --arg repository "${REPOSITORY}" \
-                --argjson number "${foreign_pr}" '
-                  .number == $number
+              ' <<<"${rpages}")" || return 1
+            while IFS=$'\t' read -r fpr fbase fhead; do
+              [ -n "${fpr}" ] || continue
+              flive="$(owner_read "repos/${REPOSITORY}/pulls/${fpr}")" || return 1
+              jq -e --arg base "${fbase}" --arg h "${fhead}" --arg repo "${REPOSITORY}" --argjson n "${fpr}" '
+                  .number == $n
                   and .base.sha == $base
-                  and .base.repo.full_name == $repository
-                  and .head.sha == $head
-                  and .head.repo.full_name == $repository
-                ' <<<"${foreign_live}" >/dev/null || return 1
-            done <<<"${foreign_rows}"
-            candidates="$(jq -ce \
-              --arg base "${EVENT_BASE}" \
-              --arg head "${EVENT_HEAD}" \
-              --arg repository "${REPOSITORY}" \
-              --argjson number "${PR_NUMBER}" '
+                  and .base.repo.full_name == $repo
+                  and .head.sha == $h
+                  and .head.repo.full_name == $repo
+                ' <<<"${flive}" >/dev/null || return 1
+            done <<<"${frows}"
+            cands="$(jq -ce --arg base "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
                   select(.name == "Current revision review gate") |
-                  select(.head_sha == $head) |
-                  select(.repository.full_name == $repository) |
-                  select(.head_repository.full_name == $repository) |
+                  select(.head_sha == $h) |
+                  select(.repository.full_name == $repo) |
+                  select(.head_repository.full_name == $repo) |
                   select(any(.pull_requests[];
-                    .number == $number
+                    .number == $n
                     and .base.sha == $base
-                    and .head.sha == $head))]
+                    and .head.sha == $h))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
                   elif ([.[].id] | unique | length) != length
                     then error("producer-owner-run-duplicate")
                   else sort_by(.id) end
-              ' <<<"${run_pages}")" || return 1
-            eligible='[]'
-            candidate_rows="$(jq -er \
-              '.[] | [.id, .run_attempt, .status] | @tsv' <<<"${candidates}")" \
-              || return 1
-            while IFS=$'\t' read -r candidate_id candidate_attempt candidate_status; do
-              [[ "${candidate_id}" =~ ^[1-9][0-9]*$ ]] || return 1
-              [[ "${candidate_attempt}" =~ ^(1|2)$ ]] || return 1
-              [[ "${candidate_status}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]] || return 1
-              job_pages="$(owner_api_read --paginate --slurp \
-                "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/${candidate_attempt}/jobs?filter=all&per_page=100")" \
-                || return 1
-              jq -e --arg head "${EVENT_HEAD}" --argjson attempt "${candidate_attempt}" --argjson run_id "${candidate_id}" '
+              ' <<<"${rpages}")" || return 1
+            e='[]'
+            crows="$(jq -er '.[] | [.id, .run_attempt, .status] | @tsv' <<<"${cands}")" || return 1
+            while IFS=$'\t' read -r cid ca cstate; do
+              [[ "${cid}" =~ ^[1-9][0-9]*$ ]] || return 1
+              [[ "${ca}" =~ ^(1|2)$ ]] || return 1
+              [[ "${cstate}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]] || return 1
+              jpages="$(owner_read --paginate --slurp "repos/${REPOSITORY}/actions/runs/${cid}/attempts/${ca}/jobs?filter=all&per_page=100")" || return 1
+              jq -e --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
                 type == "array" and length > 0 and length <= 10
                 and all(.[]; type == "object" and (.jobs | type) == "array")
                 and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
                 and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
-                  and (.name|type)=="string" and .run_id==$run_id and .run_attempt==$attempt and .head_sha==$head and (.status|type)=="string" and has("conclusion"))
-                ' <<<"${job_pages}" >/dev/null || return 1
-              policy_jobs="$(jq -ce \
-                --arg head "${EVENT_HEAD}" \
-                --argjson attempt "${candidate_attempt}" \
-                --argjson run_id "${candidate_id}" '
+                  and (.name|type)=="string" and .run_id==$rid and .run_attempt==$a and .head_sha==$h and (.status|type)=="string" and has("conclusion"))
+                ' <<<"${jpages}" >/dev/null || return 1
+              pj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
                   [.[].jobs[] |
                     select(.name == "Verify current revision policy") |
-                    select(.run_id == $run_id) |
-                    select(.run_attempt == $attempt) |
-                    select(.head_sha == $head)]
+                    select(.run_id == $rid) |
+                    select(.run_attempt == $a) |
+                    select(.head_sha == $h)]
                   | if length > 1 then error("producer-owner-job-duplicate")
                     else . end
-                ' <<<"${job_pages}")" || return 1
-              if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
-                if [[ "${candidate_status}" =~ ^(requested|waiting|pending|queued)$ ]] &&
-                  jq -e 'all(.[].jobs; length == 0)' <<<"${job_pages}" >/dev/null &&
-                  [ "$(jq 'length' <<<"${eligible}")" -gt 0 ]; then
+                ' <<<"${jpages}")" || return 1
+              if [ "$(jq 'length' <<<"${pj}")" -eq 0 ]; then
+                if [[ "${cstate}" =~ ^(requested|waiting|pending|queued)$ ]] &&
+                  jq -e 'all(.[].jobs; length == 0)' <<<"${jpages}" >/dev/null &&
+                  [ "$(jq 'length' <<<"${e}")" -gt 0 ]; then
                   continue
                 fi
                 return 1
@@ -591,27 +569,24 @@ jobs:
                       "success", "failure", "neutral", "cancelled",
                       "timed_out", "action_required", "stale",
                       "startup_failure", "skipped")))
-                ' <<<"${policy_jobs}" >/dev/null || return 1
+                ' <<<"${pj}" >/dev/null || return 1
               if jq -e '
                   .[0].status == "completed"
                   and .[0].conclusion == "skipped"
-                  ' <<<"${policy_jobs}" >/dev/null; then
+                  ' <<<"${pj}" >/dev/null; then
                 continue
               fi
               if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
-                current_requester_jobs="$(jq -ce \
-                  --arg head "${EVENT_HEAD}" \
-                  --argjson attempt "${candidate_attempt}" \
-                  --argjson run_id "${candidate_id}" '
+                crj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
                     [.[].jobs[] |
                       select(.name == "Request Copilot review for current revision") |
-                      select(.run_id == $run_id) |
-                      select(.run_attempt == $attempt) |
-                      select(.head_sha == $head)]
+                      select(.run_id == $rid) |
+                      select(.run_attempt == $a) |
+                      select(.head_sha == $h)]
                     | if length > 1 then error("producer-owner-requester-duplicate")
                       else . end
-                  ' <<<"${job_pages}")" || return 1
-                if [ "$(jq 'length' <<<"${current_requester_jobs}")" -eq 0 ]; then
+                  ' <<<"${jpages}")" || return 1
+                if [ "$(jq 'length' <<<"${crj}")" -eq 0 ]; then
                   return 1
                 fi
                 jq -e '
@@ -624,33 +599,29 @@ jobs:
                         "success", "failure", "neutral", "cancelled",
                         "timed_out", "action_required", "stale",
                         "startup_failure", "skipped")))
-                  ' <<<"${current_requester_jobs}" >/dev/null || return 1
-                if [ "${candidate_attempt}" -eq 1 ]; then
-                  original_job_pages="${job_pages}"
+                  ' <<<"${crj}" >/dev/null || return 1
+                if [ "${ca}" -eq 1 ]; then
+                  ojp="${jpages}"
                 else
-                  original_job_pages="$(owner_api_read --paginate --slurp \
-                    "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/1/jobs?filter=all&per_page=100")" \
-                    || return 1
-                  jq -e --arg head "${EVENT_HEAD}" --argjson run_id "${candidate_id}" '
+                  ojp="$(owner_read --paginate --slurp "repos/${REPOSITORY}/actions/runs/${cid}/attempts/1/jobs?filter=all&per_page=100")" || return 1
+                  jq -e --arg h "${EVENT_HEAD}" --argjson rid "${cid}" '
                     type == "array" and length > 0 and length <= 10
                     and all(.[]; type == "object" and (.jobs | type) == "array")
                     and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
                     and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
-                      and (.name|type)=="string" and .run_id==$run_id and .run_attempt==1 and .head_sha==$head and (.status|type)=="string" and has("conclusion"))
-                    ' <<<"${original_job_pages}" >/dev/null || return 1
+                      and (.name|type)=="string" and .run_id==$rid and .run_attempt==1 and .head_sha==$h and (.status|type)=="string" and has("conclusion"))
+                    ' <<<"${ojp}" >/dev/null || return 1
                 fi
-                requester_jobs="$(jq -ce \
-                  --arg head "${EVENT_HEAD}" \
-                  --argjson run_id "${candidate_id}" '
+                rj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson rid "${cid}" '
                     [.[].jobs[] |
                       select(.name == "Request Copilot review for current revision") |
-                      select(.run_id == $run_id) |
+                      select(.run_id == $rid) |
                       select(.run_attempt == 1) |
-                      select(.head_sha == $head)]
+                      select(.head_sha == $h)]
                     | if length > 1 then error("producer-owner-original-requester-duplicate")
                       else . end
-                  ' <<<"${original_job_pages}")" || return 1
-                if [ "$(jq 'length' <<<"${requester_jobs}")" -eq 0 ]; then
+                  ' <<<"${ojp}")" || return 1
+                if [ "$(jq 'length' <<<"${rj}")" -eq 0 ]; then
                   return 1
                 fi
                 jq -e '
@@ -663,33 +634,29 @@ jobs:
                         "success", "failure", "neutral", "cancelled",
                         "timed_out", "action_required", "stale",
                         "startup_failure", "skipped")))
-                  ' <<<"${requester_jobs}" >/dev/null || return 1
+                  ' <<<"${rj}" >/dev/null || return 1
                 if jq -e '
                     .[0].status == "completed"
                     and .[0].conclusion == "skipped"
-                    ' <<<"${requester_jobs}" >/dev/null; then
+                    ' <<<"${rj}" >/dev/null; then
                   continue
                 fi
               fi
-              eligible="$(jq -cn \
-                --argjson current "${eligible}" \
-                --argjson id "${candidate_id}" \
-                --argjson attempt "${candidate_attempt}" \
-                '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
-            done <<<"${candidate_rows}"
+              e="$(jq -cn --argjson current "${e}" --argjson id "${cid}" --argjson a "${ca}" '$current + [{id:$id,run_attempt:$a}]')" || return 1
+            done <<<"${crows}"
             jq -er '
-              if length == 0 then error("producer-owner-eligible-missing")
+              if length == 0 then error("producer-owner-e-missing")
               elif ([.[].id] | unique | length) != length
-                then error("producer-owner-eligible-duplicate")
+                then error("producer-owner-e-duplicate")
               else min_by(.id).id end
-              ' <<<"${eligible}" || return 1
+              ' <<<"${e}" || return 1
           }
 
-          elect_producer_owner() {
+          elect_owner() {
             local first second
-            first="$(elect_producer_owner_once)" || return 1
+            first="$(elect_once)" || return 1
             sleep 2
-            second="$(elect_producer_owner_once)" || return 1
+            second="$(elect_once)" || return 1
             if [ "${first}" != "${second}" ]; then
               echo 'Producer-owner inventory changed between stable reads.' >&2
               return 1
@@ -733,7 +700,7 @@ jobs:
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           # shellcheck source=/dev/null
           source "${owner_guard}"
-          owner_run_id="$(elect_producer_owner)"
+          owner_run_id="$(elect_owner)"
           [[ "${owner_run_id}" =~ ^[1-9][0-9]*$ ]]
           echo "owner_mode=${PRODUCER_OWNER_MODE}" >>"${GITHUB_OUTPUT}"
           echo "owner_run_id=${owner_run_id}" >>"${GITHUB_OUTPUT}"
@@ -1425,13 +1392,13 @@ jobs:
           test ! -L "${RUNNER_TEMP}/current-revision-producer-owner.sh"
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/current-revision-producer-owner.sh"
-          revalidate_producer_owner() {
+          revalidate_owner() {
             local live_owner
-            live_owner="$(elect_producer_owner)"
+            live_owner="$(elect_owner)"
             test "${live_owner}" = "${OWNER_RUN_ID}"
             test "${live_owner}" = "${GITHUB_RUN_ID}"
           }
-          validate_bound_check() {
+          validate_check() {
             local check_id="$1" external_id="$2" check_name="$3"
             local expected_details_url="$4" recovery_evidence recovery_identity
             local snapshot
@@ -1502,7 +1469,7 @@ jobs:
             else
               return 1
             fi
-            revalidate_producer_owner || return 1
+            revalidate_owner || return 1
             snapshot="$(api_read \
               "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
             jq -e \
@@ -1534,8 +1501,8 @@ jobs:
             local expected_details_url="$4" attempt output
             shift 4
             for attempt in $(seq 1 5); do
-              revalidate_producer_owner || return 1
-              validate_bound_check \
+              revalidate_owner || return 1
+              validate_check \
                 "${check_id}" "${external_id}" "${check_name}" \
                 "${expected_details_url}" || return 1
               if output="$(gh api --method PATCH "$@")"; then
@@ -1555,7 +1522,7 @@ jobs:
           [[ "${OWNER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${TRUSTED_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
           test "${GITHUB_RUN_ID}" = "${OWNER_RUN_ID}"
-          revalidate_producer_owner
+          revalidate_owner
           test "${DEFAULT_BRANCH}" = develop
           test "${TRUSTED_WORKFLOW_REF}" = \
             "${REPOSITORY}/.github/workflows/copilot-review.yml@refs/heads/${DEFAULT_BRANCH}"
@@ -1744,7 +1711,7 @@ jobs:
               # A new bound producer must refresh the terminal timestamp. GitHub's
               # strict status policy can otherwise retain the check as expected.
               completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              validate_bound_check \
+              validate_check \
                 "${check_id}" "${external_id}" "${check_name}" "${check_url}"
               updated="$(api_patch_bound \
                 "${check_id}" "${external_id}" "${check_name}" "${check_url}" \
@@ -1778,7 +1745,7 @@ jobs:
                 ' <<<"${updated}" >/dev/null
               return
             fi
-            revalidate_producer_owner
+            revalidate_owner
             if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
                 -f name="${check_name}" \
                 -f head_sha="${EVENT_HEAD}" \
@@ -1819,7 +1786,7 @@ jobs:
             fi
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${created}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
-            validate_bound_check \
+            validate_check \
               "${check_id}" "${external_id}" "${check_name}" ''
             created="$(api_patch_bound \
               "${check_id}" "${external_id}" "${check_name}" '' \
@@ -1894,7 +1861,7 @@ jobs:
           [[ "${OWNER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
           test "${GITHUB_REF_PROTECTED}" = true
-          live_owner="$(elect_producer_owner)" || exit 1
+          live_owner="$(elect_owner)" || exit 1
           test "${live_owner}" = "${OWNER_RUN_ID}"
           test "${live_owner}" = "${PRODUCER_RUN_ID}"
           test "${live_owner}" = "${GITHUB_RUN_ID}"
