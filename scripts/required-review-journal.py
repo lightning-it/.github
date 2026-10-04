@@ -378,13 +378,19 @@ class Finalizer:
                 # A durable success proposal is not perpetual write authority.
                 # The protected adapter repeats its complete authoritative read;
                 # webhook fields and a cached pre-seal snapshot are insufficient.
+                previous_job = None
                 for _ in range(2):
                     proof = checks.evidence(deepcopy(record["binding"]))
                     require(type(proof) is dict and type(proof.get("job")) is dict,
                             "delivery-evidence-shape")
-                    require((proof["job"].get("status"), proof["job"].get("conclusion"))
-                            in (("in_progress", None), ("completed", "success")),
+                    job = (proof["job"].get("status"), proof["job"].get("conclusion"))
+                    require(job in (("in_progress", None), ("completed", "success")),
                             "delivery-job-state")
+                    require(previous_job is None or previous_job == job
+                            or (previous_job == ("in_progress", None)
+                                and job == ("completed", "success")),
+                            "delivery-job-regressed")
+                    previous_job = job
                     stable = deepcopy(proof)
                     stable["job"].pop("status", None)
                     stable["job"].pop("conclusion", None)

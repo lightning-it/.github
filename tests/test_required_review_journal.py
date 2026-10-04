@@ -260,6 +260,19 @@ class RequiredReviewJournalTests(unittest.TestCase):
                 self.finalizer.deliver(self.key, self.checks)
         self.assertEqual(self.checks.writes, [])
 
+    def test_delivery_visibility_may_advance_but_cannot_regress(self):
+        self.finish()
+        terminal = deepcopy(self.proof)
+        terminal["job"].update(status="completed", conclusion="success")
+        reads = iter((terminal, self.proof))
+        self.checks.evidence = lambda identity: deepcopy(next(reads))
+        with self.assertRaisesRegex(ValueError, "delivery-job-regressed"):
+            self.finalizer.deliver(self.key, self.checks)
+        self.assertEqual(self.checks.writes, [])
+        reads = iter((self.proof, terminal))
+        self.finalizer.deliver(self.key, self.checks)
+        self.assertEqual(self.checks.check["conclusion"], "success")
+
     def test_sweeper_inventory_keeps_closed_and_superseded_reservations(self):
         newer = dict(self.identity, head="9" * 40, producer_run=210)
         self.finalizer.admit(newer, 301, 2000, 3600)
