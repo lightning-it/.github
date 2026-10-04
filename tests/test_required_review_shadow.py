@@ -280,7 +280,8 @@ class EventAdapterTests(unittest.TestCase):
                             EVENTS.producer(api, self.policy, value)
                         elif operation == "admission":
                             EVENTS.admission_run(api, self.policy, value, 7,
-                                                 self.base, self.head, "feature")
+                                                 self.base, self.head, "feature",
+                                                 self.pull["user"])
                         else:
                             EVENTS.snapshot(api, self.policy, 200, value)
                     self.assertEqual(0, api.requests)
@@ -438,6 +439,51 @@ class EventAdapterTests(unittest.TestCase):
         self.assertFalse(result["complete_global_inventory"])
         self.assertEqual(0, result["writes"])
         self.assertEqual([], EVENTS.sweep(self.api(), self.policy, self.now)["expired"])
+
+    def test_sweeper_binds_governed_sync_actor_without_authority(self):
+        sync_actor = {"id": 307342877,
+                      "login": "lightning-it-shared-assets-sync[bot]", "type": "Bot"}
+        api = self.api()
+        api.responses = deepcopy(self.responses)
+        api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+            0]["user"] = sync_actor
+        api.responses[f"{self.prefix}/pulls/7"]["user"] = sync_actor
+        api.responses[f"{self.prefix}/actions/runs/201"]["actor"] = sync_actor
+        api.responses[f"{self.prefix}/actions/runs/201"]["triggering_actor"] = sync_actor
+
+        result = EVENTS.sweep(api, self.policy, self.now + 86400)
+
+        self.assertEqual([300], [item["check_id"] for item in result["expired"]])
+        self.assertEqual("none", result["authority"])
+        self.assertEqual(0, result["writes"])
+
+    def test_observer_remains_owner_only_when_sync_actor_is_governed_for_sweeps(self):
+        api = self.api()
+        api.responses = deepcopy(self.responses)
+        api.responses[f"{self.prefix}/pulls/7"]["user"] = {
+            "id": 307342877, "login": "lightning-it-shared-assets-sync[bot]", "type": "Bot"}
+
+        with self.assertRaisesRegex(EVENTS.ShadowRejected, "^pull-author$"):
+            EVENTS.observe(api, self.policy, 200, 7, self.now)
+
+    def test_sweeper_sync_actor_mismatch_and_unknown_actor_reject(self):
+        sync_actor = {"id": 307342877,
+                      "login": "lightning-it-shared-assets-sync[bot]", "type": "Bot"}
+        api = self.api()
+        api.responses = deepcopy(self.responses)
+        api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+            0]["user"] = sync_actor
+        api.responses[f"{self.prefix}/pulls/7"]["user"] = sync_actor
+        with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-actor-attempt$"):
+            EVENTS.sweep(api, self.policy, self.now + 86400)
+
+        api = self.api()
+        api.responses = deepcopy(self.responses)
+        api.responses[f"{self.prefix}/pulls?state=open&base=develop&per_page=100&page=1"][
+            0]["user"] = {"id": 42, "login": "unknown", "type": "User"}
+        with self.assertRaisesRegex(EVENTS.ShadowRejected, "^sweeper-actor$"):
+            EVENTS.sweep(api, self.policy, self.now + 86400)
+        self.assertEqual(1, api.requests)
 
     def test_sweeper_worst_case_request_budget_boundary(self):
         for count in (14, 15):
@@ -622,7 +668,24 @@ class EventAdapterTests(unittest.TestCase):
                 api = self.api()
                 with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-pr-number$"):
                     EVENTS.admission_run(api, self.policy, 201, number,
-                                         self.base, self.head, "feature")
+                                         self.base, self.head, "feature", self.pull["user"])
+                self.assertEqual(0, api.requests)
+
+    def test_admission_expected_actor_must_be_governed_before_read(self):
+        actors = [None, False, {}, {"id": 42, "login": "unknown", "type": "User"},
+                  {"id": 76040632, "login": "litroc", "type": "Bot"},
+                  {"id": 76040632.0, "login": "litroc", "type": "User"},
+                  {"id": 307342877.0,
+                   "login": "lightning-it-shared-assets-sync[bot]", "type": "Bot"}]
+        actors.extend({"id": identity, "login": "litroc", "type": "User"}
+                      for identity in (True, False, "76040632", None, 0, -1))
+        for actor in actors:
+            with self.subTest(actor=actor):
+                api = self.api()
+                with self.assertRaisesRegex(EVENTS.ShadowRejected,
+                                            "^admission-actor-attempt$"):
+                    EVENTS.admission_run(api, self.policy, 201, 7, self.base, self.head,
+                                         "feature", actor)
                 self.assertEqual(0, api.requests)
 
     def test_admission_title_must_match_exact_native_scope(self):
@@ -649,7 +712,8 @@ class EventAdapterTests(unittest.TestCase):
                     api = self.api()
                     base, head = (value, self.head) if side == "base" else (self.base, value)
                     with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-" + side + "$"):
-                        EVENTS.admission_run(api, self.policy, 201, 7, base, head, "feature")
+                        EVENTS.admission_run(api, self.policy, 201, 7, base, head, "feature",
+                                             self.pull["user"])
                     self.assertEqual(0, api.requests)
 
     def test_admission_malformed_head_ref_rejects_even_when_all_evidence_agrees(self):
@@ -666,7 +730,8 @@ class EventAdapterTests(unittest.TestCase):
                 self.admission["pull_requests"][0]["head"]["ref"] = value
                 api = self.api()
                 with self.assertRaisesRegex(EVENTS.ShadowRejected, "^admission-head-ref$"):
-                    EVENTS.admission_run(api, self.policy, 201, 7, self.base, self.head, value)
+                    EVENTS.admission_run(api, self.policy, 201, 7, self.base, self.head, value,
+                                         self.pull["user"])
                 self.assertEqual(0, api.requests)
                 self.assert_admission_rejected(self.admission, "admission-head-ref")
 
@@ -791,6 +856,7 @@ class EventAdapterTests(unittest.TestCase):
 
     def test_sweeper_revalidates_pull_after_reservation_refresh(self):
         for field, value in (("state", "closed"), ("number", 8),
+                             ("user", {"id": 76040632, "login": "other", "type": "User"}),
                              ("head", {**self.pull["head"], "sha": "c" * 40}),
                              ("base", {**self.pull["base"], "sha": "d" * 40}),
                              ("base", {**self.pull["base"], "ref": "main"})):
