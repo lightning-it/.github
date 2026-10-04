@@ -611,20 +611,32 @@ read_refresh_checks() { printf %s "${LIVE}"; }
         functions = "".join(self._rfn(name) for name in (
             "read_refresh_checks", "revalidate_refresh_state", "va",
             "invalidate_refresh_check", "invalidate_duplicate_refresh_checks"))
-        def evaluate(checks):
+        def evaluate(checks, mode="stable", owner_drift=False):
             with tempfile.TemporaryDirectory() as tmp:
                 state, log = Path(tmp) / "state", Path(tmp) / "patches"
+                reads = Path(tmp) / "reads"
                 state.write_text(json.dumps(checks), encoding="utf-8")
+                reads.write_text("0", encoding="utf-8")
                 script = r'''set -euo pipefail
 oa() { gh api "$@"; }
-eo() { printf %s "${owner_run_id}"; }
+eo() { [ "${OWNER_DRIFT}" != true ] || { printf 78; return; }; printf %s "${owner_run_id}"; }
 validate_live_pr_tuple() { :; }
 read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,"unresolved":0}'; }
 gh() {
-  local arg endpoint='' id updated
+  local arg endpoint='' id n updated
   for arg in "$@"; do case "${arg}" in repos/*) endpoint="${arg}";; esac; done
   if [[ " $* " != *" --method PATCH "* ]]; then
-    jq -cn --slurpfile state "${STATE}" '[{check_runs:$state[0]}]'
+    n="$(cat "${READS}")"; printf %s "$((n + 1))" >"${READS}"
+    [ "${MODE}" != api-fail ] || [ "${n}" -eq 0 ] || return 97
+    if { [ "${MODE}" = count-drift ] && [ "${n}" -gt 0 ]; } ||
+      { [ "${MODE}" = post-first-drift ] && [ "${n}" -gt 1 ]; }; then
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:($state[0][0:1])}]'
+    elif [ "${MODE}" = snapshot-drift ] && [ "${n}" -gt 0 ]; then
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:($state[0] |
+        map(if .id == 42 then .output.title="drift" else . end))}]'
+    else
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:$state[0]}]'
+    fi
     return
   fi
   id="${endpoint##*/}"
@@ -645,13 +657,15 @@ neutral="$(read_refresh_checks)"
 neutral_count="$(jq 'length' <<<"${neutral}")"
 refresh_expected_count="${neutral_count}"
 refresh_expected_snapshot=null
-if invalidate_duplicate_refresh_checks; then exit 90; fi
+invalidate_duplicate_refresh_checks
 jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
 '''
                 res = self._run_bash(script, {"BASE_SHA": base, "HEAD_SHA": head,
                     "GITHUB_SERVER_URL": "https://github.example",
                     "LOG": str(log), "PR_AUTHOR": "litroc", "PR_NUMBER": "2334",
-                    "REPOSITORY": "lightning-it/.github", "STATE": str(state),
+                    "MODE": mode, "OWNER_DRIFT": str(owner_drift).lower(),
+                    "READS": str(reads), "REPOSITORY": "lightning-it/.github",
+                    "STATE": str(state),
                     "current_external_id": binding, "current_external_kind": "copilot",
                     "owner_run_id": str(owner)})
                 return res, log.read_text() if log.exists() else ""
@@ -661,6 +675,16 @@ jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
         rejected, log = evaluate([check(42), check(43, "foreign")])
         self.assertNotEqual(0, rejected.returncode)
         self.assertEqual("", log)
+        for mode in ("count-drift", "snapshot-drift", "api-fail"):
+            rejected, log = evaluate([check(42), check(43)], mode)
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual("", log)
+        rejected, log = evaluate([check(42), check(43)], owner_drift=True)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("", log)
+        rejected, log = evaluate([check(42), check(43)], "post-first-drift")
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("43\n", log)
         malformed_cases = ([check(42), check(42)],
                            [check(42), {**check(43), "external_id": None}],
                            [check(index) for index in range(1, 22)])

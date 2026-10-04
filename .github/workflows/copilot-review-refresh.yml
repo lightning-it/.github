@@ -884,7 +884,8 @@ jobs:
                 '.[$reason] > 0' <<<"${mutation_state}" >/dev/null || exit 0 ;;
               *) return 1 ;;
             esac
-            revalidate_refresh_state 1 "${refresh_expected_snapshot}"
+            revalidate_refresh_state \
+              "${refresh_expected_count}" "${refresh_expected_snapshot}" || return 1
             invalidated="$(gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f status=completed -f conclusion=failure \
@@ -932,11 +933,12 @@ jobs:
                 ')" || return 1
               invalidate_refresh_check binding || return 1
             done < <(jq -c 'sort_by(.id) | reverse | .[]' <<<"${neutral}")
-            echo 'Duplicate protected review checks were deterministically invalidated; refusing ambiguous evidence.' >&2
-            return 1
+            return 0
           }
           if [ "${neutral_count}" -gt 1 ]; then
-            invalidate_duplicate_refresh_checks
+            invalidate_duplicate_refresh_checks || exit 1
+            echo 'Duplicate protected review checks were deterministically invalidated; refusing ambiguous evidence.' >&2
+            exit 1
           fi
           if [ "${neutral_count}" -eq 1 ]; then
             refresh_expected_snapshot="$(jq -c '.' <<<"${neutral}")"
