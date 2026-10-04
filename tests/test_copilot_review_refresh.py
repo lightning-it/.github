@@ -71,8 +71,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     @staticmethod
     def _refresh_validation_filter() -> str:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        branch = workflow.index("            elif ! jq -e \\\n")
         marker = '              --arg url "${check_url}" \'\n'
-        start = workflow.index(marker) + len(marker)
+        start = workflow.index(marker, branch) + len(marker)
         end = workflow.index('\n              \' <<<"${neutral}"', start)
         return workflow[start:end]
 
@@ -164,7 +165,6 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         start = workflow.index(
             '            jq -e \\\n'
             '              --arg actor "${author}" \\\n'
-            '              --arg head_ref "${head_ref}" \\\n'
             '              --arg head_sha "${EXPECTED_HEAD}" \\\n'
             '              --argjson attempt "${producer_attempt}" \\\n'
         )
@@ -853,6 +853,7 @@ gh() {
             "schema": 4,
             "base_sha": base,
             "head_sha": head,
+            "producer_run_id": 77,
         }
         if pull_request_number is not None:
             summary["pull_request_number"] = pull_request_number
@@ -888,6 +889,9 @@ gh() {
                     "--argjson",
                     "pr_number",
                     "123",
+                    "--arg",
+                    "owner_run_id",
+                    "77",
                     "--arg",
                     "url",
                     "https://github.example/runs/42",
@@ -1974,6 +1978,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             "html_url": "https://github.example/actions/runs/77",
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "github-actions[bot]"},
+            "pull_requests": [{"head": {"ref": "fix/final"}}],
         }
 
         def evaluate_identity(
@@ -1988,7 +1993,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     "litroc",
                     "--arg",
                     "head_ref",
-                    "fix/final",
+                    "fix/renamed",
                     "--arg",
                     "head_sha",
                     head,
@@ -2021,6 +2026,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 self.assertNotEqual(
                     0, evaluate_identity(drifted, 2).returncode
                 )
+        drifted = json.loads(json.dumps(producer))
+        drifted["pull_requests"][0]["head"]["ref"] = "fix/other"
+        self.assertNotEqual(0, evaluate_identity(drifted, 2).returncode)
 
         attempt_guard = self._producer_attempt_provenance_guard()
         attempt_binding_guard = self._rerun_shell_function(
@@ -4040,6 +4048,110 @@ sleep() { :; }''',
         self.assertNotEqual(0, run("v6", summary))
         self.assertEqual(0, run("v6", {**summary, "pull_request_number": 123}))
         self.assertNotEqual(0, run("v5", {**summary, "pull_request_number": 999}))
+
+
+    def test_same_sha_rename_preserves_historical_helper_bindings(
+        self,
+    ) -> None:
+        workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("head_ref=$(jq -r .head_branch", workflow)
+        cross = self._cross_run(202, "2026-09-05T11:00:00Z")
+        pages = [{"total_count": 1, "workflow_runs": [cross]}]
+        producer = {
+            "head_branch": "fix/final",
+            "pull_requests": [{"head": {"ref": "fix/final"}}],
+        }
+        script = "\n".join((
+            "set -euo pipefail",
+            'producer="${PRODUCER}"',
+            'head_ref="fix/renamed"',
+            self._rerun_shell_function("validate_live_pr_snapshot"),
+            self._rerun_shell_function("validate_protected_run_binding"),
+            self._rerun_shell_function("validate_cross_run_binding"),
+            'validate_live_pr_snapshot "${LIVE_PR}"',
+            'jq -ce --arg api_url "${GITHUB_API_URL}" '
+            '--arg author "${author}" --arg base_ref "${base_ref}" '
+            '--arg base_sha "${EXPECTED_BASE}" --arg head_ref "${head_ref}" '
+            '--arg head_sha "${EXPECTED_HEAD}" --arg repository "${REPOSITORY}" '
+            '--arg server_url "${GITHUB_SERVER_URL}" '
+            '--argjson pr_number "${PR_NUMBER}" "${CROSS_FILTER}" '
+            '<<<"${PAGES}" >/dev/null',
+            'validate_protected_run_binding "${PROTECTED}"',
+            'validate_cross_run_binding "${CROSS}" 202',
+        ))
+        environment = {
+            "PATH": TEST_TOOL_PATH,
+            "GITHUB_API_URL": "https://api.github.example",
+            "GITHUB_SERVER_URL": "https://github.example",
+            "REPOSITORY": "lightning-it/.github",
+            "PR_NUMBER": "554",
+            "EXPECTED_BASE": "a" * 40,
+            "EXPECTED_HEAD": "b" * 40,
+            "author": "litroc",
+            "base_ref": "develop",
+            "producer": json.dumps(producer),
+            "PRODUCER": json.dumps(producer),
+            "LIVE_PR": json.dumps({
+                "number": 554,
+                "state": "open",
+                "draft": False,
+                "user": {"login": "litroc"},
+                "base": {
+                    "ref": "develop",
+                    "sha": "a" * 40,
+                    "repo": {"full_name": "lightning-it/.github"},
+                },
+                "head": {
+                    "ref": "fix/renamed",
+                    "sha": "b" * 40,
+                    "repo": {"full_name": "lightning-it/.github"},
+                },
+            }),
+            "PAGES": json.dumps(pages),
+            "CROSS_FILTER": self._cross_run_inventory_filter(),
+            "PROTECTED": json.dumps(self._protected_run()),
+            "CROSS": json.dumps(cross),
+            "run_id": "900",
+            "verifier_run_url": (
+                "https://github.example/lightning-it/.github/actions/runs/900"
+            ),
+        }
+        accepted = subprocess.run(
+            [self._test_tool("bash"), "-c", script],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        release_v4 = {
+            "head_branch": "develop",
+            "pull_requests": [],
+        }
+        environment["PRODUCER"] = json.dumps(release_v4)
+        accepted_release = subprocess.run(
+            [self._test_tool("bash"), "-c", script],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, accepted_release.returncode, accepted_release.stderr)
+
+        inconsistent = json.loads(json.dumps(cross))
+        inconsistent["pull_requests"][0]["head"]["ref"] = "fix/other"
+        environment["CROSS"] = json.dumps(inconsistent)
+        environment["PAGES"] = json.dumps([
+            {"total_count": 1, "workflow_runs": [inconsistent]}
+        ])
+        rejected = subprocess.run(
+            [self._test_tool("bash"), "-c", script],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(0, rejected.returncode)
 
 
 if __name__ == "__main__":
