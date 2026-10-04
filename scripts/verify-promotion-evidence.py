@@ -228,6 +228,50 @@ def normalized_review_text(value: str) -> str:
     )
 
 
+def historical_copilot_findings_count(body: str) -> int:
+    lines = body.splitlines()
+    headings = [line for line in lines if "## Copilot review overview" in line]
+    require(headings == ["## Copilot review overview"], "producer-review-binding")
+    fields = [line for line in lines if "**Findings:**" in line]
+    require(len(fields) == 1, "producer-review-binding")
+    if fields[0] == "**Findings:** None":
+        return 0
+    require(
+        fields[0].startswith("**Findings:** "), "producer-review-binding"
+    )
+    groups = fields[0].removeprefix("**Findings:** ").split(" · ")
+    require(1 <= len(groups) <= 3, "producer-review-binding")
+    prefix = "https://github.githubassets.com/static/images/icons/copilot-code-review/"
+    supported_icons = {
+        '<picture><source media="(prefers-color-scheme: dark)" '
+        f'srcset="{prefix}{severity}-v2-dark.svg">'
+        '<source media="(prefers-color-scheme: light)" '
+        f'srcset="{prefix}{severity}-v2-light.svg">'
+        f'<img src="{prefix}{severity}-v2-light.png" '
+        f'alt="{severity.title()} severity" width="62" height="18" '
+        'align="texttop"></picture>'
+        for severity in ("high", "medium", "low")
+    }
+    count = 0
+    observed_icons: set[str] = set()
+    for group in groups:
+        match = re.fullmatch(
+            r"(?P<count>[1-9][0-9]*)(?: (?P<icon><picture>.*</picture>))?",
+            group,
+        )
+        require(match is not None, "producer-review-binding")
+        icon = match.group("icon")
+        require(
+            (icon is None and len(groups) == 1)
+            or (icon in supported_icons and icon not in observed_icons),
+            "producer-review-binding",
+        )
+        if icon is not None:
+            observed_icons.add(icon)
+        count += int(match.group("count"))
+    return count
+
+
 def integer(value: Any, label: str) -> int:
     require(type(value) is int and value > 0, f"{label}-not-positive-integer")
     return value
@@ -1122,7 +1166,7 @@ def validate_producer_run(
     evidence_kind: str,
     evidence_version: str,
     producer_run_id: int,
-) -> JSON:
+) -> tuple[JSON, int]:
     check_id = integer(check.get("id"), "check-id")
     require(
         check.get("details_url") == f"https://github.com/{repository}/runs/{check_id}",
@@ -1606,7 +1650,7 @@ def validate_producer_run(
                     ),
                     "producer-managed-sync-time-binding",
                 )
-                return summary
+                return summary, 0
             if evidence_kind == "renovate":
                 run_created = timestamp(
                     run.get("created_at"), "producer-run-created-at"
@@ -1624,7 +1668,7 @@ def validate_producer_run(
                     <= merged_at,
                     "producer-renovate-time-binding",
                 )
-                return summary
+                return summary, 0
             if expanded_review_pages is None:
                 review_pages = exact_array(
                     gh_json(
@@ -1647,6 +1691,7 @@ def validate_producer_run(
             require(run_created <= run_updated, "producer-run-time-order")
             current_reviews: list[JSON] = []
             review_ids: list[int] = []
+            historical_findings_count = 0
             for page in review_pages:
                 for item in exact_array(page, "producer-review-page"):
                     review = exact_object(item, "producer-review")
@@ -1685,6 +1730,17 @@ def validate_producer_run(
                         ),
                         "producer-review-binding",
                     )
+                    historical_findings_count = historical_copilot_findings_count(
+                        body
+                    )
+                    normalized_body = normalized_review_text(body)
+                    require(
+                        not any(
+                            marker in normalized_body
+                            for marker in COPILOT_REVIEW_FAILURE_MARKERS
+                        ),
+                        "producer-review-binding",
+                    )
                     if expanded_review_pages is None:
                         comment_pages = exact_array(
                             gh_json(
@@ -1698,7 +1754,7 @@ def validate_producer_run(
                             ),
                             "producer-review-comment-pages",
                         )
-                        review_texts = [body]
+                        review_texts: list[str] = []
                         comment_ids: list[int] = []
                         for comment_page in comment_pages:
                             for comment_item in exact_array(
@@ -1732,16 +1788,16 @@ def validate_producer_run(
                             normalized_review_text(value) for value in review_texts
                         ]
                         require(
-                            "**Findings:** None" in body
-                            and "Changes recommended" not in body
-                            and "<strong>Open (" not in body
-                            and not any(
+                            not any(
                                 marker in normalized
                                 for normalized in normalized_texts
                                 for marker in COPILOT_REVIEW_FAILURE_MARKERS
                             ),
                             "producer-review-binding",
                         )
+                        # Historical overview counts are a submission-time
+                        # snapshot. The caller separately validates every
+                        # live review thread after this exact review binding.
                     # Expanded v6 evidence binds the exact native review ID in
                     # the protected producer result. Its overview counts are a
                     # historical rendering and may still mention a finding
@@ -1761,7 +1817,7 @@ def validate_producer_run(
                     current_reviews[0].get("node_id") == summary.get("review_id"),
                     "review-summary-review-binding",
                 )
-            return summary
+            return summary, historical_findings_count
         require(len(associations) == 1, "producer-run-pull-request-count")
         association = exact_object(associations[0], "producer-run-pull-request")
         association_base = exact_object(
@@ -1796,7 +1852,7 @@ def validate_producer_run(
             and association.get("url") == f"{repository_url}/pulls/{pull_number}",
             "producer-run-pull-request-binding",
         )
-    return summary
+    return summary, 0
 
 
 def bound_review_check(
@@ -1840,7 +1896,7 @@ def bound_review_check(
                 and v6.group("head") == head_sha
                 and output_title == v6_titles[expected_kind]
             ):
-                summary = validate_producer_run(
+                summary, historical_findings_count = validate_producer_run(
                     check,
                     repository=repository,
                     pull=pull,
@@ -1858,6 +1914,7 @@ def bound_review_check(
                     "external_id": external_id,
                     "producer_run_id": int(v6.group("run")),
                     "summary_sha256": digest(summary),
+                    "historical_findings_count": historical_findings_count,
                 }
                 matches.append(match)
             continue
@@ -1869,7 +1926,7 @@ def bound_review_check(
                 and v5.group("head") == head_sha
                 and output_title == "Current revision review passed"
             ):
-                summary = validate_producer_run(
+                summary, historical_findings_count = validate_producer_run(
                     check,
                     repository=repository,
                     pull=pull,
@@ -1887,6 +1944,7 @@ def bound_review_check(
                     "external_id": external_id,
                     "producer_run_id": int(v5.group("run")),
                     "summary_sha256": digest(summary),
+                    "historical_findings_count": historical_findings_count,
                 }
                 matches.append(match)
             continue
@@ -1944,7 +2002,7 @@ def bound_review_check(
             )
             is not None
         ):
-            summary = validate_producer_run(
+            summary, historical_findings_count = validate_producer_run(
                 check,
                 repository=repository,
                 pull=pull,
@@ -1962,6 +2020,7 @@ def bound_review_check(
                 "external_id": external_id,
                 "producer_run_id": int(v4.group("run")),
                 "summary_sha256": digest(summary),
+                "historical_findings_count": historical_findings_count,
             }
             matches.append(match)
     require(len(matches) == 1, "bound-current-revision-check-not-unique")
@@ -2076,20 +2135,24 @@ def collect_bound_ingress_evidence(
             ),
         ]
     )
-    return {
-        "review": bound_review_check(
-            checks,
-            repository=repository,
-            pull=pull,
-            pull_number=pull_number,
-            base_sha=base_sha,
-            head_sha=head_sha,
-            merge_base_sha=merge_base_sha,
-        ),
-        "threads": validate_review_threads(
-            collect_review_threads(repository, pull_number)
-        ),
-    }
+    review = bound_review_check(
+        checks,
+        repository=repository,
+        pull=pull,
+        pull_number=pull_number,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        merge_base_sha=merge_base_sha,
+    )
+    threads = validate_review_threads(
+        collect_review_threads(repository, pull_number)
+    )
+    require(
+        len(threads["resolved_thread_ids"])
+        >= review["historical_findings_count"],
+        "producer-review-thread-coverage",
+    )
+    return {"review": review, "threads": threads}
 
 
 def private_runtime_directory() -> Path:
