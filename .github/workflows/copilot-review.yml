@@ -434,19 +434,13 @@ jobs:
             local pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
-            jq -e --arg head_ref "${EVENT_HEAD_REF}" --arg h "${EVENT_HEAD}" \
+            jq -e --arg h "${EVENT_HEAD}" --arg head_ref "${EVENT_HEAD_REF}" \
               --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
                 and (.workflow_runs | type) == "array")
-              and all([.[].workflow_runs[]? |
-                select(.path == ".github/workflows/copilot-review.yml"
-                  or .name == "Current revision review gate")
-                | select(.head_sha == $h
-                  or any(.pull_requests[]?; .number == $n))
-                | select(.head_branch == $head_ref
-                  or any(.pull_requests[]?; .number == $n))][];
+              and all(.[].workflow_runs[]?;
                 . as $r
                 | type == "object"
                 and (.id | type) == "number" and .id > 0
@@ -460,26 +454,20 @@ jobs:
                     "neutral", "cancelled", "timed_out", "action_required", "stale",
                     "startup_failure", "skipped"))))
                 and (.event | type) == "string" and (.event | length) > 0
-                and .event == "pull_request_target"
                 and (.path | type) == "string" and (.path | length) > 0
-                and .path == ".github/workflows/copilot-review.yml"
                 and (.name | type) == "string" and (.name | length) > 0
-                and .name == "Current revision review gate"
                 and (.head_branch | type) == "string"
                 and (.head_branch | length) > 0
                 and (.head_sha | type) == "string"
                 and (.head_sha | test("^[0-9a-f]{40}$"))
-                and .head_sha == $h
                 and (.repository | type) == "object"
                 and (.repository.full_name | type) == "string"
                 and (.repository.full_name | length) > 0
-                and .repository.full_name == $repo
                 and (.head_repository | type) == "object"
                 and (.head_repository.full_name | type) == "string"
                 and (.head_repository.full_name | length) > 0
-                and .head_repository.full_name == $repo
                 and (.pull_requests | type) == "array"
-                and (.pull_requests | length) <= 1
+                and (.pull_requests | length) <= 10
                 and all(.pull_requests[];
                   type == "object"
                   and (.number | type) == "number" and .number > 0
@@ -493,23 +481,19 @@ jobs:
                   and .head.sha == $r.head_sha
                   and (.head.ref | type) == "string"
                   and (.head.ref | length) > 0
-                  and .head.ref == $r.head_branch))
-              and ([.[].workflow_runs[]? |
-                select(.path == ".github/workflows/copilot-review.yml"
-                  or .name == "Current revision review gate")
-                | select(.head_sha == $h
-                  or any(.pull_requests[]?; .number == $n))
-                | select(.head_branch == $head_ref
-                  or any(.pull_requests[]?; .number == $n))
-                | .id] | length)
-                == ([.[].workflow_runs[]? |
-                  select(.path == ".github/workflows/copilot-review.yml"
-                    or .name == "Current revision review gate")
-                  | select(.head_sha == $h
-                    or any(.pull_requests[]?; .number == $n))
-                  | select(.head_branch == $head_ref
-                    or any(.pull_requests[]?; .number == $n))
-                  | .id] | unique | length)
+                  and .head.ref == $r.head_branch)
+                and (if .event == "pull_request_target"
+                    and .path == ".github/workflows/copilot-review.yml"
+                    and .name == "Current revision review gate"
+                    and .head_sha == $h
+                    and .repository.full_name == $repo
+                    and .head_repository.full_name == $repo
+                  then ((.pull_requests | length) == 1
+                    or ((.pull_requests | length) == 0
+                      and .head_branch == $head_ref))
+                  else true end))
+              and ([.[].workflow_runs[].id] | length)
+                == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${rpages}" >/dev/null || return 1
             frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[]
@@ -520,7 +504,7 @@ jobs:
                   | select(.head_branch == $ref)
                   | select(.repository.full_name == $repo)
                   | select(.head_repository.full_name == $repo)
-                  | select((.pull_requests | type) == "array" and (.pull_requests | length) == 1)
+                  | select((.pull_requests | length) == 1)
                   | .pull_requests[0]
                   | select(.number != $n)
                   | [.number, .base.sha, .head.sha]]

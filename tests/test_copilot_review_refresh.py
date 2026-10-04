@@ -318,48 +318,11 @@ gh() {
                     self._owner(
                         None,
                         guard=guard,
-                        runs=[malformed],
-                        jobs={101: [self._job(101)]},
+                        runs=[malformed, self._run(102)],
+                        jobs={101: [self._job(101)],
+                              102: [self._job(102)]},
                         cond=True,
                     )
-            malformed_owner = self._run(101)
-            malformed_owner["event"] = None
-            self._owner(None, guard=guard,
-                        runs=[malformed_owner, self._run(102)],
-                        jobs={101: [self._job(101)],
-                              102: [self._job(102)]}, cond=True)
-    def test_empty_association_uses_unique_branch_binding(self):
-        unassociated = self._run(101)
-        unassociated["pull_requests"] = []
-        repo = "lightning-it/shared-assets-lit"
-        current_pull = {
-            "number": 2334, "state": "open",
-            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
-            "head": {"ref": "feature/li179", "sha": "c" * 40,
-                     "repo": {"full_name": repo}},
-        }
-        for guard in self._guards():
-            self._owner("101", guard=guard, runs=[unassociated],
-                        jobs={101: [self._job(101)]}, cond=True)
-            closed_pull = {**current_pull, "number": 12, "state": "closed",
-                           "head": {**current_pull["head"], "sha": "d" * 40}}
-            self._owner("101", guard=guard, runs=[unassociated],
-                        jobs={101: [self._job(101)]},
-                        branch_pulls=[closed_pull, current_pull], cond=True)
-            for branch_pulls in ([], [current_pull, current_pull],
-                                 [{**current_pull, "number": 999}],
-                                 [{**current_pull, "head": {
-                                     **current_pull["head"], "sha": "d" * 40}}]):
-                self._owner(None, guard=guard, runs=[unassociated],
-                            jobs={101: [self._job(101)]},
-                            branch_pulls=branch_pulls, cond=True)
-            unrelated = self._run(999)
-            unrelated["path"] = ".github/workflows/other.yml"
-            unrelated["name"] = "Other workflow"
-            unrelated["pull_requests"] = "malformed"
-            self._owner("101", guard=guard,
-                        runs=[unrelated, unassociated],
-                        jobs={101: [self._job(101)]}, cond=True)
     def test_foreign_pr(self):
         guards = self._guards()
         foreign = self._run(101)
@@ -387,6 +350,55 @@ gh() {
                 self._owner(None, guard=guard,
                     runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
                     fpulls={999: bad}, cond=True)
+    def test_unrelated_run_associations(self):
+        unrelated = self._run(100)
+        unrelated["path"] = ".github/workflows/repository-quality.yml"
+        first = unrelated["pull_requests"][0]
+        second = json.loads(json.dumps(first))
+        second["number"] = 999
+        second["base"]["sha"] = "d" * 40
+        for associations in ([], [first, second]):
+            candidate = json.loads(json.dumps(unrelated))
+            candidate["pull_requests"] = associations
+            for guard in self._guards():
+                self._owner("101", guard=guard,
+                    runs=[candidate, self._run(101)],
+                    jobs={101: [self._job(101)]}, cond=True)
+        malformed = json.loads(json.dumps(unrelated))
+        malformed["pull_requests"] = [{**first, "number": 123.5}]
+        for guard in self._guards():
+            self._owner(None, guard=guard,
+                runs=[malformed, self._run(101)],
+                jobs={101: [self._job(101)]}, cond=True)
+    def test_empty_association_uses_unique_open_branch_binding(self):
+        unassociated = self._run(101)
+        unassociated["pull_requests"] = []
+        repo = "lightning-it/shared-assets-lit"
+        current_pull = {
+            "number": 2334, "state": "open",
+            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
+            "head": {"ref": "feature/li179", "sha": "c" * 40,
+                     "repo": {"full_name": repo}},
+        }
+        closed_pull = {**current_pull, "number": 12, "state": "closed",
+                       "head": {**current_pull["head"], "sha": "d" * 40}}
+        for guard in self._guards():
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]}, cond=True)
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]},
+                        branch_pulls=[closed_pull, current_pull], cond=True)
+            for branch_pulls in ([], [current_pull, current_pull],
+                                 [{**current_pull, "number": 999}],
+                                 [{**current_pull, "head": {
+                                     **current_pull["head"], "sha": "d" * 40}}]):
+                self._owner(None, guard=guard, runs=[unassociated],
+                            jobs={101: [self._job(101)]},
+                            branch_pulls=branch_pulls, cond=True)
+            wrong_ref = json.loads(json.dumps(unassociated))
+            wrong_ref["head_branch"] = "feature/other"
+            self._owner(None, guard=guard, runs=[wrong_ref],
+                        jobs={101: [self._job(101)]}, cond=True)
     def test_owner_rename(self):
         guards = self._guards()
         original = self._run(101)
@@ -616,7 +628,7 @@ read_refresh_checks() { printf %s "${LIVE}"; }
 ''' + self._rfn("revalidate_refresh_state") + \
                     '\nrevalidate_refresh_state 1 "${EXPECTED}"\n'
                 return self._run_bash(script, {
-                    "EXPECTED": json.dumps(want, separators=(",", ":")),
+                    "EXPECTED": json.dumps([want], separators=(",", ":")),
                     "LIVE": json.dumps(live, separators=(",", ":")),
                     "OWNER_AFTER": str(owners[1]), "OWNER_BEFORE": str(owners[0]),
                     "OWNER_COUNTER": str(Path(tmp) / "owners"),
@@ -627,96 +639,101 @@ read_refresh_checks() { printf %s "${LIVE}"; }
                              ([want, want], (77, 77)),
                              ([want], (77, 78))):
             self.assertNotEqual(0, evaluate(live, owners).returncode)
-    def test_duplicate_refresh_checks_are_all_invalidated(self):
-        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn(
-            'if [ "${neutral_count}" -gt 1 ]; then\n'
-            '            invalidate_duplicate_refresh_checks "${neutral}"',
-            refresh,
-        )
-        base, head, owner = "a" * 40, "b" * 40, 77
-        checks = [{
-            "id": check_id, "name": "Current revision review",
-            "app": {"id": 15368, "slug": "github-actions"},
-            "head_sha": head, "external_id": f"owner-{check_id}",
-            "status": "completed", "conclusion": "success",
-            "details_url": f"https://github.example/runs/{check_id}",
-            "output": {"title": "passed", "summary": "old"},
-        } for check_id in (41, 42)]
-        evidence = json.dumps({
-            "schema": 4, "base_sha": base, "head_sha": head,
-            "producer_run_id": owner,
-            "reason": "ambiguous duplicate protected review evidence",
-        }, separators=(",", ":"))
-        script = r'''set -euo pipefail
-validate_live_pr_tuple() { :; }
-revalidate_refresh_owner() { :; }
-read_refresh_checks() { cat "${STATE_FILE}"; }
-oa() {
-  local id="${1##*/}"
-  jq -c --argjson id "${id}" '.[] | select(.id == $id)' "${STATE_FILE}"
-}
-gh() {
-  local id="${4##*/}" updated
-  printf '%s\n' "${id}" >>"${PATCH_LOG}"
-  if [ "${FAIL_ID}" = "${id}" ]; then return 88; fi
-  updated="$(jq -c --argjson id "${id}" --arg evidence "${EVIDENCE}" \
-    --arg url "${URL}" 'map(if .id == $id then
-      .status = "completed" | .conclusion = "failure" |
-      .details_url = $url |
-      .output.title = "Current revision review invalidated" |
-      .output.summary = $evidence else . end)' "${STATE_FILE}")"
-  printf '%s' "${updated}" >"${STATE_FILE}"
-  jq -c --argjson id "${id}" '.[] | select(.id == $id)' "${STATE_FILE}"
-}
-''' + self._rfn("invalidate_duplicate_refresh_checks") + \
-            '\ninvalidate_duplicate_refresh_checks "${NEUTRAL}"\n'
-        for fail_id in ("", "41"):
-            with self.subTest(fail_id=fail_id), tempfile.TemporaryDirectory() as tmp:
-                state, log = Path(tmp) / "checks.json", Path(tmp) / "patches"
+    def test_duplicate_refresh_checks_are_invalidated_in_id_order(self):
+        base, head, owner = "b" * 40, "c" * 40, 77
+        binding = f"mlx90-current-revision:copilot:v6:2334:{owner}:{base}:{head}"
+        def check(check_id, external_id=binding):
+            return {"id": check_id, "name": "Current revision review",
+                "app": {"id": 15368, "slug": "github-actions"},
+                "head_sha": head, "external_id": external_id,
+                "status": "completed", "conclusion": "success",
+                "details_url": f"https://github.example/lightning-it/.github/runs/{check_id}",
+                "completed_at": "2026-10-04T12:00:00Z",
+                "output": {"title": "PASS", "summary": "evidence"}}
+        functions = "".join(self._rfn(name) for name in (
+            "read_refresh_checks", "revalidate_refresh_state", "va",
+            "invalidate_refresh_check", "invalidate_duplicate_refresh_checks"))
+        def evaluate(checks, mode="stable", owner_drift=False):
+            with tempfile.TemporaryDirectory() as tmp:
+                state, log = Path(tmp) / "state", Path(tmp) / "patches"
+                reads = Path(tmp) / "reads"
                 state.write_text(json.dumps(checks), encoding="utf-8")
-                result = self._run_bash(script, {
-                    "PATH": TEST_TOOL_PATH, "STATE_FILE": str(state),
-                    "PATCH_LOG": str(log), "FAIL_ID": fail_id,
-                    "EVIDENCE": evidence,
-                    "URL": "https://github.example/lightning-it/.github/actions/runs/900",
+                reads.write_text("0", encoding="utf-8")
+                script = r'''set -euo pipefail
+oa() { gh api "$@"; }
+eo() { [ "${OWNER_DRIFT}" != true ] || { printf 78; return; }; printf %s "${owner_run_id}"; }
+validate_live_pr_tuple() { :; }
+read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,"unresolved":0}'; }
+gh() {
+  local arg endpoint='' id n updated
+  for arg in "$@"; do case "${arg}" in repos/*) endpoint="${arg}";; esac; done
+  if [[ " $* " != *" --method PATCH "* ]]; then
+    n="$(cat "${READS}")"; printf %s "$((n + 1))" >"${READS}"
+    [ "${MODE}" != api-fail ] || [ "${n}" -eq 0 ] || return 97
+    if { [ "${MODE}" = count-drift ] && [ "${n}" -gt 0 ]; } ||
+      { [ "${MODE}" = post-first-drift ] && [ "${n}" -gt 1 ]; }; then
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:($state[0][0:1])}]'
+    elif [ "${MODE}" = snapshot-drift ] && [ "${n}" -gt 0 ]; then
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:($state[0] |
+        map(if .id == 42 then .output.title="drift" else . end))}]'
+    else
+      jq -cn --slurpfile state "${STATE}" '[{check_runs:$state[0]}]'
+    fi
+    return
+  fi
+  id="${endpoint##*/}"
+  updated="$(jq -ce --arg evidence "${recovery_evidence}" \
+    --arg external "${current_external_id}" --arg url "${check_url}" \
+    --argjson id "${id}" '.[] | select(.id == $id) |
+      .status="completed" | .conclusion="failure" | .external_id=$external |
+      .details_url=$url | .completed_at="2026-10-04T12:01:00Z" |
+      .output={title:"Current revision review invalidated",summary:$evidence}' "${STATE}")" || return 1
+  jq -c --argjson updated "${updated}" --argjson id "${id}" \
+    'map(if .id == $id then $updated else . end)' "${STATE}" >"${STATE}.new"
+  mv "${STATE}.new" "${STATE}"
+  printf '%s\n' "${id}" >>"${LOG}"
+  printf %s "${updated}"
+}
+''' + functions + r'''
+neutral="$(read_refresh_checks)"
+neutral_count="$(jq 'length' <<<"${neutral}")"
+refresh_expected_count="${neutral_count}"
+refresh_expected_snapshot=null
+invalidate_duplicate_refresh_checks
+jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
+'''
+                res = self._run_bash(script, {"BASE_SHA": base, "HEAD_SHA": head,
                     "GITHUB_SERVER_URL": "https://github.example",
-                    "GITHUB_RUN_ID": "900", "REPOSITORY": "lightning-it/.github",
-                    "BASE_SHA": base, "HEAD_SHA": head,
-                    "owner_run_id": str(owner),
-                    "NEUTRAL": json.dumps(checks),
-                })
-                self.assertNotEqual(0, result.returncode)
-                self.assertEqual(["41", "42"], log.read_text().splitlines())
-                updated = json.loads(state.read_text())
-                self.assertEqual(
-                    ["success" if fail_id == "41" else "failure", "failure"],
-                    [check["conclusion"] for check in updated],
-                )
-                self.assertIn(
-                    "incomplete" if fail_id else "terminally ambiguous",
-                    result.stderr,
-                )
-    def test_duplicate_refresh_inventory_is_bounded(self):
-        script = (
-            'set -euo pipefail\n'
-            'oa() { printf %s "${PAGES}"; }\n'
-            + self._rfn("read_refresh_checks")
-            + '\nread_refresh_checks\n'
-        )
-        for count in (10, 11):
-            with self.subTest(count=count):
-                checks = [{"id": i + 1, "name": "Current revision review",
-                    "app": {"id": 15368, "slug": "github-actions"},
-                    "head_sha": "b" * 40} for i in range(count)]
-                result = self._run_bash(script, {
-                    "PAGES": json.dumps([{"check_runs": checks}]),
-                    "REPOSITORY": "lightning-it/.github", "HEAD_SHA": "b" * 40,
-                })
-                self.assertEqual(count <= 10, result.returncode == 0,
-                                 result.stderr)
-                if count > 10:
-                    self.assertIn("refresh-check-inventory-overflow", result.stderr)
+                    "LOG": str(log), "PR_AUTHOR": "litroc", "PR_NUMBER": "2334",
+                    "MODE": mode, "OWNER_DRIFT": str(owner_drift).lower(),
+                    "READS": str(reads), "REPOSITORY": "lightning-it/.github",
+                    "STATE": str(state),
+                    "current_external_id": binding, "current_external_kind": "copilot",
+                    "owner_run_id": str(owner)})
+                return res, log.read_text() if log.exists() else ""
+        result, log = evaluate([check(43), check(42)])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("43\n42\n", log)
+        rejected, log = evaluate([check(42), check(43, "foreign")])
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("", log)
+        for mode in ("count-drift", "snapshot-drift", "api-fail"):
+            rejected, log = evaluate([check(42), check(43)], mode)
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual("", log)
+        rejected, log = evaluate([check(42), check(43)], owner_drift=True)
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("", log)
+        rejected, log = evaluate([check(42), check(43)], "post-first-drift")
+        self.assertNotEqual(0, rejected.returncode)
+        self.assertEqual("43\n", log)
+        malformed_cases = ([check(42), check(42)],
+                           [check(42), {**check(43), "external_id": None}],
+                           [check(index) for index in range(1, 22)])
+        for checks in malformed_cases:
+            rejected, log = evaluate(checks)
+            self.assertNotEqual(0, rejected.returncode)
+            self.assertEqual("", log)
     def test_attempt2_rerun(self):
         script = "\n".join(
             (
@@ -927,12 +944,11 @@ oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))"
         inconsistent = json.loads(json.dumps(run))
         inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
         self.assertNotEqual(0, evaluate(inconsistent))
-        unassociated = self._run(77)
-        unassociated["head_branch"] = "feature/renamed"
+        unassociated = json.loads(json.dumps(run))
         unassociated["pull_requests"] = []
-        self.assertEqual(0, evaluate(unassociated))
-        unassociated["head_branch"] = "feature/foreign"
         self.assertNotEqual(0, evaluate(unassociated))
+        unassociated["head_branch"] = "feature/renamed"
+        self.assertEqual(0, evaluate(unassociated))
     def test_invalidation(self):
         base, head, check_id, owner = "a" * 40, "b" * 40, 42, 77
         binding = f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}"
