@@ -31,8 +31,9 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
         self.assertIn(block, COPILOT_WORKFLOW.read_text(encoding="utf-8"))
         refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        expression = refresh.split("group: >-", 1)[1].split("cancel-in-progress", 1)[0]
         for value in ("format('current-revision-{0}-pr-{1}'", "format('current-revision-quarantine-{0}'", "github.run_id", "cancel-in-progress: false", "queue: max"):
-            self.assertIn(value, refresh)
+            self.assertIn(value, expression if value.startswith(("format", "github")) else refresh)
         def lane(event, actor, login, association="NONE", sender=None, action="edited", run=1):
             trusted = event in ("pull_request_review", "pull_request_review_comment") and ((actor in ("Copilot", "copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]") and login == "copilot-pull-request-reviewer[bot]") or actor == login == "litroc" or (association in ("COLLABORATOR", "MEMBER", "OWNER") and (sender or actor) == actor and (action in ("dismissed", "deleted") or login == actor)))
             return "current-revision-1-pr-737" if trusted else f"current-revision-quarantine-{run}"
@@ -109,9 +110,9 @@ gh() {
 '''.replace("__JOB_CASES__", job_cases).replace("__PULL_CASES__", pull_cases)
         script += guard or self._guard()
         script += (
-            '\nif owner="$(elect_owner)"; then printf %s "${owner}"; else exit 71; fi\n'
+            '\nif owner="$(eo)"; then printf %s "${owner}"; else exit 71; fi\n'
             if cond
-            else "\nelect_owner\n"
+            else "\neo\n"
         )
         with tempfile.TemporaryDirectory() as tmp:
             env = {
@@ -416,7 +417,7 @@ gh() {
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         publish = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
         dispatch = workflow.split("      - name: Dispatch the protected re-evaluation helper ", 1)[1]
-        revalidation = 'live_owner="$(elect_owner)" || exit 1'
+        revalidation = 'live_owner="$(eo)" || exit 1'
         mutation = "actions/workflows/current-revision-rerun.yml/dispatches"
         for fragment in (revalidation,
                          'test "${live_owner}" = "${OWNER_RUN_ID}"',
@@ -448,8 +449,8 @@ gh() {
         publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
             1
         ]
-        self.assertIn("revalidate_owner", publish)
-        self.assertIn("validate_check", publish)
+        self.assertIn("ro", publish)
+        self.assertIn("vc", publish)
         self.assertNotIn("api_patch()", publish)
         self.assertIn("api_patch_bound", publish)
         self.assertIn('and .external_id == $external_id', publish)
@@ -554,7 +555,7 @@ gh() {
         ):
             with tempfile.TemporaryDirectory() as tmp:
                 script = r'''set -euo pipefail
-elect_owner() {
+eo() {
   local reads=0
   [ ! -f "${OWNER_COUNTER}" ] || reads="$(cat "${OWNER_COUNTER}")"
   printf %s "$((reads + 1))" >"${OWNER_COUNTER}"
@@ -670,7 +671,7 @@ gh() { printf P >>"${LOG}"; return 97; }
             with tempfile.TemporaryDirectory() as tmp:
                 epath = Path(tmp) / "event.json"
                 epath.write_text(json.dumps(event_record), encoding="utf-8")
-                script = ('set -euo pipefail\nowner_read() { [ "${COMMENT_FAIL}" != true ] || return 97; '
+                script = ('set -euo pipefail\noa() { [ "${COMMENT_FAIL}" != true ] || return 97; '
                           'if [ "${1}" = graphql ]; then local n=0; [ ! -f "${PAGE_COUNTER}" ] || n="$(cat "${PAGE_COUNTER}")"; '
                           'printf %s "$((n+1))" >"${PAGE_COUNTER}"; jq -ce --argjson n "${n}" \'.[$n]\' <<<"${COMMENT_PAGES}"; '
                           'else printf %s "${LIVE_RECORD}"; fi; }\n'
@@ -739,7 +740,7 @@ gh() { printf P >>"${LOG}"; return 97; }
                 script = r'''set -euo pipefail
 validate_live_pr_tuple() { :; }
 refresh_event_record_state() { local n=0; [ ! -f "${EC}" ] || n="$(cat "${EC}")"; printf %s "$((n + 1))" >"${EC}"; [ "${n}" -eq 0 ] && printf current || printf %s "${FINAL_EVENT}"; }
-owner_read() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))" >"${PC}"; [ "${n}" -ne "${FAIL}" ] || return 97; jq -ce --argjson n "${n}" '.[$n]' <<<"${PAGES}"; }
+oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))" >"${PC}"; [ "${n}" -ne "${FAIL}" ] || return 97; jq -ce --argjson n "${n}" '.[$n]' <<<"${PAGES}"; }
 ''' + self._rfn("read_refresh_review_state") + \
                     "\nread_refresh_review_state\n"
                 return self._run_bash(script, {"FINAL_EVENT": state, "FAIL": str(fail),
@@ -807,9 +808,9 @@ owner_read() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((
                         encoding="utf-8")
                 script = r'''set -euo pipefail
 api_read() { local reads=0; [ ! -f "${READ_COUNTER}" ] || reads="$(cat "${READ_COUNTER}")"; printf %s "$((reads + 1))" >"${READ_COUNTER}"; [ "${reads}" -eq 0 ] && printf %s "${SNAPSHOT}" || printf %s "${SNAPSHOT_AFTER}"; }
-revalidate_owner() { :; }
-''' + self._pub("validate_check") + \
-                    '\nvalidate_check 42 "${EXTERNAL_ID}" "Current revision review" "${DETAILS_URL}"\n'
+ro() { :; }
+''' + self._pub("vc") + \
+                    '\nvc 42 "${EXTERNAL_ID}" "Current revision review" "${DETAILS_URL}"\n'
                 env = {"PATH": TEST_TOOL_PATH, "DETAILS_URL": url,
                        "EVENT_BASE": base, "EVENT_HEAD": head,
                        "EXTERNAL_ID": binding, "OWNER_RUN_ID": str(owner),
@@ -4204,12 +4205,12 @@ sleep() { :; }''',
             "output": {"summary": json.dumps(summary)}}]
         script = "\n".join((
             "set -euo pipefail",
-            "elect_owner() {",
+            "eo() {",
             '  test "${EVENT_BASE}" = "${EXPECTED_PREVIOUS_BASE}"',
             '  printf "%s" "${ELECTED_PREVIOUS_OWNER}"',
             "}",
-            self._rfn("validate_previous_tuple_handoff"),
-            'validate_previous_tuple_handoff "${CHECK}" "${CHECK_URL}"',
+            self._rfn("vh"),
+            'vh "${CHECK}" "${CHECK_URL}"',
         ))
 
         def evaluate(candidate, *, elected="77", author="litroc", kind="copilot"):
@@ -4226,7 +4227,8 @@ sleep() { :; }''',
 
         accepted = evaluate(check)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
-        marker = {**summary, "invalidated_check_run_id": 42,
+        marker = {"schema": 4, "base_sha": previous, "head_sha": head,
+                  "producer_run_id": 77, "invalidated_check_run_id": 42,
                   "reason": "canonical refresh invalidation"}
         failed = [{**check[0], "conclusion": "failure", "output": {
             "title": "Current revision review invalidated",
@@ -4236,6 +4238,7 @@ sleep() { :; }''',
             [{**failed[0], "output": {**failed[0]["output"], "title": "failure"}}],
             [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "reason": "foreign"})}}],
             [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "invalidated_check_run_id": 43})}}],
+            [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "review_path": summary["review_path"]})}}],
             [{**failed[0], "external_id": "foreign"}],
         ):
             self.assertNotEqual(0, evaluate(malformed).returncode)
@@ -4876,9 +4879,9 @@ sleep() { :; }''',
         current = f"mlx90-current-revision:renovate:v6:123:{owner}:{base}:{head}"
         script = "\n".join((
             "set -euo pipefail",
-            self._rfn("validate_refresh_binding_authority"),
+            self._rfn("va"),
             "gh() { : >\"${PATCH_FILE}\"; }",
-            'if validate_refresh_binding_authority "${CHECK}"; then',
+            'if va "${CHECK}"; then',
             "  gh api --method PATCH",
             "else",
             "  exit 73",
