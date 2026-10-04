@@ -598,7 +598,7 @@ jobs:
               ' <<<"${run}" >/dev/null
           }
           refresh_event_record_state() {
-            local action event id key live pages
+            local action event id key live
             action="$(jq -er '.action | select(type == "string")' \
               "${GITHUB_EVENT_PATH}")" || return 1
             case "${EVENT_NAME}" in
@@ -619,16 +619,12 @@ jobs:
             if [ "${EVENT_NAME}" = pull_request_review_comment ]; then
               jq -e '(.body | type) == "string"' <<<"${event}" >/dev/null || return 1
               if [ "${action}" = deleted ]; then
-                pages="$(owner_api_read --paginate --slurp \
-                  "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100")" \
-                  || return 1
-                jq -e --argjson id "${id}" '
-                  type == "array" and length > 0 and length <= 10
-                  and all(.[]; type == "array")
-                  and all(.[][]; (.id | type) == "number" and .id > 0 and .id == (.id | floor))
-                  and (any(.[][]; .id == $id) | not)
-                  ' <<<"${pages}" >/dev/null || { printf superseded; return; }
-                printf current
+                live="$(read_refresh_review_state threads)" || return 1
+                jq -e 'all(.[].comments.pageInfo.hasNextPage; . == false)' \
+                  <<<"${live}" >/dev/null || return 1
+                if jq -e --argjson id "${id}" \
+                  'any(.[].comments.nodes[]?; .databaseId == $id)' \
+                  <<<"${live}" >/dev/null; then printf superseded; else printf current; fi
                 return 0
               fi
               [[ "${action}" =~ ^(created|edited)$ ]] || return 1
@@ -667,13 +663,16 @@ jobs:
           }
           read_refresh_review_state() {
             local after='' cursors='[]' event_state event_state_after has_next
-            local name owner page query thread_page threads='[]'; local -a arguments
-            validate_live_pr_tuple || return 1
-            event_state="$(refresh_event_record_state)" || return 1
-            [[ "${event_state}" =~ ^(current|superseded)$ ]] || return 1
+            local mode="${1:-state}" name owner page query thread_page threads='[]'; local -a arguments
+            [[ "${mode}" =~ ^(state|threads)$ ]] || return 1
+            if [ "${mode}" = state ]; then
+              validate_live_pr_tuple || return 1
+              event_state="$(refresh_event_record_state)" || return 1
+              [[ "${event_state}" =~ ^(current|superseded)$ ]] || return 1
+            fi
             read -r owner name <<<"${REPOSITORY//\// }"
             # shellcheck disable=SC2016  # GraphQL variables stay literal.
-            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login} pullRequestReview{commit{oid}}}}}}}}}'
+            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:100){pageInfo{hasNextPage} nodes{databaseId author{login} pullRequestReview{commit{oid}}}}}}}}}'
             for thread_page in $(seq 1 10); do
               arguments=(-f query="${query}" -F owner="${owner}" -F name="${name}"
                 -F number="${PR_NUMBER}")
@@ -690,12 +689,16 @@ jobs:
                   and (.isResolved | type) == "boolean" and (.comments | type) == "object"
                   and (.comments.nodes | type) == "array"
                   and (.comments.pageInfo.hasNextPage | type) == "boolean"
-                  and all(.comments.nodes[]?; (.author.login | type) == "string"
+                  and all(.comments.nodes[]?; (.databaseId | type) == "number"
+                    and .databaseId > 0 and .databaseId == (.databaseId | floor)
+                    and (.author.login | type) == "string"
                     and (.pullRequestReview.commit.oid | test("^[0-9a-f]{40}$"))))
                 ' <<<"${page}" >/dev/null || return 1
               threads="$(jq -ce --argjson prior "${threads}" '$prior +
                 .data.repository.pullRequest.reviewThreads.nodes |
-                select(([.[].id]|length) == ([.[].id]|unique|length))' <<<"${page}")" || return 1
+                select(([.[].id]|length) == ([.[].id]|unique|length)) |
+                select(([.[].comments.nodes[].databaseId]|length) ==
+                  ([.[].comments.nodes[].databaseId]|unique|length))' <<<"${page}")" || return 1
               has_next="$(jq -er '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage|tostring' <<<"${page}")" || return 1
               [ "${has_next}" = true ] || break
               [ "${thread_page}" -lt 10 ] || return 1
@@ -705,6 +708,7 @@ jobs:
                 <<<"${cursors}")" || return 1
             done
             [ "${has_next}" = false ] || return 1
+            if [ "${mode}" = threads ]; then printf '%s' "${threads}"; return 0; fi
             validate_live_pr_tuple || return 1
             event_state_after="$(refresh_event_record_state)" || return 1
             [[ "${event_state_after}" =~ ^(current|superseded)$ ]] || return 1
