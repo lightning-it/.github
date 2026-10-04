@@ -22,11 +22,9 @@ env:
   SUPPRESSED_COMMENTS_MARKER: suppressed comments
 
 concurrency:
-  # A synchronize/reopened verifier run must never cancel the one-time
-  # opened/ready_for_review request run before that request is recorded. GitHub
-  # can otherwise leave an already successful required check in "expected".
-  group: copilot-review-${{ github.event.pull_request.number }}-${{ github.event.action }}
+  group: current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: false
+  queue: max
 
 # Release-App pull requests use only the protected MLX-90 §7.2 Exact-Revision
 # Codex check, except for a zero-diff ancestry merge proven deterministically
@@ -392,6 +390,9 @@ jobs:
             'chore(governance): record main ancestry before '
           )))
     outputs:
+      producer_owner: ${{ steps.producer-owner.outputs.owner }}
+      producer_owner_mode: ${{ steps.producer-owner.outputs.owner_mode }}
+      producer_run_id: ${{ steps.producer-owner.outputs.owner_run_id }}
       trusted_kind: ${{ steps.trusted-automation.outputs.kind }}
     permissions:
       actions: read
@@ -403,8 +404,317 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - &materialize-producer-owner-guard
+        name: Materialize immutable producer-owner guard
+        run: |
+          set -euo pipefail
+          owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          umask 077
+          cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
+          oa() {
+            local attempt output
+            for attempt in $(seq 1 5); do
+              if output="$(gh api "$@")"; then
+                printf '%s' "${output}"
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                echo 'Producer-owner API read failed after five attempts.' >&2
+                return 1
+              fi
+              sleep 2
+            done
+          }
+
+          elect_once() {
+            local ca cid cands crows
+            local crj e fbase fhead
+            local flive fpr frows
+            local jpages ojp
+            local pj rj rpages
+            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
+            rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
+            jq -e --argjson n "${PR_NUMBER}" '
+              type == "array" and length > 0 and length <= 10
+              and all(.[];
+                type == "object"
+                and (.workflow_runs | type) == "array")
+              and all(.[].workflow_runs[]?;
+                . as $r
+                | type == "object"
+                and (.id | type) == "number" and .id > 0
+                and .id == (.id | floor)
+                and (.run_attempt | type) == "number" and .run_attempt > 0
+                and .run_attempt == (.run_attempt | floor)
+                and (.status | type) == "string"
+                and (((.status | IN("requested", "waiting", "pending", "queued", "in_progress"))
+                      and .conclusion == null)
+                  or (.status == "completed" and (.conclusion | IN("success", "failure",
+                    "neutral", "cancelled", "timed_out", "action_required", "stale",
+                    "startup_failure", "skipped"))))
+                and (.event | type) == "string" and (.event | length) > 0
+                and (.path | type) == "string" and (.path | length) > 0
+                and (.name | type) == "string" and (.name | length) > 0
+                and (.head_branch | type) == "string"
+                and (.head_branch | length) > 0
+                and (.head_sha | type) == "string"
+                and (.head_sha | test("^[0-9a-f]{40}$"))
+                and (.repository | type) == "object"
+                and (.repository.full_name | type) == "string"
+                and (.repository.full_name | length) > 0
+                and (.head_repository | type) == "object"
+                and (.head_repository.full_name | type) == "string"
+                and (.head_repository.full_name | length) > 0
+                and (.pull_requests | type) == "array"
+                and (.pull_requests | length) == 1
+                and all(.pull_requests[];
+                  type == "object"
+                  and (.number | type) == "number" and .number > 0
+                  and .number == (.number | floor)
+                  and (.base | type) == "object"
+                  and (.base.sha | type) == "string"
+                  and (.base.sha | test("^[0-9a-f]{40}$"))
+                  and (.head | type) == "object"
+                  and (.head.sha | type) == "string"
+                  and (.head.sha | test("^[0-9a-f]{40}$"))
+                  and .head.sha == $r.head_sha
+                  and (.head.ref | type) == "string"
+                  and (.head.ref | length) > 0
+                  and .head.ref == $r.head_branch))
+              and ([.[].workflow_runs[].id] | length)
+                == ([.[].workflow_runs[].id] | unique | length)
+              ' <<<"${rpages}" >/dev/null || return 1
+            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+                [.[].workflow_runs[]
+                  | select(.event == "pull_request_target")
+                  | select(.path == ".github/workflows/copilot-review.yml")
+                  | select(.name == "Current revision review gate")
+                  | select(.head_sha == $h)
+                  | select(.repository.full_name == $repo)
+                  | select(.head_repository.full_name == $repo)
+                  | .pull_requests[0]
+                  | select(.number != $n)
+                  | [.number, .base.sha, .head.sha]]
+                | unique
+                | if length > 10 then error("foreign-pr-inventory-unbounded")
+                  else map(@tsv) | join("\n") end
+              ' <<<"${rpages}")" || return 1
+            while IFS=$'\t' read -r fpr fbase fhead; do
+              [ -n "${fpr}" ] || continue
+              flive="$(oa "repos/${REPOSITORY}/pulls/${fpr}")" || return 1
+              jq -e --arg b "${fbase}" --arg h "${fhead}" --arg repo "${REPOSITORY}" --argjson n "${fpr}" '
+                  .number == $n
+                  and .base.sha == $b
+                  and .base.repo.full_name == $repo
+                  and .head.sha == $h
+                  and .head.repo.full_name == $repo
+                ' <<<"${flive}" >/dev/null || return 1
+            done <<<"${frows}"
+            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+                [.[].workflow_runs[] |
+                  select(.event == "pull_request_target") |
+                  select(.path == ".github/workflows/copilot-review.yml") |
+                  select(.name == "Current revision review gate") |
+                  select(.head_sha == $h) |
+                  select(.repository.full_name == $repo) |
+                  select(.head_repository.full_name == $repo) |
+                  select(any(.pull_requests[];
+                    .number == $n
+                    and .base.sha == $b
+                    and .head.sha == $h))]
+                | if length == 0 then error("producer-owner-missing")
+                  elif length > 20 then error("producer-owner-overflow")
+                  elif ([.[].id] | unique | length) != length
+                    then error("producer-owner-run-duplicate")
+                  else sort_by(.id) end
+              ' <<<"${rpages}")" || return 1
+            e='[]'
+            crows="$(jq -er '.[] | [.id, .run_attempt, .status] | @tsv' <<<"${cands}")" || return 1
+            while IFS=$'\t' read -r cid ca cstate; do
+              [[ "${cid}" =~ ^[1-9][0-9]*$ ]] || return 1
+              [[ "${ca}" =~ ^(1|2)$ ]] || return 1
+              [[ "${cstate}" =~ ^(requested|waiting|pending|queued|in_progress|completed)$ ]] || return 1
+              jpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs/${cid}/attempts/${ca}/jobs?filter=all&per_page=100")" || return 1
+              jq -e --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
+                type == "array" and length > 0 and length <= 10
+                and all(.[]; type == "object" and (.jobs | type) == "array")
+                and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
+                and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
+                  and (.name|type)=="string" and .run_id==$rid and .run_attempt==$a and .head_sha==$h and (.status|type)=="string" and has("conclusion"))
+                ' <<<"${jpages}" >/dev/null || return 1
+              pj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
+                  [.[].jobs[] |
+                    select(.name == "Verify current revision policy") |
+                    select(.run_id == $rid) |
+                    select(.run_attempt == $a) |
+                    select(.head_sha == $h)]
+                  | if length > 1 then error("producer-owner-job-duplicate")
+                    else . end
+                ' <<<"${jpages}")" || return 1
+              if [ "$(jq 'length' <<<"${pj}")" -eq 0 ]; then
+                if [[ "${cstate}" =~ ^(requested|waiting|pending|queued)$ ]] &&
+                  jq -e 'all(.[].jobs; length == 0)' <<<"${jpages}" >/dev/null &&
+                  [ "$(jq 'length' <<<"${e}")" -gt 0 ]; then
+                  continue
+                fi
+                return 1
+              fi
+              jq -e '
+                .[0] as $job
+                | (($job.status | IN(
+                    "requested", "waiting", "pending", "queued", "in_progress"))
+                    and $job.conclusion == null)
+                  or ($job.status == "completed"
+                    and ($job.conclusion | IN(
+                      "success", "failure", "neutral", "cancelled",
+                      "timed_out", "action_required", "stale",
+                      "startup_failure", "skipped")))
+                ' <<<"${pj}" >/dev/null || return 1
+              if jq -e '
+                  .[0].status == "completed"
+                  and .[0].conclusion == "skipped"
+                  ' <<<"${pj}" >/dev/null; then
+                continue
+              fi
+              if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
+                crj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson a "${ca}" --argjson rid "${cid}" '
+                    [.[].jobs[] |
+                      select(.name == "Request Copilot review for current revision") |
+                      select(.run_id == $rid) |
+                      select(.run_attempt == $a) |
+                      select(.head_sha == $h)]
+                    | if length > 1 then error("producer-owner-requester-duplicate")
+                      else . end
+                  ' <<<"${jpages}")" || return 1
+                if [ "$(jq 'length' <<<"${crj}")" -eq 0 ]; then
+                  return 1
+                fi
+                jq -e '
+                  .[0] as $job
+                  | (($job.status | IN(
+                      "requested", "waiting", "pending", "queued", "in_progress"))
+                      and $job.conclusion == null)
+                    or ($job.status == "completed"
+                      and ($job.conclusion | IN(
+                        "success", "failure", "neutral", "cancelled",
+                        "timed_out", "action_required", "stale",
+                        "startup_failure", "skipped")))
+                  ' <<<"${crj}" >/dev/null || return 1
+                if [ "${ca}" -eq 1 ]; then
+                  ojp="${jpages}"
+                else
+                  ojp="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs/${cid}/attempts/1/jobs?filter=all&per_page=100")" || return 1
+                  jq -e --arg h "${EVENT_HEAD}" --argjson rid "${cid}" '
+                    type == "array" and length > 0 and length <= 10
+                    and all(.[]; type == "object" and (.jobs | type) == "array")
+                    and ([.[].jobs[].id] | length) == ([.[].jobs[].id] | unique | length)
+                    and all(.[].jobs[]?; type=="object" and (.id|type)=="number" and .id>0
+                      and (.name|type)=="string" and .run_id==$rid and .run_attempt==1 and .head_sha==$h and (.status|type)=="string" and has("conclusion"))
+                    ' <<<"${ojp}" >/dev/null || return 1
+                fi
+                rj="$(jq -ce --arg h "${EVENT_HEAD}" --argjson rid "${cid}" '
+                    [.[].jobs[] |
+                      select(.name == "Request Copilot review for current revision") |
+                      select(.run_id == $rid) |
+                      select(.run_attempt == 1) |
+                      select(.head_sha == $h)]
+                    | if length > 1 then error("producer-owner-original-requester-duplicate")
+                      else . end
+                  ' <<<"${ojp}")" || return 1
+                if [ "$(jq 'length' <<<"${rj}")" -eq 0 ]; then
+                  return 1
+                fi
+                jq -e '
+                  .[0] as $job
+                  | (($job.status | IN(
+                      "requested", "waiting", "pending", "queued", "in_progress"))
+                      and $job.conclusion == null)
+                    or ($job.status == "completed"
+                      and ($job.conclusion | IN(
+                        "success", "failure", "neutral", "cancelled",
+                        "timed_out", "action_required", "stale",
+                        "startup_failure", "skipped")))
+                  ' <<<"${rj}" >/dev/null || return 1
+                if jq -e '
+                    .[0].status == "completed"
+                    and .[0].conclusion == "skipped"
+                    ' <<<"${rj}" >/dev/null; then
+                  continue
+                fi
+              fi
+              e="$(jq -cn --argjson current "${e}" --argjson id "${cid}" --argjson a "${ca}" '$current + [{id:$id,run_attempt:$a}]')" || return 1
+            done <<<"${crows}"
+            jq -er '
+              if length == 0 then error("producer-owner-e-missing")
+              elif ([.[].id] | unique | length) != length
+                then error("producer-owner-e-duplicate")
+              else min_by(.id).id end
+              ' <<<"${e}" || return 1
+          }
+
+          eo() {
+            local first second
+            first="$(elect_once)" || return 1
+            sleep 2
+            second="$(elect_once)" || return 1
+            if [ "${first}" != "${second}" ]; then
+              echo 'Producer-owner inventory changed between stable reads.' >&2
+              return 1
+            fi
+            printf '%s' "${first}"
+          }
+          PRODUCER_OWNER_GUARD
+
+      - name: Elect immutable current-revision producer owner
+        id: producer-owner
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          PRODUCER_OWNER_MODE=verification
+          if [ "${PR_AUTHOR}" = litroc ]; then
+            PRODUCER_OWNER_MODE=copilot
+          fi
+          if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
+              && [[ "${EVENT_HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; } \
+            || { [ "${PR_AUTHOR}" = "renovate[bot]" ] \
+              && [[ "${EVENT_HEAD_REF}" == renovate/* ]]; } \
+            || { { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+                || [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; } \
+              && [[ "${EVENT_HEAD_REF}" == backmerge/*-main ]]; }; then
+            test "${PR_BASE_REF}" = develop
+            PRODUCER_OWNER_MODE=deterministic
+          fi
+          export PRODUCER_OWNER_MODE
+          owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          # shellcheck source=/dev/null
+          source "${owner_guard}"
+          owner_run_id="$(eo)"
+          [[ "${owner_run_id}" =~ ^[1-9][0-9]*$ ]]
+          echo "owner_mode=${PRODUCER_OWNER_MODE}" >>"${GITHUB_OUTPUT}"
+          echo "owner_run_id=${owner_run_id}" >>"${GITHUB_OUTPUT}"
+          if [ "${GITHUB_RUN_ID}" = "${owner_run_id}" ]; then
+            echo 'owner=true' >>"${GITHUB_OUTPUT}"
+            echo "Producer ${GITHUB_RUN_ID} owns the exact PR/base/head tuple."
+          else
+            echo 'owner=false' >>"${GITHUB_OUTPUT}"
+            echo "Producer ${GITHUB_RUN_ID} is stale; immutable owner is ${owner_run_id}."
+          fi
+
       - name: Classify trusted automation pull request
         id: trusted-automation
+        if: steps.producer-owner.outputs.owner == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -558,7 +868,9 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
 
       - name: Accept trusted automation exemption
-        if: steps.trusted-automation.outputs.trusted == 'true'
+        if: >-
+          steps.producer-owner.outputs.owner == 'true' &&
+          steps.trusted-automation.outputs.trusted == 'true'
         run: |
           if [ "${{ steps.trusted-automation.outputs.kind }}" = renovate ]; then
             {
@@ -581,7 +893,9 @@ jobs:
           fi
 
       - name: Verify evidence-bound ancestry backmerge
-        if: steps.trusted-automation.outputs.kind == 'ancestry-backmerge'
+        if: >-
+          steps.producer-owner.outputs.owner == 'true' &&
+          steps.trusted-automation.outputs.kind == 'ancestry-backmerge'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GH_TOKEN: ${{ github.token }}
@@ -633,14 +947,21 @@ jobs:
           echo "Verified an exact evidence-bound merge of current develop and main tips."
 
       - name: Verify current Copilot review and resolved findings
+        id: verify-copilot-review
         if: >-
+          steps.producer-owner.outputs.owner == 'true' &&
           steps.trusted-automation.outputs.trusted != 'true' &&
           github.event.pull_request.user.login != 'lightning-it-release-automation[bot]'
         env:
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          verification_script="${RUNNER_TEMP}/verify-current-copilot-review.sh"
+          umask 077
+          cat >"${verification_script}" <<'VERIFY_COPILOT_REVIEW'
           set -euo pipefail
 
           owner="${REPOSITORY%%/*}"
@@ -835,6 +1156,10 @@ jobs:
                 echo "Unable to determine the pull request head SHA." >&2
                 exit 1
               fi
+              if [ "${page_head_sha}" != "${EVENT_HEAD}" ]; then
+                echo "Pull request head no longer matches the producer-bound head ${EVENT_HEAD}." >&2
+                exit 1
+              fi
               if [ -n "${head_sha}" ] && [ "${head_sha}" != "${page_head_sha}" ]; then
                 echo "Pull request head changed during review verification; retrying." >&2
                 request_failed=true
@@ -927,7 +1252,8 @@ jobs:
                   pageInfo { hasNextPage endCursor }
                   nodes {
                     isResolved
-                    comments(first: 1) {
+                    comments(first: 100) {
+                      pageInfo { hasNextPage }
                       nodes { author { login } }
                     }
                   }
@@ -965,6 +1291,17 @@ jobs:
                 break
               fi
 
+              incomplete_thread_comments="$(
+                jq '[
+                  (.data.repository.pullRequest.reviewThreads.nodes // [])[]
+                  | select(.comments.pageInfo.hasNextPage == true)
+                ] | length' <<<"${response}"
+              )"
+              if [ "${incomplete_thread_comments}" -gt 0 ]; then
+                echo "Review-thread comments exceed the verified page; refusing to publish PASS." >&2
+                exit 1
+              fi
+
               page_unresolved="$(
                 jq \
                   --arg reviewer "${COPILOT_REVIEWER_LOGIN}" \
@@ -972,8 +1309,12 @@ jobs:
                     (.data.repository.pullRequest.reviewThreads.nodes // [])[]
                     | select(.isResolved == false)
                     | select(
-                        (.comments.nodes[0].author.login // "") as $login
-                        | ($login == $reviewer or $login == ($reviewer + "[bot]"))
+                        any(
+                          .comments.nodes[]?;
+                          (.author.login // "") as $login
+                          | ($login == $reviewer
+                            or $login == ($reviewer + "[bot]"))
+                        )
                       )
                   ]
                   | length' <<<"${response}"
@@ -1013,14 +1354,19 @@ jobs:
           fi
 
           echo "GitHub Copilot reviewed current head ${head_sha}; no unresolved Copilot findings remain."
+          VERIFY_COPILOT_REVIEW
+          bash "${verification_script}"
 
       - name: Publish bound neutral result
+        if: steps.producer-owner.outputs.owner == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          OWNER_RUN_ID: ${{ steps.producer-owner.outputs.owner_run_id }}
+          PRODUCER_OWNER_MODE: ${{ steps.producer-owner.outputs.owner_mode }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
           TRUSTED_KIND: ${{ steps.trusted-automation.outputs.kind }}
@@ -1042,15 +1388,129 @@ jobs:
               sleep 5
             done
           }
-          api_patch() {
-            local attempt output
+          test -f "${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          test ! -L "${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          # shellcheck source=/dev/null
+          source "${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          ro() {
+            local live_owner
+            live_owner="$(eo)"
+            test "${live_owner}" = "${OWNER_RUN_ID}"
+            test "${live_owner}" = "${GITHUB_RUN_ID}"
+          }
+          vc() {
+            local check_id="$1" external_id="$2" check_name="$3"
+            local expected_details_url="$4" recovery_evidence recovery_identity
+            local snapshot
+            recovery_evidence="$(jq -cn \
+              --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" \
+              --argjson check_run_id "${check_id}" \
+              --argjson producer_run_id "${OWNER_RUN_ID}" '
+                {schema:4,base_sha:$base,head_sha:$head,
+                  producer_run_id:$producer_run_id,
+                  invalidated_check_run_id:$check_run_id,
+                  reason:"canonical refresh invalidation"}
+              ')" || return 1
+            snapshot="$(api_read \
+              "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
+            if jq -e \
+              --arg check_name "${check_name}" \
+              --arg details_url "${expected_details_url}" \
+              --arg evidence "${evidence}" \
+              --arg external_id "${external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --argjson check_id "${check_id}" '
+                .id == $check_id
+                and .name == $check_name
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .head_sha == $head
+                and .external_id == $external_id
+                and .status == "completed"
+                and ($details_url == "" or .details_url == $details_url)
+                and .conclusion == "success"
+                and .output.summary == $evidence
+              ' <<<"${snapshot}" >/dev/null; then
+              return 0
+            fi
+            jq -e \
+              --arg check_name "${check_name}" \
+              --arg details_url "${expected_details_url}" \
+              --arg external_id "${external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg recovery_evidence "${recovery_evidence}" \
+              --argjson check_id "${check_id}" '
+                .id == $check_id
+                and .name == $check_name
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .head_sha == $head
+                and .external_id == $external_id
+                and .status == "completed"
+                and ($details_url == "" or .details_url == $details_url)
+                and (.completed_at | type) == "string"
+                and .conclusion == "failure"
+                and .output.title == "Current revision review invalidated"
+                and .output.summary == $recovery_evidence
+              ' <<<"${snapshot}" >/dev/null || return 1
+            recovery_identity="$(jq -cer \
+              '[.id,.completed_at,.external_id,.output.summary] | @json' \
+              <<<"${snapshot}")" || return 1
+            if [ "${TRUSTED_KIND}" = none ]; then
+              test -f "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
+                || return 1
+              test ! -L "${RUNNER_TEMP}/verify-current-copilot-review.sh" \
+                || return 1
+              bash "${RUNNER_TEMP}/verify-current-copilot-review.sh" >&2 \
+                || return 1
+            elif [[ "${TRUSTED_KIND}" =~ ^(shared-assets|repository-quality|renovate|ancestry-backmerge)$ ]]; then
+              echo "Deterministic ${TRUSTED_KIND} evidence was revalidated after refresh invalidation." >&2
+            else
+              return 1
+            fi
+            ro || return 1
+            snapshot="$(api_read \
+              "repos/${REPOSITORY}/check-runs/${check_id}")" || return 1
+            jq -e \
+              --arg check_name "${check_name}" \
+              --arg details_url "${expected_details_url}" \
+              --arg external_id "${external_id}" \
+              --arg head "${EVENT_HEAD}" \
+              --arg recovery_evidence "${recovery_evidence}" \
+              --arg recovery_identity "${recovery_identity}" \
+              --argjson check_id "${check_id}" '
+                .id == $check_id
+                and .name == $check_name
+                and .app.id == 15368
+                and .app.slug == "github-actions"
+                and .head_sha == $head
+                and .external_id == $external_id
+                and .status == "completed"
+                and ($details_url == "" or .details_url == $details_url)
+                and (.completed_at | type) == "string"
+                and .conclusion == "failure"
+                and .output.title == "Current revision review invalidated"
+                and .output.summary == $recovery_evidence
+                and ([.id,.completed_at,.external_id,.output.summary] | @json)
+                  == $recovery_identity
+              ' <<<"${snapshot}" >/dev/null || return 1
+          }
+          api_patch_bound() {
+            local check_id="$1" external_id="$2" check_name="$3"
+            local expected_details_url="$4" attempt output
+            shift 4
             for attempt in $(seq 1 5); do
+              ro || return 1
+              vc \
+                "${check_id}" "${external_id}" "${check_name}" \
+                "${expected_details_url}" || return 1
               if output="$(gh api --method PATCH "$@")"; then
                 printf '%s' "${output}"
                 return 0
               fi
               if [ "${attempt}" -eq 5 ]; then
-                echo "Idempotent GitHub check update failed after five attempts." >&2
+                echo "Bound GitHub check update failed after five attempts." >&2
                 return 1
               fi
               sleep 5
@@ -1059,7 +1519,10 @@ jobs:
           [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${OWNER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${TRUSTED_WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_RUN_ID}" = "${OWNER_RUN_ID}"
+          ro
           test "${DEFAULT_BRANCH}" = develop
           test "${TRUSTED_WORKFLOW_REF}" = \
             "${REPOSITORY}/.github/workflows/copilot-review.yml@refs/heads/${DEFAULT_BRANCH}"
@@ -1248,7 +1711,11 @@ jobs:
               # A new bound producer must refresh the terminal timestamp. GitHub's
               # strict status policy can otherwise retain the check as expected.
               completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              updated="$(api_patch "repos/${REPOSITORY}/check-runs/${check_id}" \
+              vc \
+                "${check_id}" "${external_id}" "${check_name}" "${check_url}"
+              updated="$(api_patch_bound \
+                "${check_id}" "${external_id}" "${check_name}" "${check_url}" \
+                "repos/${REPOSITORY}/check-runs/${check_id}" \
                 -f status=completed \
                 -f conclusion=success \
                 -f "completed_at=${completed_at}" \
@@ -1278,6 +1745,7 @@ jobs:
                 ' <<<"${updated}" >/dev/null
               return
             fi
+            ro
             if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
                 -f name="${check_name}" \
                 -f head_sha="${EVENT_HEAD}" \
@@ -1318,7 +1786,11 @@ jobs:
             fi
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${created}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
-            created="$(api_patch "repos/${REPOSITORY}/check-runs/${check_id}" \
+            vc \
+              "${check_id}" "${external_id}" "${check_name}" ''
+            created="$(api_patch_bound \
+              "${check_id}" "${external_id}" "${check_name}" '' \
+              "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f "details_url=${check_url}")"
             jq -e \
               --arg evidence "${evidence}" \
@@ -1348,6 +1820,7 @@ jobs:
     if: >-
       always() &&
       needs['verify-current-revision-policy'].result == 'success' &&
+      needs['verify-current-revision-policy'].outputs.producer_owner == 'true' &&
       needs['verify-current-revision-policy'].outputs.trusted_kind != 'renovate'
     permissions:
       actions: write
@@ -1356,6 +1829,8 @@ jobs:
     timeout-minutes: 5
 
     steps:
+      - *materialize-producer-owner-guard
+
       - name: Dispatch the protected re-evaluation helper from the exact base
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -1366,13 +1841,30 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          OWNER_RUN_ID: >-
+            ${{ needs.verify-current-revision-policy.outputs.producer_run_id }}
+          PRODUCER_OWNER_MODE: >-
+            ${{ needs.verify-current-revision-policy.outputs.producer_owner_mode }}
         run: |
           set -euo pipefail
+          EVENT_BASE="${EXPECTED_BASE}"
+          EVENT_HEAD="${EXPECTED_HEAD}"
+          EVENT_HEAD_REF="${EXPECTED_HEAD_REF}"
+          export EVENT_BASE EVENT_HEAD EVENT_HEAD_REF
+          owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
+          # shellcheck source=/dev/null
+          source "${owner_guard}"
           [[ "${BASE_REF}" =~ ^(develop|main)$ ]]
           [[ "${PRODUCER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           [[ "${PRODUCER_RUN_ATTEMPT}" =~ ^(1|2)$ ]]
+          [[ "${OWNER_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"
           test "${GITHUB_REF_PROTECTED}" = true
+          live_owner="$(eo)" || exit 1
+          test "${live_owner}" = "${OWNER_RUN_ID}"
+          test "${live_owner}" = "${PRODUCER_RUN_ID}"
+          test "${live_owner}" = "${GITHUB_RUN_ID}"
           gh api --method POST \
             "repos/${REPOSITORY}/actions/workflows/current-revision-rerun.yml/dispatches" \
             -f "ref=${BASE_REF}" \

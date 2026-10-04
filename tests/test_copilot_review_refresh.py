@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COPILOT_WORKFLOW = ROOT / ".github/workflows/copilot-review.yml"
 REFRESH_WORKFLOW = ROOT / ".github/workflows/copilot-review-refresh.yml"
 RERUN_WORKFLOW = ROOT / ".github/workflows/current-revision-rerun.yml"
-TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+TEST_TOOL_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
   while [ "${1:-}" != gh ]; do
     [ "$#" -gt 0 ] || return 98
@@ -22,6 +22,844 @@ FAKE_TIMEOUT_PASSTHROUGH = r'''timeout() {
 
 
 class CopilotReviewRefreshTests(unittest.TestCase):
+    def _run_bash(self, script, env):
+        return subprocess.run([self._test_tool("bash"), "-c", script],
+            text=True, capture_output=True, check=False,
+            env={"PATH": TEST_TOOL_PATH, **env})
+    def test_serialization(self):
+        group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
+        block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
+        self.assertIn(block, COPILOT_WORKFLOW.read_text(encoding="utf-8"))
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        expression = refresh.split("group: >-", 1)[1].split("cancel-in-progress", 1)[0]
+        for value in ("format('current-revision-{0}-pr-{1}'", "format('current-revision-quarantine-{0}'", "github.run_id", "cancel-in-progress: false", "queue: max"):
+            self.assertIn(value, expression if value.startswith(("format", "github")) else refresh)
+        def lane(event, actor, login, association="NONE", sender=None, action="edited", run=1):
+            trusted = event in ("pull_request_review", "pull_request_review_comment") and ((actor in ("Copilot", "copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]") and login == "copilot-pull-request-reviewer[bot]") or actor == login == "litroc" or (association in ("COLLABORATOR", "MEMBER", "OWNER") and (sender or actor) == actor and (action in ("dismissed", "deleted") or login == actor)))
+            return "current-revision-1-pr-737" if trusted else f"current-revision-quarantine-{run}"
+        for event in ("pull_request_review", "pull_request_review_comment"):
+            for args in (("Copilot", "copilot-pull-request-reviewer[bot]"), ("litroc", "litroc"), ("maintainer", "maintainer", "MEMBER", "maintainer")):
+                self.assertEqual("current-revision-1-pr-737", lane(event, *args))
+            self.assertNotEqual(lane(event, "mallory", "other", run=8), lane(event, "mallory", "other", run=9))
+    @staticmethod
+    def _guards():
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
+        guards = []
+        cursor = 0
+        while marker in workflow[cursor:]:
+            start = workflow.index(marker, cursor) + len(marker)
+            end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
+            guards.append(workflow[start:end])
+            cursor = end + 1
+        if len(guards) != 1: raise AssertionError("want one anchored owner guard")
+        if workflow.count("*materialize-producer-owner-guard") != 1:
+            raise AssertionError("dispatch must reuse anchored guard")
+        return [guards[0], guards[0], CopilotReviewRefreshTests._refresh_guard()]
+    @classmethod
+    def _guard(cls):
+        return cls._guards()[0]
+    @staticmethod
+    def _refresh_guard():
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = "          cat >\"${owner_guard}\" <<'PRODUCER_OWNER_GUARD'\n"
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
+        return workflow[start:end]
+    def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
+        event_ref="feature/li179", fpulls=None,
+        runs2=None, cond=False, mode="copilot",
+        add_req=True):
+        njobs, ojobs = {}, {}
+        for run_id, records in jobs.items():
+            njobs[run_id] = list(records)
+            if add_req and not any(record.get("name") ==
+                    "Request Copilot review for current revision" for record in records):
+                req_attempt = int(records[0].get("run_attempt", 1))
+                njobs[run_id].append(self._req(run_id, req_attempt))
+            orecords = (list(first_jobs[run_id]) if first_jobs
+                is not None and run_id in first_jobs else
+                [dict(record, run_attempt=1) for record in records])
+            if add_req and not any(record.get("name") ==
+                    "Request Copilot review for current revision" for record in orecords):
+                orecords.append(self._req(run_id, 1))
+            ojobs[run_id] = orecords
+        bash = self._test_tool("bash")
+        jq = self._test_tool("jq")
+        job_cases = "".join(f'{i}) [ "${{run_attempt}}" -eq 1 ] && printf %s '
+            f'"${{JOBS_{i}_ATTEMPT_1}}" || printf %s "${{JOBS_{i}}}" ;;'
+            for i in sorted(njobs))
+        pull_cases = "".join(f'{i}) printf %s "${{PULL_{i}}}" ;;'
+                             for i in sorted(fpulls or {}))
+        script = r'''set -euo pipefail
+sleep() { :; }
+gh() {
+  local argument endpoint='' reads=0 run_id run_attempt
+  for argument in "$@"; do case "${argument}" in repos/*) endpoint="${argument}";; esac; done
+  if [[ "${endpoint}" == *'/actions/runs?'* ]]; then
+    [ ! -f "${COUNTER_FILE}" ] || reads="$(cat "${COUNTER_FILE}")"
+    printf %s "$((reads + 1))" >"${COUNTER_FILE}"
+    [ "${reads}" -eq 0 ] && printf %s "${RUN_PAGES}" || printf %s "${RUN_PAGES_SECOND}"
+  elif [[ "${endpoint}" =~ /actions/runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then
+    run_id="${BASH_REMATCH[1]}"; run_attempt="${BASH_REMATCH[2]}"
+    case "${run_id}" in __JOB_CASES__ *) return 92;; esac
+  elif [[ "${endpoint}" =~ /pulls/([0-9]+)$ ]]; then
+    case "${BASH_REMATCH[1]}" in __PULL_CASES__ *) return 94;; esac
+  else return 93; fi
+}
+'''.replace("__JOB_CASES__", job_cases).replace("__PULL_CASES__", pull_cases)
+        script += guard or self._guard()
+        script += (
+            '\nif owner="$(eo)"; then printf %s "${owner}"; else exit 71; fi\n'
+            if cond
+            else "\neo\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
+                "REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
+                "EVENT_BASE": "b" * 40, "EVENT_HEAD": "c" * 40,
+                "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
+                "COUNTER_FILE": str(Path(tmp) / "reads"),
+                "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
+                "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}])}
+            def pages(records):
+                return json.dumps([{"jobs": [record]} for record in records]
+                                  or [{"jobs": []}])
+            env.update({f"JOBS_{i}": pages(v) for i, v in njobs.items()})
+            env.update({f"PULL_{i}": json.dumps(v)
+                                for i, v in (fpulls or {}).items()})
+            env.update({f"JOBS_{i}_ATTEMPT_1": pages(v)
+                                for i, v in ojobs.items()})
+            return subprocess.run([bash, "-c", script], env=env,
+                text=True, capture_output=True, check=False)
+    def _owner(self, want, **kwargs):
+        res = self._run_guard(**kwargs)
+        if want is None:
+            self.assertNotEqual(0, res.returncode)
+        else:
+            self.assertEqual(0, res.returncode, res.stderr)
+            self.assertEqual(want, res.stdout)
+    @staticmethod
+    def _run(run_id, attempt=1):
+        repo = "lightning-it/shared-assets-lit"
+        return {"id": run_id, "event": "pull_request_target",
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate", "run_attempt": attempt,
+            "status": "in_progress", "conclusion": None,
+            "head_branch": "feature/li179", "head_sha": "c" * 40,
+            "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
+            "pull_requests": [{"number": 2334, "base": {"sha": "b" * 40},
+                "head": {"sha": "c" * 40, "ref": "feature/li179"}}]}
+    @staticmethod
+    def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
+        return {"id": run_id * 10, "name": "Verify current revision policy",
+            "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
+            "status": status, "conclusion": conclusion}
+    @staticmethod
+    def _req(run_id, attempt=1, *, status="completed", conclusion="success"):
+        return {
+            "id": run_id * 10 + 1,
+            "name": "Request Copilot review for current revision",
+            "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
+            "status": status, "conclusion": conclusion}
+    def test_owner_first(self):
+        self._owner("101", runs=[self._run(101), self._run(102)],
+                           jobs={101: [self._job(101)], 102: [self._job(102)]})
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        dispatch = workflow.split("\n  request-protected-verifier-reevaluation:", 1)[1]
+        self.assertIn("if: steps.producer-owner.outputs.owner == 'true'", publish)
+        self.assertIn("needs['verify-current-revision-policy'].outputs.producer_owner "
+                      "== 'true'", dispatch)
+    def test_owner_queued(self):
+        owner = self._run(101)
+        queued = self._run(102)
+        queued.update(status="queued", conclusion=None)
+        o_jobs = [self._job(101), self._req(101)]
+        started = self._run(102)
+        q_first = self._run(100)
+        q_first.update(status="queued", conclusion=None)
+        s_jobs = [self._job(102), self._req(102)]
+        wrong_job = dict(self._job(102), run_id=999)
+        cases = (
+            ([owner, queued], {101: o_jobs, 102: []}, "101"),
+            ([owner, started], {101: o_jobs, 102: s_jobs}, "101"),
+            ([owner, started], {101: o_jobs, 102: []}, None),
+            ([owner, queued], {101: o_jobs, 102: [wrong_job]}, None),
+            ([q_first, owner], {100: [], 101: o_jobs}, None),
+        )
+        for runs, jobs, want in cases:
+            self._owner(
+                want, runs=runs, jobs=jobs,
+                add_req=False,
+            )
+    def test_owner_attempts(self):
+        self._owner(
+            "101",
+            runs=[self._run(101), self._run(102, attempt=2)],
+            jobs={
+                101: [self._job(101)],
+                102: [self._job(102, attempt=2)],
+            },
+        )
+        for runs, records in (
+            ([self._run(101)] * 2, [self._job(101)]),
+            ([self._run(101)], [self._job(101)] * 2),
+            ([self._run(101)], [self._job(101), *[self._req(101)] * 2]),
+        ):
+            self._owner(None, runs=runs, jobs={101: records})
+        skip_req = self._req(101)
+        skip_req.update(status="completed", conclusion="skipped")
+        self._owner(
+            "101",
+            runs=[self._run(101)],
+            jobs={101: [self._job(101), skip_req]},
+            mode="deterministic",
+        )
+    def test_job_ids(self):
+        cases = (
+            (self._run(101), [self._job(101), dict(self._req(101), id=1010)], None),
+            (self._run(101, attempt=2), [self._job(101, 2), self._req(101, 2)],
+             {101: [self._req(101), dict(self._job(101), id=1011)]}),
+        )
+        for guard in self._guards():
+            for run, jobs, attempt_one in cases:
+                self._owner(
+                    None,
+                    guard=guard, runs=[run], jobs={101: jobs}, first_jobs=attempt_one,
+                    add_req=False,
+                    cond=True,
+                )
+    def test_job_tuples(self):
+        for guard in self._guards():
+            good=lambda a:[self._job(101,a),self._req(101,a)]
+            for c in ({"run_id":999},{"run_attempt":9},{"head_sha":"d"*40}):
+                for orig in (False,True):
+                    a=1 if orig else 2
+                    m=[*good(a),dict(self._job(101,a),id=2020,**c)]
+                    self._owner(None,guard=guard,runs=[self._run(101,2)],
+                        jobs={101:good(2) if orig else m},
+                        first_jobs={101:m if orig else good(1)},
+                        add_req=False,cond=True)
+    def test_owner_attempt3(self):
+        guards = self._guards()
+        self.assertEqual(3, len(guards))
+        for index, guard in enumerate(guards):
+            with self.subTest(guard=index):
+                self._owner(None, guard=guard,
+                    runs=[self._run(101, attempt=3), self._run(102)],
+                    jobs={101: [self._job(101, attempt=3)], 102: [self._job(102)]},
+                    first_jobs={101: [self._job(101), self._req(101)]},
+                    cond=True)
+    def test_pr_tuple(self):
+        original = self._run(101)
+        tuple = original["pull_requests"][0]
+        bad_runs = []
+        for field in (
+            "event",
+            "path",
+            "name",
+            "head_branch",
+            "head_sha",
+            "repository",
+            "head_repository",
+        ):
+            malformed = json.loads(json.dumps(original))
+            malformed[field] = None
+            bad_runs.append(malformed)
+        for pull_requests in (None, [], [tuple, tuple],
+                              [{**tuple, "number": None}],
+                              [{**tuple, "base": {"sha": None}}],
+                              [{**tuple, "head": {"sha": None,
+                                                         "ref": None}}]):
+            malformed = json.loads(json.dumps(original))
+            malformed["pull_requests"] = pull_requests
+            bad_runs.append(malformed)
+        missing = json.loads(json.dumps(original))
+        del missing["pull_requests"]
+        bad_runs.append(missing)
+        for key, value in (
+            ("number", 123.5),
+            ("number", 999),
+            ("base_sha", "z" * 40),
+            ("head_sha", "z" * 40),
+            ("head_mismatch", "d" * 40),
+            ("ref_mismatch", "feature/renamed"),
+        ):
+            malformed = json.loads(json.dumps(original))
+            association = malformed["pull_requests"][0]
+            target = (association if key == "number" else
+                      association["base"] if key == "base_sha" else
+                      association["head"])
+            target[{"number": "number", "base_sha": "sha",
+                    "ref_mismatch": "ref"}.get(key, "sha")] = value
+            bad_runs.append(malformed)
+        for field, value in (("id", 101.5), ("run_attempt", 1.5)):
+            malformed = json.loads(json.dumps(original))
+            malformed[field] = value
+            bad_runs.append(malformed)
+        for guard in self._guards():
+            for malformed in bad_runs:
+                with self.subTest(guard=guard[:20], malformed=malformed):
+                    self._owner(
+                        None,
+                        guard=guard,
+                        runs=[malformed, self._run(102)],
+                        jobs={101: [self._job(101)],
+                              102: [self._job(102)]},
+                        cond=True,
+                    )
+    def test_foreign_pr(self):
+        guards = self._guards()
+        foreign = self._run(101)
+        foreign["pull_requests"][0]["number"] = 999
+        foreign["pull_requests"][0]["base"]["sha"] = "d" * 40
+        fpull = {
+            "number": 999,
+            "base": {
+                "sha": "d" * 40,
+                "repo": {"full_name": "lightning-it/shared-assets-lit"},
+            },
+            "head": {
+                "sha": "c" * 40,
+                "ref": "feature/li179",
+                "repo": {"full_name": "lightning-it/shared-assets-lit"},
+            },
+        }
+        for gidx, guard in enumerate(guards):
+            with self.subTest(guard=gidx):
+                self._owner("102", guard=guard,
+                    runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
+                    fpulls={999: fpull}, cond=True)
+                bad = json.loads(json.dumps(fpull))
+                bad["head"]["sha"] = "e" * 40
+                self._owner(None, guard=guard,
+                    runs=[foreign, self._run(102)], jobs={102: [self._job(102)]},
+                    fpulls={999: bad}, cond=True)
+    def test_owner_rename(self):
+        guards = self._guards()
+        original = self._run(101)
+        original["head_branch"] = "feature/original"
+        original["pull_requests"][0]["head"]["ref"] = "feature/original"
+        renamed = self._run(102)
+        renamed["head_branch"] = "feature/renamed"
+        renamed["pull_requests"][0]["head"]["ref"] = "feature/renamed"
+        for gidx, guard in enumerate(guards):
+            with self.subTest(guard=gidx):
+                self._owner("101", guard=guard,
+                    event_ref="feature/renamed", runs=[original, renamed],
+                    jobs={101: [self._job(101)], 102: [self._job(102)]},
+                    cond=True)
+    def test_owner_drift(self):
+        malformed = self._run(101)
+        malformed["run_attempt"] = "1"
+        self._owner(None, runs=[malformed], jobs={101: [self._job(101)]},
+                           cond=True)
+        changed = self._run_guard(runs=[self._run(102)],
+            runs2=[self._run(101), self._run(102)],
+            jobs={101: [self._job(101)], 102: [self._job(102)]}, cond=True)
+        self.assertNotEqual(0, changed.returncode)
+        self.assertIn("changed between stable reads", changed.stderr)
+        self._owner(None, runs=[self._run(101), self._run(102)],
+            jobs={101: [self._req(101)], 102: [self._job(102)]},
+            cond=True)
+    def test_owner_draft(self):
+        draft_job = self._job(101, status="completed", conclusion="skipped")
+        done_job = self._job(101, status="completed", conclusion="failure")
+        sync_req = self._req(101, status="completed", conclusion="skipped")
+        rreq = self._req(102, status="in_progress", conclusion=None)
+        sync_pol = self._job(37155519577, status="completed", conclusion="failure")
+        sync_req2 = self._req(37155519577, status="completed", conclusion="skipped")
+        ready_pol = self._job(37156339900, status="completed", conclusion="failure")
+        ready_req = self._req(37156339900, status="completed", conclusion="success")
+        runs = [self._run(101), self._run(102)]
+        cases = (
+            ("102", runs, {101: [draft_job], 102: [self._job(102)]}),
+            ("101", runs, {101: [done_job], 102: [self._job(102)]}),
+            ("102", runs, {101: [done_job, sync_req],
+                                  102: [self._job(102), rreq]}),
+            ("37156339900", [self._run(37155519577), self._run(37156339900)],
+             {37155519577: [sync_pol, sync_req2],
+              37156339900: [ready_pol, ready_req]}),
+            ("101", [self._run(101)], {101: [done_job]}),
+        )
+        for want, runs, jobs in cases:
+            self._owner(want, runs=runs, jobs=jobs, cond=True)
+        for conclusion in ("", "unknown", "skipped ", "SUCCESS"):
+            with self.subTest(conclusion=conclusion):
+                unk_job = self._job(101, status="completed", conclusion=conclusion)
+                self._owner(None, runs=runs,
+                    jobs={101: [unk_job], 102: [self._job(102)]},
+                    cond=True)
+        bad_job = self._job(101, status="completed", conclusion={"bad": True})
+        self._owner(None, runs=runs,
+            jobs={101: [bad_job], 102: [self._job(102)]},
+            cond=True)
+    def test_owner_original(self):
+        skip_req = self._req(101)
+        skip_req.update(status="completed", conclusion="skipped")
+        self._owner("101", runs=[self._run(101)],
+            jobs={101: [self._job(101), skip_req]},
+            mode="verification", cond=True)
+        rerun_pol = self._job(101, attempt=2)
+        rerun_req = self._req(101, attempt=2)
+        rerun_req.update(status="completed", conclusion="skipped")
+        self._owner("101",
+            runs=[self._run(101, attempt=2), self._run(102)],
+            jobs={101: [rerun_pol, rerun_req], 102: [self._job(102)]},
+            first_jobs={101: [self._job(101), self._req(101)]},
+            cond=True)
+    def test_helper_owner(self):
+        guards = self._guards()
+        self.assertEqual(3, len(guards))
+        self.assertTrue(all(guard == guards[0] for guard in guards))
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        dispatch = workflow.split("      - name: Dispatch the protected re-evaluation helper ", 1)[1]
+        revalidation = 'live_owner="$(eo)" || exit 1'
+        mutation = "actions/workflows/current-revision-rerun.yml/dispatches"
+        for fragment in (revalidation,
+                         'test "${live_owner}" = "${OWNER_RUN_ID}"',
+                         'test "${live_owner}" = "${PRODUCER_RUN_ID}"'):
+            self.assertIn(fragment, dispatch)
+        self.assertLess(dispatch.index(revalidation), dispatch.index(mutation))
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("sort_by(.run_number)", refresh)
+        rerun = '"repos/${REPOSITORY}/actions/runs/${owner_run_id}/rerun"'
+        for fragment in (rerun, 'test "${live_owner}" = "${owner_run_id}"',
+                         "revalidate_refresh_state", 'and .run_attempt == 1'):
+            self.assertIn(fragment, refresh)
+        retry_budget = 'if [ "${run_attempt}" -ne 1 ]; then'
+        self.assertIn(retry_budget, refresh)
+        self.assertLess(refresh.rindex("revalidate_refresh_state"), refresh.index(rerun))
+        self.assertLess(refresh.index(retry_budget), refresh.index(rerun))
+        rel_route = "Release-App review evidence is owned by its dedicated producer"
+        self.assertIn(rel_route, refresh)
+        owner_guard = 'owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"'
+        self.assertLess(refresh.index(rel_route), refresh.index(owner_guard))
+        for fragment, text in (
+            ("producer_owner_mode: ${{ steps.producer-owner.outputs.owner_mode }}", workflow),
+            ("PRODUCER_OWNER_MODE: ${{ steps.producer-owner.outputs.owner_mode }}", publish),
+            ("needs.verify-current-revision-policy.outputs.producer_owner_mode", dispatch),
+        ):
+            self.assertIn(fragment, text)
+    def test_neutral_binding(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.split("      - name: Publish bound neutral result\n", 1)[
+            1
+        ]
+        self.assertIn("ro", publish)
+        self.assertIn("vc", publish)
+        self.assertNotIn("api_patch()", publish)
+        self.assertIn("api_patch_bound", publish)
+        self.assertIn('and .external_id == $external_id', publish)
+        recovery = (
+            "{schema:4,base_sha:$base,head_sha:$head,\n"
+            "                  producer_run_id:$producer_run_id,\n"
+            "                  invalidated_check_run_id:$check_run_id,\n"
+            '                  reason:"canonical refresh invalidation"}'
+        )
+        self.assertIn(recovery, workflow)
+        self.assertIn(
+            recovery,
+            REFRESH_WORKFLOW.read_text(encoding="utf-8"),
+        )
+    @staticmethod
+    def _pub(name):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.index("      - name: Publish bound neutral result\n")
+        marker = f"          {name}() {{\n"
+        start = workflow.index(marker, publish)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        return textwrap.dedent(workflow[start:end])
+    @staticmethod
+    def _rfn(name):
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        marker = f"          {name}() {{\n"
+        start = workflow.index(marker)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        return textwrap.dedent(workflow[start:end])
+    @staticmethod
+    def _review_script():
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        marker = (
+            '          cat >"${verification_script}" '
+            "<<'VERIFY_COPILOT_REVIEW'\n"
+        )
+        start = workflow.index(marker) + len(marker)
+        end = workflow.index("\n          VERIFY_COPILOT_REVIEW", start)
+        return textwrap.dedent(workflow[start:end])
+    def test_successor_head(self):
+        bhead = "b" * 40
+        def evaluate(lhead):
+            empty = {"pageInfo": {"hasNextPage": False, "endCursor": None},
+                     "nodes": []}
+            review = {"id": "REVIEW_1",
+                      "author": {"login": "copilot-pull-request-reviewer"},
+                      "commit": {"oid": lhead}, "state": "COMMENTED"}
+            pages = (
+                {"errors": [], "data": {"repository": {"pullRequest": {
+                    "headRefOid": lhead, "reviews": {
+                        "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+                        "nodes": [review]}}}}},
+                {"errors": [], "data": {"node": {"body": "Review complete.",
+                    "commit": {"oid": lhead},
+                    "pullRequest": {"headRefOid": lhead}, "comments": empty}}},
+                {"errors": [], "data": {"repository": {"pullRequest": {
+                    "headRefOid": lhead, "reviewThreads": empty}}}},
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                script = r'''set -euo pipefail
+sleep() { :; }
+gh() {
+  local calls=0
+  [ ! -f "${CALL_COUNTER}" ] || calls="$(cat "${CALL_COUNTER}")"
+  printf %s "$((calls + 1))" >"${CALL_COUNTER}"
+  case "${calls}" in 0) printf %s "${PAGE_0}";; 1) printf %s "${PAGE_1}";; 2) printf %s "${PAGE_2}";; *) return 91;; esac
+}
+''' + self._review_script()
+                env = {"PATH": TEST_TOOL_PATH,
+                       "CALL_COUNTER": str(Path(tmp) / "calls"),
+                       "COPILOT_REVIEWER_LOGIN": "copilot-pull-request-reviewer",
+                       "EVENT_HEAD": bhead,
+                       "NO_FILES_REVIEW_MARKER": "was not able to review any files",
+                       "PR_NUMBER": "123", "QUOTA_EXCEEDED_MARKER": "quota exceeded",
+                       "QUOTA_EXHAUSTED_MARKER": "quota exhausted",
+                       "REPOSITORY": "lightning-it/.github",
+                       "SUPPRESSED_COMMENTS_MARKER": "suppressed comments",
+                       "UNABLE_REVIEW_MARKER": "unable to review this pull request"}
+                env.update({f"PAGE_{index}": json.dumps(page)
+                            for index, page in enumerate(pages)})
+                return self._run_bash(script, env)
+        current = evaluate(bhead)
+        self.assertEqual(0, current.returncode, current.stderr)
+        successor = evaluate("c" * 40)
+        self.assertNotEqual(
+            0,
+            successor.returncode,
+            f"stdout={successor.stdout!r} stderr={successor.stderr!r}",
+        )
+        self.assertIn("producer-bound head", successor.stderr)
+    def test_refresh_binding(self):
+        want = {
+            "id": 42, "name": "Current revision review",
+            "app": {"id": 15368, "slug": "github-actions"},
+            "head_sha": "b" * 40, "external_id": "bound-owner-77",
+            "status": "completed", "conclusion": "success",
+            "details_url": "https://github.example/runs/42",
+            "completed_at": "2026-10-03T12:00:00Z",
+            "output": {"title": "passed", "summary": "evidence"}}
+        def evaluate(
+            live, owners
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                script = r'''set -euo pipefail
+eo() {
+  local reads=0
+  [ ! -f "${OWNER_COUNTER}" ] || reads="$(cat "${OWNER_COUNTER}")"
+  printf %s "$((reads + 1))" >"${OWNER_COUNTER}"
+  [ "${reads}" -eq 0 ] && printf %s "${OWNER_BEFORE}" || printf %s "${OWNER_AFTER}"
+}
+validate_live_pr_tuple() { :; }
+read_refresh_checks() { printf %s "${LIVE}"; }
+''' + self._rfn("revalidate_refresh_state") + \
+                    '\nrevalidate_refresh_state 1 "${EXPECTED}"\n'
+                return self._run_bash(script, {
+                    "EXPECTED": json.dumps(want, separators=(",", ":")),
+                    "LIVE": json.dumps(live, separators=(",", ":")),
+                    "OWNER_AFTER": str(owners[1]), "OWNER_BEFORE": str(owners[0]),
+                    "OWNER_COUNTER": str(Path(tmp) / "owners"),
+                    "owner_run_id": "77"})
+        stable = evaluate([want], (77, 77))
+        self.assertEqual(0, stable.returncode, stable.stderr)
+        for live, owners in (([{**want, "external_id": "foreign"}], (77, 77)),
+                             ([want, want], (77, 77)),
+                             ([want], (77, 78))):
+            self.assertNotEqual(0, evaluate(live, owners).returncode)
+    def test_attempt2_rerun(self):
+        script = "\n".join(
+            (
+                "set -euo pipefail",
+                self._rfn("assert_refresh_rerun_budget"),
+                'assert_refresh_rerun_budget "${RUN}"',
+            )
+        )
+        def evaluate(attempt):
+            return self._run_bash(script, {
+                "RUN": json.dumps({"id": 77, "status": "completed",
+                                   "run_attempt": attempt}, separators=(",", ":")),
+                "owner_run_id": "77"})
+        self.assertEqual(0, evaluate(1).returncode)
+        self.assertNotEqual(0, evaluate(2).returncode)
+    def test_queued_refresh(self):
+        functions = (self._rfn("assert_refresh_rerun_budget")
+                     + self._rfn("rerun_owner_if_review_current"))
+        def execute(state):
+            with tempfile.TemporaryDirectory() as tmp:
+                lfile = Path(tmp) / "log"
+                script = r'''set -euo pipefail
+revalidate_refresh_state() { printf S >>"${LOG_FILE}"; }
+validate_refresh_owner_run() { printf O >>"${LOG_FILE}"; }
+read_refresh_review_state() { printf V >>"${LOG_FILE}"; printf %s "${STATE}"; }
+gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; printf '{}'; else printf G >>"${LOG_FILE}"; printf %s "${RUN}"; fi; }
+''' + functions + "\nrerun_owner_if_review_current\n"
+                env = {"PATH": TEST_TOOL_PATH, "LOG_FILE": str(lfile),
+                       "REPOSITORY": "lightning-it/.github",
+                       "RUN": json.dumps({"id": 77, "status": "completed",
+                                          "conclusion": "failure", "run_attempt": 1}),
+                       "STATE": json.dumps(state, separators=(",", ":")),
+                       "owner_run_id": "77", "refresh_expected_count": "0",
+                       "refresh_expected_snapshot": "null"}
+                res = self._run_bash(script, env)
+                return res.returncode, lfile.read_text() if lfile.exists() else ""
+        unresolved = {"event_current": True, "incomplete": 0, "unresolved": 1}
+        resolved = {"event_current": True, "incomplete": 0, "unresolved": 0}
+        superseded = {**resolved, "event_current": False}
+        for name, state, want_log in (
+            ("producer timeout before resolution", unresolved, "SGOV"),
+            ("resolution before lane acquire", resolved, "SGOVSGP"),
+            ("stale event superseded", superseded, "SGOV"),
+        ):
+            with self.subTest(name=name):
+                returncode, log = execute(state)
+                self.assertEqual(0, returncode)
+                self.assertEqual(want_log, log)
+        # Only the later resolved lane turn may consume attempt two.
+        self.assertEqual((0, "SGOV"), execute(unresolved))
+        self.assertEqual((0, "SGOVSGP"), execute(resolved))
+    def test_superseded_event(self):
+        function = self._rfn("invalidate_refresh_check")
+        def execute(state, reason):
+            with tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / "mutations"
+                script = r'''set -euo pipefail
+read_refresh_review_state() { printf %s "${STATE}"; }
+revalidate_refresh_state() { printf R >>"${LOG}"; }
+gh() { printf P >>"${LOG}"; return 97; }
+''' + function + '\ninvalidate_refresh_check "${REASON}"\n'
+                res = self._run_bash(script, {"LOG": str(log),
+                    "REASON": reason, "STATE": json.dumps(state)})
+                self.assertEqual(0, res.returncode, res.stderr)
+                self.assertFalse(log.exists(), "stale evidence reached PATCH path")
+        execute({"event_current": False, "incomplete": 0, "unresolved": 0},
+                "binding")
+        execute({"event_current": True, "incomplete": 0, "unresolved": 0},
+                "unresolved")
+    def test_event_freshness(self):
+        head = "c" * 40
+        pull_url = "https://api.github.com/repos/lightning-it/.github/pulls/737"
+        def page(ids=(), more=False, cursor=None, live=head, errors=None):
+            nodes = [{"id": "T1", "isResolved": True,
+                "comments": {"pageInfo": {"hasNextPage": False}, "nodes": [
+                    {"databaseId": value, "author": {"login": "litroc"},
+                     "pullRequestReview": {"commit": {"oid": head}}} for value in ids]}}] if ids else []
+            res = {"data": {"repository": {"pullRequest": {"headRefOid": live,
+                "reviewThreads": {"nodes": nodes, "pageInfo": {
+                    "hasNextPage": more, "endCursor": cursor}}}}}}
+            if errors is not None: res["errors"] = errors
+            return res
+        event = {"action": "submitted", "review": {"id": 42,
+                 "user": {"login": "copilot-pull-request-reviewer[bot]"},
+                 "author_association": "NONE", "commit_id": head,
+                 "body": "finding", "state": "commented",
+                 "submitted_at": "2026-10-04T04:45:53Z",
+                 "pull_request_url": pull_url}}
+        live = {**event["review"], "state": "COMMENTED"}
+        def evaluate(event_record, live_record,
+                     event_name="pull_request_review", pages=None, fail=False):
+            with tempfile.TemporaryDirectory() as tmp:
+                epath = Path(tmp) / "event.json"
+                epath.write_text(json.dumps(event_record), encoding="utf-8")
+                script = ('set -euo pipefail\noa() { [ "${COMMENT_FAIL}" != true ] || return 97; '
+                          'if [ "${1}" = graphql ]; then local n=0; [ ! -f "${PAGE_COUNTER}" ] || n="$(cat "${PAGE_COUNTER}")"; '
+                          'printf %s "$((n+1))" >"${PAGE_COUNTER}"; jq -ce --argjson n "${n}" \'.[$n]\' <<<"${COMMENT_PAGES}"; '
+                          'else printf %s "${LIVE_RECORD}"; fi; }\n'
+                          + self._rfn("refresh_event_record_state")
+                          + self._rfn("read_refresh_review_state")
+                          + "\nrefresh_event_record_state\n")
+                env = {"PATH": TEST_TOOL_PATH, "EVENT_NAME": event_name,
+                       "GITHUB_API_URL": "https://api.github.com",
+                       "GITHUB_EVENT_PATH": str(epath), "HEAD_SHA": head,
+                       "LIVE_RECORD": json.dumps(live_record),
+                       "COMMENT_FAIL": str(fail).lower(),
+                       "PAGE_COUNTER": str(Path(tmp) / "pages"),
+                       "COMMENT_PAGES": json.dumps(pages if pages is not None else [page()]),
+                       "PR_NUMBER": "737",
+                       "REPOSITORY": "lightning-it/.github"}
+                return self._run_bash(script, env)
+        current = evaluate(event, live)
+        self.assertEqual(0, current.returncode, current.stderr)
+        self.assertEqual("current", current.stdout, current.stderr)
+        edited = {**live, "body": "newer evidence"}
+        self.assertEqual("superseded", evaluate(event, edited).stdout)
+        malformed = json.loads(json.dumps(event))
+        malformed["review"]["id"] = 42.5
+        self.assertNotEqual(0, evaluate(malformed, live).returncode)
+        comment = {"id": 43, "user": {"login": "litroc"},
+                   "author_association": "MEMBER", "commit_id": head,
+                   "body": "resolved", "path": "README.md",
+                   "created_at": "2026-10-04T04:00:00Z",
+                   "updated_at": "2026-10-04T04:45:53Z",
+                   "pull_request_url": pull_url}
+        comment_event = {"action": "edited", "comment": comment}
+        current = evaluate(comment_event, comment, "pull_request_review_comment")
+        self.assertEqual("current", current.stdout)
+        self.assertEqual("superseded", evaluate(
+            comment_event, {**comment, "body": "later"},
+            "pull_request_review_comment").stdout)
+        deleted = {"action": "deleted", "comment": comment}
+        absent = evaluate(deleted, {}, "pull_request_review_comment", [page()])
+        self.assertEqual("current", absent.stdout, f"{absent.returncode}: {absent.stderr}")
+        self.assertEqual("superseded", evaluate(
+            deleted, {}, "pull_request_review_comment", [page([43])]).stdout)
+        bad = ([{"bad": True}], [page(more=True)],
+               [page(more=True, cursor="C1"), page(more=True, cursor="C1")],
+               [page(more=True, cursor=f"C{i}") for i in range(10)])
+        for pages in bad:
+            self.assertNotEqual(0, evaluate(
+                deleted, {}, "pull_request_review_comment", pages).returncode)
+        self.assertNotEqual(0, evaluate(
+            deleted, {}, "pull_request_review_comment", [], True).returncode)
+    def test_thread_pages(self):
+        head = "c" * 40
+        def thread(index, resolved=True, oid=head):
+            comments = [] if resolved else [{"databaseId": index + 1,
+                "author": {"login": "copilot-pull-request-reviewer"},
+                "pullRequestReview": {"commit": {"oid": oid}}}]
+            return {"id": f"T{index}", "isResolved": resolved,
+                    "comments": {"pageInfo": {"hasNextPage": False}, "nodes": comments}}
+        def page(nodes=(), more=False, cursor=None, live=head, errors=None):
+            res = {"data": {"repository": {"pullRequest": {"headRefOid": live,
+                "reviewThreads": {"nodes": list(nodes), "pageInfo": {
+                    "hasNextPage": more, "endCursor": cursor}}}}}}
+            if errors is not None: res["errors"] = errors
+            return res
+        def run(pages, fail=-1, state="current"):
+            with tempfile.TemporaryDirectory() as tmp:
+                script = r'''set -euo pipefail
+validate_live_pr_tuple() { :; }
+refresh_event_record_state() { local n=0; [ ! -f "${EC}" ] || n="$(cat "${EC}")"; printf %s "$((n + 1))" >"${EC}"; [ "${n}" -eq 0 ] && printf current || printf %s "${FINAL_EVENT}"; }
+oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))" >"${PC}"; [ "${n}" -ne "${FAIL}" ] || return 97; jq -ce --argjson n "${n}" '.[$n]' <<<"${PAGES}"; }
+''' + self._rfn("read_refresh_review_state") + \
+                    "\nread_refresh_review_state\n"
+                return self._run_bash(script, {"FINAL_EVENT": state, "FAIL": str(fail),
+                    "EC": str(Path(tmp) / "events"), "PC": str(Path(tmp) / "pages"),
+                    "HEAD_SHA": head, "PAGES": json.dumps(pages), "PR_NUMBER": "737",
+                    "REPOSITORY": "lightning-it/.github"})
+        first = [thread(index) for index in range(100)]
+        res = run([page(first, True, "C1"), page([thread(100)])])
+        self.assertEqual(0, res.returncode, res.stderr)
+        self.assertEqual({"event_current": True, "incomplete": 0, "unresolved": 0},
+                         json.loads(res.stdout))
+        res = run([page(first, True, "C1"), page([thread(100, False)])])
+        self.assertEqual(1, json.loads(res.stdout)["unresolved"])
+        superseded = run([page(first, True, "C1"), page([thread(100)])], state="superseded")
+        self.assertFalse(json.loads(superseded.stdout)["event_current"])
+        bad = ([page(first, True)], [page(first, True, "C1"), page(more=True, cursor="C1")],
+               [page(first, True, "C1"), page(live="d" * 40)],
+               [page(first, True, "C1"), page(errors=[{"message": "bad"}])],
+               [page(first, True, "C1"), page([thread(0)])],
+               [page(more=True, cursor=f"C{i}") for i in range(10)])
+        for pages in bad:
+            with self.subTest(pages=len(pages)): self.assertNotEqual(0, run(pages).returncode)
+        self.assertNotEqual(0, run([page(first, True, "C1"), page()], fail=1).returncode)
+    def test_refresh_rename(self):
+        run = self._run(77)
+        run["head_branch"] = "feature/original"
+        run["pull_requests"][0]["head"]["ref"] = "feature/original"
+        script = "\n".join((
+            "set -euo pipefail",
+            self._rfn("validate_refresh_owner_run"),
+            'validate_refresh_owner_run "${RUN}"',
+        ))
+        def evaluate(candidate):
+            res = self._run_bash(script, {
+                    "BASE_SHA": "b" * 40,
+                    "HEAD_REF": "feature/renamed",
+                    "HEAD_SHA": "c" * 40,
+                    "PR_NUMBER": "2334",
+                    "REPOSITORY": "lightning-it/shared-assets-lit",
+                    "RUN": json.dumps(candidate),
+                    "owner_run_id": "77"})
+            return res.returncode
+        self.assertEqual(0, evaluate(run))
+        inconsistent = json.loads(json.dumps(run))
+        inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
+        self.assertNotEqual(0, evaluate(inconsistent))
+    def test_invalidation(self):
+        base, head, check_id, owner = "a" * 40, "b" * 40, 42, 77
+        binding = f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}"
+        url = "https://github.example/runs/42"
+        data = {"schema": 4, "base_sha": base, "head_sha": head,
+                "producer_run_id": owner}
+        def compact(value):
+            return json.dumps(value, separators=(",", ":"))
+        evidence = compact(data)
+        rec = compact({**data, "invalidated_check_run_id": check_id,
+                       "reason": "canonical refresh invalidation"})
+        def evaluate(snapshot, *, after=None, vexit=0, kind="none", verifier=True):
+            with tempfile.TemporaryDirectory() as tmp:
+                path, log = Path(tmp), Path(tmp) / "verified"
+                if verifier:
+                    (path / "verify-current-copilot-review.sh").write_text(
+                        '#!/usr/bin/env bash\nprintf "verification log\\n"\n'
+                        'printf V >>"${VERIFY_LOG}"\nexit "${VERIFY_EXIT}"\n',
+                        encoding="utf-8")
+                script = r'''set -euo pipefail
+api_read() { local reads=0; [ ! -f "${READ_COUNTER}" ] || reads="$(cat "${READ_COUNTER}")"; printf %s "$((reads + 1))" >"${READ_COUNTER}"; [ "${reads}" -eq 0 ] && printf %s "${SNAPSHOT}" || printf %s "${SNAPSHOT_AFTER}"; }
+ro() { :; }
+''' + self._pub("vc") + \
+                    '\nvc 42 "${EXTERNAL_ID}" "Current revision review" "${DETAILS_URL}"\n'
+                env = {"PATH": TEST_TOOL_PATH, "DETAILS_URL": url,
+                       "EVENT_BASE": base, "EVENT_HEAD": head,
+                       "EXTERNAL_ID": binding, "OWNER_RUN_ID": str(owner),
+                       "READ_COUNTER": str(path / "reads"),
+                       "REPOSITORY": "lightning-it/.github", "RUNNER_TEMP": tmp,
+                       "SNAPSHOT": compact(snapshot),
+                       "SNAPSHOT_AFTER": compact(after or snapshot),
+                       "VERIFY_EXIT": str(vexit), "VERIFY_LOG": str(log),
+                       "TRUSTED_KIND": kind, "evidence": evidence}
+                res = self._run_bash(script, env)
+                return res, len(log.read_text()) if log.exists() else 0
+        common = {
+            "id": check_id, "name": "Current revision review",
+            "app": {"id": 15368, "slug": "github-actions"}, "head_sha": head,
+            "external_id": binding, "status": "completed", "details_url": url,
+            "completed_at": "2026-10-03T12:00:00Z"}
+        success = {**common, "conclusion": "success",
+                   "output": {"summary": evidence, "title": "passed"}}
+        failed = {**common, "conclusion": "failure", "output": {
+            "summary": rec, "title": "Current revision review invalidated"}}
+        for snapshot, options, ok, count in (
+            (success, {}, True, 0), (failed, {}, True, 1),
+            (failed, {"vexit": 1}, False, 1),
+            (failed, {"after": {**failed,
+             "completed_at": "2026-10-03T12:00:01Z"}}, False, 1),
+        ):
+            res, attempts = evaluate(snapshot, **options)
+            self.assertEqual(ok, res.returncode == 0, res.stderr)
+            self.assertEqual(count, attempts)
+        ok, _ = evaluate(failed)
+        self.assertEqual("", ok.stdout)
+        self.assertIn("verification log", ok.stderr)
+        deterministic, attempts = evaluate(failed, kind="shared-assets",
+                                           verifier=False)
+        self.assertEqual(0, deterministic.returncode, deterministic.stderr)
+        self.assertEqual(0, attempts)
+        self.assertIn("Deterministic shared-assets evidence was revalidated",
+                      deterministic.stderr)
+        rejected = (
+            {**failed, "external_id": "foreign"},
+            {**failed, "output": {**failed["output"],
+             "title": "Current revision review invalidated "}},
+            {**failed, "output": {**failed["output"],
+             "summary": rec.replace('"invalidated_check_run_id":42',
+                                    '"invalidated_check_run_id":43')}},
+            {**failed, "conclusion": "neutral"},
+        )
+        for snapshot in rejected:
+            self.assertNotEqual(0, evaluate(snapshot)[0].returncode)
     def test_copilot_dispatcher_matches_the_rerun_helper_contract(self) -> None:
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
         marker = (
@@ -3341,6 +4179,7 @@ sleep() { :; }''',
         )
         rejected, attempts = run_with_retry([[completed_attempt_two, newer]])
         self.assertNotEqual(0, rejected.returncode)
+
         self.assertEqual(1, attempts)
 
         failed_attempt_two = self._cross_run(
@@ -3352,6 +4191,86 @@ sleep() { :; }''',
         rejected, attempts = run_with_retry([[failed_attempt_two]])
         self.assertNotEqual(0, rejected.returncode)
         self.assertEqual(1, attempts)
+
+    def test_old_handoff(self):
+        current, previous, head = "a" * 40, "c" * 40, "b" * 40
+        summary = {"schema": 4, "base_sha": previous, "head_sha": head,
+                   "producer_run_id": 77, "pull_request_number": 123,
+                   "review_path": "applicable Copilot or governed automation exemption"}
+        check = [{"id": 42,
+            "status": "completed", "conclusion": "success",
+            "completed_at": "2026-10-03T20:00:00Z",
+            "details_url": "https://github.example/runs/42",
+            "external_id": f"mlx90-current-revision:copilot:v6:123:77:{previous}:{head}",
+            "output": {"summary": json.dumps(summary)}}]
+        script = "\n".join((
+            "set -euo pipefail",
+            "eo() {",
+            '  test "${EVENT_BASE}" = "${EXPECTED_PREVIOUS_BASE}"',
+            '  printf "%s" "${ELECTED_PREVIOUS_OWNER}"',
+            "}",
+            self._rfn("vh"),
+            'vh "${CHECK}" "${CHECK_URL}"',
+        ))
+
+        def evaluate(candidate, *, elected="77", author="litroc", kind="copilot"):
+            env = {"PATH": TEST_TOOL_PATH, "BASE_SHA": current,
+                   "CHECK": json.dumps(candidate),
+                   "CHECK_URL": "https://github.example/runs/42",
+                   "ELECTED_PREVIOUS_OWNER": elected,
+                   "EXPECTED_PREVIOUS_BASE": previous, "HEAD_SHA": head,
+                   "PR_AUTHOR": author, "PR_NUMBER": "123",
+                   "current_external_kind": kind}
+            return subprocess.run([self._test_tool("bash"), "-c", script],
+                                  text=True, capture_output=True,
+                                  check=False, env=env)
+
+        accepted = evaluate(check)
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        marker = {"schema": 4, "base_sha": previous, "head_sha": head,
+                  "producer_run_id": 77, "invalidated_check_run_id": 42,
+                  "reason": "canonical refresh invalidation"}
+        failed = [{**check[0], "conclusion": "failure", "output": {
+            "title": "Current revision review invalidated",
+            "summary": json.dumps(marker)}}]
+        self.assertEqual(0, evaluate(failed).returncode)
+        for malformed in (
+            [{**failed[0], "output": {**failed[0]["output"], "title": "failure"}}],
+            [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "reason": "foreign"})}}],
+            [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "invalidated_check_run_id": 43})}}],
+            [{**failed[0], "output": {**failed[0]["output"], "summary": json.dumps({**marker, "review_path": summary["review_path"]})}}],
+            [{**failed[0], "external_id": "foreign"}],
+        ):
+            self.assertNotEqual(0, evaluate(malformed).returncode)
+
+        for drift in (
+            [{**check[0], "external_id": "foreign"}],
+            [{**check[0], "output": {"summary": json.dumps(
+                {**summary, "base_sha": "d" * 40})}}],
+            [{**check[0], "external_id":
+              f"mlx90-current-revision:copilot:v6:123:77:{current}:{head}",
+              "output": {"summary": json.dumps(
+                  {**summary, "base_sha": current})}}],
+        ):
+            with self.subTest(drift=drift):
+                self.assertNotEqual(0, evaluate(drift).returncode)
+        self.assertNotEqual(0, evaluate(check, elected="78").returncode)
+
+        renovate_summary = {
+            **summary,
+            "review_path": "deterministic policy-bound Renovate exemption",
+        }
+        renovate = [{**check[0], "external_id":
+                     f"mlx90-current-revision:renovate:v6:123:77:{previous}:{head}",
+                     "output": {"summary": json.dumps(renovate_summary)}}]
+        result = evaluate(renovate, author="renovate[bot]", kind="renovate")
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(
+            1, refresh.count('-f "external_id=${current_external_id}"')
+        )
+        self.assertGreaterEqual(refresh.count("validate_live_pr_tuple"), 4)
 
     def test_cross_success_converges_transient_detail_and_job_reads(
         self,
@@ -3794,6 +4713,17 @@ sleep() { :; }''',
         head = "b" * 40
         release_app = "lightning-it-release-automation[bot]"
         sync_app = "lightning-it-shared-assets-sync[bot]"
+        refresh_workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        renovate_route = (
+            'if [ "${PR_AUTHOR}" = "renovate[bot]" ] \\\n'
+            '            && [[ "${HEAD_REF}" == renovate/* ]]; then\n'
+            "            current_external_kind=renovate"
+        )
+        self.assertIn(renovate_route, refresh_workflow)
+        self.assertLess(
+            refresh_workflow.index(renovate_route),
+            refresh_workflow.index("current_external_kind=managed-sync"),
+        )
         cases = (
             ("litroc", f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (
@@ -3818,6 +4748,11 @@ sleep() { :; }''',
                 None,
             ),
             (release_app, f"mlx90-current-revision:v4:77:{'c' * 64}", None),
+            (
+                "renovate[bot]",
+                f"mlx90-current-revision:renovate:v6:123:77:{base}:{head}",
+                123,
+            ),
         )
         for author, external_id, pull_request_number in cases:
             with self.subTest(external_id=external_id):
@@ -3825,6 +4760,11 @@ sleep() { :; }''',
                     author=author,
                     external_id=external_id,
                     pull_request_number=pull_request_number,
+                    review_path=(
+                        "deterministic policy-bound Renovate exemption"
+                        if author == "renovate[bot]"
+                        else None
+                    ),
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
 
@@ -3873,6 +4813,11 @@ sleep() { :; }''',
             (release_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
             (sync_app, f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}", 123),
             (sync_app, f"mlx90-current-revision:copilot:v5:77:{base}:{head}", None),
+            (
+                "renovate[bot]",
+                f"mlx90-current-revision:copilot:v6:123:77:{base}:{head}",
+                123,
+            ),
             (
                 "litroc",
                 f"mlx90-current-revision:managed-sync:v6:123:77:{base}:{head}",
@@ -3928,6 +4873,46 @@ sleep() { :; }''',
                     repository="lightning-it/website",
                 )
                 self.assertNotEqual(0, result.returncode)
+
+    def test_renovate_binding(self):
+        base, head, owner = "a" * 40, "b" * 40, "77"
+        current = f"mlx90-current-revision:renovate:v6:123:{owner}:{base}:{head}"
+        script = "\n".join((
+            "set -euo pipefail",
+            self._rfn("va"),
+            "gh() { : >\"${PATCH_FILE}\"; }",
+            'if va "${CHECK}"; then',
+            "  gh api --method PATCH",
+            "else",
+            "  exit 73",
+            "fi",
+        ))
+
+        def evaluate(external_id):
+            with tempfile.TemporaryDirectory() as temporary:
+                patch_file = Path(temporary) / "patch"
+                result = subprocess.run(
+                    [self._test_tool("bash"), "-c", script],
+                    text=True, capture_output=True, check=False,
+                    env={
+                        "PATH": TEST_TOOL_PATH,
+                        "BASE_SHA": base,
+                        "CHECK": json.dumps([{"external_id": external_id}]),
+                        "HEAD_SHA": head,
+                        "PATCH_FILE": str(patch_file),
+                        "PR_AUTHOR": "renovate[bot]",
+                        "current_external_id": current,
+                        "current_external_kind": "renovate",
+                        "owner_run_id": owner,
+                    },
+                )
+                return result.returncode, patch_file.exists()
+
+        legacy = f"mlx90-current-revision:copilot:v5:{owner}:{base}:{head}"
+        for binding, code, patched in ((current, 0, True), (legacy, 73, False)):
+            result, mutated = evaluate(binding)
+            self.assertEqual(code, result)
+            self.assertEqual(patched, mutated)
 
     def test_rerun_managed_sync_is_bound_to_develop_and_sync_actor(self) -> None:
         guard = "set -euo pipefail\n" + self._rerun_evidence_kind_guard()

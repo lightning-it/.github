@@ -1,0 +1,7 @@
+paths:
+  .github/workflows/copilot-review.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/copilot-review-refresh.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
