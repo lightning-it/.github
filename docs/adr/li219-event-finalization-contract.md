@@ -1,5 +1,9 @@
 # LI-219 event finalization contract (not operationalized)
 
+The owner-authorized no-rerun continuation selects the dedicated App migration
+described in [the follow-on architecture and CAS/outbox proposal](li219-app-finalizer-migration.md).
+That proposal preserves the existing required gates and remains unactivated.
+
 Task profile — Work item: LI-219; risk: high; model/reasoning: frontier/high;
 rationale: organization-wide Required-Workflow provenance and event ordering;
 escalate only if: ruleset, check identity, App identity, or provenance changes.
