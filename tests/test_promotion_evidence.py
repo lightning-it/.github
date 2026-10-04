@@ -2087,6 +2087,60 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, delayed_without_association["producer_run_id"])
 
+        # GitHub may return a terminal run snapshot whose updated_at still
+        # predates the already completed handoff job. Two identical later
+        # reads of the same run may establish convergence without rerunning it.
+        stale_run = dict(run, updated_at="2026-09-27T00:04:35Z")
+
+        def convergence_api(*snapshots: dict[str, object]):
+            remaining = iter(snapshots)
+            ordinary = evidence_api(run, jobs=exact_jobs)
+
+            def dispatch(arguments: list[str]) -> dict[str, object]:
+                if arguments[-1] == "repos/lightning-it/example/actions/runs/88":
+                    return next(remaining)
+                return ordinary(arguments)
+
+            return dispatch
+
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=convergence_api(stale_run, run, run)
+        ):
+            converged = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, converged["producer_run_id"])
+
+        for snapshots, reason in (
+            ((stale_run, dict(run, head_sha="9" * 40), run), "producer-run-convergence-identity"),
+            ((stale_run, dict(run, run_attempt=True), run), "producer-run-convergence-identity"),
+            (
+                (stale_run, run, dict(run, updated_at="2026-09-27T00:05:01Z")),
+                "producer-run-convergence-unstable",
+            ),
+            (
+                (stale_run, dict(run, updated_at="2026-09-27T00:04:34Z"), run),
+                "producer-run-convergence-rollback",
+            ),
+        ):
+            with self.subTest(reason=reason), mock.patch.object(
+                MODULE, "gh_json", side_effect=convergence_api(*snapshots)
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
         for completed_at in (
             "2026-09-27T00:04:28Z",
             "2026-09-27T00:06:01Z",
