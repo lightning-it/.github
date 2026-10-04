@@ -2637,6 +2637,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** 1\n\n"
                 "<details open><summary><strong>Open (1)</strong></summary>"
@@ -2668,6 +2669,62 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual("copilot", evidence["evidence_kind"])
         self.assertEqual(0, comment_calls)
+
+    def test_expanded_positive_findings_require_native_thread_coverage(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, expanded_v6_summary())
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        delegate = evidence_api(run, review=review)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return delegate(arguments)
+
+        for nodes in ([], [{"id": "PRRT_1", "isResolved": True}]):
+            with (
+                self.subTest(nodes=nodes),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": nodes, "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if nodes:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=pull, pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        1, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=pull, pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {

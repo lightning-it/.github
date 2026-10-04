@@ -1717,6 +1717,9 @@ def validate_producer_run(
                         ),
                         "producer-review-binding",
                     )
+                    historical_findings_count = historical_copilot_findings_count(
+                        body
+                    )
                     if expanded_review_pages is None:
                         comment_pages = exact_array(
                             gh_json(
@@ -1763,9 +1766,6 @@ def validate_producer_run(
                         normalized_texts = [
                             normalized_review_text(value) for value in review_texts
                         ]
-                        historical_findings_count = (
-                            historical_copilot_findings_count(body)
-                        )
                         require(
                             not any(
                                 marker in normalized
