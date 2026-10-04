@@ -327,7 +327,7 @@ jobs:
                   and .pull_requests == [])
               ' <<<"${rpages}" >/dev/null; then
               pp="$(oa --method GET --paginate --slurp \
-                -f state=all -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
+                -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
               jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
                 --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
@@ -568,7 +568,8 @@ jobs:
               select(.name == "Current revision review") |
               select(.app.id == 15368 and .app.slug == "github-actions") |
               select(.head_sha == $head)]
-            | if ([.[].id] | length) != ([.[].id] | unique | length)
+            | if length > 10 then error("refresh-check-inventory-overflow")
+              elif ([.[].id] | length) != ([.[].id] | unique | length)
                 or any(.[]; (.id | type) != "number" or .id <= 0 or .id != (.id | floor))
               then error("refresh-check-inventory-invalid") else . end
             ' <<<"${pages}" || return 1

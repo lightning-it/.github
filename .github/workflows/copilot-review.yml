@@ -552,7 +552,7 @@ jobs:
                   and .pull_requests == [])
               ' <<<"${rpages}" >/dev/null; then
               pp="$(oa --method GET --paginate --slurp \
-                -f state=all -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
+                -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
               jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
                 --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \

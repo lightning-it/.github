@@ -104,7 +104,8 @@ gh() {
     run_id="${BASH_REMATCH[1]}"; run_attempt="${BASH_REMATCH[2]}"
     case "${run_id}" in __JOB_CASES__ *) return 92;; esac
   elif [[ "${endpoint}" =~ /pulls$ ]]; then
-    printf %s "${BRANCH_PULL_PAGES}"
+    [[ " $* " == *" state=open "* ]] || return 96
+    jq -c '[.[] | map(select(.state == "open"))]' <<<"${BRANCH_PULL_PAGES}"
   elif [[ "${endpoint}" =~ /pulls/([0-9]+)$ ]]; then
     case "${BASH_REMATCH[1]}" in __PULL_CASES__ *) return 94;; esac
   else return 93; fi
@@ -340,6 +341,11 @@ gh() {
         for guard in self._guards():
             self._owner("101", guard=guard, runs=[unassociated],
                         jobs={101: [self._job(101)]}, cond=True)
+            closed_pull = {**current_pull, "number": 12, "state": "closed",
+                           "head": {**current_pull["head"], "sha": "d" * 40}}
+            self._owner("101", guard=guard, runs=[unassociated],
+                        jobs={101: [self._job(101)]},
+                        branch_pulls=[closed_pull, current_pull], cond=True)
             for branch_pulls in ([], [current_pull, current_pull],
                                  [{**current_pull, "number": 999}],
                                  [{**current_pull, "head": {
@@ -691,6 +697,26 @@ gh() {
                     "incomplete" if fail_id else "terminally ambiguous",
                     result.stderr,
                 )
+    def test_duplicate_refresh_inventory_is_bounded(self):
+        script = (
+            'set -euo pipefail\n'
+            'oa() { printf %s "${PAGES}"; }\n'
+            + self._rfn("read_refresh_checks")
+            + '\nread_refresh_checks\n'
+        )
+        for count in (10, 11):
+            with self.subTest(count=count):
+                checks = [{"id": i + 1, "name": "Current revision review",
+                    "app": {"id": 15368, "slug": "github-actions"},
+                    "head_sha": "b" * 40} for i in range(count)]
+                result = self._run_bash(script, {
+                    "PAGES": json.dumps([{"check_runs": checks}]),
+                    "REPOSITORY": "lightning-it/.github", "HEAD_SHA": "b" * 40,
+                })
+                self.assertEqual(count <= 10, result.returncode == 0,
+                                 result.stderr)
+                if count > 10:
+                    self.assertIn("refresh-check-inventory-overflow", result.stderr)
     def test_attempt2_rerun(self):
         script = "\n".join(
             (
