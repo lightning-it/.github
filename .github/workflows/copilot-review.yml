@@ -406,38 +406,10 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Elect immutable current-revision producer owner
-        id: producer-owner
-        env:
-          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
-          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
-          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          GH_TOKEN: ${{ github.token }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPOSITORY: ${{ github.repository }}
+      - &materialize-producer-owner-guard
+        name: Materialize immutable producer-owner guard
         run: |
           set -euo pipefail
-          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
-          PRODUCER_OWNER_MODE=verification
-          if [ "${PR_AUTHOR}" = litroc ]; then
-            PRODUCER_OWNER_MODE=copilot
-          fi
-          if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
-              && [[ "${EVENT_HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; } \
-            || { [ "${PR_AUTHOR}" = "renovate[bot]" ] \
-              && [[ "${EVENT_HEAD_REF}" == renovate/* ]]; } \
-            || { { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
-                || [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; } \
-              && [[ "${EVENT_HEAD_REF}" == backmerge/*-main ]]; }; then
-            test "${PR_BASE_REF}" = develop
-            PRODUCER_OWNER_MODE=deterministic
-          fi
-          export PRODUCER_OWNER_MODE
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           umask 077
           cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
@@ -458,7 +430,9 @@ jobs:
 
           elect_producer_owner_once() {
             local candidate_attempt candidate_id candidates candidate_rows
-            local current_requester_jobs eligible job_pages original_job_pages
+            local current_requester_jobs eligible foreign_base foreign_head
+            local foreign_head_ref foreign_live foreign_pr foreign_rows
+            local job_pages original_job_pages
             local policy_jobs requester_jobs run_pages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] \
               || return 1
@@ -496,7 +470,6 @@ jobs:
                   type == "object"
                   and (.number | type) == "number" and .number > 0
                   and .number == (.number | floor)
-                  and .number == $number
                   and (.base | type) == "object"
                   and (.base.sha | type) == "string"
                   and (.base.sha | test("^[0-9a-f]{40}$"))
@@ -510,6 +483,43 @@ jobs:
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
+            foreign_rows="$(jq -cer \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${EVENT_HEAD_REF}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson number "${PR_NUMBER}" '
+                [.[].workflow_runs[]
+                  | select(.event == "pull_request_target")
+                  | select(.path == ".github/workflows/copilot-review.yml")
+                  | select(.name == "Current revision review gate")
+                  | select(.head_branch == $head_ref and .head_sha == $head)
+                  | select(.repository.full_name == $repository)
+                  | select(.head_repository.full_name == $repository)
+                  | .pull_requests[0]
+                  | select(.number != $number)
+                  | [.number, .base.sha, .head.sha, .head.ref]]
+                | unique
+                | if length > 10 then error("foreign-pr-inventory-unbounded")
+                  else map(@tsv) | join("\n") end
+              ' <<<"${run_pages}")" || return 1
+            while IFS=$'\t' read -r foreign_pr foreign_base foreign_head foreign_head_ref; do
+              [ -n "${foreign_pr}" ] || continue
+              foreign_live="$(owner_api_read \
+                "repos/${REPOSITORY}/pulls/${foreign_pr}")" || return 1
+              jq -e \
+                --arg base "${foreign_base}" \
+                --arg head "${foreign_head}" \
+                --arg head_ref "${foreign_head_ref}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson number "${foreign_pr}" '
+                  .number == $number
+                  and .base.sha == $base
+                  and .base.repo.full_name == $repository
+                  and .head.sha == $head
+                  and .head.ref == $head_ref
+                  and .head.repo.full_name == $repository
+                ' <<<"${foreign_live}" >/dev/null || return 1
+            done <<<"${foreign_rows}"
             candidates="$(jq -ce \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
@@ -694,6 +704,40 @@ jobs:
             printf '%s' "${first}"
           }
           PRODUCER_OWNER_GUARD
+
+      - name: Elect immutable current-revision producer owner
+        id: producer-owner
+        env:
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+          EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GH_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "${EVENT_BASE}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_HEAD}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          PRODUCER_OWNER_MODE=verification
+          if [ "${PR_AUTHOR}" = litroc ]; then
+            PRODUCER_OWNER_MODE=copilot
+          fi
+          if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
+              && [[ "${EVENT_HEAD_REF}" =~ ^chore/sync-(shared-assets-lit|repository-quality)- ]]; } \
+            || { [ "${PR_AUTHOR}" = "renovate[bot]" ] \
+              && [[ "${EVENT_HEAD_REF}" == renovate/* ]]; } \
+            || { { [ "${PR_AUTHOR}" = "lightning-it-release-automation[bot]" ] \
+                || [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ]; } \
+              && [[ "${EVENT_HEAD_REF}" == backmerge/*-main ]]; }; then
+            test "${PR_BASE_REF}" = develop
+            PRODUCER_OWNER_MODE=deterministic
+          fi
+          export PRODUCER_OWNER_MODE
+          owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           # shellcheck source=/dev/null
           source "${owner_guard}"
           owner_run_id="$(elect_producer_owner)"
@@ -1825,6 +1869,8 @@ jobs:
     timeout-minutes: 5
 
     steps:
+      - *materialize-producer-owner-guard
+
       - name: Dispatch the protected re-evaluation helper from the exact base
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -1847,261 +1893,6 @@ jobs:
           EVENT_HEAD_REF="${EXPECTED_HEAD_REF}"
           export EVENT_BASE EVENT_HEAD EVENT_HEAD_REF
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
-          umask 077
-          cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
-          owner_api_read() {
-            local attempt output
-            for attempt in $(seq 1 5); do
-              if output="$(gh api "$@")"; then
-                printf '%s' "${output}"
-                return 0
-              fi
-              if [ "${attempt}" -eq 5 ]; then
-                echo 'Producer-owner API read failed after five attempts.' >&2
-                return 1
-              fi
-              sleep 2
-            done
-          }
-
-          elect_producer_owner_once() {
-            local candidate_attempt candidate_id candidates candidate_rows
-            local current_requester_jobs eligible job_pages original_job_pages
-            local policy_jobs requester_jobs run_pages
-            [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] \
-              || return 1
-            run_pages="$(owner_api_read --paginate --slurp \
-              "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" \
-              || return 1
-            jq -e --argjson number "${PR_NUMBER}" '
-              type == "array" and length > 0 and length <= 10
-              and all(.[];
-                type == "object"
-                and (.workflow_runs | type) == "array")
-              and all(.[].workflow_runs[]?;
-                . as $run
-                | type == "object"
-                and (.id | type) == "number" and .id > 0
-                and .id == (.id | floor)
-                and (.run_attempt | type) == "number" and .run_attempt > 0
-                and .run_attempt == (.run_attempt | floor)
-                and (.event | type) == "string" and (.event | length) > 0
-                and (.path | type) == "string" and (.path | length) > 0
-                and (.name | type) == "string" and (.name | length) > 0
-                and (.head_branch | type) == "string"
-                and (.head_branch | length) > 0
-                and (.head_sha | type) == "string"
-                and (.head_sha | test("^[0-9a-f]{40}$"))
-                and (.repository | type) == "object"
-                and (.repository.full_name | type) == "string"
-                and (.repository.full_name | length) > 0
-                and (.head_repository | type) == "object"
-                and (.head_repository.full_name | type) == "string"
-                and (.head_repository.full_name | length) > 0
-                and (.pull_requests | type) == "array"
-                and (.pull_requests | length) == 1
-                and all(.pull_requests[];
-                  type == "object"
-                  and (.number | type) == "number" and .number > 0
-                  and .number == (.number | floor)
-                  and .number == $number
-                  and (.base | type) == "object"
-                  and (.base.sha | type) == "string"
-                  and (.base.sha | test("^[0-9a-f]{40}$"))
-                  and (.head | type) == "object"
-                  and (.head.sha | type) == "string"
-                  and (.head.sha | test("^[0-9a-f]{40}$"))
-                  and .head.sha == $run.head_sha
-                  and (.head.ref | type) == "string"
-                  and (.head.ref | length) > 0
-                  and .head.ref == $run.head_branch))
-              and ([.[].workflow_runs[].id] | length)
-                == ([.[].workflow_runs[].id] | unique | length)
-              ' <<<"${run_pages}" >/dev/null || return 1
-            candidates="$(jq -ce \
-              --arg base "${EVENT_BASE}" \
-              --arg head "${EVENT_HEAD}" \
-              --arg head_ref "${EVENT_HEAD_REF}" \
-              --arg repository "${REPOSITORY}" \
-              --argjson number "${PR_NUMBER}" '
-                [.[].workflow_runs[] |
-                  select(.event == "pull_request_target") |
-                  select(.path == ".github/workflows/copilot-review.yml") |
-                  select(.name == "Current revision review gate") |
-                  select(.head_branch == $head_ref and .head_sha == $head) |
-                  select(.repository.full_name == $repository) |
-                  select(.head_repository.full_name == $repository) |
-                  select(any(.pull_requests[];
-                    .number == $number
-                    and .base.sha == $base
-                    and .head.sha == $head
-                    and .head.ref == $head_ref))]
-                | if length == 0 then error("producer-owner-missing")
-                  elif length > 20 then error("producer-owner-overflow")
-                  elif ([.[].id] | unique | length) != length
-                    then error("producer-owner-run-duplicate")
-                  else sort_by(.id) end
-              ' <<<"${run_pages}")" || return 1
-            eligible='[]'
-            candidate_rows="$(jq -er \
-              '.[] | [.id, .run_attempt] | @tsv' <<<"${candidates}")" \
-              || return 1
-            while IFS=$'\t' read -r candidate_id candidate_attempt; do
-              [[ "${candidate_id}" =~ ^[1-9][0-9]*$ ]] || return 1
-              [[ "${candidate_attempt}" =~ ^(1|2)$ ]] || return 1
-              job_pages="$(owner_api_read --paginate --slurp \
-                "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/${candidate_attempt}/jobs?filter=all&per_page=100")" \
-                || return 1
-              jq -e '
-                type == "array" and length > 0 and length <= 10
-                and all(.[]; type == "object" and (.jobs | type) == "array")
-                and all(.[].jobs[]?;
-                  type == "object"
-                  and (.id | type) == "number" and .id > 0
-                  and (.name | type) == "string"
-                  and (.run_id | type) == "number" and .run_id > 0
-                  and (.run_attempt | type) == "number"
-                  and (.head_sha | type) == "string"
-                  and (.status | type) == "string"
-                  and has("conclusion"))
-                ' <<<"${job_pages}" >/dev/null || return 1
-              policy_jobs="$(jq -ce \
-                --arg head "${EVENT_HEAD}" \
-                --argjson attempt "${candidate_attempt}" \
-                --argjson run_id "${candidate_id}" '
-                  [.[].jobs[] |
-                    select(.name == "Verify current revision policy") |
-                    select(.run_id == $run_id) |
-                    select(.run_attempt == $attempt) |
-                    select(.head_sha == $head)]
-                  | if length > 1 then error("producer-owner-job-duplicate")
-                    else . end
-                ' <<<"${job_pages}")" || return 1
-              if [ "$(jq 'length' <<<"${policy_jobs}")" -eq 0 ]; then
-                return 1
-              fi
-              jq -e '
-                .[0] as $job
-                | (($job.status | IN(
-                    "requested", "waiting", "pending", "queued", "in_progress"))
-                    and $job.conclusion == null)
-                  or ($job.status == "completed"
-                    and ($job.conclusion | IN(
-                      "success", "failure", "neutral", "cancelled",
-                      "timed_out", "action_required", "stale",
-                      "startup_failure", "skipped")))
-                ' <<<"${policy_jobs}" >/dev/null || return 1
-              if jq -e '
-                  .[0].status == "completed"
-                  and .[0].conclusion == "skipped"
-                  ' <<<"${policy_jobs}" >/dev/null; then
-                continue
-              fi
-              if [ "${PRODUCER_OWNER_MODE}" = copilot ]; then
-                current_requester_jobs="$(jq -ce \
-                  --arg head "${EVENT_HEAD}" \
-                  --argjson attempt "${candidate_attempt}" \
-                  --argjson run_id "${candidate_id}" '
-                    [.[].jobs[] |
-                      select(.name == "Request Copilot review for current revision") |
-                      select(.run_id == $run_id) |
-                      select(.run_attempt == $attempt) |
-                      select(.head_sha == $head)]
-                    | if length > 1 then error("producer-owner-requester-duplicate")
-                      else . end
-                  ' <<<"${job_pages}")" || return 1
-                if [ "$(jq 'length' <<<"${current_requester_jobs}")" -eq 0 ]; then
-                  return 1
-                fi
-                jq -e '
-                  .[0] as $job
-                  | (($job.status | IN(
-                      "requested", "waiting", "pending", "queued", "in_progress"))
-                      and $job.conclusion == null)
-                    or ($job.status == "completed"
-                      and ($job.conclusion | IN(
-                        "success", "failure", "neutral", "cancelled",
-                        "timed_out", "action_required", "stale",
-                        "startup_failure", "skipped")))
-                  ' <<<"${current_requester_jobs}" >/dev/null || return 1
-                if [ "${candidate_attempt}" -eq 1 ]; then
-                  original_job_pages="${job_pages}"
-                else
-                  original_job_pages="$(owner_api_read --paginate --slurp \
-                    "repos/${REPOSITORY}/actions/runs/${candidate_id}/attempts/1/jobs?filter=all&per_page=100")" \
-                    || return 1
-                  jq -e '
-                    type == "array" and length > 0 and length <= 10
-                    and all(.[]; type == "object" and (.jobs | type) == "array")
-                    and all(.[].jobs[]?;
-                      type == "object"
-                      and (.id | type) == "number" and .id > 0
-                      and (.name | type) == "string"
-                      and (.run_id | type) == "number" and .run_id > 0
-                      and (.run_attempt | type) == "number"
-                      and (.head_sha | type) == "string"
-                      and (.status | type) == "string"
-                      and has("conclusion"))
-                    ' <<<"${original_job_pages}" >/dev/null || return 1
-                fi
-                requester_jobs="$(jq -ce \
-                  --arg head "${EVENT_HEAD}" \
-                  --argjson run_id "${candidate_id}" '
-                    [.[].jobs[] |
-                      select(.name == "Request Copilot review for current revision") |
-                      select(.run_id == $run_id) |
-                      select(.run_attempt == 1) |
-                      select(.head_sha == $head)]
-                    | if length > 1 then error("producer-owner-original-requester-duplicate")
-                      else . end
-                  ' <<<"${original_job_pages}")" || return 1
-                if [ "$(jq 'length' <<<"${requester_jobs}")" -eq 0 ]; then
-                  return 1
-                fi
-                jq -e '
-                  .[0] as $job
-                  | (($job.status | IN(
-                      "requested", "waiting", "pending", "queued", "in_progress"))
-                      and $job.conclusion == null)
-                    or ($job.status == "completed"
-                      and ($job.conclusion | IN(
-                        "success", "failure", "neutral", "cancelled",
-                        "timed_out", "action_required", "stale",
-                        "startup_failure", "skipped")))
-                  ' <<<"${requester_jobs}" >/dev/null || return 1
-                if jq -e '
-                    .[0].status == "completed"
-                    and .[0].conclusion == "skipped"
-                    ' <<<"${requester_jobs}" >/dev/null; then
-                  continue
-                fi
-              fi
-              eligible="$(jq -cn \
-                --argjson current "${eligible}" \
-                --argjson id "${candidate_id}" \
-                --argjson attempt "${candidate_attempt}" \
-                '$current + [{id:$id,run_attempt:$attempt}]')" || return 1
-            done <<<"${candidate_rows}"
-            jq -er '
-              if length == 0 then error("producer-owner-eligible-missing")
-              elif ([.[].id] | unique | length) != length
-                then error("producer-owner-eligible-duplicate")
-              else min_by(.id).id end
-              ' <<<"${eligible}" || return 1
-          }
-
-          elect_producer_owner() {
-            local first second
-            first="$(elect_producer_owner_once)" || return 1
-            sleep 2
-            second="$(elect_producer_owner_once)" || return 1
-            if [ "${first}" != "${second}" ]; then
-              echo 'Producer-owner inventory changed between stable reads.' >&2
-              return 1
-            fi
-            printf '%s' "${first}"
-          }
-          PRODUCER_OWNER_GUARD
           # shellcheck source=/dev/null
           source "${owner_guard}"
           [[ "${BASE_REF}" =~ ^(develop|main)$ ]]

@@ -33,7 +33,11 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             end = workflow.index("\n          PRODUCER_OWNER_GUARD", start)
             guards.append(workflow[start:end])
             cursor = end + 1
-        return guards
+        if len(guards) != 1:
+            raise AssertionError("expected one anchored producer-owner guard")
+        if workflow.count("*materialize-producer-owner-guard") != 1:
+            raise AssertionError("dispatch must reuse the anchored guard step")
+        return [guards[0], guards[0]]
 
     @classmethod
     def _producer_owner_guard(cls) -> str:
@@ -54,6 +58,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         jobs: dict[int, list[dict[str, object]]],
         guard: str | None = None,
         attempt_one_jobs: dict[int, list[dict[str, object]]] | None = None,
+        foreign_pulls: dict[int, dict[str, object]] | None = None,
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
         mode: str = "copilot",
@@ -119,6 +124,16 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             "    esac\n"
             "    return 0\n"
             "  fi\n"
+            "  if [[ \"${endpoint}\" =~ /pulls/([0-9]+)$ ]]; then\n"
+            "    case \"${BASH_REMATCH[1]}\" in\n"
+            + "".join(
+                f"      {number}) printf '%s' \"${{PULL_{number}}}\" ;;\n"
+                for number in sorted(foreign_pulls or {})
+            )
+            + "      *) return 94 ;;\n"
+            "    esac\n"
+            "    return 0\n"
+            "  fi\n"
             "  return 93\n"
             "}\n"
             + (guard or self._producer_owner_guard())
@@ -148,6 +163,12 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 {
                     f"JOBS_{run_id}": json.dumps([{"jobs": records}])
                     for run_id, records in normalized_jobs.items()
+                }
+            )
+            environment.update(
+                {
+                    f"PULL_{number}": json.dumps(pull)
+                    for number, pull in (foreign_pulls or {}).items()
                 }
             )
             environment.update(
@@ -396,6 +417,51 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                     )
                     self.assertNotEqual(0, result.returncode)
                     self.assertNotEqual("102", result.stdout)
+
+    def test_owner_inventory_excludes_only_verified_other_pr_same_head(
+        self,
+    ) -> None:
+        guards = self._producer_owner_guards()
+        guards.append(self._refresh_producer_owner_guard())
+        foreign = self._producer_run(101)
+        foreign["pull_requests"][0]["number"] = 999
+        foreign["pull_requests"][0]["base"]["sha"] = "d" * 40
+        foreign_pull = {
+            "number": 999,
+            "base": {
+                "sha": "d" * 40,
+                "repo": {"full_name": "lightning-it/shared-assets-lit"},
+            },
+            "head": {
+                "sha": "c" * 40,
+                "ref": "feature/li179",
+                "repo": {"full_name": "lightning-it/shared-assets-lit"},
+            },
+        }
+
+        for guard_index, guard in enumerate(guards):
+            with self.subTest(guard=guard_index):
+                result = self._run_producer_owner_guard(
+                    guard=guard,
+                    runs=[foreign, self._producer_run(102)],
+                    jobs={102: [self._producer_job(102)]},
+                    foreign_pulls={999: foreign_pull},
+                    conditional=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("102", result.stdout)
+
+                mismatched = json.loads(json.dumps(foreign_pull))
+                mismatched["head"]["sha"] = "e" * 40
+                rejected = self._run_producer_owner_guard(
+                    guard=guard,
+                    runs=[foreign, self._producer_run(102)],
+                    jobs={102: [self._producer_job(102)]},
+                    foreign_pulls={999: mismatched},
+                    conditional=True,
+                )
+                self.assertNotEqual(0, rejected.returncode)
+                self.assertNotEqual("102", rejected.stdout)
 
     def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
         self,

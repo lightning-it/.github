@@ -188,7 +188,9 @@ jobs:
 
           elect_producer_owner_once() {
             local candidate_attempt candidate_id candidates candidate_rows
-            local current_requester_jobs eligible job_pages original_job_pages
+            local current_requester_jobs eligible foreign_base foreign_head
+            local foreign_head_ref foreign_live foreign_pr foreign_rows
+            local job_pages original_job_pages
             local policy_jobs requester_jobs run_pages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] \
               || return 1
@@ -226,7 +228,6 @@ jobs:
                   type == "object"
                   and (.number | type) == "number" and .number > 0
                   and .number == (.number | floor)
-                  and .number == $number
                   and (.base | type) == "object"
                   and (.base.sha | type) == "string"
                   and (.base.sha | test("^[0-9a-f]{40}$"))
@@ -240,6 +241,43 @@ jobs:
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${run_pages}" >/dev/null || return 1
+            foreign_rows="$(jq -cer \
+              --arg head "${EVENT_HEAD}" \
+              --arg head_ref "${EVENT_HEAD_REF}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson number "${PR_NUMBER}" '
+                [.[].workflow_runs[]
+                  | select(.event == "pull_request_target")
+                  | select(.path == ".github/workflows/copilot-review.yml")
+                  | select(.name == "Current revision review gate")
+                  | select(.head_branch == $head_ref and .head_sha == $head)
+                  | select(.repository.full_name == $repository)
+                  | select(.head_repository.full_name == $repository)
+                  | .pull_requests[0]
+                  | select(.number != $number)
+                  | [.number, .base.sha, .head.sha, .head.ref]]
+                | unique
+                | if length > 10 then error("foreign-pr-inventory-unbounded")
+                  else map(@tsv) | join("\n") end
+              ' <<<"${run_pages}")" || return 1
+            while IFS=$'\t' read -r foreign_pr foreign_base foreign_head foreign_head_ref; do
+              [ -n "${foreign_pr}" ] || continue
+              foreign_live="$(owner_api_read \
+                "repos/${REPOSITORY}/pulls/${foreign_pr}")" || return 1
+              jq -e \
+                --arg base "${foreign_base}" \
+                --arg head "${foreign_head}" \
+                --arg head_ref "${foreign_head_ref}" \
+                --arg repository "${REPOSITORY}" \
+                --argjson number "${foreign_pr}" '
+                  .number == $number
+                  and .base.sha == $base
+                  and .base.repo.full_name == $repository
+                  and .head.sha == $head
+                  and .head.ref == $head_ref
+                  and .head.repo.full_name == $repository
+                ' <<<"${foreign_live}" >/dev/null || return 1
+            done <<<"${foreign_rows}"
             candidates="$(jq -ce \
               --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" \
