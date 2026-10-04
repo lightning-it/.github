@@ -611,6 +611,107 @@ jobs:
                   and .head.ref == $run.head_branch)
               ' <<<"${run}" >/dev/null
           }
+          refresh_event_record_state() {
+            local action event id key live pages
+            action="$(jq -er '.action | select(type == "string")' \
+              "${GITHUB_EVENT_PATH}")" || return 1
+            case "${EVENT_NAME}" in
+              pull_request_review) key=review ;;
+              pull_request_review_comment) key=comment ;;
+              *) return 1 ;;
+            esac
+            event="$(jq -ce --arg key "${key}" '.[$key] | select(type == "object")' \
+              "${GITHUB_EVENT_PATH}")" || return 1
+            id="$(jq -er '.id | select(type == "number" and . > 0 and . == floor)' \
+              <<<"${event}")" || return 1
+            jq -e --arg api "${GITHUB_API_URL}" --arg head "${HEAD_SHA}" \
+              --arg repository "${REPOSITORY}" --argjson pr "${PR_NUMBER}" '
+                .commit_id == $head and (.user.login | type) == "string"
+                and (.author_association | type) == "string"
+                and .pull_request_url == ($api + "/repos/" + $repository + "/pulls/" + ($pr | tostring))
+              ' <<<"${event}" >/dev/null || return 1
+            if [ "${EVENT_NAME}" = pull_request_review_comment ]; then
+              jq -e '(.body | type) == "string"' <<<"${event}" >/dev/null || return 1
+              if [ "${action}" = deleted ]; then
+                pages="$(owner_api_read --paginate --slurp \
+                  "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100")" \
+                  || return 1
+                jq -e --argjson id "${id}" '
+                  type == "array" and length > 0 and length <= 10
+                  and all(.[]; type == "array")
+                  and all(.[][]; (.id | type) == "number" and .id > 0 and .id == (.id | floor))
+                  and (any(.[][]; .id == $id) | not)
+                  ' <<<"${pages}" >/dev/null || { printf superseded; return; }
+                printf current
+                return 0
+              fi
+              [[ "${action}" =~ ^(created|edited)$ ]] || return 1
+              live="$(owner_api_read \
+                "repos/${REPOSITORY}/pulls/comments/${id}")" || return 1
+              if jq -e --argjson event "${event}" --argjson id "${id}" '
+                .id == $id and .user.login == $event.user.login
+                and .author_association == $event.author_association
+                and .commit_id == $event.commit_id and .body == $event.body
+                and .path == $event.path and .created_at == $event.created_at
+                and .updated_at == $event.updated_at
+                and .pull_request_url == $event.pull_request_url
+                ' <<<"${live}" >/dev/null; then printf current; else printf superseded; fi
+              return 0
+            fi
+            live="$(owner_api_read \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews/${id}")" \
+              || return 1
+            if jq -e --arg action "${action}" --arg head "${HEAD_SHA}" \
+              --argjson event "${event}" --argjson id "${id}" '
+                .id == $id
+                and .user.login == $event.user.login and .author_association == $event.author_association
+                and .commit_id == $head and .commit_id == $event.commit_id
+                and (.body // "") == ($event.body // "")
+                and ((.state | ascii_downcase) == (($event.state // "") | ascii_downcase))
+                and .submitted_at == $event.submitted_at
+                and .pull_request_url == $event.pull_request_url
+                and (if $action == "dismissed" then (.state | ascii_downcase) == "dismissed"
+                  else (($action | IN("submitted", "edited")) and
+                    ((.state | ascii_downcase) | IN("commented", "approved", "changes_requested"))) end)
+              ' <<<"${live}" >/dev/null; then
+              printf current
+            else
+              printf superseded
+            fi
+          }
+          read_refresh_review_state() {
+            local event_state name owner page query
+            validate_live_pr_tuple || return 1
+            event_state="$(refresh_event_record_state)" || return 1
+            [[ "${event_state}" =~ ^(current|superseded)$ ]] || return 1
+            read -r owner name <<<"${REPOSITORY//\// }"
+            # shellcheck disable=SC2016  # GraphQL variables stay literal.
+            query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login} pullRequestReview{commit{oid}}}}}}}}}'
+            page="$(owner_api_read graphql -f query="${query}" -F owner="${owner}" \
+              -F name="${name}" -F number="${PR_NUMBER}")" || return 1
+            jq -cn --arg event_state "${event_state}" --arg head "${HEAD_SHA}" \
+              --argjson page "${page}" '
+                ($page.data.repository.pullRequest) as $pr
+                | select((($page.errors // []) | length) == 0 and $pr.headRefOid == $head
+                  and ($pr.reviewThreads.nodes | type) == "array"
+                  and ($pr.reviewThreads.pageInfo.hasNextPage | type) == "boolean"
+                  and all($pr.reviewThreads.nodes[]?;
+                    (.isResolved | type) == "boolean" and (.comments.nodes | type) == "array"
+                    and (.comments.pageInfo.hasNextPage | type) == "boolean"
+                    and all(.comments.nodes[]?;
+                      (.author.login | type) == "string" and
+                      (.pullRequestReview.commit.oid | type) == "string")))
+                | ($pr.reviewThreads) as $threads
+                | {event_current:($event_state == "current"),
+                  incomplete:((if $threads.pageInfo.hasNextPage then 1 else 0 end) +
+                    ([$threads.nodes[] | select(.isResolved == false and
+                      .comments.pageInfo.hasNextPage)] | length)),
+                  unresolved:([$threads.nodes[] | select(.isResolved == false)
+                    | select(any(.comments.nodes[];
+                      (.author.login | IN("copilot-pull-request-reviewer",
+                        "copilot-pull-request-reviewer[bot]"))
+                      and .pullRequestReview.commit.oid == $head))] | length)}'
+          }
           validate_previous_tuple_handoff() {
             local check_json="$1" expected_url="$2"
             local binding previous_base previous_owner verified_owner
@@ -726,9 +827,47 @@ jobs:
               ' <<<"${check_json}" >/dev/null
           }
           neutral="$(read_refresh_checks)"
+          review_state="$(read_refresh_review_state)"
+          if ! jq -e '.event_current == true' <<<"${review_state}" >/dev/null; then
+            echo 'Queued refresh event was superseded while awaiting the mutation lane; no action is permitted.'
+            exit 0
+          fi
           neutral_count="$(jq 'length' <<<"${neutral}")"
           refresh_expected_count="${neutral_count}"
           refresh_expected_snapshot='null'
+          invalidate_refresh_check() {
+            local reason="$1"
+            mutation_state="$(read_refresh_review_state)" || return 1
+            if ! jq -e '.event_current == true' <<<"${mutation_state}" >/dev/null; then
+              echo 'Queued refresh event became superseded before invalidation; no mutation is permitted.'
+              exit 0
+            fi
+            case "${reason}" in
+              binding) ;;
+              incomplete|unresolved) jq -e --arg reason "${reason}" \
+                '.[$reason] > 0' <<<"${mutation_state}" >/dev/null || exit 0 ;;
+              *) return 1 ;;
+            esac
+            revalidate_refresh_state 1 "${refresh_expected_snapshot}"
+            invalidated="$(gh api --method PATCH \
+              "repos/${REPOSITORY}/check-runs/${check_id}" \
+              -f status=completed -f conclusion=failure \
+              -f "details_url=${check_url}" -f "external_id=${current_external_id}" \
+              -f 'output[title]=Current revision review invalidated' \
+              -f "output[summary]=${recovery_evidence}")" || return 1
+            jq -e --arg evidence "${recovery_evidence}" \
+              --arg external_id "${current_external_id}" --arg head "${HEAD_SHA}" \
+              --arg url "${check_url}" --argjson check_id "${check_id}" '
+                .id == $check_id and .name == "Current revision review"
+                and .app.id == 15368 and .app.slug == "github-actions"
+                and .head_sha == $head and .external_id == $external_id
+                and .status == "completed" and .conclusion == "failure"
+                and .details_url == $url
+                and .output.title == "Current revision review invalidated"
+                and .output.summary == $evidence
+              ' <<<"${invalidated}" >/dev/null || return 1
+            refresh_expected_snapshot="$(jq -c '.' <<<"${invalidated}")"
+          }
           if [ "${neutral_count}" -eq 1 ]; then
             refresh_expected_snapshot="$(jq -c '.[0]' <<<"${neutral}")"
             check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${neutral}")"
@@ -845,147 +984,71 @@ jobs:
                 and $summary.producer_run_id == ($owner_run_id | tonumber)
               ' <<<"${neutral}" >/dev/null; then
               echo "Existing neutral result is stale or malformed; canonical rerun required."
-              revalidate_refresh_state 1 "${refresh_expected_snapshot}"
-              invalidated="$(gh api --method PATCH \
-                "repos/${REPOSITORY}/check-runs/${check_id}" \
-                -f status=completed \
-                -f conclusion=failure \
-                -f "details_url=${check_url}" \
-                -f "external_id=${current_external_id}" \
-                -f 'output[title]=Current revision review invalidated' \
-                -f "output[summary]=${recovery_evidence}")"
-              jq -e \
-                --arg evidence "${recovery_evidence}" \
-                --arg external_id "${current_external_id}" \
-                --arg head "${HEAD_SHA}" \
-                --arg url "${check_url}" \
-                --argjson check_id "${check_id}" '
-                  .id == $check_id
-                  and .name == "Current revision review"
-                  and .app.id == 15368
-                  and .app.slug == "github-actions"
-                  and .head_sha == $head
-                  and .external_id == $external_id
-                  and .status == "completed"
-                  and .conclusion == "failure"
-                  and .details_url == $url
-                  and .output.title == "Current revision review invalidated"
-                  and .output.summary == $evidence
-                ' <<<"${invalidated}" >/dev/null
-              refresh_expected_snapshot="$(jq -c '.' <<<"${invalidated}")"
+              invalidate_refresh_check binding
               neutral_count=0
             fi
 
           fi
+          incomplete="$(jq -er '.incomplete | select(type == "number")' \
+            <<<"${review_state}")"
+          unresolved="$(jq -er '.unresolved | select(type == "number")' \
+            <<<"${review_state}")"
+          if [ "${incomplete}" -gt 0 ]; then
+            if [ "${neutral_count}" -eq 1 ]; then invalidate_refresh_check incomplete; fi
+            echo 'Current review-thread evidence is incomplete; refusing refresh mutation.' >&2
+            exit 1
+          fi
+          if [ "${unresolved}" -gt 0 ]; then
+            if [ "${neutral_count}" -eq 1 ]; then
+              invalidate_refresh_check unresolved
+              echo 'Current-head Copilot findings invalidate the neutral PASS.' >&2
+              exit 1
+            fi
+            echo 'Current-head findings remain unresolved; queued refresh is a no-op and cannot consume the rerun budget.'
+            exit 0
+          fi
           if [ "${neutral_count}" -eq 1 ]; then
-            read -r owner name <<<"${REPOSITORY//\// }"
-            # shellcheck disable=SC2016  # GraphQL variables must stay literal.
-            query='query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login} pullRequestReview{commit{oid}}}}}}}}}'
-            threads='[]'
-            after=''
-            while true; do
-              args=(-f query="${query}" -F owner="${owner}" -F name="${name}" -F number="${PR_NUMBER}")
-              if [ -n "${after}" ]; then args+=(-f after="${after}"); fi
-              page="$(gh api graphql "${args[@]}")"
-              page_threads="$(jq '.data.repository.pullRequest.reviewThreads.nodes' <<<"${page}")"
-              threads="$(jq -c --argjson page "${page_threads}" '. + $page' <<<"${threads}")"
-              if [ "$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"${page}")" != true ]; then break; fi
-              after="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<<"${page}")"
-              test -n "${after}"
-            done
-            incomplete="$(jq '[.[] |
-              select(.isResolved == false) |
-              select(.comments.pageInfo.hasNextPage == true)] | length' <<<"${threads}")"
-            if [ "${incomplete}" -gt 0 ]; then
-              revalidate_refresh_state 1 "${refresh_expected_snapshot}"
-              invalidated="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
-                -f status=completed \
-                -f conclusion=failure \
-                -f "details_url=${check_url}" \
-                -f "external_id=${current_external_id}" \
-                -f 'output[title]=Current revision review invalidated' \
-                -f "output[summary]=${recovery_evidence}")"
-              jq -e \
-                --arg evidence "${recovery_evidence}" \
-                --arg external_id "${current_external_id}" \
-                --arg head "${HEAD_SHA}" \
-                --arg url "${check_url}" \
-                --argjson check_id "${check_id}" '
-                  .id == $check_id
-                  and .name == "Current revision review"
-                  and .app.id == 15368
-                  and .app.slug == "github-actions"
-                  and .head_sha == $head
-                  and .external_id == $external_id
-                  and .status == "completed"
-                  and .conclusion == "failure"
-                  and .details_url == $url
-                  and .output.title == "Current revision review invalidated"
-                  and .output.summary == $evidence
-                ' <<<"${invalidated}" >/dev/null
-              echo "Unresolved review-thread comments exceed the verified page; refusing to preserve PASS." >&2
-              exit 1
-            fi
-            unresolved="$(jq --arg head "${HEAD_SHA}" '[.[] |
-              select(.isResolved == false) |
-              select(any(.comments.nodes[];
-                (.author.login == "copilot-pull-request-reviewer"
-                  or .author.login == "copilot-pull-request-reviewer[bot]")
-                and .pullRequestReview.commit.oid == $head))] | length' <<<"${threads}")"
-            if [ "${unresolved}" -gt 0 ]; then
-              revalidate_refresh_state 1 "${refresh_expected_snapshot}"
-              invalidated="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
-                -f status=completed \
-                -f conclusion=failure \
-                -f "details_url=${check_url}" \
-                -f "external_id=${current_external_id}" \
-                -f 'output[title]=Current revision review invalidated' \
-                -f "output[summary]=${recovery_evidence}")"
-              jq -e \
-                --arg evidence "${recovery_evidence}" \
-                --arg external_id "${current_external_id}" \
-                --arg head "${HEAD_SHA}" \
-                --arg url "${check_url}" \
-                --argjson check_id "${check_id}" '
-                  .id == $check_id
-                  and .name == "Current revision review"
-                  and .app.id == 15368
-                  and .app.slug == "github-actions"
-                  and .head_sha == $head
-                  and .external_id == $external_id
-                  and .status == "completed"
-                  and .conclusion == "failure"
-                  and .details_url == $url
-                  and .output.title == "Current revision review invalidated"
-                  and .output.summary == $evidence
-                ' <<<"${invalidated}" >/dev/null
-              echo "Current-head Copilot findings invalidate the neutral PASS." >&2
-              exit 1
-            fi
             echo "The exact current-head neutral PASS remains valid; no rerun is needed."
             exit 0
           fi
 
-          revalidate_refresh_state \
-            "${refresh_expected_count}" "${refresh_expected_snapshot}"
-          run="$(gh api "repos/${REPOSITORY}/actions/runs/${owner_run_id}")"
-          validate_refresh_owner_run "${run}"
-          status="$(jq -er '.status | select(type == "string")' <<<"${run}")"
-          if [ "${status}" = completed ]; then
+          rerun_owner_if_review_current() {
+            local review_state run run_attempt status
+            revalidate_refresh_state \
+              "${refresh_expected_count}" "${refresh_expected_snapshot}"
+            run="$(gh api "repos/${REPOSITORY}/actions/runs/${owner_run_id}")" \
+              || return 1
+            validate_refresh_owner_run "${run}" || return 1
+            status="$(jq -er '.status | select(type == "string")' \
+              <<<"${run}")" || return 1
+            if [ "${status}" != completed ]; then
+              [[ "${status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]] \
+                || return 1
+              echo "Immutable producer owner ${owner_run_id} is ${status}; its polling loop will observe the review event."
+              return 0
+            fi
             run_attempt="$(jq -er '.run_attempt | select(. == 1 or . == 2)' \
-              <<<"${run}")"
+              <<<"${run}")" || return 1
             if [ "${run_attempt}" -ne 1 ]; then
               echo "Immutable producer owner ${owner_run_id} exhausted its single supported rerun attempt." >&2
-              exit 1
+              return 1
+            fi
+            review_state="$(read_refresh_review_state)" || return 1
+            if ! jq -e '
+              .event_current == true
+              and .incomplete == 0
+              and .unresolved == 0
+              ' <<<"${review_state}" >/dev/null; then
+              echo 'Review evidence changed before rerun; preserving the remaining retry budget.' >&2
+              return 0
             fi
             revalidate_refresh_state \
               "${refresh_expected_count}" "${refresh_expected_snapshot}"
-            run="$(gh api "repos/${REPOSITORY}/actions/runs/${owner_run_id}")"
-            assert_refresh_rerun_budget "${run}"
+            run="$(gh api "repos/${REPOSITORY}/actions/runs/${owner_run_id}")" \
+              || return 1
+            assert_refresh_rerun_budget "${run}" || return 1
             gh api --method POST \
               "repos/${REPOSITORY}/actions/runs/${owner_run_id}/rerun"
             echo "Rerun requested for immutable producer owner ${owner_run_id}."
-          else
-            [[ "${status}" =~ ^(requested|waiting|pending|queued|in_progress)$ ]]
-            echo "Immutable producer owner ${owner_run_id} is ${status}; its polling loop will observe the review event."
-          fi
+          }
+          rerun_owner_if_review_current
