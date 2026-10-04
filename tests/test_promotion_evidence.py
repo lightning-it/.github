@@ -938,6 +938,21 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        late_success_check = check_run(external_id, v6_summary())
+        late_success_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [late_success_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
         early_check = check_run(external_id, v6_summary())
         early_check["completed_at"] = "2026-09-27T00:03:00Z"
         with mock.patch.object(
@@ -1984,6 +1999,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": "Verify current revision policy",
                 "status": "completed",
                 "conclusion": "success",
+                "started_at": "2026-09-27T00:04:20Z",
+                "completed_at": "2026-09-27T00:04:29Z",
             },
             {
                 "id": 3,
@@ -2033,6 +2050,63 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # GitHub may publish the neutral check after the failed handoff and
+        # even after the producer run closes. The verified policy job, rather
+        # than the asynchronous check publication, orders the handoff.
+        delayed_check = check_run(external_id, v6_summary())
+        delayed_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+        ):
+            delayed = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed["producer_run_id"])
+
+        empty_association_run = dict(run)
+        empty_association_run["pull_requests"] = []
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(empty_association_run, jobs=exact_jobs),
+        ):
+            delayed_without_association = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed_without_association["producer_run_id"])
+
+        for completed_at in (
+            "2026-09-27T00:04:28Z",
+            "2026-09-27T00:06:01Z",
+        ):
+            invalid_check = check_run(external_id, v6_summary())
+            invalid_check["completed_at"] = completed_at
+            with self.subTest(completed_at=completed_at):
+                with mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+                ):
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-post-evidence-failure-order"
+                    ):
+                        MODULE.bound_review_check(
+                            [{"check_runs": [invalid_check]}],
+                            repository="lightning-it/example",
+                            pull=ingress_pull(),
+                            pull_number=17,
+                            base_sha=BASE,
+                            head_sha=HEAD,
+                        )
+
         for mutate, reason in (
             (
                 lambda candidate: candidate[1].update({"conclusion": "failure"}),
@@ -2051,8 +2125,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "producer-run-job-binding",
             ),
             (
-                lambda candidate: candidate[3].update(
-                    {"started_at": "2026-09-27T00:04:29Z"}
+                lambda candidate: candidate[1].update(
+                    {"completed_at": "2026-09-27T00:04:32Z"}
                 ),
                 "producer-post-evidence-failure-order",
             ),
@@ -2123,8 +2197,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": name,
                 "status": "completed",
                 "conclusion": conclusion,
-                "started_at": "2026-09-27T00:04:31Z",
-                "completed_at": "2026-09-27T00:04:40Z",
+                "started_at": (
+                    "2026-09-27T00:04:20Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:31Z"
+                ),
+                "completed_at": (
+                    "2026-09-27T00:04:29Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:40Z"
+                ),
             }
             for index, (name, conclusion) in enumerate(outcomes, start=1)
         ]
@@ -2146,6 +2228,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("managed-sync", evidence["evidence_kind"])
         self.assertEqual(88, evidence["producer_run_id"])
 
+        check["completed_at"] = "2026-09-27T00:05:01Z"
+        self.assertEqual(88, verify(exact_jobs)["producer_run_id"])
+        check["completed_at"] = "2026-09-27T00:04:30Z"
+
         for index, field, value, reason in (
             (0, "conclusion", "success", "producer-run-job-binding"),
             (1, "conclusion", "failure", "producer-run-job-binding"),
@@ -2159,9 +2245,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             (4, "name", "Unexpected job", "producer-run-job-binding"),
             (4, "name", outcomes[0][0], "producer-run-job-binding"),
             (
-                3,
-                "started_at",
-                "2026-09-27T00:04:29Z",
+                1,
+                "completed_at",
+                "2026-09-27T00:04:32Z",
                 "producer-post-evidence-failure-order",
             ),
         ):
