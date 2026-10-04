@@ -58,6 +58,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
         jobs: dict[int, list[dict[str, object]]],
         guard: str | None = None,
         attempt_one_jobs: dict[int, list[dict[str, object]]] | None = None,
+        event_head_ref: str = "feature/li179",
         foreign_pulls: dict[int, dict[str, object]] | None = None,
         runs_second: list[dict[str, object]] | None = None,
         conditional: bool = False,
@@ -151,7 +152,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 "PR_NUMBER": "2334",
                 "EVENT_BASE": "b" * 40,
                 "EVENT_HEAD": "c" * 40,
-                "EVENT_HEAD_REF": "feature/li179",
+                "EVENT_HEAD_REF": event_head_ref,
                 "PRODUCER_OWNER_MODE": mode,
                 "COUNTER_FILE": str(Path(temporary) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
@@ -387,6 +388,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             ("base_sha", "z" * 40),
             ("head_sha", "z" * 40),
             ("head_mismatch", "d" * 40),
+            ("ref_mismatch", "feature/renamed"),
         ):
             malformed = json.loads(json.dumps(original))
             association = malformed["pull_requests"][0]
@@ -394,6 +396,8 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 association["number"] = value
             elif key == "base_sha":
                 association["base"]["sha"] = value
+            elif key == "ref_mismatch":
+                association["head"]["ref"] = value
             else:
                 association["head"]["sha"] = value
             malformed_runs.append(malformed)
@@ -462,6 +466,31 @@ class CopilotReviewRefreshTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, rejected.returncode)
                 self.assertNotEqual("102", rejected.stdout)
+
+    def test_owner_identity_survives_same_sha_branch_rename(self) -> None:
+        guards = self._producer_owner_guards()
+        guards.append(self._refresh_producer_owner_guard())
+        original = self._producer_run(101)
+        original["head_branch"] = "feature/original"
+        original["pull_requests"][0]["head"]["ref"] = "feature/original"
+        renamed = self._producer_run(102)
+        renamed["head_branch"] = "feature/renamed"
+        renamed["pull_requests"][0]["head"]["ref"] = "feature/renamed"
+
+        for guard_index, guard in enumerate(guards):
+            with self.subTest(guard=guard_index):
+                result = self._run_producer_owner_guard(
+                    guard=guard,
+                    event_head_ref="feature/renamed",
+                    runs=[original, renamed],
+                    jobs={
+                        101: [self._producer_job(101)],
+                        102: [self._producer_job(102)],
+                    },
+                    conditional=True,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("101", result.stdout)
 
     def test_owner_election_fails_closed_in_conditional_and_on_snapshot_drift(
         self,
@@ -974,6 +1003,42 @@ class CopilotReviewRefreshTests(unittest.TestCase):
 
         self.assertEqual(0, evaluate(1).returncode)
         self.assertNotEqual(0, evaluate(2).returncode)
+
+    def test_refresh_owner_run_revalidation_ignores_live_branch_rename(
+        self,
+    ) -> None:
+        run = self._producer_run(77)
+        run["head_branch"] = "feature/original"
+        run["pull_requests"][0]["head"]["ref"] = "feature/original"
+        script = "\n".join((
+            "set -euo pipefail",
+            self._refresh_shell_function("validate_refresh_owner_run"),
+            'validate_refresh_owner_run "${RUN}"',
+        ))
+
+        def evaluate(candidate: dict[str, object]) -> int:
+            result = subprocess.run(
+                [self._test_tool("bash"), "-c", script],
+                text=True,
+                capture_output=True,
+                check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "BASE_SHA": "b" * 40,
+                    "HEAD_REF": "feature/renamed",
+                    "HEAD_SHA": "c" * 40,
+                    "PR_NUMBER": "2334",
+                    "REPOSITORY": "lightning-it/shared-assets-lit",
+                    "RUN": json.dumps(candidate),
+                    "owner_run_id": "77",
+                },
+            )
+            return result.returncode
+
+        self.assertEqual(0, evaluate(run))
+        inconsistent = json.loads(json.dumps(run))
+        inconsistent["pull_requests"][0]["head"]["ref"] = "feature/other"
+        self.assertNotEqual(0, evaluate(inconsistent))
 
     def test_bound_publisher_accepts_only_exact_refresh_invalidation(
         self,
