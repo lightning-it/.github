@@ -181,6 +181,7 @@ jobs:
           fi
           export PRODUCER_OWNER_MODE
           export EVENT_BASE="${BASE_SHA}"
+          export LIVE_BASE="${BASE_SHA}"
           export EVENT_HEAD="${HEAD_SHA}"
           export EVENT_HEAD_REF="${HEAD_REF}"
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
@@ -311,7 +312,7 @@ jobs:
               pp="$(oa --method GET --paginate --slurp \
                 -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
-              jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
+              jq -e --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
                 --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
                 --argjson n "${PR_NUMBER}" '
                   type == "array" and length > 0 and length <= 10
