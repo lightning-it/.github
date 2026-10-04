@@ -2052,6 +2052,63 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # The successful policy job can publish its bound check before the
+        # job itself reaches its terminal success, and the protected handoff
+        # can then publish the same semantic evidence again. Both native
+        # records must validate; only an exact semantic replica is reconciled.
+        policy_check = check_run(external_id, v6_summary())
+        policy_check.update(
+            {
+                "id": 98,
+                "completed_at": "2026-09-27T00:04:25Z",
+                "details_url": "https://github.com/lightning-it/example/runs/98",
+            }
+        )
+        protected_check = check_run(external_id, v6_summary())
+        protected_check.update(
+            {"id": 99, "completed_at": "2026-09-27T00:04:41Z"}
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, jobs=exact_jobs),
+        ):
+            reconciled = MODULE.bound_review_check(
+                [{"check_runs": [protected_check, policy_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(99, reconciled["check_id"])
+
+        distinct_check = check_run(
+            external_id,
+            expanded_v6_summary(),
+        )
+        distinct_check["id"] = 100
+        distinct_check["details_url"] = (
+            "https://github.com/lightning-it/example/runs/100"
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, jobs=exact_jobs),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                "bound-current-revision-check-not-unique",
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [protected_check, distinct_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull() | {"labels": []},
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
         # GitHub may publish the neutral check after the failed handoff and
         # even after the producer run closes. The verified policy job, rather
         # than the asynchronous check publication, orders the handoff.
@@ -2142,7 +2199,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     )
 
         for completed_at in (
-            "2026-09-27T00:04:28Z",
+            "2026-09-27T00:04:19Z",
             "2026-09-27T00:06:01Z",
         ):
             invalid_check = check_run(external_id, v6_summary())

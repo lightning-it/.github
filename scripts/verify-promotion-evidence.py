@@ -1496,6 +1496,10 @@ def validate_producer_run(
                 "Request protected verifier re-evaluation / "
                 "Re-run the one protected verifier attempt"
             ]
+            policy_started = timestamp(
+                observed_jobs["Verify current revision policy"].get("started_at"),
+                "producer-policy-started-at",
+            )
             policy_completed = timestamp(
                 observed_jobs["Verify current revision policy"].get("completed_at"),
                 "producer-policy-completed-at",
@@ -1518,8 +1522,11 @@ def validate_producer_run(
             # ordering gap, with two identical read-only terminal run reads.
             # Every other run field must remain identical.
             if (
-                policy_completed <= handoff_started <= handoff_completed
-                and policy_completed <= check_completed <= merged_at
+                policy_started
+                <= policy_completed
+                <= handoff_started
+                <= handoff_completed
+                and policy_started <= check_completed <= merged_at
                 and handoff_completed > run_updated
                 and run_updated <= merged_at
             ):
@@ -1553,12 +1560,13 @@ def validate_producer_run(
                 require(stable_update is not None, "producer-run-convergence-missing")
                 run_updated = stable_update
             require(
-                policy_completed
+                policy_started
+                <= policy_completed
                 <= handoff_started
                 <= handoff_completed
                 <= run_updated
                 <= merged_at
-                and policy_completed <= check_completed <= merged_at,
+                and policy_started <= check_completed <= merged_at,
                 "producer-post-evidence-failure-order",
             )
             failed_handoff_producer = True
@@ -2062,8 +2070,17 @@ def bound_review_check(
                 "historical_findings_count": historical_findings_count,
             }
             matches.append(match)
-    require(len(matches) == 1, "bound-current-revision-check-not-unique")
-    return matches[0]
+    # GitHub can retain both the policy job's native check and an identical
+    # protected-verifier publication for the same producer. Validate every
+    # candidate above, then reconcile only byte-equivalent semantic evidence.
+    # Distinct producer, version, summary or finding evidence remains
+    # ambiguous and therefore fails closed.
+    semantic_bindings = {
+        canonical({key: value for key, value in match.items() if key != "check_id"})
+        for match in matches
+    }
+    require(len(semantic_bindings) == 1, "bound-current-revision-check-not-unique")
+    return max(matches, key=lambda match: match["check_id"])
 
 
 def validate_review_threads(connection: Any) -> JSON:
