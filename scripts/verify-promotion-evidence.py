@@ -1731,9 +1731,21 @@ def validate_producer_run(
                         normalized_texts = [
                             normalized_review_text(value) for value in review_texts
                         ]
+                        overview_lines = body.splitlines()
+                        findings_lines = [
+                            line for line in overview_lines
+                            if line.lstrip().startswith("**Findings:**")
+                        ]
                         require(
-                            "## Copilot review overview" in body
-                            and "**Findings:**" in body
+                            overview_lines.count("## Copilot review overview") == 1
+                            and len(findings_lines) == 1
+                            and re.fullmatch(
+                                r"\*\*Findings:\*\* (?:None|[1-9][0-9]*"
+                                r"(?: <picture><source [^<>\r\n]+>"
+                                r"<source [^<>\r\n]+><img [^<>\r\n]+>"
+                                r"</picture>)?)",
+                                findings_lines[0],
+                            ) is not None
                             and not any(
                                 marker in normalized
                                 for normalized in normalized_texts

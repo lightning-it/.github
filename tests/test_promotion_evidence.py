@@ -3147,7 +3147,9 @@ class PromotionEvidenceTests(unittest.TestCase):
                      "**Findings:** 1\n"
                      "<strong>Open (1)</strong>"),
         }
-        remote = evidence_api(producer_run(), review=review)
+        run = producer_run()
+        run["pull_requests"] = []
+        remote = evidence_api(run, review=review)
 
         def api(arguments):
             if "check-runs?check_name=" in arguments[-1]:
@@ -3184,6 +3186,58 @@ class PromotionEvidenceTests(unittest.TestCase):
                             pull=ingress_pull(), pull_number=17,
                             base_sha=BASE, head_sha=HEAD,
                         )
+
+        valid_body = review["body"]
+        review["body"] = valid_body.replace(
+            "**Findings:** 1",
+            '**Findings:** 1 <picture><source media="dark">'
+            '<source media="light"><img alt="High"></picture>',
+        )
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+        for invalid_body in (
+            valid_body.replace("**Findings:** 1", "**Findings:**"),
+            valid_body.replace("**Findings:** 1", "**Findings:** arbitrary"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 0"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 1 extra"),
+            valid_body + "\n**Findings:** None",
+            valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
+        ):
+            with (
+                self.subTest(invalid_body=invalid_body),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                review["body"] = invalid_body
+                remote = evidence_api(run, review=review)
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "producer-review-binding"
+                ):
+                    MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
 
     def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
         accepted = MODULE.validate_review_threads(
