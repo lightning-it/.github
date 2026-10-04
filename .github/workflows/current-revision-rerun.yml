@@ -449,14 +449,13 @@ jobs:
               ' <<<"${controller_ancestry}" >/dev/null
             jq -e \
               --arg actor "${author}" \
-              --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
               --argjson attempt "${producer_attempt}" \
               --arg run_url "${producer_url}" '
                 .event == "pull_request_target"
                 and .path == ".github/workflows/copilot-review.yml"
                 and .name == "Current revision review gate"
-                and .head_branch == $head_ref
+                and ((.head_branch|strings) as $ref | ($ref|length)>0 and $ref==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
                 and .html_url == $run_url
                 and .actor.login == $actor
@@ -582,8 +581,6 @@ jobs:
             if [ "${v3_count}" -eq 1 ] && [ "${v2_count}" -eq 0 ]; then
               reservations="${v3_reservations}"
             elif [ "${v3_count}" -eq 0 ] && [ "${v2_count}" -eq 1 ]; then
-              # Bounded cutover compatibility: v2 lacks the base in external_id,
-              # so the protected run payload below must bind the exact live base.
               reservations="${v2_reservations}"
             elif [ "${v3_count}" -eq 0 ] && [ "${v2_count}" -eq 0 ]; then
               reservations='[]'
@@ -633,7 +630,6 @@ jobs:
             run_id="${BASH_REMATCH[1]}"
           fi
           verifier_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${run_id}"
-
           load_cross_inventory() {
             local cross_pages cross_runs
             cross_pages="$(bounded_gh_api --paginate --slurp \
@@ -684,7 +680,7 @@ jobs:
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
-                  select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                  select(.head_sha == $head_sha) |
                   select((.pull_requests | length) == 1) |
                   select(.pull_requests[0].number == $pr_number) |
                   select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
@@ -692,7 +688,9 @@ jobs:
                   select(.pull_requests[0].base.ref == $base_ref) |
                   select(.pull_requests[0].base.sha == $base_sha) |
                   select(.pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)) |
-                  select(.pull_requests[0].head.ref == $head_ref) |
+                  select((.head_branch|strings) as $r |
+                    ($r|length)>0
+                    and $r==(.pull_requests[0].head.ref|strings)) |
                   select(.pull_requests[0].head.sha == $head_sha) |
                   select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
                   select(.workflow_url == ($api_url + "/repos/" + $repository
@@ -1008,7 +1006,9 @@ jobs:
                       + "/actions/required_workflows/"
                       + (.workflow_id | tostring)
                   end)
-                and .head_branch == $head_ref
+                and ((.head_branch|strings) as $r |
+                  ($r|length)>0
+                  and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
                 and .html_url == $run_url
                 and .actor.login == $author
@@ -1023,7 +1023,6 @@ jobs:
                 and .pull_requests[0].base.sha == $base_sha
                 and .pull_requests[0].base.repo.url
                   == ($api_url + "/repos/" + $repository)
-                and .pull_requests[0].head.ref == $head_ref
                 and .pull_requests[0].head.sha == $head_sha
                 and .pull_requests[0].head.repo.url
                   == ($api_url + "/repos/" + $repository)
@@ -1316,7 +1315,9 @@ jobs:
                       == $created_at
                     ) catch false)
                 and (.run_attempt == 1 or .run_attempt == 2)
-                and .head_branch == $head_ref
+                and ((.head_branch|strings) as $r |
+                  ($r|length)>0
+                  and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
                 and (.workflow_id | type) == "number" and .workflow_id > 0
                 and .workflow_url == ($api_url + "/repos/" + $repository
@@ -1337,7 +1338,6 @@ jobs:
                 and .pull_requests[0].base.ref == $base_ref
                 and .pull_requests[0].base.sha == $base_sha
                 and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
-                and .pull_requests[0].head.ref == $head_ref
                 and .pull_requests[0].head.sha == $head_sha
                 and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
                 and (
