@@ -2324,13 +2324,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 "pull_request": number,
                 "merged_at": merged_at,
                 "ancestry_boundary": ancestry_boundary,
+                "baseline_reconciliation": index == baseline_boundary,
                 "post_baseline": post_baseline,
                 "review": review,
                 "threads": threads,
             }
         )
     post_baseline_count = sum(item["post_baseline"] is True for item in ingress)
-    require(post_baseline_count > 0, "no-post-baseline-ingress")
+    # A reviewed feature may precede the backsync that introduces main. All
+    # first-parent merges here are outside main and retain their exact native
+    # acceptance evidence, regardless of position. Reconciliation alone must
+    # never qualify as a new change to promote.
+    reviewed_change_count = sum(
+        not item["ancestry_boundary"] and not item["baseline_reconciliation"]
+        for item in ingress
+    )
+    require(reviewed_change_count > 0, "no-reviewed-change-ingress")
 
     # Finish every other mutable remote read before taking the final ingress
     # snapshot. No network operation is permitted between this snapshot and
@@ -2459,6 +2468,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
         "controller_sha": controller_sha,
         "ingress_count": len(ingress),
         "post_baseline_ingress_count": post_baseline_count,
+        "reviewed_change_ingress_count": reviewed_change_count,
         "ingress": ingress,
     }
     return {**evidence, "evidence_sha256": digest(evidence)}

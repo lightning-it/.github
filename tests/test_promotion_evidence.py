@@ -2726,20 +2726,51 @@ class PromotionEvidenceTests(unittest.TestCase):
         }
 
         def execute(
-            *, mutate_final_pull: bool, reviewed_release: bool = False, missing_release_review: bool = False
+            *, mutate_final_pull: bool, reviewed_release: bool = False,
+            missing_release_review: bool = False, late_baseline: bool = False,
+            change_kind: str = "feature", missing_feature_review: bool = False,
+            mutated_feature_review: bool = False,
         ) -> dict[str, object]:
             current = promotion()
             pull_reads = 0
             api_calls: list[str] = []
             active_boundary = json.loads(json.dumps(boundary))
+            active_feature = json.loads(json.dumps(feature))
+            active_merges = json.loads(json.dumps(merges))
+            if change_kind == "structural":
+                active_feature["user"] = pre_boundary["user"]
+                active_feature["title"] = pre_boundary["title"]
+                active_feature["head"]["ref"] = (
+                    f"backmerge/example-{historical_main[:12]}-"
+                    f"{boundary_merge[:12]}-main"
+                )
+            if late_baseline:
+                active_merges = [active_merges[0], active_merges[2], active_merges[1]]
+                active_merges[1]["base_sha"] = pre_boundary_merge
+                active_merges[2]["base_sha"] = feature_merge
+                active_boundary["head"]["ref"] = (
+                    f"backmerge/example-{BASE[:12]}-{feature_merge[:12]}-main"
+                )
+                active_feature["merged_at"] = "2026-09-26T23:30:00Z"
+            if change_kind == "absent":
+                active_merges = json.loads(json.dumps(merges[:2]))
             if reviewed_release:
                 active_boundary["user"] = {"login": "litroc", "id": 1, "type": "User"}
                 active_boundary["title"] = "chore(release): sync v1.14.0 back to develop"
                 active_boundary["head"]["ref"] = "backsync/release-v1.14.0-to-develop"
 
+            feature_reads = 0
+
             def collect(**kwargs: object) -> dict[str, object]:
+                nonlocal feature_reads
                 if missing_release_review and kwargs["pull_number"] == 10:
                     raise MODULE.EvidenceError("no-current-head-review")
+                if kwargs["pull_number"] == 17:
+                    feature_reads += 1
+                    if missing_feature_review:
+                        raise MODULE.EvidenceError("no-current-head-review")
+                    if mutated_feature_review and feature_reads == 2:
+                        return {**bound, "review": {"check_id": 100}}
                 return bound
 
             def api(arguments: list[str]) -> object:
@@ -2767,13 +2798,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ):
                     return [[pre_boundary]]
                 if endpoint.endswith(f"commits/{feature_merge}/pulls?per_page=100"):
-                    return [[feature]]
+                    return [[active_feature]]
                 if endpoint == "repos/lightning-it/example/pulls/10":
                     return active_boundary
                 if endpoint == "repos/lightning-it/example/pulls/16":
                     return pre_boundary
                 if endpoint == "repos/lightning-it/example/pulls/17":
-                    return feature
+                    return active_feature
                 if endpoint == "repos/lightning-it/example/branches/main":
                     return {"name": "main", "protected": True, "commit": {"sha": BASE}}
                 if endpoint == "repos/lightning-it/example/branches/develop":
@@ -2809,7 +2840,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         mock.patch.object(
                             MODULE,
                             "first_parent_merges",
-                            return_value=("a" * 40, "b" * 40, merges),
+                            return_value=("a" * 40, "b" * 40, active_merges),
                         ),
                         mock.patch.object(
                             MODULE,
@@ -2820,7 +2851,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                             MODULE,
                             "is_ancestor",
                             side_effect=lambda _path, _ancestor, descendant: not reviewed_release
-                            or descendant in {boundary_head, boundary_merge, HEAD, feature_merge},
+                            or descendant in {boundary_head, boundary_merge}
+                            or (not late_baseline and descendant in {HEAD, feature_merge}),
                         ),
                         mock.patch.object(
                             MODULE,
@@ -2834,6 +2866,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                             side_effect=lambda _repository, *, head_sha, **_kwargs: (
                                 historical_main
                                 if head_sha == pre_boundary_head
+                                or (head_sha == HEAD and change_kind == "structural")
                                 else BASE if head_sha == boundary_head else None
                             ),
                         ),
@@ -2849,14 +2882,21 @@ class PromotionEvidenceTests(unittest.TestCase):
                         value = MODULE.verify(arguments)
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
-                    self.assertEqual(1, value["post_baseline_ingress_count"])
+                    self.assertEqual(0 if late_baseline else 1, value["post_baseline_ingress_count"])
+                    self.assertEqual(1, value["reviewed_change_ingress_count"])
                     self.assertTrue(value["ingress"][0]["ancestry_boundary"])
-                    self.assertEqual(not reviewed_release, value["ingress"][1]["ancestry_boundary"])
-                    self.assertFalse(value["ingress"][2]["ancestry_boundary"])
+                    baseline_index = 2 if late_baseline else 1
+                    feature_index = 1 if late_baseline else 2
+                    self.assertEqual(not reviewed_release, value["ingress"][baseline_index]["ancestry_boundary"])
+                    self.assertTrue(value["ingress"][baseline_index]["baseline_reconciliation"])
+                    self.assertFalse(value["ingress"][feature_index]["baseline_reconciliation"])
+                    self.assertFalse(value["ingress"][feature_index]["ancestry_boundary"])
+                    self.assertEqual(bound["review"], value["ingress"][feature_index]["review"])
+                    self.assertEqual(2, feature_reads)
                     self.assertIsNone(value["ingress"][0]["review"])
                     if reviewed_release:
-                        self.assertEqual(bound["review"], value["ingress"][1]["review"])
-                        self.assertEqual(bound["threads"], value["ingress"][1]["threads"])
+                        self.assertEqual(bound["review"], value["ingress"][baseline_index]["review"])
+                        self.assertEqual(bound["threads"], value["ingress"][baseline_index]["threads"])
                         self.assertEqual(2, release_binding.call_count)
                         self.assertEqual(
                             2,
@@ -2869,8 +2909,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                     self.assertEqual(
                         [
                             "repos/lightning-it/example/pulls/16",
-                            "repos/lightning-it/example/pulls/10",
-                            "repos/lightning-it/example/pulls/17",
+                            f"repos/lightning-it/example/pulls/{17 if late_baseline else 10}",
+                            f"repos/lightning-it/example/pulls/{10 if late_baseline else 17}",
                         ],
                         api_calls[-3:],
                     )
@@ -2881,14 +2921,85 @@ class PromotionEvidenceTests(unittest.TestCase):
                     else:
                         os.environ["RUNNER_TEMP"] = previous
 
+        execute(mutate_final_pull=False, reviewed_release=True, late_baseline=True)
         execute(mutate_final_pull=False)
         execute(mutate_final_pull=False, reviewed_release=True)
+        for reviewed_release in (False, True):
+            with self.subTest(reviewed_release=reviewed_release):
+                execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True)
+                for change_kind in ("absent", "structural"):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "no-reviewed-change-ingress"):
+                        execute(mutate_final_pull=False, reviewed_release=reviewed_release, change_kind=change_kind)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-17:no-current-head-review"):
+                    execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True, missing_feature_review=True)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-17:ingress-evidence-mutated"):
+                    execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True, mutated_feature_review=True)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "promotion-event-body-mismatch"):
+                    execute(mutate_final_pull=True, reviewed_release=reviewed_release, late_baseline=True)
         with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-10:no-current-head-review"):
             execute(mutate_final_pull=False, reviewed_release=True, missing_release_review=True)
         with self.assertRaisesRegex(
             MODULE.EvidenceError, "promotion-event-body-mismatch"
         ):
             execute(mutate_final_pull=True)
+
+    def test_workflow_package_gate_accepts_reviewed_prebaseline_changes_only(self) -> None:
+        aggregate = WORKFLOW.read_text().split(
+            "      - name: Aggregate exact protected ingress evidence\n", 1
+        )[1].split("      - name: Persist exact promotion evidence package\n", 1)[0]
+        predicate = aggregate.split(
+            '--argjson pull_request "${PR_NUMBER}" \'', 1
+        )[1].split('\' "${output}" >/dev/null', 1)[0]
+        package = {
+            "schema_version": 1, "repository": "lightning-it/example",
+            "pull_request": 41, "base_sha": BASE, "head_sha": HEAD,
+            "controller_sha": "5" * 40, "ingress_count": 2,
+            "post_baseline_ingress_count": 0, "reviewed_change_ingress_count": 1,
+            "diff": {"bytes": 100, "sha256": "6" * 64},
+            "evidence_sha256": "7" * 64,
+            "ingress": [
+                {"ancestry_boundary": False, "baseline_reconciliation": False,
+                 "post_baseline": False, "review": {}, "threads": {}},
+                {"ancestry_boundary": False, "baseline_reconciliation": True,
+                 "post_baseline": False, "review": {}, "threads": {}},
+            ],
+        }
+
+        def accepted(value: dict[str, object]) -> bool:
+            result = subprocess.run(
+                ["jq", "-e", "--arg", "base", BASE, "--arg", "head", HEAD,
+                 "--arg", "controller", "5" * 40, "--arg", "repository",
+                 "lightning-it/example", "--argjson", "pull_request", "41", predicate],
+                input=json.dumps(value), text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(3, result.returncode, result.stderr)
+            return result.returncode == 0
+
+        self.assertTrue(accepted(package))
+        post_baseline = json.loads(json.dumps(package))
+        post_baseline["ingress"][0]["post_baseline"] = True
+        post_baseline["post_baseline_ingress_count"] = 1
+        self.assertTrue(accepted(post_baseline))
+        for field, values in (
+            ("post_baseline_ingress_count", (-1, 1, None, "0")),
+            ("reviewed_change_ingress_count", (0, 2, None, "1")),
+            ("ingress_count", (0, 1, None, "2")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(accepted({**package, field: value}))
+        for field, value in (
+            ("ancestry_boundary", True), ("ancestry_boundary", None),
+            ("baseline_reconciliation", True), ("baseline_reconciliation", None),
+            ("post_baseline", None), ("review", None), ("threads", None),
+        ):
+            with self.subTest(ingress_field=field, value=value):
+                invalid = json.loads(json.dumps(package))
+                invalid["ingress"][0][field] = value
+                self.assertFalse(accepted(invalid))
+        baseline_only = {**package, "ingress": package["ingress"][1:],
+                         "ingress_count": 1, "reviewed_change_ingress_count": 0}
+        self.assertFalse(accepted(baseline_only))
 
     def test_duplicate_checks_and_unresolved_threads_fail_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
