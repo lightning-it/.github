@@ -1523,7 +1523,9 @@ def validate_producer_run(
                 and handoff_completed > run_updated
                 and run_updated <= merged_at
             ):
-                original_binding = {key: value for key, value in run.items() if key != "updated_at"}
+                original_binding = canonical(
+                    {key: value for key, value in run.items() if key != "updated_at"}
+                )
                 stable_update = None
                 for _ in range(2):
                     refreshed_run = exact_object(
@@ -1531,7 +1533,13 @@ def validate_producer_run(
                         "producer-run-convergence",
                     )
                     require(
-                        {key: value for key, value in refreshed_run.items() if key != "updated_at"}
+                        canonical(
+                            {
+                                key: value
+                                for key, value in refreshed_run.items()
+                                if key != "updated_at"
+                            }
+                        )
                         == original_binding,
                         "producer-run-convergence-identity",
                     )

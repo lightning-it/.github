@@ -2118,6 +2118,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         for snapshots, reason in (
             ((stale_run, dict(run, head_sha="9" * 40), run), "producer-run-convergence-identity"),
+            ((stale_run, dict(run, run_attempt=True), run), "producer-run-convergence-identity"),
             (
                 (stale_run, run, dict(run, updated_at="2026-09-27T00:05:01Z")),
                 "producer-run-convergence-unstable",
