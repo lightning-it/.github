@@ -450,6 +450,21 @@ gh() {
         self._owner(None, guard=guard, runs=[previous],
                     jobs={100: [wrong_event_job]},
                     event_base=previous_base, cond=True)
+
+    def test_publish_revalidation_binds_live_base_before_owner_guard(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index("      - name: Publish bound neutral result\n")
+        end = workflow.find("\n      - name:", start + 1)
+        publish = workflow[start:end if end >= 0 else None]
+        self.assertIn(
+            "LIVE_BASE: ${{ github.event.pull_request.base.sha }}", publish
+        )
+        self.assertIn(
+            'source "${RUNNER_TEMP}/current-revision-producer-owner.sh"',
+            publish,
+        )
+        self.assertIn('live_owner="$(eo)"', publish)
+
     def test_owner_rename(self):
         guards = self._guards()
         original = self._run(101)
