@@ -1349,6 +1349,7 @@ def validate_producer_run(
             "producer-run-triggering-actor-identity",
         )
     require(run.get("status") == "completed", "producer-run-status")
+    failed_handoff_producer = False
     if evidence_kind == "release-app":
         require(run.get("conclusion") == "success", "producer-run-conclusion")
         require(attempt == 1, "release-producer-run-attempt")
@@ -1477,6 +1478,7 @@ def validate_producer_run(
                 and policy_completed <= check_completed <= merged_at,
                 "producer-post-evidence-failure-order",
             )
+            failed_handoff_producer = True
         if evidence_kind == "copilot" and "review_id" in summary:
             expanded_review_pages = validate_expanded_review_identity(
                 repository=repository,
@@ -1594,8 +1596,14 @@ def validate_producer_run(
                 require(
                     run_created
                     <= check_completed
-                    <= run_updated
                     <= merged_at,
+                    "producer-managed-sync-time-binding",
+                )
+                require(
+                    run_created <= run_updated <= merged_at
+                    and (
+                        failed_handoff_producer or check_completed <= run_updated
+                    ),
                     "producer-managed-sync-time-binding",
                 )
                 return summary
@@ -1667,8 +1675,12 @@ def validate_producer_run(
                             and submitted <= check_completed
                             and run_created
                             <= check_completed
-                            <= run_updated
                             <= merged_at
+                            and run_updated <= merged_at
+                            and (
+                                failed_handoff_producer
+                                or check_completed <= run_updated
+                            )
                             and body.startswith("<!-- ccr-overview-v2 -->")
                         ),
                         "producer-review-binding",

@@ -938,6 +938,21 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        late_success_check = check_run(external_id, v6_summary())
+        late_success_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [late_success_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
         early_check = check_run(external_id, v6_summary())
         early_check["completed_at"] = "2026-09-27T00:03:00Z"
         with mock.patch.object(
@@ -2053,6 +2068,23 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, delayed["producer_run_id"])
 
+        empty_association_run = dict(run)
+        empty_association_run["pull_requests"] = []
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(empty_association_run, jobs=exact_jobs),
+        ):
+            delayed_without_association = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed_without_association["producer_run_id"])
+
         for completed_at in (
             "2026-09-27T00:04:28Z",
             "2026-09-27T00:06:01Z",
@@ -2195,6 +2227,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         evidence = verify(exact_jobs)
         self.assertEqual("managed-sync", evidence["evidence_kind"])
         self.assertEqual(88, evidence["producer_run_id"])
+
+        check["completed_at"] = "2026-09-27T00:05:01Z"
+        self.assertEqual(88, verify(exact_jobs)["producer_run_id"])
+        check["completed_at"] = "2026-09-27T00:04:30Z"
 
         for index, field, value, reason in (
             (0, "conclusion", "success", "producer-run-job-binding"),
