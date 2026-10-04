@@ -28,6 +28,7 @@ class NativeGitHub:
         self.calls = []
         self.sequence = 1
         self.before_commit = None
+        self.after_commit = None
         self.after_read = None
         self.response_mutation = None
         self.lose_reply = False
@@ -68,8 +69,11 @@ class NativeGitHub:
         self.document = json.loads(base64.b64decode(request["fileChanges"]["additions"][0]["contents"]))
         self.sequence += 1
         self.oid = f"{self.sequence:040x}"
-        if self.lose_reply:
-            self.lose_reply = False
+        lose_reply, self.lose_reply = self.lose_reply, False
+        if self.after_commit:
+            callback, self.after_commit = self.after_commit, None
+            callback()
+        if lose_reply:
             raise TimeoutError("response unavailable")
         return {"data": {"createCommitOnBranch": {"commit": {"oid": self.oid},
                 "ref": {"name": "li219-reservations", "target": {"oid": self.oid}}}}}
@@ -176,6 +180,41 @@ class RequiredReviewJournalTests(unittest.TestCase):
             self.finish()
         self.assertEqual(self.server.document["records"][self.key]["record"]["state"], "pending")
         self.assertEqual(self.checks.writes, [])
+
+    def test_successful_cas_survives_a_concurrent_unrelated_admission(self):
+        newer = dict(self.identity, producer_run=210)
+        self.server.after_commit = lambda: self.finalizer.admit(newer, 301, 1100, 3600)
+        result = self.finish()
+        self.assertEqual(result["record"]["state"], "success")
+        self.assertEqual(len(self.server.document["records"]), 2)
+        self.finalizer.deliver(self.key, self.checks)
+        self.assertEqual(len(self.checks.writes), 1)
+
+    def test_lost_commit_reply_survives_concurrent_delivery_receipt(self):
+        self.server.lose_reply = True
+        self.server.after_commit = lambda: self.finalizer.deliver(self.key, self.checks)
+        result = self.finish()
+        self.assertTrue(result["delivered"])
+        self.assertEqual(len(self.checks.writes), 1)
+
+    def test_successful_admission_can_read_back_its_later_terminal_state(self):
+        newer = dict(self.identity, producer_run=210)
+        key = J.STATE.operation_key(newer)
+        self.server.after_commit = lambda: self.finalizer.expire(key, 301, 4700)
+        result = self.finalizer.admit(newer, 301, 1100, 3600)
+        self.assertEqual(result["record"]["state"], "failure")
+
+    def test_successor_readback_cannot_erase_a_preexisting_terminal_outbox(self):
+        self.finish()
+        before = self.store.snapshot()["journal"]
+        for mutation in (
+            lambda d: d["records"].clear(),
+            lambda d: d["records"].update({self.key: deepcopy(self.entry)}),
+        ):
+            candidate = deepcopy(before)
+            mutation(candidate)
+            with self.assertRaisesRegex(ValueError, "journal-write-unconfirmed"):
+                J.preserves(before, candidate, CONFIG)
 
     def test_competing_finalizer_and_sweeper_only_one_decision_wins(self):
         self.server.before_commit = lambda: self.finalizer.expire(self.key, 300, 4600)
@@ -326,6 +365,16 @@ class RequiredReviewJournalTests(unittest.TestCase):
         for raw in (b'{"x":1,"x":2}', b'{"x":1.0}', b'{"x":NaN}'):
             with self.assertRaises(ValueError):
                 J.parsed(raw)
+
+    def test_falsey_malformed_graphql_errors_never_authorize_a_write(self):
+        before = len(self.writes())
+        for errors in (None, False, 0, 0.0, "", {}, []):
+            with self.subTest(errors=errors):
+                self.server.response_mutation = lambda response: response.update(errors=errors)
+                with self.assertRaisesRegex(ValueError, "store-response"):
+                    self.finish()
+        self.assertEqual(len(self.writes()), before)
+        self.assertEqual(self.checks.writes, [])
 
     def test_no_deletion_reopening_payload_mutation_or_receipt_shortcut(self):
         self.finish()

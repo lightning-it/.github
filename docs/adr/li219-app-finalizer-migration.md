@@ -75,6 +75,12 @@ drops history to make room. This is a bounded reference implementation, not an
 unbounded fleet storage claim. Capacity/partitioning must be resolved before
 production activation, preserving operation tombstones and complete inventory.
 
+GraphQL success must omit `errors`; falsey malformed values and partial data
+reject. CAS read-back may observe a later concurrent state: reconciliation
+validates that every intended record, immutable binding and terminal payload is
+preserved and that receipts never regress. Another writer's valid admission or
+delivery receipt does not turn an already durable CAS into a false failure.
+
 Each operation key binds repository ID, PR, head and producer run. The accepted
 transition model retains base, controller, ruleset digest, actor, run attempt,
 admission, reviewer and metadata bindings. App ID, check ID, generation and

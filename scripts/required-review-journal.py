@@ -187,6 +187,31 @@ def transition(previous, candidate, config):
                 "outbox-is-immutable")
 
 
+def preserves(committed, observed, config):
+    """A concurrent successor must retain every intended immutable transition.
+
+    Read-back may include later admissions, a pending-to-terminal transition,
+    or a delivery receipt. This recognizes durable effects without trusting a
+    mutation response or requiring the branch to remain globally idle.
+    """
+    journal(committed, config)
+    journal(observed, config)
+    before, after = committed["records"], observed["records"]
+    require(set(before) <= set(after), "journal-write-unconfirmed")
+    for key, expected in before.items():
+        actual = after[key]
+        require(expected["app_id"] == actual["app_id"]
+                and expected["external_id"] == actual["external_id"],
+                "journal-write-unconfirmed")
+        try:
+            STATE.compare_and_swap(expected["record"], expected["record"], actual["record"])
+        except ValueError:
+            raise JournalRejected("journal-write-unconfirmed") from None
+        require(expected["outbox"] is None or expected["outbox"] == actual["outbox"],
+                "journal-write-unconfirmed")
+        require(not expected["delivered"] or actual["delivered"], "journal-write-unconfirmed")
+
+
 class GitHubJournal:
     """A single private data branch, using GitHub's expectedHeadOid CAS.
 
@@ -203,7 +228,12 @@ class GitHubJournal:
     def snapshot(self):
         owner, name = self.config["store_repository"].split("/")
         response = self.call(READ, {"owner": owner, "name": name, "ref": REF})
-        require(type(response) is dict and not response.get("errors"), "store-response")
+        # GraphQL success omits errors; even falsey errors are a malformed
+        # response, not evidence that the request succeeded. Partial data rejects.
+        require(type(response) is dict and set(response) <= {"data", "extensions"}
+                and type(response.get("data")) is dict
+                and ("extensions" not in response or type(response["extensions"]) is dict),
+                "store-response")
         try:
             repo = response["data"]["repository"]
             require(repo["nameWithOwner"] == self.config["store_repository"]
@@ -253,8 +283,8 @@ class GitHubJournal:
             # An unknown response never licenses a second write. Always read back.
             pass
         observed = self.snapshot()
-        require(observed["oid"] != expected["oid"] and observed["journal"] == candidate,
-                "journal-write-unconfirmed")
+        require(observed["oid"] != expected["oid"], "journal-write-unconfirmed")
+        preserves(candidate, observed["journal"], self.config)
         return observed
 
 
