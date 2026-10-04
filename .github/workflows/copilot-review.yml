@@ -536,7 +536,7 @@ jobs:
               pp="$(oa --method GET --paginate --slurp \
                 -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
-              jq -e --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" \
+              jq -e --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
                 --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
                 --argjson n "${PR_NUMBER}" '
                   type == "array" and length > 0 and length <= 10
@@ -746,6 +746,8 @@ jobs:
             PRODUCER_OWNER_MODE=deterministic
           fi
           export PRODUCER_OWNER_MODE
+          LIVE_BASE="${EVENT_BASE}"
+          export LIVE_BASE
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           # shellcheck source=/dev/null
           source "${owner_guard}"
@@ -1413,6 +1415,7 @@ jobs:
           EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
           EVENT_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          LIVE_BASE: ${{ github.event.pull_request.base.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           OWNER_RUN_ID: ${{ steps.producer-owner.outputs.owner_run_id }}
           PRODUCER_OWNER_MODE: ${{ steps.producer-owner.outputs.owner_mode }}
@@ -1898,9 +1901,10 @@ jobs:
         run: |
           set -euo pipefail
           EVENT_BASE="${EXPECTED_BASE}"
+          LIVE_BASE="${EXPECTED_BASE}"
           EVENT_HEAD="${EXPECTED_HEAD}"
           EVENT_HEAD_REF="${EXPECTED_HEAD_REF}"
-          export EVENT_BASE EVENT_HEAD EVENT_HEAD_REF
+          export EVENT_BASE LIVE_BASE EVENT_HEAD EVENT_HEAD_REF
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           # shellcheck source=/dev/null
           source "${owner_guard}"
