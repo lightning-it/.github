@@ -2320,9 +2320,23 @@ jobs:
               and .head_sha == $head
               and .controller_sha == $controller
               and (.ingress_count | type == "number" and . > 0)
+              and (.ingress | type == "array")
               and (.ingress | length) == .ingress_count
-              and (.post_baseline_ingress_count | type == "number" and . > 0)
-              and .post_baseline_ingress_count <= .ingress_count
+              and all(.ingress[];
+                (.ancestry_boundary | type == "boolean")
+                and (.baseline_reconciliation | type == "boolean")
+                and (.post_baseline | type == "boolean")
+                and (.ancestry_boundary or
+                  ((.review | type == "object") and (.threads | type == "object"))))
+              and (.ingress | to_entries as $entries
+                | [$entries[] | select(.value.baseline_reconciliation) | .key] as $baselines
+                | ($baselines | length) == 1
+                  and all($entries[]; .value.post_baseline == (.key > $baselines[0])))
+              and (.post_baseline_ingress_count | type == "number" and . >= 0)
+              and .post_baseline_ingress_count == ([.ingress[] | select(.post_baseline)] | length)
+              and (.reviewed_change_ingress_count | type == "number" and . > 0)
+              and .reviewed_change_ingress_count ==
+                ([.ingress[] | select(.ancestry_boundary == false and .baseline_reconciliation == false)] | length)
               and (.diff.bytes | type == "number" and . > 0)
               and (.diff.sha256 | test("^[0-9a-f]{64}$"))
               and (.evidence_sha256 | test("^[0-9a-f]{64}$"))
@@ -2366,7 +2380,8 @@ jobs:
           jq -r '
             "### Protected promotion evidence\n\n"
             + "- Ingress PRs: \(.ingress_count)\n"
-            + "- Post-baseline reviewed PRs: \(.post_baseline_ingress_count)\n"
+            + "- Reviewed change PRs: \(.reviewed_change_ingress_count)\n"
+            + "- Post-baseline PRs: \(.post_baseline_ingress_count)\n"
             + "- Promotion bytes: \(.diff.bytes)\n"
             + "- Promotion SHA-256: `\(.diff.sha256)`\n"
             + "- Evidence SHA-256: `\(.evidence_sha256)`"

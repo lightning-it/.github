@@ -810,14 +810,23 @@ def validate_reviewed_release_baseline(
     require(match is not None, "release-baseline-ref")
     assert match is not None
     version = match.group(1)
+    controller_title = f"chore: sync v{version} release back to develop"
     require(
-        pull.get("title") == f"chore(release): sync v{version} back to develop",
+        pull.get("title") in (
+            f"chore(release): sync v{version} back to develop",
+            controller_title,
+        ),
         "release-baseline-title",
     )
+    evidence_kind = expected_evidence_kind(pull, repository=repository)
     require(
-        expected_evidence_kind(pull, repository=repository) in {"copilot", "release-app"},
+        evidence_kind in {"copilot", "release-app"},
         "release-baseline-review-kind",
     )
+    # The existing release-back-sync producer uses this exact alternate title.
+    # It still needs the authenticated App identity and ordinary review proof.
+    if pull.get("title") == controller_title:
+        require(evidence_kind == "release-app", "release-baseline-title-author")
     previous = sha(merge.get("base_sha"), "release-baseline-previous")
     head_sha = sha(merge.get("head_sha"), "release-baseline-head-sha")
     merge_sha = sha(merge.get("merge_sha"), "release-baseline-merge-sha")
@@ -2315,13 +2324,22 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 "pull_request": number,
                 "merged_at": merged_at,
                 "ancestry_boundary": ancestry_boundary,
+                "baseline_reconciliation": index == baseline_boundary,
                 "post_baseline": post_baseline,
                 "review": review,
                 "threads": threads,
             }
         )
     post_baseline_count = sum(item["post_baseline"] is True for item in ingress)
-    require(post_baseline_count > 0, "no-post-baseline-ingress")
+    # A reviewed feature may precede the backsync that introduces main. All
+    # first-parent merges here are outside main and retain their exact native
+    # acceptance evidence, regardless of position. Reconciliation alone must
+    # never qualify as a new change to promote.
+    reviewed_change_count = sum(
+        not item["ancestry_boundary"] and not item["baseline_reconciliation"]
+        for item in ingress
+    )
+    require(reviewed_change_count > 0, "no-reviewed-change-ingress")
 
     # Finish every other mutable remote read before taking the final ingress
     # snapshot. No network operation is permitted between this snapshot and
@@ -2450,6 +2468,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
         "controller_sha": controller_sha,
         "ingress_count": len(ingress),
         "post_baseline_ingress_count": post_baseline_count,
+        "reviewed_change_ingress_count": reviewed_change_count,
         "ingress": ingress,
     }
     return {**evidence, "evidence_sha256": digest(evidence)}
