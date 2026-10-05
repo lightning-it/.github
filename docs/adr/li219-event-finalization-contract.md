@@ -13,7 +13,14 @@ activate the separate App/journal proposal. The historical pure-model and
 platform analysis below remains applicable; its statement that production
 polling is unchanged describes the earlier design-only revision.
 
-The review request job runs only on attempt 1. An unavailable review leaves
+The review request job runs only on attempt 1. For a ready, same-repository PR
+authored and updated by `litroc`, `synchronize` may request review of a genuinely
+new head. This explicitly supersedes the older blanket prohibition on
+`synchronize` requests: the protected job records and reads back the durable
+head claim **before** its single request. A consumed claim prevents another
+request even after an uncertain response. An already-pending, PR-scoped
+reviewer is not relabelled as a new head's request. `edited`, `labeled`, draft
+PRs and attempt 2 cannot request AI review. An unavailable review leaves
 the initial verifier failed and merge-blocking after one observation. A later
 review event, producer completion or scheduled reconciliation resumes the same
 PR and head. It never requests another AI review. Re-running the producer run

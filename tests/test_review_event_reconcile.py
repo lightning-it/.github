@@ -46,7 +46,7 @@ class ReviewEventTests(unittest.TestCase):
                "head_branch": "fix/final", "pull_requests": [{"number": 23}],
                "status": state, "created_at": (self.now - dt.timedelta(seconds=delay)).isoformat()}
         inventories = {
-            
+
             f"{prefix}/pulls?state=open": [pr],
             f"{prefix}/actions/runs?event=pull_request_target&head_sha={self.head}": [run],
             f"{prefix}/commits/{self.head}/check-runs?filter=all": [],
@@ -257,9 +257,61 @@ gh() {
         workflow = (ROOT / ".github/workflows/copilot-review.yml").read_text()
         request = workflow.split("  request-current-revision-review:", 1)[1].split("    permissions:", 1)[0]
         self.assertIn("github.run_attempt == 1", request)
+        self.assertIn("github.event.action == 'synchronize'", request)
+        self.assertNotIn("github.event.action == 'edited'", request)
+        self.assertNotIn("github.event.action == 'labeled'", request)
         verifier = contracts.CopilotReviewRefreshTests._review_script()
         self.assertNotIn("seq 1 40", verifier)
         self.assertNotIn("seq 1 20", verifier)
+
+    def test_new_head_requests_once_and_lost_response_cannot_repeat_same_head(self):
+        workflow = (ROOT / ".github/workflows/copilot-review.yml").read_text()
+        fragment = workflow.split('          reviewer_is_requested() {\n', 1)[1].split('\n  verify-current-revision-policy:', 1)[0]
+        fragment = textwrap.dedent('          reviewer_is_requested() {\n' + fragment)
+        shell = r'''set -euo pipefail
+sleep() { :; }
+gh() {
+  local arg body=''
+  for arg in "$@"; do case "$arg" in body=*) body="${arg#body=}";; esac; done
+  if [[ " $* " == *" --method POST "* ]]; then
+    if [[ "$*" == *requested_reviewers* ]]; then
+      printf '%s\n' "${EXPECTED_HEAD}" >>"${REQUESTS}"
+      return 42
+    fi
+    jq -c --arg body "${body}" '.[0]+=[{user:{login:"github-actions[bot]"},body:$body}]' "${COMMENTS}" >"${COMMENTS}.next"
+    mv "${COMMENTS}.next" "${COMMENTS}"
+    return 42
+  fi
+  if [[ "$*" == *'/comments?'* ]]; then cat "${COMMENTS}"
+  elif [[ "$*" == *requested_reviewers* ]]; then printf '%s' '{"users":[]}'
+  elif [[ "$*" == *'/pulls/23' ]]; then
+    jq -cn --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" '
+      {number:23,state:"open",draft:false,user:{login:"litroc"},
+       head:{sha:$head,repo:{full_name:"lightning-it/.github"}},
+       base:{sha:$base,repo:{full_name:"lightning-it/.github"}}}'
+  else return 99; fi
+}
+worker() (
+  EXPECTED_HEAD="$1"
+  marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
+''' + fragment + r'''
+)
+for head in "${FIRST_HEAD}" "${FIRST_HEAD}" "${SECOND_HEAD}" "${SECOND_HEAD}"; do
+  worker "${head}" || true
+done
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            comments, requests = Path(tmp) / "comments", Path(tmp) / "requests"
+            comments.write_text('[[]]')
+            result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
+                                    env={**os.environ, "COMMENTS": str(comments), "REQUESTS": str(requests),
+                                         "FIRST_HEAD": self.head, "SECOND_HEAD": "c" * 40,
+                                         "EXPECTED_BASE": self.base, "PR_NUMBER": "23", "GITHUB_RUN_ID": "77",
+                                         "REPOSITORY": "lightning-it/.github", "reviewer": "copilot-pull-request-reviewer[bot]",
+                                         "requested_reviewers_url": "repos/lightning-it/.github/pulls/23/requested_reviewers"})
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual([self.head, "c" * 40], requests.read_text().splitlines())
+            self.assertEqual(2, len(json.loads(comments.read_text())[0]))
 
     def test_missing_human_review_reaches_blocking_reservation_without_wait(self):
         workflow = (ROOT / ".github/workflows/supplementary-current-revision-required.yml").read_text()

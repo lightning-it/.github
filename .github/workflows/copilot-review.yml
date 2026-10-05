@@ -208,7 +208,8 @@ jobs:
       needs.classify-main-trust-root-handoff.outputs.active != 'true' &&
       github.event_name == 'pull_request_target' &&
       (github.event.action == 'opened' ||
-        github.event.action == 'ready_for_review') &&
+        github.event.action == 'ready_for_review' ||
+        github.event.action == 'synchronize') &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == 'litroc' &&
@@ -328,38 +329,60 @@ jobs:
             <<<"${comments}" >/dev/null; then
             marker_exists=true
           fi
+          if [ "${marker_exists}" = true ]; then
+            echo "The exact-head Copilot request is consumed; no second request is permitted."
+            exit 0
+          fi
           if reviewer_is_requested; then
-            if [ "${marker_exists}" = false ]; then
-              gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-                -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
-            fi
-            echo "Copilot review is already pending for the exact finalized head."
+            # requested_reviewers is PR-scoped, not proof of a request for this
+            # head. Do not consume the new head merely because an older request
+            # remains pending, and never send a concurrent second request.
+            echo "A review is pending; awaiting head-bound evidence without another request."
             exit 0
           else
             request_status=$?
-            if [ "${request_status}" -ne 1 ]; then
-              exit "${request_status}"
+            [ "${request_status}" -eq 1 ] || exit "${request_status}"
+          fi
+          revalidate_request_head() {
+            local current
+            current="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
+            jq -e --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" \
+              --arg repo "${REPOSITORY}" --argjson pr "${PR_NUMBER}" '
+                .number == $pr and .state == "open" and .draft == false
+                and .user.login == "litroc"
+                and .head.sha == $head and .base.sha == $base
+                and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+              ' <<<"${current}" >/dev/null
+          }
+          revalidate_request_head
+          claim_body="${marker}Copilot review request reserved for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}."
+          gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -f "body=${claim_body}" >/dev/null || true
+          claim_confirmed=false
+          for observation in 1 2 3; do
+            comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+            if jq -e --arg marker "${marker}" --arg body "${claim_body}" '
+              [.[][] | select(.user.login == "github-actions[bot]")
+                | select(.body | contains($marker))]
+              | length == 1 and .[0].body == $body
+              ' <<<"${comments}" >/dev/null; then
+              claim_confirmed=true
+              break
             fi
-          fi
-          if [ "${marker_exists}" = true ]; then
-            echo "The one exact-head Copilot request was already consumed; automatic retry is forbidden." >&2
-            exit 1
-          fi
+            [ "${observation}" -eq 3 ] || sleep 2
+          done
+          test "${claim_confirmed}" = true
+          revalidate_request_head
           if ! gh api --method POST "${requested_reviewers_url}" \
               -f "reviewers[]=${reviewer}"; then
-            # A concurrent protected request may win after the pre-check.
-            # Accept only the verified idempotent outcome; every API failure
-            # without the expected live reviewer remains fail-closed.
+            # Never retry the AI request. The durable claim remains consumed;
+            # subsequent review/completion events can reconcile accepted work.
             if reviewer_is_requested; then
-              echo "A concurrent workflow already requested Copilot review."
+              echo "Uncertain response reconciled from the pending reviewer."
             else
-              verification_status=$?
-              exit "${verification_status}"
+              echo "Review request response remains uncertain; exact-head claim retained." >&2
+              exit 1
             fi
-          fi
-          if [ "${marker_exists}" = false ]; then
-            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-              -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
           fi
 
   verify-current-revision-policy:
