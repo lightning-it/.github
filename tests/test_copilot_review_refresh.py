@@ -884,7 +884,41 @@ printf %s "${result}"
         marker = f"          {name}() {{\n"
         start = workflow.index(marker)
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
-        return textwrap.dedent(workflow[start:end])
+        function = textwrap.dedent(workflow[start:end])
+        if name != "va":
+            return function
+        fixture = r'''
+read_evidence_owner_pr() {
+  if [ -n "${OWNER_PR:-}" ]; then printf '%s\n' "${OWNER_PR}"; return; fi
+  jq -cn --arg author "${PR_AUTHOR}" --arg base "${BASE_SHA}" \
+    --arg base_ref "${BASE_REF:-develop}" --arg head "${HEAD_SHA}" \
+    --arg head_ref "${HEAD_REF:-fix/final}" \
+    --arg repository "${REPOSITORY:-lightning-it/.github}" \
+    --argjson number "${PR_NUMBER:-123}" \
+    '{number:$number,state:"open",draft:false,merged_at:null,
+      user:{login:$author},base:{ref:$base_ref,sha:$base,
+      repo:{full_name:$repository}},head:{ref:$head_ref,sha:$head,
+      repo:{full_name:$repository}}}'
+}
+'''
+        function = function.replace("va() {", "workflow_va() {", 1)
+        wrapper = r'''
+va() {
+  local payload="${1}"
+  : "${BASE_REF:=develop}" "${HEAD_REF:=fix/final}"
+  : "${PR_NUMBER:=123}" "${REPOSITORY:=lightning-it/.github}"
+  if ! jq -e '.[0].output.summary | strings | fromjson? | type=="object"' \
+      <<<"${payload}" >/dev/null; then
+    payload="$(jq -c --arg base "${BASE_SHA}" --arg head "${HEAD_SHA}" \
+      --argjson owner "${owner_run_id}" --argjson pr "${PR_NUMBER:-123}" \
+      '.[0].output.summary=({schema:4,base_sha:$base,head_sha:$head,
+        pull_request_number:$pr,producer_run_id:$owner}|tojson)' \
+      <<<"${payload}")"
+  fi
+  workflow_va "${payload}"
+}
+'''
+        return textwrap.dedent(fixture) + function + textwrap.dedent(wrapper)
     @staticmethod
     def _review_script():
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -1433,11 +1467,17 @@ ro() { :; }
     @staticmethod
     def _rerun_summary_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
-        summary = workflow.index('          neutral_summary="$(jq -cer \\\n')
+        summary = workflow.index("          validate_evidence_owner() {\n")
         marker = '            --argjson run_id "${producer_id}" \'\n'
         start = workflow.index(marker, summary) + len(marker)
-        end = workflow.index('\n            \' <<<"${neutral_summary}"', start)
+        end = workflow.index('\n              \' <<<"${neutral_summary}"', start)
         return workflow[start:end]
+
+    @staticmethod
+    def _rerun_owner_binding_guard() -> str:
+        return CopilotReviewRefreshTests._rerun_shell_function(
+            "validate_evidence_owner"
+        )
 
     @staticmethod
     def _rerun_list_summary_parsing() -> str:
@@ -2187,6 +2227,7 @@ gh() {
         author: str,
         external_id: str,
         pull_request_number: int | None,
+        owner_pr_number: int = 123,
         repository: str = "lightning-it/.github",
         review_path: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -2221,17 +2262,28 @@ gh() {
                     "base",
                     base,
                     "--arg",
+                    "current_kind",
+                    ("renovate" if author == "renovate[bot]" else
+                     "ancestry-backmerge" if "ancestry-backmerge" in external_id else
+                     "managed-sync" if "managed-sync" in external_id else "copilot"),
+                    "--arg",
                     "head",
                     head,
                     "--arg",
                     "pr",
                     "123",
                     "--arg",
+                    "owner_pr",
+                    str(owner_pr_number),
+                    "--arg",
                     "repository",
                     repository,
                     "--argjson",
                     "pr_number",
                     "123",
+                    "--argjson",
+                    "owner_pr_number",
+                    str(owner_pr_number),
                     "--arg",
                     "owner_run_id",
                     "77",
@@ -3321,7 +3373,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             "html_url": "https://github.example/actions/runs/77",
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "github-actions[bot]"},
-            "pull_requests": [{"head": {"ref": "fix/final"}}],
+            "pull_requests": [
+                {"number": 123, "head": {"ref": "fix/final"}}
+            ],
         }
 
         def evaluate_identity(
@@ -3343,6 +3397,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     "--argjson",
                     "attempt",
                     str(attempt),
+                    "--argjson",
+                    "owner_pr",
+                    "123",
                     "--arg",
                     "run_url",
                     "https://github.example/actions/runs/77",

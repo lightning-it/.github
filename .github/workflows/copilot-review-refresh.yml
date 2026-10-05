@@ -526,6 +526,7 @@ jobs:
             sleep 6
           done
           [[ "${owner_run_id}" =~ ^[1-9][0-9]*$ ]]
+          owner_pr_number="${PR_NUMBER}"
           current_external_kind=copilot
           if [ "${PR_AUTHOR}" = "renovate[bot]" ] \
             && [[ "${HEAD_REF}" == renovate/* ]]; then
@@ -636,7 +637,7 @@ jobs:
               --arg head_ref "${HEAD_REF}" \
               --arg repository "${REPOSITORY}" \
               --argjson owner_run_id "${owner_run_id}" \
-              --argjson pr "${PR_NUMBER}" '
+              --argjson pr "${owner_pr_number:-${PR_NUMBER}}" '
                 . as $run
                 | .id == $owner_run_id
                 and .event == "pull_request_target"
@@ -867,45 +868,91 @@ jobs:
             test "${vo}" = "${po}"
           }
 
+          read_evidence_owner_pr() {
+            oa "repos/${REPOSITORY}/pulls/${1}"
+          }
+
           va() {
-            local check_json="$1"
+            local check_json="$1" owner_payload parsed
+            parsed="$(jq -cer \
+              --arg author "${PR_AUTHOR}" \
+              --arg base "${BASE_SHA}" \
+              --arg current_kind "${current_external_kind}" \
+              --arg head "${HEAD_SHA}" \
+              --argjson current_pr "${PR_NUMBER}" \
+              --argjson owner_run_id "${owner_run_id}" '
+                .[0] as $check
+                | ($check.output.summary | fromjson) as $summary
+                | ($check.external_id |
+                    if test("^mlx90-current-revision:copilot:v6:[1-9][0-9]*:[1-9][0-9]*:"
+                      + $base + ":" + $head + "$")
+                    then capture("^mlx90-current-revision:(?<kind>copilot):v6:(?<pr>[1-9][0-9]*):(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                      | {version:"v6",kind:.kind,pr:(.pr|tonumber),
+                          owner:(.owner|tonumber),base:.base,head:.head}
+                    elif test("^mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:"
+                      + ($current_pr|tostring) + ":[1-9][0-9]*:" + $base + ":" + $head + "$")
+                    then capture("^mlx90-current-revision:(?<kind>managed-sync|ancestry-backmerge|renovate):v6:(?<pr>[1-9][0-9]*):(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                      | {version:"v6",kind:.kind,pr:(.pr|tonumber),
+                          owner:(.owner|tonumber),base:.base,head:.head}
+                    elif test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:"
+                      + $base + ":" + $head + "$")
+                    then capture("^mlx90-current-revision:(?<kind>copilot|ancestry-backmerge):v5:(?<owner>[1-9][0-9]*):(?<base>[0-9a-f]{40}):(?<head>[0-9a-f]{40})$")
+                      | {version:"v5",kind:.kind,pr:$current_pr,
+                          owner:(.owner|tonumber),base:.base,head:.head}
+                    elif ($current_kind == "ancestry-backmerge"
+                      and $author == "lightning-it-release-automation[bot]"
+                      and test("^mlx90-current-revision:v4:"
+                        + ($owner_run_id|tostring) + ":[0-9a-f]{64}$"))
+                    then {version:"v4",kind:"ancestry-backmerge",pr:$current_pr,
+                      owner:$owner_run_id,base:$base,head:$head}
+                    else error("current-tuple-external-id") end
+                  ) as $binding
+                | select($binding.kind == $current_kind)
+                | select($binding.owner == $owner_run_id)
+                | select($binding.base == $base and $binding.head == $head)
+                | select($summary.schema == 4)
+                | select($summary.base_sha == $base)
+                | select($summary.head_sha == $head)
+                | select($summary.producer_run_id == $owner_run_id)
+                | select(
+                    if $binding.version == "v6" then
+                      $summary.pull_request_number == $binding.pr
+                    else
+                      (($summary | has("pull_request_number")) | not)
+                      or $summary.pull_request_number == $binding.pr
+                    end)
+                | $binding
+              ' <<<"${check_json}")" || return 1
+            owner_pr_number="$(jq -er '.pr' <<<"${parsed}")" || return 1
+            [[ "${owner_pr_number}" =~ ^[1-9][0-9]*$ ]] || return 1
+            owner_payload="$(read_evidence_owner_pr \
+              "${owner_pr_number}")" || return 1
             jq -e \
               --arg author "${PR_AUTHOR}" \
               --arg base "${BASE_SHA}" \
-              --arg current_external_id "${current_external_id}" \
-              --arg current_kind "${current_external_kind}" \
+              --arg base_ref "${BASE_REF}" \
               --arg head "${HEAD_SHA}" \
-              --arg owner_run_id "${owner_run_id}" '
-                .[0].external_id as $external_id
-                | ($external_id | type) == "string"
+              --arg head_ref "${HEAD_REF}" \
+              --arg repository "${REPOSITORY}" \
+              --argjson current_pr "${PR_NUMBER}" \
+              --argjson owner_pr "${owner_pr_number}" '
+                .number == $owner_pr
+                and .draft == false
+                and .user.login == $author
+                and .base.ref == $base_ref
+                and .base.sha == $base
+                and .base.repo.full_name == $repository
+                and .head.ref == $head_ref
+                and .head.sha == $head
+                and .head.repo.full_name == $repository
                 and (
-                  $external_id == $current_external_id
-                  or (
-                    $current_kind == "copilot"
-                    and ($author != "lightning-it-release-automation[bot]")
-                    and ($author != "lightning-it-shared-assets-sync[bot]")
-                    and ($author != "renovate[bot]")
-                    and $external_id
-                      == ("mlx90-current-revision:copilot:v5:"
-                        + $owner_run_id + ":" + $base + ":" + $head)
-                  )
-                  or (
-                    $current_kind == "ancestry-backmerge"
-                    and ($author == "lightning-it-release-automation[bot]"
-                      or $author == "lightning-it-shared-assets-sync[bot]")
-                    and $external_id
-                      == ("mlx90-current-revision:ancestry-backmerge:v5:"
-                        + $owner_run_id + ":" + $base + ":" + $head)
-                  )
-                  or (
-                    $current_kind == "ancestry-backmerge"
-                    and $author == "lightning-it-release-automation[bot]"
-                    and ($external_id | test(
-                      "^mlx90-current-revision:v4:" + $owner_run_id
-                        + ":[0-9a-f]{64}$"))
-                  )
+                  if $owner_pr == $current_pr then
+                    .state == "open"
+                  else
+                    .state == "closed" and .merged_at == null
+                  end
                 )
-              ' <<<"${check_json}" >/dev/null
+              ' <<<"${owner_payload}" >/dev/null
           }
           neutral="$(read_refresh_checks)"
           review_state="$(read_refresh_review_state)"
@@ -1025,10 +1072,13 @@ jobs:
             elif ! jq -e \
               --arg author "${PR_AUTHOR}" \
               --arg base "${BASE_SHA}" \
+              --arg current_kind "${current_external_kind}" \
               --arg head "${HEAD_SHA}" \
               --arg pr "${PR_NUMBER}" \
+              --arg owner_pr "${owner_pr_number}" \
               --arg repository "${REPOSITORY}" \
               --argjson pr_number "${PR_NUMBER}" \
+              --argjson owner_pr_number "${owner_pr_number}" \
               --arg owner_run_id "${owner_run_id}" \
               --arg url "${check_url}" '
                 .[0] as $check
@@ -1046,7 +1096,7 @@ jobs:
                         and $author != "lightning-it-shared-assets-sync[bot]"
                         and $author != "renovate[bot]")
                         and ($check.external_id |
-                          test("^mlx90-current-revision:copilot:v6:" + $pr
+                          test("^mlx90-current-revision:copilot:v6:" + $owner_pr
                             + ":" + $owner_run_id + ":" + $base + ":" + $head + "$")))
                       or
                       ($author == "lightning-it-shared-assets-sync[bot]"
@@ -1070,7 +1120,12 @@ jobs:
                           test("^mlx90-current-revision:ancestry-backmerge:v6:"
                             + $pr + ":" + $owner_run_id + ":" + $base + ":" + $head + "$")))
                     )
-                    and $summary.pull_request_number == $pr_number
+                    and $summary.pull_request_number == (
+                      if $current_kind == "copilot" then
+                        $owner_pr_number
+                      else
+                        $pr_number
+                      end)
                   )
                   or
                   (

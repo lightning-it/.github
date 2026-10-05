@@ -234,6 +234,66 @@ jobs:
             echo 'The reservation producer did not stabilize at success.' >&2
             return 1
           }
+          validate_evidence_owner() {
+            evidence_version=''
+            external_kind=''
+            expected_review_path=''
+            controller_sha=''
+            producer_job_head_sha=''
+            producer_job_name=''
+            v4_input_sha256=''
+            v4_workflow_sha=''
+            owner_pr_number="${PR_NUMBER}"
+            if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:([0-9a-f]{64})$ ]]; then
+              evidence_version=v4
+              v4_input_sha256="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:copilot:v6:([1-9][0-9]*):${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v6
+              external_kind=copilot
+              owner_pr_number="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v6
+              external_kind="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v5
+              external_kind="${BASH_REMATCH[1]}"
+            else
+              echo "Neutral evidence does not match a supported protected producer binding." >&2
+              return 1
+            fi
+            jq -e --arg base "${EXPECTED_BASE}" \
+              --arg evidence_version "${evidence_version}" \
+              --arg head "${EXPECTED_HEAD}" --arg run_url "${producer_url}" \
+              --argjson pr_number "${owner_pr_number:-${PR_NUMBER}}" \
+              --argjson run_id "${producer_id}" '
+                .schema == 4 and .base_sha == $base and .head_sha == $head
+                and .producer_run_id == $run_id and .run_url == $run_url
+                and (if $evidence_version == "v6" then
+                  .pull_request_number == $pr_number else
+                  ((has("pull_request_number") | not)
+                    or .pull_request_number == $pr_number) end)
+              ' <<<"${neutral_summary}" >/dev/null || return 1
+            owner_pr="${pr}"
+            if [ "${owner_pr_number}" != "${PR_NUMBER}" ]; then
+              test "${evidence_version}" = v6 || return 1
+              test "${external_kind}" = copilot || return 1
+              owner_pr="$(bounded_gh_api \
+                "repos/${REPOSITORY}/pulls/${owner_pr_number}")" || return 1
+            fi
+            jq -e --arg author "${author}" --arg base "${EXPECTED_BASE}" \
+              --arg base_ref "${base_ref}" --arg head "${EXPECTED_HEAD}" \
+              --arg head_ref "${head_ref}" --arg repository "${REPOSITORY}" \
+              --argjson current_pr "${PR_NUMBER}" \
+              --argjson owner_pr "${owner_pr_number}" '
+                .number == $owner_pr and .draft == false
+                and .user.login == $author and .base.ref == $base_ref
+                and .base.sha == $base and .base.repo.full_name == $repository
+                and .head.ref == $head_ref and .head.sha == $head
+                and .head.repo.full_name == $repository
+                and (if $owner_pr == $current_pr then .state == "open"
+                  else .state == "closed" and .merged_at == null end)
+              ' <<<"${owner_pr}" >/dev/null
+          }
           GUARD
           test -s "${guard}" && test ! -L "${guard}"
 
@@ -324,48 +384,7 @@ jobs:
           author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
           base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' <<<"${pr}")"
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
-          evidence_version=''
-          external_kind=''
-          expected_review_path=''
-          controller_sha=''
-          producer_job_head_sha=''
-          producer_job_name=''
-          v4_input_sha256=''
-          v4_workflow_sha=''
-          if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:([0-9a-f]{64})$ ]]; then
-            evidence_version=v4
-            v4_input_sha256="${BASH_REMATCH[1]}"
-          elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
-            evidence_version=v6
-            external_kind="${BASH_REMATCH[1]}"
-          elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
-            evidence_version=v5
-            external_kind="${BASH_REMATCH[1]}"
-          else
-            echo "Neutral evidence does not match a supported protected producer binding." >&2
-            exit 1
-          fi
-          jq -e \
-            --arg base "${EXPECTED_BASE}" \
-            --arg evidence_version "${evidence_version}" \
-            --arg head "${EXPECTED_HEAD}" \
-            --arg run_url "${producer_url}" \
-            --argjson pr_number "${PR_NUMBER}" \
-            --argjson run_id "${producer_id}" '
-              .schema == 4
-              and .base_sha == $base
-              and .head_sha == $head
-              and .producer_run_id == $run_id
-              and .run_url == $run_url
-              and (
-                if $evidence_version == "v6" then
-                  .pull_request_number == $pr_number
-                else
-                  ((has("pull_request_number") | not)
-                    or .pull_request_number == $pr_number)
-                end
-              )
-            ' <<<"${neutral_summary}" >/dev/null
+          validate_evidence_owner
           if [ "${evidence_version}" = v4 ]; then
             v4_workflow_sha="$(jq -er \
               '.workflow_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
@@ -451,11 +470,16 @@ jobs:
               --arg actor "${author}" \
               --arg head_sha "${EXPECTED_HEAD}" \
               --argjson attempt "${producer_attempt}" \
+              --argjson owner_pr "${owner_pr_number:-${PR_NUMBER}}" \
               --arg run_url "${producer_url}" '
                 .event == "pull_request_target"
                 and .path == ".github/workflows/copilot-review.yml"
                 and .name == "Current revision review gate"
-                and ((.head_branch|strings) as $ref | ($ref|length)>0 and $ref==(.pull_requests[0].head.ref|strings))
+                and (.pull_requests | type) == "array"
+                and (.pull_requests | length) == 1
+                and .pull_requests[0].number == $owner_pr
+                and ((.head_branch|strings) as $ref | ($ref|length)>0
+                  and $ref==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
                 and .html_url == $run_url
                 and .actor.login == $actor
@@ -1066,7 +1090,7 @@ jobs:
               --arg evidence_version "${evidence_version}" \
               --arg head "${EXPECTED_HEAD}" \
               --arg run_url "${producer_url}" \
-              --argjson pr_number "${PR_NUMBER}" \
+              --argjson pr_number "${owner_pr_number:-${PR_NUMBER}}" \
               --argjson run_id "${producer_id}" '
                 .schema == 4
                 and .base_sha == $base

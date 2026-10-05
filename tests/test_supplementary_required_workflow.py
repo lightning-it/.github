@@ -2577,7 +2577,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:copilot:v6:([1-9][0-9]*):([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn(
@@ -3107,7 +3111,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('.event == "pull_request_review"', late)
         self.assertIn(
-            'pulls/${PR_NUMBER}/reviews?per_page=100',
+            'pulls/${owner_pr_number}/reviews?per_page=100',
             late,
         )
         self.assertIn(
@@ -4409,7 +4413,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
-        self.assertIn("and .controller_sha == $controller", human_path)
+        summary_filter = workflow.split(
+            '          cat >"${summary_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
+        self.assertIn("and .controller_sha==$controller", summary_filter)
         self.assertIn(".base.ref == $base_ref", human_path)
         self.assertNotIn(".head_branch == $controller_branch", human_path)
         self.assertNotIn(".head_sha == $controller_sha", human_path)
@@ -5540,7 +5547,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             nonterminal_handoff,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:",
+            "mlx90-current-revision:copilot:v6:",
+            terminal_wait,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:",
             terminal_wait,
         )
         self.assertIn(
@@ -6021,11 +6032,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n                \' <<<"${producer}" >/dev/null',
             1,
         )[0]
-        validator_start = permanent.index("            validate_recorded_ref() {")
-        validator_end = permanent.index("\n            }", validator_start)
-        validator = textwrap.dedent(
-            permanent[validator_start : validator_end + len("\n            }")]
-        )
+        owner_run_filter = workflow.split(
+            '          cat >"${owner_run_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
         jq = self._test_tool("jq")
         head = "a" * 40
         payload = {
@@ -6037,7 +6046,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "head_sha": head,
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "litroc"},
-            "pull_requests": [{"head": {"ref": "feature/original"}}],
+            "pull_requests": [
+                {"number": 1502, "head": {"ref": "feature/original"}}
+            ],
         }
 
         def accepts(
@@ -6055,8 +6066,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 candidate.pop("conclusion")
             script = "\n".join((
                 "set -euo pipefail",
-                validator,
-                'validate_recorded_ref "${CANDIDATE}"',
+                'jq -e --argjson owner 1502 "${OWNER_RUN_FILTER}" '
+                '<<<"${CANDIDATE}" >/dev/null',
                 'jq -e '
                     + " ".join([
                     "--arg",
@@ -6079,6 +6090,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "CANDIDATE": json.dumps(candidate),
                     "FILTER": producer_filter,
                     "HEAD": head,
+                    "OWNER_RUN_FILTER": owner_run_filter,
                 },
             )
             return result.returncode == 0
@@ -6881,6 +6893,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "mlx90-current-revision:managed-sync:v6:"
                 f"{pr_number}:789:{base}:{head}"
             ): "789",
+            f"mlx90-current-revision:copilot:v6:1498:790:{base}:{head}": "790",
             (
                 "mlx90-current-revision:renovate:v6:"
                 f"{pr_number}:901:{base}:{head}"
@@ -6893,7 +6906,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual(run_id, result.stdout)
 
         rejected = (
-            [f"mlx90-current-revision:copilot:v6:99:789:{base}:{head}"],
+            [f"mlx90-current-revision:managed-sync:v6:99:789:{base}:{head}"],
             [f"mlx90-current-revision:copilot:v5:789:{head}:{base}"],
             [
                 "mlx90-current-revision:renovate:v6:99:789:"

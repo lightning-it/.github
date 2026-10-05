@@ -3425,7 +3425,10 @@ jobs:
                     ($external_id |
                       test("^mlx90-current-revision:v4:[1-9][0-9]*:[0-9a-f]{64}$"))
                     or ($external_id |
-                      test("^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:"
+                      test("^mlx90-current-revision:copilot:v6:[1-9][0-9]*:[1-9][0-9]*:"
+                        + $base + ":" + $head + "$"))
+                    or ($external_id |
+                      test("^mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:"
                         + $pr + ":[1-9][0-9]*:" + $base + ":" + $head + "$"))
                     or ($external_id |
                       test("^mlx90-current-revision:(copilot|ancestry-backmerge):v5:[1-9][0-9]*:"
@@ -3437,7 +3440,10 @@ jobs:
               if [[ "${external_id}" =~ ^mlx90-current-revision:v4:([1-9][0-9]*): ]]; then
                 producer_kind=release-app
                 producer_run_id="${BASH_REMATCH[1]}"
-              elif [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              elif [[ "${external_id}" =~ ^mlx90-current-revision:copilot:v6:([1-9][0-9]*):([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+                producer_kind=copilot
+                producer_run_id="${BASH_REMATCH[2]}"
+              elif [[ "${external_id}" =~ ^mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
                 producer_kind="${BASH_REMATCH[1]}"
                 producer_run_id="${BASH_REMATCH[2]}"
               else
@@ -5330,6 +5336,48 @@ jobs:
           and $step_completed <= $job_completed
           and $job_completed <= $updated
           JQ
+          owner_pr_filter="${RUNNER_TEMP}/current-revision-owner-pr.jq"
+          install -m 0600 /dev/null "${owner_pr_filter}"
+          cat >"${owner_pr_filter}" <<'JQ'
+          .number==$owner and .draft==false
+          and .user.login==$current.user.login
+          and (.base|{ref,sha,repo:.repo.full_name})
+            == ($current.base|{ref,sha,repo:.repo.full_name})
+          and (.head|{ref,sha,repo:.repo.full_name})
+            == ($current.head|{ref,sha,repo:.repo.full_name})
+          and (if $owner==$current.number then .state=="open"
+            else .state=="closed" and .merged_at==null end)
+          JQ
+          owner_run_filter="${RUNNER_TEMP}/current-revision-owner-run.jq"
+          install -m 0600 /dev/null "${owner_run_filter}"
+          cat >"${owner_run_filter}" <<'JQ'
+          .head_branch as $r | ($r|strings|length)>0
+          and (.pull_requests|type)=="array" and (.pull_requests|length)==1
+          and .pull_requests[0].number==$owner
+          and $r==(.pull_requests[0].head.ref|strings)
+          JQ
+          owner_summary_filter="${RUNNER_TEMP}/current-revision-owner-summary.jq"
+          install -m 0600 /dev/null "${owner_summary_filter}"
+          cat >"${owner_summary_filter}" <<'JQ'
+          if $version=="v6" then .pull_request_number==$owner
+          else ((has("pull_request_number")|not) or .pull_request_number==$owner)
+          end
+          JQ
+          current_pr_filter="${RUNNER_TEMP}/current-revision-live-pr.jq"
+          install -m 0600 /dev/null "${current_pr_filter}"
+          cat >"${current_pr_filter}" <<'JQ'
+          .state=="open" and .draft==false and .base.sha==$base
+          and .head.sha==$head and .base.repo.full_name==$repository
+          and (.head.repo.full_name|type)=="string"
+          and (.head.repo.full_name|length)>0
+          JQ
+          summary_filter="${RUNNER_TEMP}/current-revision-summary.jq"
+          install -m 0600 /dev/null "${summary_filter}"
+          cat >"${summary_filter}" <<'JQ'
+          .schema==4 and .base_sha==$base and .head_sha==$head
+          and .controller_sha==$controller and .producer_run_id==$run_id
+          and .run_url==$run_url and .review_path==$review_path
+          JQ
 
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
@@ -5380,9 +5428,6 @@ jobs:
             ${{ steps.terminal-producer.outputs.producer_run_id }}
           TERMINAL_PRODUCER_KIND: >-
             ${{ steps.terminal-producer.outputs.producer_kind }}
-        # actionlint 1.7.12 deadlocks before ShellCheck starts when one run
-        # payload reaches the Linux 65,536-byte pipe capacity (upstream #712).
-        # The deterministic unit test keeps this protected payload bounded.
         run: |
           # shellcheck disable=SC2153
           set -euo pipefail
@@ -6366,18 +6411,10 @@ jobs:
             failure_stage='permanent-producer-inventory'
           neutral='[]'
           current_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-          jq -e \
-            --arg base "${EVENT_BASE}" \
-            --arg head "${EVENT_HEAD}" \
-            --arg repository "${REPOSITORY}" '
-              .state == "open"
-              and .draft == false
-              and .base.sha == $base
-              and .head.sha == $head
-              and .base.repo.full_name == $repository
-              and (.head.repo.full_name | type) == "string"
-              and (.head.repo.full_name | length) > 0
-            ' <<<"${current_pr}" >/dev/null
+          jq -e --arg base "${EVENT_BASE}" --arg head "${EVENT_HEAD}" \
+            --arg repository "${REPOSITORY}" \
+            -f "${RUNNER_TEMP}/current-revision-live-pr.jq" \
+            <<<"${current_pr}" >/dev/null
           for evidence_observation in $(seq 1 450); do
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -6489,7 +6526,15 @@ jobs:
                 and (.input_sha256 | test("^[0-9a-f]{64}$"))
               ' <<<"${summary}" >/dev/null
           else
-            if [[ "${external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+            owner_pr_number="${PR_NUMBER}"
+            evidence_version=v5
+            if [[ "${external_id}" =~ ^mlx90-current-revision:copilot:v6:([1-9][0-9]*):([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              evidence_version=v6
+              producer_kind=copilot
+              owner_pr_number="${BASH_REMATCH[1]}"
+              producer_run_id="${BASH_REMATCH[2]}"
+            elif [[ "${external_id}" =~ ^mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              evidence_version=v6
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             else
@@ -6497,6 +6542,16 @@ jobs:
               producer_kind="${BASH_REMATCH[1]}"
               producer_run_id="${BASH_REMATCH[2]}"
             fi
+            owner_pr="${current_pr}"
+            if [ "${owner_pr_number}" != "${PR_NUMBER}" ]; then
+              test "${producer_kind}" = copilot
+              owner_pr="$(gh api \
+                "repos/${REPOSITORY}/pulls/${owner_pr_number}")"
+            fi
+            jq -e --argjson current "${current_pr}" \
+              --argjson owner "${owner_pr_number}" \
+              -f "${RUNNER_TEMP}/current-revision-owner-pr.jq" \
+              <<<"${owner_pr}" >/dev/null
             test "${producer_run_id}" = "${TERMINAL_PRODUCER_RUN_ID}"
             if { [ "${author}" = 'lightning-it-release-automation[bot]' ] \
                 || [ "${central_sync_backmerge}" = true ]; }; then
@@ -6521,8 +6576,9 @@ jobs:
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
             validate_recorded_ref() {
-              jq -e '.head_branch as $r|($r|strings|length)>0
-                and $r==(.pull_requests[0].head.ref|strings)' <<<"$1" >/dev/null
+              jq -e --argjson owner "${owner_pr_number}" \
+                -f "${RUNNER_TEMP}/current-revision-owner-run.jq" \
+                <<<"$1" >/dev/null
             }
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${summary}")"
@@ -6696,7 +6752,7 @@ jobs:
                 ' <<<"${attempt_one_jobs}")"
 
               review_pages="$(gh api --paginate --slurp \
-                "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
+                "repos/${REPOSITORY}/pulls/${owner_pr_number}/reviews?per_page=100")"
               reviews="$(jq -c \
                 --arg producer_created_at "$(jq -er '.created_at | strings' \
                   <<<"${attempt_one}")" \
@@ -6734,7 +6790,7 @@ jobs:
                 --arg review_submitted_at "${review_submitted_at}" \
                 --arg producer_updated_at "$(jq -er '.updated_at | strings' \
                   <<<"${producer}")" \
-                --argjson pr_number "${PR_NUMBER}" '
+                --argjson pr_number "${owner_pr_number}" '
                   [.[].workflow_runs[]? |
                     select((.id | type) == "number" and .id > 0
                       and (.id | floor) == .id) |
@@ -6774,7 +6830,6 @@ jobs:
                 ' <<<"${refresh_pages}")"
               test "$(jq 'length' <<<"${refresh_runs}")" -eq 1
 
-              # Native job/step times prove strict order; same-second stays denied.
               refresh_run="$(jq -c '.[0]' <<<"${refresh_runs}")"
               refresh_run_id="$(jq -er '.id' <<<"${refresh_run}")"
               refresh_jobs="$(gh api --paginate --slurp \
@@ -6788,7 +6843,7 @@ jobs:
                 -f "${RUNNER_TEMP}/native-recovery-ordering.jq" \
                 <<<"${refresh_jobs}" >/dev/null
 
-              tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/timeline?per_page=100")"
+              tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
               jq -e --arg actor "${author}" \
                 --arg start "$(jq -er '.created_at | strings' <<<"${producer}")" \
                 --arg end "${review_submitted_at}" \
@@ -6813,21 +6868,16 @@ jobs:
               --arg run_url "${producer_run_url}" '
                 .html_url == $run_url
               ' <<<"${producer}" >/dev/null
-            jq -e \
-              --arg base "${EVENT_BASE}" \
-              --arg controller "${controller_sha}" \
-              --arg head "${EVENT_HEAD}" \
-              --arg review_path "${expected_review_path}" \
+            jq -e --arg base "${EVENT_BASE}" --arg controller "${controller_sha}" \
+              --arg head "${EVENT_HEAD}" --arg review_path "${expected_review_path}" \
               --arg run_url "${producer_run_url}" \
-              --argjson run_id "${producer_run_id}" '
-                .schema == 4
-                and .base_sha == $base
-                and .head_sha == $head
-                and .controller_sha == $controller
-                and .producer_run_id == $run_id
-                and .run_url == $run_url
-                and .review_path == $review_path
-              ' <<<"${summary}" >/dev/null
+              --argjson run_id "${producer_run_id}" \
+              -f "${RUNNER_TEMP}/current-revision-summary.jq" \
+              <<<"${summary}" >/dev/null
+            jq -e --arg version "${evidence_version}" \
+              --argjson owner "${owner_pr_number}" \
+              -f "${RUNNER_TEMP}/current-revision-owner-summary.jq" \
+              <<<"${summary}" >/dev/null
           fi
 
           fi
