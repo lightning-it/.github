@@ -35,19 +35,37 @@ class CopilotReviewRefreshTests(unittest.TestCase):
             text=True, capture_output=True, check=False,
             env={"PATH": TEST_TOOL_PATH, **env})
     def test_serialization(self):
-        group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
+        group = (
+            "current-revision-${{ github.repository_id }}-head-"
+            "${{ github.event.pull_request.head.sha }}-"
+            "check-current-revision-review"
+        )
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
-        self.assertIn(block, COPILOT_WORKFLOW.read_text(encoding="utf-8"))
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(block, workflow)
         refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         expression = refresh.split("group: >-", 1)[1].split("cancel-in-progress", 1)[0]
-        for value in ("format('current-revision-{0}-pr-{1}'", "format('current-revision-quarantine-{0}'", "github.run_id", "cancel-in-progress: false", "queue: max"):
+        for value in (
+            "format('current-revision-{0}-head-{1}-check-current-revision-review'",
+            "github.event.pull_request.head.sha",
+            "format('current-revision-quarantine-{0}'",
+            "github.run_id",
+            "cancel-in-progress: false",
+            "queue: max",
+        ):
             self.assertIn(value, expression if value.startswith(("format", "github")) else refresh)
         def lane(event, actor, login, association="NONE", sender=None, action="edited", run=1):
             trusted = event in ("pull_request_review", "pull_request_review_comment") and ((actor in ("Copilot", "copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]") and login == "copilot-pull-request-reviewer[bot]") or actor == login == "litroc" or (association in ("COLLABORATOR", "MEMBER", "OWNER") and (sender or actor) == actor and (action in ("dismissed", "deleted") or login == actor)))
-            return "current-revision-1-pr-737" if trusted else f"current-revision-quarantine-{run}"
+            return ("current-revision-1-head-" + "c" * 40
+                    + "-check-current-revision-review" if trusted
+                    else f"current-revision-quarantine-{run}")
         for event in ("pull_request_review", "pull_request_review_comment"):
             for args in (("Copilot", "copilot-pull-request-reviewer[bot]"), ("litroc", "litroc"), ("maintainer", "maintainer", "MEMBER", "maintainer")):
-                self.assertEqual("current-revision-1-pr-737", lane(event, *args))
+                self.assertEqual(
+                    "current-revision-1-head-" + "c" * 40
+                    + "-check-current-revision-review",
+                    lane(event, *args),
+                )
             self.assertNotEqual(lane(event, "mallory", "other", run=8), lane(event, "mallory", "other", run=9))
     @staticmethod
     def _guards():
@@ -198,6 +216,224 @@ gh() {
         self.assertIn("if: steps.producer-owner.outputs.owner == 'true'", publish)
         self.assertIn("needs['verify-current-revision-policy'].outputs.producer_owner "
                       "== 'true'", dispatch)
+        self.assertIn("needs['verify-current-revision-policy'].outputs.owns_result "
+                      "== 'true'", dispatch)
+
+    def test_publisher_retains_permanent_foreign_owner_read_only(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        policy = workflow.split("\n  verify-current-revision-policy:", 1)[1].split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[0]
+        publisher = policy.split("      - name: Publish bound neutral result\n", 1)[1]
+        reuse = publisher.split("            reuse_permanent_owner() {\n", 1)[1].split(
+            "\n            }\n            named=", 1
+        )[0]
+        self.assertIn("outputs.owns_result", workflow)
+        self.assertIn("owner_snapshot=", reuse)
+        self.assertIn("attempts/1/jobs?filter=all&per_page=100", reuse)
+        self.assertIn(".run_attempt == 1", reuse)
+        self.assertIn(".status == \"completed\" and .conclusion == \"success\"", reuse)
+        self.assertIn("(.steps | type == \"array\")", reuse)
+        self.assertIn("map(.id) | unique | length", reuse)
+        self.assertIn("verify-current-copilot-review.sh", reuse)
+        self.assertIn("$check.output.title == $title", reuse)
+        self.assertIn("ro || return 1", reuse)
+        self.assertIn("read_named_checks", reuse)
+        self.assertNotIn("--method POST", reuse)
+        self.assertNotIn("api_patch_bound", reuse)
+        self.assertIn("printf 'reused:%s'", reuse)
+        self.assertIn("echo 'owns_result=false'", publisher)
+        self.assertIn("echo 'owns_result=true'", publisher)
+
+    def test_permanent_owner_branch_executes_read_only_and_records_loser(self):
+        base, head, owner, current = "b" * 40, "c" * 40, 100, 200
+        repository = "lightning-it/.github"
+        server = "https://github.example"
+        owner_evidence = {
+            "schema": 4,
+            "base_sha": base,
+            "head_sha": head,
+            "controller_sha": "d" * 40,
+            "pull_request_number": 779,
+            "producer_run_id": owner,
+            "review_path": "applicable Copilot or governed automation exemption",
+            "run_url": f"{server}/{repository}/actions/runs/{owner}",
+        }
+        current_evidence = {
+            **owner_evidence,
+            "producer_run_id": current,
+            "run_url": f"{server}/{repository}/actions/runs/{current}",
+        }
+        check = {
+            "id": 42,
+            "name": "Current revision review",
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": (
+                f"mlx90-current-revision:copilot:v6:779:{owner}:{base}:{head}"
+            ),
+            "details_url": f"{server}/{repository}/runs/42",
+            "output": {
+                "title": "Current revision review passed",
+                "summary": json.dumps(owner_evidence, separators=(",", ":")),
+            },
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        owner_run = {
+            "id": owner,
+            "run_attempt": 1,
+            "event": "pull_request_target",
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+            "head_sha": head,
+            "head_branch": "fix/permanent-owner",
+            "status": "completed",
+            "conclusion": "success",
+            "pull_requests": [{
+                "number": 779,
+                "base": {"sha": base, "repo": {
+                    "url": f"https://api.github.com/repos/{repository}"}},
+                "head": {"sha": head, "ref": "fix/permanent-owner", "repo": {
+                    "url": f"https://api.github.com/repos/{repository}"}},
+            }],
+        }
+        request_job = {
+            "id": 1001,
+            "name": "Request Copilot review for current revision",
+            "run_id": owner,
+            "run_attempt": 1,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [{"name": "Request review", "status": "completed",
+                       "conclusion": "success"}],
+        }
+        policy_job = {
+            "id": 1002,
+            "name": "Verify current revision policy",
+            "run_id": owner,
+            "run_attempt": 1,
+            "runner_id": 7,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                {"name": "Verify current Copilot review and resolved findings",
+                 "status": "completed", "conclusion": "success"},
+                {"name": "Publish bound neutral result",
+                 "status": "completed", "conclusion": "success"},
+            ],
+        }
+        good_pages = [{"total_count": 1, "check_runs": [check]}]
+        good_jobs = [{"total_count": 2, "jobs": [request_job, policy_job]}]
+        functions = self._pub_nested("read_named_checks") + self._pub_nested(
+            "reuse_permanent_owner"
+        ) + self._pub("record_publication_ownership")
+
+        def execute(*, first=good_pages, second=good_pages,
+                    run=owner_run, jobs=good_jobs):
+            with tempfile.TemporaryDirectory() as tmp:
+                verification = Path(tmp) / "verify-current-copilot-review.sh"
+                verification.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                output = Path(tmp) / "output"
+                mutation = Path(tmp) / "mutation"
+                counter = Path(tmp) / "checks"
+                script = r'''set -euo pipefail
+api_read() {
+  local endpoint="${*: -1}" reads=0
+  case "${endpoint}" in
+    *'/check-runs?'*)
+      [ ! -f "${CHECK_COUNTER}" ] || reads="$(cat "${CHECK_COUNTER}")"
+      printf %s "$((reads + 1))" >"${CHECK_COUNTER}"
+      [ "${reads}" -eq 0 ] && printf %s "${CHECKS_FIRST}" || printf %s "${CHECKS_SECOND}"
+      ;;
+    */attempts/1/jobs*) printf %s "${OWNER_JOBS}" ;;
+    */actions/runs/*) printf %s "${OWNER_RUN}" ;;
+    *) return 92 ;;
+  esac
+}
+ro() { :; }
+gh() { printf mutation >"${MUTATION}"; return 99; }
+''' + functions + r'''
+named="$(read_named_checks)"
+result="$(reuse_permanent_owner)"
+record_publication_ownership "${result}"
+printf %s "${result}"
+'''
+                result = self._run_bash(script, {
+                    "CHECK_COUNTER": str(counter),
+                    "CHECKS_FIRST": json.dumps(first, separators=(",", ":")),
+                    "CHECKS_SECOND": json.dumps(second, separators=(",", ":")),
+                    "EVENT_BASE": base,
+                    "EVENT_HEAD": head,
+                    "EVENT_HEAD_REF": "fix/permanent-owner",
+                    "GITHUB_API_URL": "https://api.github.com",
+                    "GITHUB_OUTPUT": str(output),
+                    "GITHUB_RUN_ID": str(current),
+                    "GITHUB_SERVER_URL": server,
+                    "MUTATION": str(mutation),
+                    "OWNER_JOBS": json.dumps(jobs, separators=(",", ":")),
+                    "OWNER_RUN": json.dumps(run, separators=(",", ":")),
+                    "PR_NUMBER": "779",
+                    "REPOSITORY": repository,
+                    "RUNNER_TEMP": tmp,
+                    "TRUSTED_KIND": "none",
+                    "check_name": "Current revision review",
+                    "evidence": json.dumps(current_evidence, separators=(",", ":")),
+                    "named": json.dumps([check], separators=(",", ":")),
+                    "result_title": "Current revision review passed",
+                })
+                return (
+                    result,
+                    output.read_text(encoding="utf-8") if output.exists() else "",
+                    mutation.exists(),
+                )
+
+        accepted, ownership, mutated = execute()
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertEqual("reused:42", accepted.stdout)
+        self.assertEqual("owns_result=false\n", ownership)
+        self.assertFalse(mutated)
+
+        drifted = json.loads(json.dumps(good_pages))
+        drifted[0]["check_runs"][0]["output"]["title"] = "drifted"
+        malformed_run = {**owner_run, "run_attempt": 2}
+        malformed_jobs = json.loads(json.dumps(good_jobs))
+        del malformed_jobs[0]["jobs"][1]["steps"]
+        bad_title = json.loads(json.dumps(good_pages))
+        bad_title[0]["check_runs"][0]["output"]["title"] = "wrong"
+        for kwargs in (
+            {"second": drifted},
+            {"run": malformed_run},
+            {"jobs": malformed_jobs},
+            {"first": bad_title, "second": bad_title},
+        ):
+            with self.subTest(kwargs=tuple(kwargs)):
+                rejected, ownership, mutated = execute(**kwargs)
+                self.assertNotEqual(0, rejected.returncode)
+                self.assertEqual("", ownership)
+                self.assertFalse(mutated)
+
+    def test_publisher_rechecks_complete_zero_inventory_before_create(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publisher = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        create = publisher.index(
+            'if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs"'
+        )
+        before_create = publisher[:create]
+        after_create = publisher[create:]
+        self.assertIn("total_count == ($inventory | length)", publisher)
+        self.assertIn("map(.id) | unique | length", publisher)
+        self.assertGreaterEqual(before_create.count("read_named_checks"), 4)
+        self.assertIn('owner_snapshot="$(read_named_checks)"', before_create)
+        self.assertIn('named="$(read_named_checks)"', before_create)
+        self.assertIn('test "$(jq -cS . <<<"${named}")" =', before_create)
+        self.assertIn('named="$(read_named_checks)"', after_create)
+        self.assertIn('test "$(jq \'length\' <<<"${named}")" -eq 1', after_create)
+        self.assertIn('test "$(jq -er \'.[0].external_id\'', after_create)
     def test_owner_queued(self):
         owner = self._run(101)
         queued = self._run(102)
@@ -600,6 +836,14 @@ gh() {
         marker = f"          {name}() {{\n"
         start = workflow.index(marker, publish)
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        return textwrap.dedent(workflow[start:end])
+    @staticmethod
+    def _pub_nested(name):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.index("      - name: Publish bound neutral result\n")
+        marker = f"            {name}() {{\n"
+        start = workflow.index(marker, publish)
+        end = workflow.index("\n            }\n", start) + len("\n            }\n")
         return textwrap.dedent(workflow[start:end])
     @staticmethod
     def _rfn(name):

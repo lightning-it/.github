@@ -29,7 +29,7 @@ concurrency:
           ('litroc' == github.actor && 'litroc' == github.event.comment.user.login) ||
           (contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association) && github.event.sender.login == github.actor && (github.event.action == 'deleted' || github.event.comment.user.login == github.actor))
         ))
-      ) && format('current-revision-{0}-pr-{1}', github.repository_id, github.event.pull_request.number) ||
+      ) && format('current-revision-{0}-head-{1}-check-current-revision-review', github.repository_id, github.event.pull_request.head.sha) ||
       format('current-revision-quarantine-{0}', github.run_id)
     }}
   cancel-in-progress: false
