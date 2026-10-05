@@ -2321,36 +2321,36 @@ gh() {
         self.assertIn("' \"${GITHUB_EVENT_PATH}\" >/dev/null", workflow)
 
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event_name == 'pull_request_review' &&"),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event_name == 'pull_request_review_comment' &&"
             ),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event.review.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event.comment.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
-        self.assertEqual(2, workflow.count("github.actor == 'litroc'"))
+        self.assertEqual(4, workflow.count("github.actor == 'litroc'"))
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event.review.user.login == 'litroc'"),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event.comment.user.login == 'litroc'"),
         )
 

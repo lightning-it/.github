@@ -69,7 +69,7 @@ class ReviewEventTests(unittest.TestCase):
 
         with patch.object(EVENT, "api", side_effect=api), \
                 patch.object(EVENT, "pages", side_effect=lambda route, key=None: [] if "/actions/workflows/" in route else inventories[route]), \
-                patch.dict(os.environ, GITHUB_REF="refs/heads/develop", GITHUB_REF_PROTECTED="true"):
+                patch.dict(os.environ, LI219_EVENT_MODE="enabled", GITHUB_REF="refs/heads/develop", GITHUB_REF_PROTECTED="true"):
             if uncertain:
                 with self.assertRaises(TimeoutError):
                     EVENT.reconcile("lightning-it/.github", self.now)
@@ -93,108 +93,15 @@ class ReviewEventTests(unittest.TestCase):
     def test_ambiguous_dispatch_response_is_not_retried(self):
         self.assertEqual(1, len(self.reconcile(uncertain=True)))
 
-    def test_lost_rerun_response_and_next_worker_send_only_one_rerun(self):
-        shell = r'''set -euo pipefail
-sleep() { :; }
-revalidate_refresh_state() { :; }
-validate_refresh_owner_run() { test "$2" = 77 && test "$3" = 23; }
-assert_refresh_rerun_budget() { :; }
-usable_current_review() { :; }
-read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,"unresolved":0}'; }
-claim_review_operation() { [ ! -f "${CLAIM}" ] || return 1; touch "${CLAIM}"; }
-gh() {
-  if [[ " $* " == *" --method POST "* ]]; then
-    printf 'RERUN\n' >>"${LOG}"
-    return 42
-  fi
-  printf 'READ\n' >>"${LOG}"
-  printf '%s' '{"id":77,"status":"completed","run_attempt":1}'
-}
-''' + contracts.CopilotReviewRefreshTests._rfn("rerun_owner_if_review_current") + "\nrerun_owner_if_review_current\nrerun_owner_if_review_current\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            log = Path(tmp) / "log"
-            result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
-                                    env={**os.environ, "CLAIM": str(Path(tmp) / "claim"), "LOG": str(log),
-                                         "REPOSITORY": "lightning-it/.github", "PR_NUMBER": "23", "owner_run_id": "77",
-                                         "HEAD_SHA": self.head, "BASE_SHA": self.base,
-                                         "refresh_expected_count": "0", "refresh_expected_snapshot": "null"})
-            self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(1, log.read_text().splitlines().count("RERUN"))
-            self.assertIn("response unresolved", result.stdout)
-
     def test_active_dispatch_is_deduplicated(self):
         run = {"path": ".github/workflows/copilot-review-refresh.yml",
                "event": "workflow_dispatch", "display_title": "bound", "status": "queued"}
         self.assertTrue(EVENT.recent_dispatch([run], EVENT.REFRESH, "bound"))
         self.assertFalse(EVENT.recent_dispatch([run], EVENT.REFRESH, "foreign"))
 
-    def claim(self, mode):
-        claim = contracts.CopilotReviewRefreshTests._rfn("claim_review_operation")
-        self.assertEqual(claim, contracts.CopilotReviewRefreshTests._rerun_shell_function("claim_review_operation"))
-        script = r'''set -euo pipefail
-sleep() { :; }
-timeout() { while [ "$1" != gh ]; do shift; done; "$@"; }
-gh() {
-  if [[ " $* " == *" --method POST "* ]]; then
-    printf 'POST\n' >>"${LOG}"
-    local arg summary=''
-    for arg in "$@"; do
-      case "$arg" in output\[summary\]=*) summary="${arg#*=}";; esac
-    done
-    if [ "${MODE}" != absent ]; then
-      jq -cn --arg head "${HEAD}" --arg key "${KEY}" --arg summary "${summary}" '
-        [{total_count:1,check_runs:[{id:99,name:"Review event operation",head_sha:$head,
-          external_id:$key,app:{id:15368,slug:"github-actions"},
-          status:"completed",conclusion:"neutral",
-          output:{title:"Verifier mutation consumed",summary:$summary}}]}]' >"${STATE}"
-    fi
-    return 42
-  fi
-  if [[ " $* " == *"/actions/runs/77"* ]]; then
-    local created
-    created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    [ "${MODE}" != expired ] || created=2000-01-01T00:00:00Z
-    jq -cn --arg created "${created}" '{id:77,run_attempt:1,created_at:$created}'
-    return
-  fi
-  cat "${STATE}"
-}
-''' + claim + r'''
-first=0
-claim_review_operation 77 "${HEAD}" "${BASE}" 23 || first=$?
-second=0
-claim_review_operation 77 "${HEAD}" "${BASE}" 23 || second=$?
-printf '%s %s' "${first}" "${second}"
-'''
-        with tempfile.TemporaryDirectory() as tmp:
-            state, log = Path(tmp) / "state", Path(tmp) / "log"
-            state.write_text('[{"total_count":0,"check_runs":[]}]')
-            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                                    env={**os.environ, "STATE": str(state), "LOG": str(log),
-                                         "MODE": mode, "HEAD": self.head, "BASE": self.base,
-                                         "KEY": f"li219-verifier-operation:v1:23:{self.base}:{self.head}:77",
-                                         "REPOSITORY": "lightning-it/.github",
-                                         "GITHUB_RUN_ID": "500", "GITHUB_RUN_ATTEMPT": "1"}, check=False)
-            return result, log.read_text() if log.exists() else ""
-
-    def test_lost_claim_response_is_reconciled_and_duplicate_event_cannot_reclaim(self):
-        result, log = self.claim("accepted")
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("0 1", result.stdout)
-        self.assertEqual("POST\n", log)
-
-    def test_missing_claim_never_authorizes_rerun(self):
-        result, _ = self.claim("absent")
-        self.assertEqual("1 1", result.stdout)
-
-    def test_expired_operation_never_writes_a_claim_or_reruns(self):
-        result, log = self.claim("expired")
-        self.assertEqual("1 1", result.stdout)
-        self.assertEqual("", log)
-
     def test_all_rerun_writers_share_the_exact_head_lane(self):
         helper = (ROOT / ".github/workflows/current-revision-rerun.yml").read_text()
-        self.assertIn("current-revision-${{ github.repository_id }}-head-${{ inputs.expected_head }}-check-current-revision-review", helper)
+        self.assertIn("format('current-revision-{0}-head-{1}-check-current-revision-review', github.repository_id, inputs.expected_head)", helper)
         self.assertIn("cancel-in-progress: false\n  queue: max", helper)
 
     def test_required_verifier_accepts_bound_delayed_dispatch_and_rejects_forgery(self):
@@ -202,7 +109,7 @@ printf '%s %s' "${first}" "${second}"
         guard = workflow.split("<<'EVENT_RECOVERY'\n", 1)[1].split("\n          EVENT_RECOVERY", 1)[0]
         ordering = workflow.split('cat >"${ordering}" <<\'JQ\'\n', 1)[1].split("\n          JQ", 1)[0]
         key = f"li219-verifier-operation:v1:23:{self.base}:{self.head}:77"
-        receipt = {"operation": key, "claim_run": "500", "claim_attempt": "1"}
+        receipt = {"operation": key, "claim_run": "500", "claim_attempt": "1", "journal_commit": "1" * 40}
         claim = {"name": "Review event operation", "head_sha": self.head,
                  "external_id": key, "app": {"id": 15368, "slug": "github-actions"},
                  "status": "completed", "conclusion": "neutral", "started_at": "2026-10-05T18:00:02Z",
@@ -229,23 +136,42 @@ gh() {
     *'/attempts/1/jobs?'*) printf %s "${JOBS}" ;;
     *'/actions/runs/500') printf %s "${REFRESH}" ;;
     *'/compare/'*) printf %s "${ANCESTRY}" ;;
+    *'/git/ref/'*) printf %s "1111111111111111111111111111111111111111" ;;
+    *'graphql'*) printf %s "${JOURNAL}" ;;
     *) return 99;;
   esac
 }
 ''' + textwrap.dedent(guard) + "\nverify_event_recovery\n"
+        record = {"schema": 1, "repository": "lightning-it/.github", "repository_id": "1112629689", "action": "rerun", "operation": key,
+                  "claim_run": "500", "claim_attempt": "1", "source_sha": "c" * 40}
+        def blob(value):
+            encoded = json.dumps(value)
+            return {"__typename": "Blob", "isTruncated": False, "byteSize": len(encoded), "text": encoded}
+        journal = {"data": {"repository": {"nameWithOwner": "lightning-it/.github",
+                   "source": {"__typename": "Commit", "oid": "1" * 40},
+                   "manifest": blob({"schema": 1, "repository": "lightning-it/.github", "repository_id": "1112629689", "ref": "refs/heads/lit-review-operations"}),
+                   "record": blob(record)}}}
         cases = [({}, 0), ({"CLAIMS": [{"check_runs": []}]}, 10),
                  ({"CLAIMS": [{"check_runs": [claim, claim]}]}, 1),
                  ({"REFRESH": {**run, "display_title": "foreign"}}, 1),
                  ({"REFRESH": {**run, "actor": {"login": "mallory"}}}, 1),
                  ({"ANCESTRY": {"status": "behind"}}, 1),
                  ({"JOBS": [{"total_count": 1, "jobs": [{**job, "head_sha": self.head}]}]}, 1)]
+        import copy
+        for field, value in (("record", blob({**record, "claim_run": "501"})),
+                             ("record", blob({**record, "source_sha": "d" * 40})),
+                             ("source", {"__typename": "Commit", "oid": "0" * 40}),
+                             ("record", None)):
+            forged = copy.deepcopy(journal)
+            forged["data"]["repository"][field] = value
+            cases.append(({"JOURNAL": forged}, 1))
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "native-recovery-ordering.jq").write_text(textwrap.dedent(ordering))
             for changes, expected in cases:
                 data = {"CLAIMS": [{"check_runs": [claim]}], "REFRESH": run,
-                        "JOBS": [{"total_count": 1, "jobs": [job]}], "ANCESTRY": {"status": "identical"}, **changes}
+                        "JOBS": [{"total_count": 1, "jobs": [job]}], "ANCESTRY": {"status": "identical"}, "JOURNAL": journal, **changes}
                 result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
-                                        env={**os.environ, **{k: json.dumps(v) for k, v in data.items()},
+                                        env={**os.environ, "LI219_EVENT_MODE": "enabled", "GITHUB_REPOSITORY_ID": "1112629689", **{k: json.dumps(v) for k, v in data.items()},
                                              "RUNNER_TEMP": tmp, "owner_pr_number": "23", "EVENT_BASE": self.base,
                                              "EVENT_HEAD": self.head, "producer_run_id": "77",
                                              "REPOSITORY": "lightning-it/.github", "controller_branch": "develop",
@@ -321,7 +247,7 @@ done
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "outputs"
             result = subprocess.run(["bash", "-c", prefix + script], capture_output=True, text=True, check=False,
-                                    env={**os.environ, "GITHUB_OUTPUT": str(output), "PR_AUTHOR_TYPE": "User",
+                                    env={**os.environ, "LI219_EVENT_MODE": "enabled", "GITHUB_OUTPUT": str(output), "PR_AUTHOR_TYPE": "User",
                                          "REPOSITORY": "lightning-it/.github", "PR_NUMBER": "23",
                                          "EVENT_HEAD": self.head, "EVENT_BASE": self.base})
             self.assertEqual(0, result.returncode, result.stderr)

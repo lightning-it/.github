@@ -9,7 +9,8 @@ escalate only if: ruleset, check identity, App identity, or provenance changes.
 The owner has selected option 1 below: retain Required-Workflow authority and
 permit one event-bound verifier re-evaluation. The implementation candidate
 uses the existing protected producer, refresh and rerun helper. It does not
-activate the separate App/journal proposal. The historical pure-model and
+activate the separate App/S3 authority proposal. The small native Git CAS store
+only consumes operations under the retained Required-Workflow authority. The historical pure-model and
 platform analysis below remains applicable; its statement that production
 polling is unchanged describes the earlier design-only revision.
 
@@ -39,22 +40,63 @@ dispatch, including controller ancestry and exact native job/step ordering.
 This also permits an event queued before the initial failure to execute after
 that job has ended. Historical native review-event evidence remains supported.
 
-Producer, refresh and helper share the same repository-ID/head concurrency
-group with cancellation disabled and the full pending queue retained. Before
-an effective rerun, the sole active writer creates a native `Review event
-operation` consumption marker, bound to PR, base, head and target run. It reads
-the marker back before sending the rerun. A later worker finding that marker
-never sends another rerun POST. Ambiguous marker creation is read back at most
-three times; ambiguous rerun delivery is reconciled from native run attempts,
-without repeating the mutation. Duplicate/malformed marker inventory blocks.
+The event mode is **disabled by default**. All five components compute the same
+condition: repository variable `LI219_EVENT_MODE` equals `enabled` AND the
+repository is exactly `lightning-it/.github`, `lightning-it/shared-assets-lit`
+or `lightning-it/ansible-collection-supplementary`. An absent variable, every
+other value and every non-pilot repository use the legacy wait windows
+(40 review, 20 thread, 450 neutral-evidence and 60 producer observations).
+The human early-admission route and the completion/schedule adapter are also
+gated. Deactivated refresh/helper jobs retain their old mutation path and
+helper concurrency group. Never change this variable with writers in flight.
 
-This is serialized ownership, **not a GitHub Checks CAS or external-ID uniqueness
-guarantee**. Its production guarantee depends on the shared Actions concurrency
-lane and complete native API inventory. A crash after claim but before delivery,
-or persistently ambiguous API visibility, deliberately remains blocked and
-requires diagnosis. It is not reported as a successful review or live acceptance.
-The marker is operational native history, not a duplicate release-evidence
-package and not a replacement required check.
+In enabled pilots, producer, refresh and helper share the repository-ID/head
+concurrency lane. Native review listeners have contents-read and dispatch only
+locators. The refresh writer runs exclusively by bot dispatch from the protected
+default branch; the helper runs by bot dispatch from the protected base branch.
+These writer jobs have contents-write. The AI request job is separately bounded
+to the existing protected pull_request_target source and exact litroc actor;
+its static job permission ceiling is contents-write, while content mutation is
+possible only inside the enabled pilot branch. No PR checkout is executed and
+no token is passed to the data ref or stored in its commits.
+
+Each pilot uses the fixed `refs/heads/lit-review-operations` data ref. Its root
+commit contains only `manifest.json`: schema 1, repository name, string native
+repository ID and the fixed ref. The writer never creates or repairs this ref.
+Missing bootstrap, invalid manifest and ambiguous API results fail closed.
+Source commit, manifest and operation record are read using the same immutable
+commit OID. Operations occupy `operations/<sha256(operation-key)>.json`.
+The record binds schema, repository/name-ID, action, operation key, claimant run
+and attempt 1, and immutable protected workflow source SHA.
+
+A rerun key binds PR, base, head and target run within that repository store.
+The separate AI-request key binds native repository ID, PR and head; base drift
+and a fresh producer run never create a new request entitlement for that head.
+Existing current-head review and PR-scoped pending request remain read-only
+no-ops. Check-run and comment markers are projections, never exclusivity locks.
+
+A writer may make **one** `createCommitOnBranch(expectedHeadOid)` attempt against
+the exact snapshot. Only an unambiguous successful response with the expected
+single parent, followed by an exact immutable record readback, permits the
+subsequent single effect POST. A conflict or uncertain CAS response performs up
+to three readbacks and sends no effect, including when it discovers its own
+record. A later worker that sees an old ref snapshot loses against the server's
+current ref. An existing record cannot authorize another effect; crashes after
+claim remain consumed and blocked for diagnosis. An uncertain rerun or AI request
+response is never retried. This provides at-most-one send, not guaranteed delivery.
+
+The Required verifier checks that the check projection matches the Git record,
+that its commit belongs to the retained data-ref history, and that the record's
+workflow source and claimant match the fully validated protected native run.
+The data contains operational consumption metadata only, not duplicate AI or
+release evidence. Required-Workflow authority and native acceptance remain
+unchanged. No App, S3 store, token or ruleset bypass is introduced.
+
+`contents: write` is repository-scoped; it cannot be granted only for this ref.
+The fixed path and protected code constrain this writer. Protection against
+unrelated already privileged workflows is not implied. Root must prevent data
+ref deletion/non-fast-forward rewrites without granting an Actions-App bypass
+on code branches. Preserve all records; no expiry cleanup or compaction exists.
 
 Reservations expire seven days after the original run creation time. Expiry
 prevents refresh/helper claims and leaves the original required failure

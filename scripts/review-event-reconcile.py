@@ -16,6 +16,8 @@ import subprocess
 PRODUCER = ".github/workflows/copilot-review.yml"
 REFRESH = "copilot-review-refresh.yml"
 HELPER = "current-revision-rerun.yml"
+PILOTS = {"lightning-it/.github", "lightning-it/shared-assets-lit",
+          "lightning-it/ansible-collection-supplementary"}
 TTL = dt.timedelta(days=7)
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
@@ -80,6 +82,8 @@ def recent_dispatch(runs, path, title):
 
 
 def reconcile(repository, now):
+    if repository not in PILOTS or os.environ.get("LI219_EVENT_MODE") != "enabled":
+        return
     prefix = f"repos/{repository}"
     metadata = api(prefix)
     branch = metadata["default_branch"]

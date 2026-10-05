@@ -25,6 +25,9 @@ concurrency:
     protected-current-revision-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
+env:
+  LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
+
 jobs:
   route-protected-current-revision:
     name: Route protected current-revision verification
@@ -3454,7 +3457,7 @@ jobs:
               fi
               break
             fi
-            if [ "${PR_AUTHOR_TYPE:-}" = User ]; then
+            if [ "${LI219_EVENT_MODE:-disabled}" = enabled ] && [ "${PR_AUTHOR_TYPE:-}" = User ]; then
               # Let the bound admission below create and fail its reservation.
               # This locator is not review success and cannot satisfy the gate.
               printf 'producer_kind=copilot\nproducer_run_id=\n' >>"${GITHUB_OUTPUT}"
@@ -5390,6 +5393,25 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          cat >"${RUNNER_TEMP}/required-init.sh" <<'INITIALIZATION'
+          report_failure_stage() {
+            local exit_code="$?"
+            if [ "${exit_code}" -ne 0 ]; then
+              printf '::error title=REP-60 verifier failed closed::stage=%s\n' \
+                "${failure_stage}"
+            fi
+          }
+          validate_target_repository() {
+            target_repository="$(gh api "repos/${REPOSITORY}")"
+            jq -e \
+              --arg repository "${REPOSITORY}" '
+                .full_name == $repository
+                and .owner.login == "lightning-it"
+                and .archived == false
+                and .disabled == false
+              ' <<<"${target_repository}" >/dev/null
+          }
+          INITIALIZATION
           cat >"${RUNNER_TEMP}/event-recovery.sh" <<'EVENT_RECOVERY'
           validate_recorded_ref() {
             jq -e --argjson owner "${owner_pr_number}" \
@@ -5397,8 +5419,9 @@ jobs:
               <<<"$1" >/dev/null
           }
           verify_event_recovery() {
+            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
             local key pages claims claim receipt refresh_id refresh_run refresh_jobs
-            local source_sha source_ancestry
+            local source_sha source_ancestry journal_commit journal_head journal_path journal_snapshot journal_record
             key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
             pages="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" || return 1
             claims="$(jq -ce --arg key "${key}" '
@@ -5416,10 +5439,39 @@ jobs:
               ' <<<"${claims}")" || return 1
             receipt="$(jq -cer --arg key "${key}" '
               .output.summary | fromjson
-              | select((keys | sort) == ["claim_attempt","claim_run","operation"])
+              | select((keys | sort) == ["claim_attempt","claim_run","journal_commit","operation"])
               | select(.operation == $key and .claim_attempt == "1")
+              | select(.journal_commit | type == "string" and test("^[0-9a-f]{40}$"))
               | select(.claim_run | type == "string" and test("^[1-9][0-9]*$"))
               ' <<<"${claim}")" || return 1
+            journal_commit="$(jq -r .journal_commit <<<"${receipt}")"
+            journal_path="operations/$(printf '%s' "${key}" | sha256sum | cut -d ' ' -f 1).json"
+            journal_head="$(gh api "repos/${REPOSITORY}/git/ref/heads/lit-review-operations" --jq '.object.sha')" || return 1
+            [[ "${journal_head}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${journal_commit}...${journal_head}")" || return 1
+            jq -e --arg commit "${journal_commit}" '
+              .status == "identical" or (.status == "ahead" and .behind_by == 0 and .merge_base_commit.sha == $commit)
+              ' <<<"${source_ancestry}" >/dev/null || return 1
+            journal_snapshot="$(gh api graphql -f query='query($owner:String!,$name:String!,$oid:String!,$manifest:String!,$record:String!){
+              repository(owner:$owner,name:$name){nameWithOwner
+                source:object(expression:$oid){__typename oid}
+                manifest:object(expression:$manifest){__typename ... on Blob{isTruncated byteSize text}}
+                record:object(expression:$record){__typename ... on Blob{isTruncated byteSize text}}
+              }}' -f "owner=${REPOSITORY%%/*}" -f "name=${REPOSITORY#*/}" \
+              -f "oid=${journal_commit}" -f "manifest=${journal_commit}:manifest.json" \
+              -f "record=${journal_commit}:${journal_path}")" || return 1
+            journal_record="$(jq -ce --arg oid "${journal_commit}" --arg repo "${REPOSITORY}" --arg repo_id "${GITHUB_REPOSITORY_ID}" --argjson receipt "${receipt}" '
+              select(has("errors") | not) | .data.repository
+              | select(.nameWithOwner == $repo and .source.__typename == "Commit" and .source.oid == $oid)
+              | select(all(.manifest,.record; .__typename == "Blob" and .isTruncated == false
+                  and (.byteSize | type) == "number" and .byteSize > 0 and .byteSize <= 4096))
+              | select((.manifest.text | fromjson) == {schema:1,repository:$repo,repository_id:$repo_id,ref:"refs/heads/lit-review-operations"})
+              | .record.text | fromjson
+              | select((keys | sort) == ["action","claim_attempt","claim_run","operation","repository","repository_id","schema","source_sha"])
+              | select(.schema == 1 and .repository == $repo and .repository_id == $repo_id and .action == "rerun" and .operation == $receipt.operation
+                  and .claim_run == $receipt.claim_run and .claim_attempt == $receipt.claim_attempt)
+              | select(.source_sha | type == "string" and test("^[0-9a-f]{40}$"))
+              ' <<<"${journal_snapshot}")" || return 1
             refresh_id="$(jq -r .claim_run <<<"${receipt}")"
             refresh_run="$(gh api "repos/${REPOSITORY}/actions/runs/${refresh_id}")" || return 1
             jq -e --arg repo "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
@@ -5442,6 +5494,9 @@ jobs:
                   and .pull_requests[0].number == $pr
                   and .pull_requests[0].head.sha == $head and .pull_requests[0].base.sha == $base
                 end)
+              ' <<<"${refresh_run}" >/dev/null || return 1
+            jq -e --arg source "$(jq -r .source_sha <<<"${journal_record}")" '
+              .event == "workflow_dispatch" and .head_sha == $source
               ' <<<"${refresh_run}" >/dev/null || return 1
             if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
               source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
@@ -5513,25 +5568,11 @@ jobs:
           # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
-          report_failure_stage() {
-            local exit_code="$?"
-            if [ "${exit_code}" -ne 0 ]; then
-              printf '::error title=REP-60 verifier failed closed::stage=%s\n' \
-                "${failure_stage}"
-            fi
-          }
+          # shellcheck source=/dev/null
+          source "${RUNNER_TEMP}/required-init.sh"
           trap report_failure_stage EXIT
           producer_kind="${TERMINAL_PRODUCER_KIND}"
-
-          target_repository="$(gh api "repos/${REPOSITORY}")"
-          jq -e \
-            --arg repository "${REPOSITORY}" '
-              .full_name == $repository
-              and .owner.login == "lightning-it"
-              and .archived == false
-              and .disabled == false
-            ' <<<"${target_repository}" >/dev/null
-
+          validate_target_repository
           failure_stage='live-pr-binding'
           pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
@@ -6496,7 +6537,9 @@ jobs:
             --arg repository "${REPOSITORY}" \
             -f "${RUNNER_TEMP}/current-revision-live-pr.jq" \
             <<<"${current_pr}" >/dev/null
-          for evidence_observation in 1; do
+          evidence_limit=450
+          [ "${LI219_EVENT_MODE:-disabled}" != enabled ] || evidence_limit=1
+          for evidence_observation in $(seq 1 "${evidence_limit}"); do
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
             neutral="$(jq -c '
@@ -6527,10 +6570,11 @@ jobs:
               fi
               [[ "${neutral_status}" =~ ^(queued|in_progress)$ ]]
             fi
-            if [ "${evidence_observation}" -eq 1 ]; then
-              echo 'Awaiting protected producer event; merge remains blocked.' >&2
+            if [ "${evidence_observation}" -eq "${evidence_limit}" ]; then
+              echo 'Protected producer evidence unavailable; merge remains blocked.' >&2
               exit 1
             fi
+            sleep 2
           done
           current_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
@@ -6682,17 +6726,21 @@ jobs:
             producer_evidence_ready=false
             if [ "${producer_run_attempt}" -eq 1 ]; then
               test "$INLINE_POLICY_STEP" || { echo >&2 'No inline policy step'; exit 1; }
-              for producer_observation in 1; do
+              producer_limit=60
+              [ "${LI219_EVENT_MODE:-disabled}" != enabled ] || producer_limit=1
+              for producer_observation in $(seq 1 "${producer_limit}"); do
                 producer="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
                 producer_status="$(jq -er \
                   '.status | select(type == "string" and length > 0)' \
                   <<<"${producer}")"
                 if [ "${producer_status}" = queued ]; then
-                  if [ "${producer_observation}" -eq 1 ]; then
+                  if [ "${producer_observation}" -eq "${producer_limit}" ]; then
                     echo 'Awaiting producer event.' >&2
                     exit 1
                   fi
+                  sleep 1
+                  continue
                 fi
                 [[ "${producer_status}" =~ ^(requested|waiting|pending|in_progress|completed)$ ]]
                 producer_jobs_pages="$(gh api --paginate --slurp \
@@ -6758,10 +6806,11 @@ jobs:
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
-                if [ "${producer_observation}" -eq 1 ]; then
+                if [ "${producer_observation}" -eq "${producer_limit}" ]; then
                   echo 'Awaiting producer evidence.' >&2
                   exit 1
                 fi
+                sleep 1
               done
             fi
             validate_recorded_ref "${producer}"

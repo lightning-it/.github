@@ -24,8 +24,13 @@ concurrency:
   group: review-event-reconciliation
   cancel-in-progress: false
 
+env:
+  LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
+
 jobs:
   reconcile:
+    if: >-
+      vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -45,7 +50,7 @@ jobs:
             --cap-drop ALL --security-opt no-new-privileges=true \
             --pids-limit 128 --user "$(id -u):$(id -g)" \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
-            -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_REF -e GITHUB_REF_PROTECTED \
+            -e LI219_EVENT_MODE -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_REF -e GITHUB_REF_PROTECTED \
             -e PYTHONDONTWRITEBYTECODE=1 -e HOME=/tmp \
             -v "${GITHUB_WORKSPACE}:/workspace:ro" \
             -w /workspace "${DEVTOOLS_IMAGE}" \
