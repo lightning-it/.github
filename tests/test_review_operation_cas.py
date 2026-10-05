@@ -312,6 +312,8 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                                          'versions': {INITIAL: {}}, 'markers': [], 'calls': []}))
             mock.write_text(MOCK.replace('lightning-it/.github', repository))
             (Path(tmp) / 'request-operation.sh').write_text(claim)
+            (Path(tmp) / 'review_request_continuation.py').write_text(
+                (ROOT / 'scripts/review_request_continuation.py').read_text())
             workers = [('500', BASE, HEAD), ('501', 'd' * 40, HEAD)]
             if new_head:
                 workers.append(('502', 'd' * 40, 'e' * 40))

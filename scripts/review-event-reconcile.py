@@ -16,10 +16,11 @@ import subprocess
 PRODUCER = ".github/workflows/copilot-review.yml"
 REFRESH = "copilot-review-refresh.yml"
 HELPER = "current-revision-rerun.yml"
+CONTINUATION = "review-request-continuation.yml"
 PILOTS = {"lightning-it/.github", "lightning-it/shared-assets-lit",
           "lightning-it/ansible-collection-supplementary"}
 TTL = dt.timedelta(days=7)
-# Shared by both dispatch workflows, including split probes. The Actions API
+# Shared by all three dispatch workflows, including split probes. The Actions API
 # caps filtered searches at 1000 results, independently of our page limit.
 DISPATCH_INVENTORY_REQUESTS = 256
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
@@ -131,7 +132,7 @@ def dispatch_inventory(prefix, now):
                 raise ValueError("unbound dispatch inventory")
         return items
 
-    return window(REFRESH, start, end) + window(HELPER, start, end)
+    return window(REFRESH, start, end) + window(HELPER, start, end) + window(CONTINUATION, start, end)
 
 
 def clean_review(review, comments, head):
@@ -280,7 +281,7 @@ def reconcile(repository, now):
             ref = pr["base"]["ref"]
             # Let the native admission terminate; never spend the retry while its
             # first attempt is still running or while producer jobs are invisible.
-            # Event-filtered Actions lists omit organization Required runs.
+            # Required discovery must not depend on producer event filtering.
             # Keep the producer query separate and verify authority on each
             # unfiltered-by-event result; a local workflow is not the Required gate.
             required_runs = pages(
@@ -301,12 +302,30 @@ def reconcile(repository, now):
                     if clean_review(review, comments, head):
                         usable.append(review)
             if not usable:
-                continue
-            review = max(usable, key=lambda item: item["id"])
-            path, ref = REFRESH, branch
-            title = f"Reconcile review PR #{number} head {head}"
-            inputs = dict(pr_number=str(number), expected_head=head, expected_base=base,
-                          review_id=str(review["id"]))
+                # The existing periodic locator also covers delayed job/pending
+                # visibility. It never requests AI or grants a verifier attempt.
+                if not reviews or any(item.get("commit_id") == head and item.get("user", {}).get("login") in REVIEWERS for item in reviews):
+                    continue
+                import importlib.util
+                from pathlib import Path
+                spec = importlib.util.spec_from_file_location("continuation", Path(__file__).with_name("review_request_continuation.py"))
+                continuation = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(continuation)
+                try:
+                    inputs = continuation.reconcile_candidate(repository, str(metadata["id"]), number, head, now)
+                except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+                    print(f"PR {number}: deferred locator remains closed: {exc}")
+                    continue
+                if inputs is None:
+                    continue
+                path, ref = CONTINUATION, branch
+                title = f"First review PR #{number} head {head} owner {inputs['owner_run']} old review {inputs['old_review']}"
+            else:
+                review = max(usable, key=lambda item: item["id"])
+                path, ref = REFRESH, branch
+                title = f"Reconcile review PR #{number} head {head}"
+                inputs = dict(pr_number=str(number), expected_head=head, expected_base=base,
+                              review_id=str(review["id"]))
         if recent_dispatch(dispatches, path, title, now):
             continue
         # Re-read after inventory. No mutation on a changed/closed/draft PR.

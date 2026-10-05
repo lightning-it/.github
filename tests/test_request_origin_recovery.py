@@ -43,8 +43,16 @@ if route == 'graphql':
     fields = dict(arg.split('=', 1) for arg in args if '=' in arg)
     assert 'mutation' not in fields['query']
     kind = 'REQUEST_JOURNAL' if fields['record'].endswith(state['REQUEST_PATH']) else 'RERUN_JOURNAL'
-    assert fields['oid'] == state['OID'] and fields['manifest'] == state['OID'] + ':manifest.json'
-    result = state[kind]
+    lookup = fields['oid'] + ':' + fields['record'].split(':', 1)[1]
+    if lookup in state.get('EXTRA_JOURNALS', {}):
+        result = state['EXTRA_JOURNALS'][lookup]
+    else:
+        assert fields['oid'] == state['OID'] and fields['manifest'] == state['OID'] + ':manifest.json'
+        result = state[kind]
+elif route.split('?', 1)[0] in state.get('EXTRA_ROUTES', {}):
+    result = state['EXTRA_ROUTES'][route.split('?', 1)[0]]
+    if '--slurp' in args:
+        result = [result]
 elif route.endswith('/attempts/1'):
     result = state['FIRST']
 elif '/actions/runs/77/attempts/1/jobs?' in route:
@@ -84,6 +92,7 @@ class RequestOriginRecoveryTests(unittest.TestCase):
         def heredoc(label):
             return textwrap.dedent(workflow.split("<<'" + label + "'\n", 1)[1].split('\n          ' + label, 1)[0])
         (self.root / 'request-origin.py').write_text(heredoc('REQUEST_ORIGIN'))
+        (self.root / 'review_request_continuation.py').write_text(heredoc('CONTINUATION'))
         guard = heredoc('EVENT_RECOVERY')
         ordering = workflow.split('cat >"${ordering}" <<\'JQ\'\n', 1)[1].split('\n          JQ', 1)[0]
         (self.root / 'native-recovery-ordering.jq').write_text(textwrap.dedent(ordering))
@@ -304,3 +313,106 @@ class RequestOriginRecoveryTests(unittest.TestCase):
         data = copy.deepcopy(self.data)
         data['RERUN_JOURNAL']['data']['repository']['record'] = blob(self.record)
         self.assertNotEqual(0, self.run_caller(data).returncode)
+
+    def resume_fixture(self):
+        data = copy.deepcopy(self.data)
+        intent = {'schema': 1, 'kind': 'deferred-first-request', 'repository': REPO, 'repository_id': '1112629689',
+                  'operation': REQUEST_KEY, 'pr': PR, 'base': BASE, 'head': HEAD, 'base_ref': 'develop', 'head_ref': 'fix/final',
+                  'owner_run': RUN, 'owner_attempt': 1, 'source_sha': SOURCE, 'event': 'pull_request_target', 'action': 'synchronize',
+                  'author': 'litroc', 'actor': 'litroc', 'triggering_actor': 'litroc', 'created_at': '2026-10-05T17:50:10Z'}
+        historical = '2' * 40
+        old_head = 'd' * 40
+        record = {**self.record, 'schema': 2, 'claim_run': '88', 'intent': intent,
+                  'intent_commit': historical, 'old_review': 16, 'old_head': old_head}
+        data['REQUEST_JOURNAL'] = snapshot(record)
+        def history(value):
+            result = snapshot(value)
+            result['data']['repository']['source']['oid'] = historical
+            if value is None:
+                result['data']['repository']['record'] = None
+            return result
+        data['EXTRA_JOURNALS'] = {
+            historical + ':' + REQUEST_PATH: history(None),
+            historical + ':' + REQUEST_PATH.replace('operations/', 'deferred/'): history(intent),
+        }
+        resume = {**copy.deepcopy(data['REFRESH']), 'id': 88, 'path': '.github/workflows/review-request-continuation.yml',
+                  'name': 'Continue deferred first review request',
+                  'display_title': f'First review PR #{PR} head {HEAD} owner {RUN} old review 16',
+                  'created_at': '2026-10-05T17:59:31Z', 'updated_at': '2026-10-05T17:59:59Z'}
+        job = copy.deepcopy(data['FIRST_JOBS'][0]['jobs'][0])
+        job.update(id=880, run_id=88, head_sha=SOURCE, name='Resume deferred first review request',
+                   started_at='2026-10-05T17:59:32Z', completed_at='2026-10-05T17:59:59Z')
+        names = ['Set up job', 'Materialize protected first-request continuation', 'Resume the deferred first request', 'Complete job']
+        times = [('32', '33'), ('33', '34'), ('34', '58'), ('58', '59')]
+        job['steps'] = [{'name': name, 'number': index + 1, 'status': 'completed', 'conclusion': 'success',
+                         'started_at': '2026-10-05T17:59:' + times[index][0] + 'Z',
+                         'completed_at': '2026-10-05T17:59:' + times[index][1] + 'Z'} for index, name in enumerate(names)]
+        inactive = {**job, 'id': 881, 'name': 'Locate deferred first review request', 'conclusion': 'skipped', 'runner_id': None, 'steps': []}
+        old = {'id': 16, 'commit_id': old_head, 'user': {'login': 'copilot-pull-request-reviewer[bot]', 'type': 'Bot'},
+               'state': 'COMMENTED', 'body': 'Reviewed old head.', 'submitted_at': '2026-10-05T17:58:00Z'}
+        data['EXTRA_ROUTES'] = {
+            f'repos/{REPO}/actions/runs/77/attempts/1/jobs': data['FIRST_JOBS'][0],
+            f'repos/{REPO}/actions/runs/88/attempts/1': resume,
+            f'repos/{REPO}/actions/runs/88/attempts/1/jobs': {'total_count': 2, 'jobs': [job, inactive]},
+            f'repos/{REPO}/pulls/{PR}/reviews/16': old,
+            f'repos/{REPO}/pulls/{PR}/reviews/16/comments': [],
+            f'repos/{REPO}/pulls/{PR}/reviews': [old, *data['REVIEWS'][0]],
+        }
+        data['TIMELINE'][0][0]['created_at'] = '2026-10-05T17:59:40Z'
+        return data
+
+    def test_actual_required_attempt2_accepts_separate_original_and_resume_proof(self):
+        data = self.resume_fixture()
+        result = self.run_caller(data)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/actions/runs/88/attempts/1/jobs' in ' '.join(call) for call in self.calls))
+        self.assertTrue(any('deferred/' in ' '.join(call) for call in self.calls))
+        self.assertFalse(any('--method' in call for call in self.calls))
+
+    def test_actual_required_allows_old_completion_before_owner_but_keeps_effect_age_limit(self):
+        data = self.resume_fixture()
+        old = data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']
+        old['submitted_at'] = '2026-10-05T17:49:30Z'
+        result = self.run_caller(data)
+        self.assertEqual(0, result.returncode, result.stderr)
+        old['submitted_at'] = '2026-09-28T17:49:30Z'
+        self.assertNotEqual(0, self.run_caller(data).returncode)
+
+    def test_required_embeds_only_the_read_only_provenance_transport(self):
+        program = (self.root / 'review_request_continuation.py').read_text()
+        self.assertEqual((ROOT / 'scripts/review_request_provenance.py').read_text().strip(), program.strip())
+        for forbidden in ('def resume(', 'def defer(', 'def locate(', 'def create(', '--method', '--input', 'requested_reviewers'):
+            self.assertNotIn(forbidden, program)
+
+    def test_actual_required_resume_rejects_forged_steps_source_owner_old_review_and_timeline(self):
+        original = self.resume_fixture()
+        prefix = f'repos/{REPO}'
+        mutations = {
+            'PR head masquerading as writer source': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_sha=HEAD),
+            'unprotected writer branch': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_branch='fix/final'),
+            'wrong event': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(event='pull_request_review'),
+            'failed POST': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1/jobs']['jobs'][0]['steps'][2].update(conclusion='failure'),
+            'extra step': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1/jobs']['jobs'][0]['steps'].append({}),
+            'wrong original job': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/77/attempts/1/jobs']['jobs'][0]['steps'][2].update(conclusion='failure'),
+            'wrong locator step': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1/jobs']['jobs'][1].update(conclusion='success'),
+            'old quota': lambda d: d['EXTRA_ROUTES'][prefix + f'/pulls/{PR}/reviews/16'].update(body='Quota exceeded'),
+            'old is current': lambda d: d['EXTRA_ROUTES'][prefix + f'/pulls/{PR}/reviews/16'].update(commit_id=HEAD),
+            'request outside resume step': lambda d: d['TIMELINE'][0][0].update(created_at='2026-10-05T17:50:10Z'),
+            'duplicate timeline': lambda d: d['TIMELINE'][0].append(copy.deepcopy(d['TIMELINE'][0][0])),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                data = copy.deepcopy(original)
+                mutate(data)
+                result = self.run_caller(data)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+
+    def test_actual_required_resume_cannot_buy_budget_or_replace_intent(self):
+        for field, value in [('owner_run', 78), ('owner_attempt', 2), ('source_sha', HEAD), ('action', 'edited'),
+                             ('actor', 'mallory'), ('base', HEAD)]:
+            with self.subTest(field=field):
+                data = self.resume_fixture()
+                record = json.loads(data['REQUEST_JOURNAL']['data']['repository']['record']['text'])
+                record['intent'][field] = value
+                data['REQUEST_JOURNAL'] = snapshot(record)
+                self.assertNotEqual(0, self.run_caller(data).returncode)
