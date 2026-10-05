@@ -126,9 +126,16 @@ class ReviewEventTests(unittest.TestCase):
         job = {"id": 55, "run_id": 500, "run_attempt": 1, "head_sha": "c" * 40,
                "name": "Refresh canonical Copilot review gate", "status": "completed", "conclusion": "success",
                "started_at": "2026-10-05T18:00:00Z", "completed_at": "2026-10-05T18:00:06Z",
-               "steps": [{"name": "Rerun the canonical protected gate when needed", "number": 2,
+               "steps": [{"name": "Materialize the protected operation claim", "number": 2,
+                          "status": "completed", "conclusion": "success",
+                          "started_at": "2026-10-05T18:00:00Z", "completed_at": "2026-10-05T18:00:01Z"},
+                         {"name": "Rerun the canonical protected gate when needed", "number": 3,
                           "status": "completed", "conclusion": "success",
                           "started_at": "2026-10-05T18:00:01Z", "completed_at": "2026-10-05T18:00:05Z"}]}
+        skipped = [{"id": 56 + index, "run_id": 500, "run_attempt": 1, "head_sha": "c" * 40,
+                    "name": name, "status": "completed", "conclusion": "skipped", "runner_id": None, "steps": []}
+                   for index, name in enumerate(("Locate protected review refresh", "Inactive legacy writer"))]
+        full_jobs = [{"total_count": 3, "jobs": [*skipped, job]}]
         shell = r'''set -euo pipefail
 gh() {
   case "$*" in
@@ -158,6 +165,14 @@ gh() {
                  ({"ANCESTRY": {"status": "behind"}}, 1),
                  ({"JOBS": [{"total_count": 1, "jobs": [{**job, "head_sha": self.head}]}]}, 1)]
         import copy
+        for index, field, value in ((0, "name", "Unknown sibling"), (1, "status", "in_progress"),
+                                    (0, "conclusion", "failure"), (1, "runner_id", 99),
+                                    (0, "run_id", 501), (1, "run_attempt", 2),
+                                    (0, "head_sha", self.head), (1, "id", skipped[0]["id"])):
+            forged = copy.deepcopy(full_jobs)
+            forged[0]["jobs"][index][field] = value
+            cases.append(({"JOBS": forged}, 1))
+        cases.append(({"JOBS": [{"total_count": 3, "jobs": [job]}]}, 1))
         for field, value in (("record", blob({**record, "claim_run": "501"})),
                              ("record", blob({**record, "source_sha": "d" * 40})),
                              ("source", {"__typename": "Commit", "oid": "0" * 40}),
@@ -169,7 +184,7 @@ gh() {
             (Path(tmp) / "native-recovery-ordering.jq").write_text(textwrap.dedent(ordering))
             for changes, expected in cases:
                 data = {"CLAIMS": [{"check_runs": [claim]}], "REFRESH": run,
-                        "JOBS": [{"total_count": 1, "jobs": [job]}], "ANCESTRY": {"status": "identical"}, "JOURNAL": journal, **changes}
+                        "JOBS": full_jobs, "ANCESTRY": {"status": "identical"}, "JOURNAL": journal, **changes}
                 result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
                                         env={**os.environ, "LI219_EVENT_MODE": "enabled", "GITHUB_REPOSITORY_ID": "1112629689", **{k: json.dumps(v) for k, v in data.items()},
                                              "RUNNER_TEMP": tmp, "owner_pr_number": "23", "EVENT_BASE": self.base,

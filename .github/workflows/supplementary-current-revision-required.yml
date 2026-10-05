@@ -5313,22 +5313,55 @@ jobs:
             fromdateiso8601 | select(todateiso8601 == $value);
           def positive_id:
             type == "number" and . > 0 and floor == .;
-          select(type == "array" and length == 1) |
-          .[0] |
-          select(.total_count == 1 and (.jobs | type) == "array"
-            and (.jobs | length) == 1) |
-          .jobs[0] |
-          select((.id | positive_id)
-            and .run_id == $refresh.id and .run_attempt == 1
-            and .head_sha == $head
-            and .name == "Refresh canonical Copilot review gate"
-            and .status == "completed" and .conclusion == "success"
+          # Validate the complete ledger before selecting a writer. A skipped
+          # branch is inert only with the exact expected name and no runner/steps.
+          select(type == "array" and length > 0 and length <= 3) |
+          select(all(.[]; type == "object" and (.total_count | positive_id)
+            and (.jobs | type) == "array" and (.jobs | length) > 0)) |
+          select(([.[].total_count] | unique | length) == 1) |
+          .[0].total_count as $count |
+          [.[].jobs[]] |
+          select(length == $count and ($count == 1 or $count == 3)) |
+          select(all(.[]; type == "object" and (.id | positive_id)
+            and (.run_id | positive_id)
+            and .run_id == $refresh.id and .run_attempt == 1 and .head_sha == $head
+            and (.name | type) == "string")) |
+          select((map(.id) | unique | length) == length
+            and (map(.name) | unique | length) == length) |
+          (if $event_claim then "Inactive legacy writer" else "Inactive event writer" end) as $inactive |
+          select(if $count == 1 then
+              # Historical single-job native refreshes remain valid only on
+              # the legacy route; current CAS dispatch always has three jobs.
+              ($event_claim | not) and .[0].name == "Refresh canonical Copilot review gate"
+            else
+              (if $event_claim then $refresh.event == "workflow_dispatch"
+               else ($refresh.event | IN("pull_request_review", "pull_request_review_comment")) end)
+              and (map(.name) | sort) == ([$inactive, "Locate protected review refresh",
+                "Refresh canonical Copilot review gate"] | sort)
+              and all(.[] | select(.name != "Refresh canonical Copilot review gate");
+                .status == "completed" and .conclusion == "skipped"
+                and has("runner_id") and .runner_id == null and .steps == [])
+            end) |
+          .[] | select(.name == "Refresh canonical Copilot review gate") |
+          select(.status == "completed" and .conclusion == "success"
             and (.steps | type) == "array") |
+          select(all(.steps[]; type == "object" and (.name | type) == "string"
+            and (.number | positive_id))) |
+          select((.steps | map(.number) | unique | length) == (.steps | length)) |
           . as $job |
           [.steps[] | select(.name == "Rerun the canonical protected gate when needed")] |
           select(length == 1) | .[0] |
           select(.status == "completed" and .conclusion == "success"
-            and .number == 2) |
+            and .number == (if $count == 1 then 2 else 3 end)) |
+          . as $effect |
+          select(if $count == 1 then true else
+            [$job.steps[] | select(.name == "Materialize the protected operation claim")] |
+            length == 1 and .[0].number == 2 and .[0].status == "completed"
+            and .[0].conclusion == "success"
+            and (.[0].started_at | epoch) >= ($job.started_at | epoch)
+            and (.[0].completed_at | epoch) >= (.[0].started_at | epoch)
+            and (.[0].completed_at | epoch) <= ($effect.started_at | epoch)
+            end) |
           ($failed_at | epoch) as $failed |
           ($refresh.created_at | epoch) as $created |
           ($refresh.updated_at | epoch) as $updated |
