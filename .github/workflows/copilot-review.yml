@@ -684,12 +684,8 @@ jobs:
                         "timed_out", "action_required", "stale",
                         "startup_failure", "skipped")))
                   ' <<<"${rj}" >/dev/null || return 1
-                if jq -e '
-                    .[0].status == "completed"
-                    and .[0].conclusion == "skipped"
-                    ' <<<"${rj}" >/dev/null; then
-                  continue
-                fi
+                # A skipped requester forbids funding; it does not skip the
+                # current-head verification job or transfer its ownership.
               fi
               e="$(jq -cn --argjson current "${e}" --argjson id "${cid}" --argjson a "${ca}" '$current + [{id:$id,run_attempt:$a}]')" || return 1
             done <<<"${crows}"
