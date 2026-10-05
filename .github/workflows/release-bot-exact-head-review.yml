@@ -655,6 +655,16 @@ jobs:
               and .output.summary == $summary
             ' <<<"${created}" >/dev/null
 
+      - name: Require complete-request token budget before a new model call
+        if: steps.dedupe.outputs.reuse != 'true'
+        shell: bash
+        run: |
+          # Metadata v5 and receipt v4 bind bytes, not the complete model input.
+          # Source/Governance must install the versioned budgeted executor
+          # before this direct codex-action path can issue another model call.
+          echo 'New Own-MLX review blocked: complete-request token budget is not bound.' >&2
+          exit 1
+
       - name: Run protected history-free Exact-Revision Codex review
         if: steps.dedupe.outputs.reuse != 'true'
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1

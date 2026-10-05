@@ -109,7 +109,8 @@ INSTRUCTION_PATH_PATTERN = re.compile(
     r"^\.github/instructions/.+\.instructions\.md$"
 )
 MAX_CONFIG_BYTES = 1_000_000
-MAX_REVIEW_BYTES = 5_000_000
+DEFAULT_DIFF_WARNING_BYTES = 500_000
+MAX_UNTRACKED_FINGERPRINT_BYTES = 100_000_000
 MAX_TIMEOUT_SECONDS = 3_600
 CHECK_TIMEOUT_SECONDS = 1_800
 AUTHORITATIVE_BASE_REFS = {
@@ -535,7 +536,7 @@ def untracked_names() -> list[str]:
     return [entry for entry in names.split("\0") if entry]
 
 
-def untracked_file_hashes(max_bytes: int = 100_000_000) -> dict[str, str]:
+def untracked_file_hashes(max_bytes: int = MAX_UNTRACKED_FINGERPRINT_BYTES) -> dict[str, str]:
     hashes: dict[str, str] = {}
     total = 0
     for name in untracked_names():
@@ -894,11 +895,7 @@ def load_config() -> dict[str, Any]:
     review = data.get("review")
     if not isinstance(review, dict):
         raise RuntimeError("review must be an object")
-    require_positive_integer(
-        review.get("max_diff_bytes"),
-        "review.max_diff_bytes",
-        maximum=MAX_REVIEW_BYTES,
-    )
+    review_warning_threshold(review)
     evidence = data.get("evidence")
     if not isinstance(evidence, dict):
         raise RuntimeError("evidence must be an object")
@@ -909,6 +906,24 @@ def load_config() -> dict[str, Any]:
     )
     validate_remote_only_checks(data.get("remote_only_checks"))
     return data
+
+
+def review_warning_threshold(review: dict[str, Any]) -> Optional[int]:
+    """Version 2 migration: the legacy ceiling is readable, never enforced.
+
+    The old value is not reused as a warning threshold. Existing configurations
+    get the same 500000-byte advisory as new ones; explicit null disables it.
+    """
+    if not isinstance(review, dict) or set(review) - {"max_diff_bytes", "warn_diff_bytes"}:
+        raise RuntimeError("review accepts only warn_diff_bytes and deprecated max_diff_bytes")
+    if "max_diff_bytes" in review:
+        legacy = review["max_diff_bytes"]
+        if type(legacy) is not int or legacy <= 0:
+            raise RuntimeError("deprecated review.max_diff_bytes must be a positive integer")
+    warning = review.get("warn_diff_bytes", DEFAULT_DIFF_WARNING_BYTES)
+    if warning is not None and (type(warning) is not int or warning <= 0):
+        raise RuntimeError("review.warn_diff_bytes must be a positive integer or null")
+    return warning
 
 
 def instructions_digest() -> str:
@@ -2023,38 +2038,29 @@ def planned_change(
     tracked_names = git_output(
         "diff", "--name-only", "--no-renames", "-z", base_commit, "--"
     ).split("\0")
-    max_bytes = require_positive_integer(
-        config["review"]["max_diff_bytes"],
-        "review.max_diff_bytes",
-        maximum=MAX_REVIEW_BYTES,
-    )
+    warning_bytes = review_warning_threshold(config["review"])
     untracked_hashes: dict[str, str] = {}
     patches: list[str] = []
-    consumed = utf8_size(tracked_diff)
+    # Preserve the existing untracked-file fingerprint resource ceiling. It is
+    # independent of the tracked diff and never derives from review policy.
+    untracked_bytes = 0
     for name in untracked_names():
-        remaining = max_bytes - consumed
-        if remaining <= 0:
-            raise RuntimeError(
-                f"planned diff exceeds local review limit of {max_bytes} bytes"
-            )
         payload, mode = read_repository_file(
             name,
-            purpose="Local review",
-            max_bytes=remaining,
+            purpose="Untracked fingerprint",
+            max_bytes=MAX_UNTRACKED_FINGERPRINT_BYTES - untracked_bytes,
         )
-        patch = render_untracked_patch(name, payload, mode)
-        patch_bytes = utf8_size(patch)
-        consumed += patch_bytes
-        if consumed > max_bytes:
-            raise RuntimeError(
-                f"planned diff exceeds local review limit of {max_bytes} bytes"
-            )
-        patches.append(patch)
+        untracked_bytes += len(payload)
+        patches.append(render_untracked_patch(name, payload, mode))
         untracked_hashes[name] = sha256_bytes(payload)
     diff = tracked_diff + "".join(patches)
-    if utf8_size(diff) > max_bytes:
-        raise RuntimeError(
-            f"planned diff exceeds local review limit of {max_bytes} bytes"
+    diff_bytes = utf8_size(diff)
+    if warning_bytes is not None and diff_bytes >= warning_bytes:
+        print(
+            f"Planning notice: complete diff is {diff_bytes} bytes "
+            f"(advisory threshold {warning_bytes}); all deterministic checks "
+            "still run. No automatic PR splitting.",
+            file=sys.stderr,
         )
     paths = tuple(
         sorted(

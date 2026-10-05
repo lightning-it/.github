@@ -133,7 +133,7 @@ sys.exit(rc)
 
 
 class ReviewOperationCASTests(unittest.TestCase):
-    def probe(self, mode, **changes):
+    def probe(self, mode, terminal_review=None, terminal_in_comment=False, **changes):
         claim = contracts.CopilotReviewRefreshTests._rfn('claim_review_operation')
         self.assertEqual(claim, contracts.CopilotReviewRefreshTests._rerun_shell_function('claim_review_operation'))
         script = r'''set -euo pipefail
@@ -146,11 +146,31 @@ assert_refresh_rerun_budget() { :; }
 usable_current_review() { :; }
 read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,"unresolved":0}'; }
 ''' + claim + '\n' + contracts.CopilotReviewRefreshTests._rfn('rerun_owner_if_review_current') + '\nrerun_owner_if_review_current\n'
+        if terminal_review is not None:
+            script = script.replace('usable_current_review() { :; }',
+                                    contracts.CopilotReviewRefreshTests._rfn('usable_current_review'))
+            script = script.replace('sleep() { :; }', 'sleep() { :; }\noa() { gh "$@"; }')
         with tempfile.TemporaryDirectory() as tmp:
             state, mock = Path(tmp) / 'state', Path(tmp) / 'mock.py'
             state.write_text(json.dumps({'mode': mode, 'oid': INITIAL,
                                          'versions': {INITIAL: {}}, 'markers': [], 'calls': []}))
-            mock.write_text(MOCK)
+            transport = MOCK
+            if terminal_review is not None:
+                branch = """elif '/reviews' in route:
+    body = os.environ['TERMINAL_REVIEW'] if worker == '500' else 'Review complete.'
+    in_comment = os.environ['TERMINAL_IN_COMMENT'] == 'true'
+    review = {'id': 17, 'commit_id': os.environ['HEAD_SHA'], 'body': '' if in_comment else body,
+              'user': {'login': 'copilot-pull-request-reviewer[bot]'}, 'state': 'COMMENTED'}
+    if '/comments' in route:
+        result = [[{'body': body}]] if in_comment else [[]]
+    elif '/reviews?' in route:
+        result = [[review]]
+    else:
+        result = review
+"""
+                transport = transport.replace("elif '/comments' in route:", branch + "elif '/comments' in route:")
+                transport = transport.replace("worker == '501' or mode == 'invisible-marker'", "(worker == '501' and mode != 'terminal-review') or mode == 'invisible-marker'")
+            mock.write_text(transport)
             outcomes = []
             for worker in ('500', '501'):
                 env = {**os.environ, 'STATE': str(state), 'MOCK_GH': str(mock), 'GITHUB_RUN_ID': worker,
@@ -158,7 +178,9 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
                        'GITHUB_REF_PROTECTED': 'true', 'GITHUB_REF': 'refs/heads/develop',
                        'GITHUB_REPOSITORY_ID': '1112629689', 'LI219_EVENT_MODE': 'enabled', 'WORKFLOW_SHA': SOURCE, 'REPOSITORY': 'lightning-it/.github', 'PR_NUMBER': '23',
                        'owner_run_id': '77', 'HEAD_SHA': HEAD, 'BASE_SHA': BASE,
-                       'refresh_expected_count': '0', 'refresh_expected_snapshot': 'null', **changes}
+                       'refresh_expected_count': '0', 'refresh_expected_snapshot': 'null',
+                       'current_external_kind': 'copilot', 'TERMINAL_REVIEW': terminal_review or '',
+                       'TERMINAL_IN_COMMENT': str(terminal_in_comment).lower(), **changes}
                 result = subprocess.run(['bash', '-c', script], env=env, capture_output=True,
                                         text=True, timeout=30, check=False)
                 self.assertEqual(0, result.returncode, result.stderr)
@@ -177,6 +199,18 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
                 if mode == 'stale-ref':
                     second = [c for c in state['calls'] if c['worker'] == '501' and c.get('cas')]
                     self.assertEqual(INITIAL, second[0]['input']['expectedHeadOid'])
+
+    def test_terminal_review_preserves_cas_until_later_valid_review(self):
+        for marker in ('premium request quota', 'premium requests quota', 'encountered an error'):
+            for in_comment in (False, True):
+                with self.subTest(marker=marker, in_comment=in_comment):
+                    state, outcomes = self.probe('terminal-review', terminal_review=marker.upper().replace(' ', '\n'),
+                                                 terminal_in_comment=in_comment)
+                    first = [call for call in state['calls'] if call['worker'] == '500']
+                    self.assertFalse(any(call.get('post') or call.get('cas') for call in first))
+                    self.assertIn('preserving the one verifier retry', outcomes[0].stderr)
+                    self.assertEqual(['501'], [call['worker'] for call in state['calls'] if call.get('cas')])
+                    self.assertEqual(['501'], [call['worker'] for call in state['calls'] if call.get('rerun')])
 
     def test_unknown_or_partial_cas_response_consumes_without_rerun(self):
         for mode in ('lost-cas', 'partial-cas', 'wrong-parent'):

@@ -4922,21 +4922,15 @@ jobs:
                       and .[0].commit_id == $head
                       and .[0].submitted_at == "2026-09-07T06:48:29Z"
                       and (.[0].body | type) == "string"
-                      and ((.[0].body | ascii_downcase |
-                        contains("unable to review this pull request")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("no files to review")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("able to review any files")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("quota exhausted")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("quota exceeded")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("suppressed comments")) | not)
-                      and ((.[0].body | ascii_downcase |
-                        contains("encountered an error")) | not)
-                    ' <<<"${copilot_reviews}" >/dev/null
+                      and ((.[0].body | ascii_downcase
+                        | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                        | ["unabletoreviewthispullrequest","nofilestoreview",
+                           "wasnotabletoreviewanyfiles","abletoreviewanyfiles",
+                           "premiumrequestquota","premiumrequestsquota",
+                           "quotaexhausted","quotaexceeded","suppressedcomments",
+                           "encounteredanerror"]
+                        | all(.[]; . as $marker | $body | contains($marker) | not))
+                      ' <<<"${copilot_reviews}" >/dev/null
 
                   # shellcheck disable=SC2016
                   thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'
@@ -6912,20 +6906,8 @@ jobs:
                 --arg producer_created_at "$(jq -er '.created_at | strings' \
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
-                  [.[][]? |
-                    select(.user.login == "copilot-pull-request-reviewer[bot]") |
-                    select(.user.type == "Bot") |
-                    select(.commit_id == $head) |
-                    select(.state == "COMMENTED" or .state == "APPROVED") |
-                    select((.id | type) == "number" and .id > 0) |
-                    select((.submitted_at | type) == "string") |
-                    select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) |
-                    select(((.body // "") | ascii_downcase |
-                      (contains("unable to review this pull request") | not)
-                      and (contains("premium request quota") | not)
-                      and (contains("premium requests quota") | not)
-                      and (contains("encountered an error") | not)))]
+                  [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("wasn[\u0027\u2019]t";"was not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","abletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7305,21 +7287,15 @@ jobs:
                   and .[0].commit_id == $head
                   and .[0].submitted_at == "2026-09-07T06:48:29Z"
                   and (.[0].body | type) == "string"
-                  and ((.[0].body | ascii_downcase |
-                    contains("unable to review this pull request")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("no files to review")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("able to review any files")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("quota exhausted")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("quota exceeded")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("suppressed comments")) | not)
-                  and ((.[0].body | ascii_downcase |
-                    contains("encountered an error")) | not)
-                ' <<<"${final_reviews}" >/dev/null
+                  and ((.[0].body | ascii_downcase
+                    | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                    | ["unabletoreviewthispullrequest","nofilestoreview",
+                       "wasnotabletoreviewanyfiles","abletoreviewanyfiles",
+                       "premiumrequestquota","premiumrequestsquota",
+                       "quotaexhausted","quotaexceeded","suppressedcomments",
+                       "encounteredanerror"]
+                    | all(.[]; . as $marker | $body | contains($marker) | not))
+                  ' <<<"${final_reviews}" >/dev/null
 
               # shellcheck disable=SC2016
               final_thread_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewThreads(first:100){totalCount pageInfo{hasNextPage} nodes{id isResolved isOutdated path line originalLine comments(first:100){totalCount pageInfo{hasNextPage} nodes{databaseId author{login} createdAt updatedAt pullRequestReview{databaseId commit{oid}}}}}}}}}'

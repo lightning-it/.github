@@ -36,7 +36,7 @@ class ReviewEventTests(unittest.TestCase):
         self.assertFalse(EVENT.clean_review(self.review(), [{"body": "Suppressed comments"}], self.head))
         self.assertTrue(EVENT.clean_review(self.review(body=""), [{"body": "Reviewed files"}], self.head))
 
-    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False):
+    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None):
         prefix = "repos/lightning-it/.github"
         pr = {"id": 23, "number": 23, "draft": False, "state": "open",
               "user": {"login": "litroc", "type": "User"},
@@ -50,8 +50,8 @@ class ReviewEventTests(unittest.TestCase):
             f"{prefix}/pulls?state=open": [pr],
             f"{prefix}/actions/runs?event=pull_request_target&head_sha={self.head}": [run],
             f"{prefix}/commits/{self.head}/check-runs?filter=all": [],
-            f"{prefix}/pulls/23/reviews": [] if missing else [self.review()],
-            f"{prefix}/pulls/23/reviews/17/comments": [],
+            f"{prefix}/pulls/23/reviews": [] if missing else [self.review(body=review_body)],
+            f"{prefix}/pulls/23/reviews/17/comments": [] if comment_body is None else [{"body": comment_body}],
         }
         mutations = []
 
@@ -84,6 +84,14 @@ class ReviewEventTests(unittest.TestCase):
             self.assertTrue(calls[0][0].endswith("copilot-review-refresh.yml/dispatches"))
             self.assertEqual("23", calls[0][1]["inputs"]["pr_number"])
             self.assertEqual(self.head, calls[0][1]["inputs"]["expected_head"])
+
+    def test_terminal_markers_never_dispatch_and_later_valid_review_remains_eligible(self):
+        for marker in EVENT.MARKERS:
+            for field in ('review_body', 'comment_body'):
+                with self.subTest(marker=marker, field=field):
+                    value = marker.upper().replace(' ', '\n')
+                    self.assertEqual([], self.reconcile(**{field: value}))
+                    self.assertEqual(1, len(self.reconcile()))
 
     def test_missing_event_expiry_early_producer_and_stale_head_never_dispatch(self):
         for args in ({"missing": True}, {"delay": 7 * 86400 + 1},

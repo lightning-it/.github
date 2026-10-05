@@ -252,6 +252,41 @@ review-to-verifier, total latency median/P95, and false negatives over matched
 before/after cohorts. No after-rollout measurement exists yet; local simulated
 time must never be reported as a live latency reduction.
 
+## 2026-10-05 size-policy amendment
+
+The owner's later size-policy authorization removes blanket diff-byte gates
+from normal Copilot PR admission and cumulative promotion admission. Local
+Push-ready constructs the complete diff and runs the full deterministic
+profile regardless of its byte size. The default 500000-byte notice is advisory;
+there is no automatic splitting, truncation, skipped check, or extra AI request.
+This is independent of the three-pilot event authorization above.
+
+Push-ready configuration version 2 now writes `review.warn_diff_bytes` (positive
+integer or null to disable notices). Old `review.max_diff_bytes` positive
+integers remain readable but are not enforced or reused as warning thresholds;
+without an explicit new key, the warning threshold is 500000. Mixed keys are
+accepted for staged distribution; the new warning key wins. Deploy the new
+engine before writing the new-only configuration to downstream repositories.
+An older engine remains fail-closed on the new-only configuration. Promotion
+policy version 2 accepts either the historical `maximum_bytes: 199999` review
+shape (deprecated, no byte gate) or `warn_diff_bytes` with the unchanged format
+and minimum fields. The checked-in provisional, non-authorizing promotion
+policy remains inactive. Policy hashes and operation keys still bind the full
+policy; old acceptance evidence is not rewritten.
+
+Resource protections retain their own meaning: configuration/instruction reads,
+untracked fingerprints, safe regular-file reads, JSON/tree metadata, bounded
+inventory collection and command timeouts still fail closed. The historical
+Own-MLX metadata v5 / receipt v4 byte contract and inactive feature-main-prestage
+contract are not migrated by this change. A new Own-MLX producer/consumer
+version must bind model and tokenizer identity, complete rendered input
+(instructions, policy, prompt, schema, full diff and tool framing/results),
+context capacity and explicit output/reasoning reserve before its first model
+call. Unknown or exceeded token budgets block that call. The direct Own-MLX codex-action path now fails before any new model call;
+reuse of validated historical receipts remains available. Source/Governance owns
+that coordinated migration; no character-to-token heuristic or larger byte
+constant stands in for it. Native exact-head acceptance remains mandatory.
+
 [triggers]: https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#supported-event-triggers
 
 [rep40]: https://wiki.cloud.l-it.io/wiki/spaces/LIT/pages/2878440201

@@ -47,7 +47,8 @@
   2887909377 version 13, amendment added 2026-10-05. Scoped owner-authorized
   project-rule overrides are permitted for this bounded completion; they do
   not supersede global policy or authorize bypasses, weaker required checks,
-  additional AI requests, or a global review-size threshold migration.
+  additional AI requests. The later size-policy amendment below governs
+  review sizing independently.
 - Every other human or external contributor supplies any required current-head
   Copilot review under their own entitlement and cost. Lightning IT verifies
   valid evidence but never requests or funds that review, and personal tokens or
@@ -149,3 +150,32 @@ model/reasoning choice, rationale, and a concrete escalation condition.
   remaining risks; preserve durable decisions in Confluence, Jira, or GitHub.
 
 <!-- LIT AI task governance: end -->
+
+<!-- LIT review sizing governance: start -->
+
+## Review size and model budgets
+
+- The owner-authorized 2026-10-05 size-policy amendment replaces blanket KB
+  gates for normal Copilot pull requests and cumulative promotions. Complete
+  local deterministic checks run independently of diff size. An optional
+  planning notice starts at 500000 bytes; it never blocks or automatically
+  divides a PR, skips checks, truncates review input, or requests another AI
+  review. Existing actor, exact-head, source, and request-count guards remain.
+- Version 2 push-ready configurations migrate from `review.max_diff_bytes` to
+  `review.warn_diff_bytes`. The legacy positive integer remains readable but
+  has no blocking effect and does not set the advisory threshold. The default
+  advisory is 500000 bytes; an explicit null disables it. Promotion version 2
+  likewise accepts its legacy review shape without enforcing a diff ceiling.
+- For model calls we control, Source/Governance must budget the complete model
+  input: system and developer instructions, repository policy, prompt, schemas,
+  full diff, tool framing and results, plus an explicit output/reasoning reserve.
+  Bind the model, tokenizer/version, context capacity, all input hashes and
+  reserved output in a versioned contract; fail closed on unknown capacity or
+  an exceeded token budget. KB size is not a substitute for token accounting.
+- Preserve real parser, transport, file-read, metadata, timeout and inventory
+  resource limits. Historical Own-MLX receipt versions and the inactive bounded
+  feature-main-prestage authorization are separate contracts. Their limits
+  must not be silently reinterpreted as token budgets or globally removed;
+  Source/Governance coordinates a new producer/consumer version before cutover.
+
+<!-- LIT review sizing governance: end -->

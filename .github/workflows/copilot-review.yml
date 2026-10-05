@@ -437,22 +437,17 @@ jobs:
             jq -e \
               --arg reviewer "${reviewer}" \
               --arg head "${EXPECTED_HEAD}" \
-              --arg retry_unable "${UNABLE_REVIEW_MARKER}" \
-              --arg retry_no_files "${NO_FILES_REVIEW_MARKER}" \
-              --arg retry_quota_exhausted "${QUOTA_EXHAUSTED_MARKER}" \
-              --arg retry_quota_exceeded "${QUOTA_EXCEEDED_MARKER}" \
-              --arg retry_suppressed "${SUPPRESSED_COMMENTS_MARKER}" '
-                any(add[];
+              'any(add[];
                   .user.login == $reviewer
                   and .commit_id == $head
-                  and (((.body // "") | ascii_downcase) as $body
-                    | ($body | contains($retry_unable) | not)
-                    and ($body | contains($retry_no_files) | not)
-                    and ($body | contains("able to review any files") | not)
-                    and ($body | contains($retry_quota_exhausted) | not)
-                    and ($body | contains($retry_quota_exceeded) | not)
-                    and ($body | contains($retry_suppressed) | not)
-                    and ($body | contains("encountered an error") | not))
+                  and (((.body // "") | ascii_downcase
+                    | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                    | ["unabletoreviewthispullrequest", "nofilestoreview",
+                       "wasnotabletoreviewanyfiles", "abletoreviewanyfiles",
+                       "premiumrequestquota", "premiumrequestsquota",
+                       "quotaexhausted", "quotaexceeded", "suppressedcomments",
+                       "encounteredanerror"]
+                    | all(.[]; . as $marker | $body | contains($marker) | not))
                 )
               ' <<<"${reviews}" >/dev/null
           }
@@ -1315,6 +1310,11 @@ jobs:
                               or contains($quota_exhausted)
                               or contains($quota_exceeded)
                               or contains($suppressed)
+                              or contains("nofilestoreview")
+                              or contains("abletoreviewanyfiles")
+                              or contains("premiumrequestquota")
+                              or contains("premiumrequestsquota")
+                              or contains("encounteredanerror")
                             )
                         )
                     ] | length),

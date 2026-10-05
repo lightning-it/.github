@@ -1484,7 +1484,9 @@ jobs:
                 any(.[]; length > 0) and all(.[];
                   (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
-                   or contains("suppressedcomments")) | not)
+                   or contains("suppressedcomments") or contains("nofilestoreview")
+                   or contains("abletoreviewanyfiles") or contains("premiumrequestquota")
+                   or contains("premiumrequestsquota") or contains("encounteredanerror")) | not)
                 ' <<<"${texts}" >/dev/null; then return 0; fi
             done < <(jq -r '.[].id' <<<"${candidates}")
             echo 'No complete current-head AI review is available; preserving the one verifier retry.' >&2

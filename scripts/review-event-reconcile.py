@@ -21,8 +21,11 @@ PILOTS = {"lightning-it/.github", "lightning-it/shared-assets-lit",
 TTL = dt.timedelta(days=7)
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
-    "was not able to review any files", "unable to review this pull request",
+    "unable to review this pull request", "no files to review",
+    "was not able to review any files", "able to review any files",
+    "premium request quota", "premium requests quota",
     "quota exhausted", "quota exceeded", "suppressed comments",
+    "encountered an error",
 )
 
 
