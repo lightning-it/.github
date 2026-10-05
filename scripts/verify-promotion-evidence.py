@@ -848,18 +848,21 @@ def validate_reviewed_release_baseline(
     head = exact_object(pull.get("head"), "release-baseline-head")
     reference = text(head.get("ref"), "release-baseline-ref")
     match = re.fullmatch(
-        r"backsync/release-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))-to-develop",
+        r"backsync/release-v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+        r"-(to-develop|[a-z]{2,12}[1-9][0-9]{0,8}-current-base)",
         reference,
     )
     require(match is not None, "release-baseline-ref")
     assert match is not None
     version = match.group(1)
+    reviewed_successor = match.group(2) != "to-develop"
     controller_title = f"chore: sync v{version} release back to develop"
+    successor_title = f"chore: preserve v{version} release ancestry on current develop"
     require(
-        pull.get("title") in (
+        pull.get("title") in ((successor_title,) if reviewed_successor else (
             f"chore(release): sync v{version} back to develop",
             controller_title,
-        ),
+        )),
         "release-baseline-title",
     )
     evidence_kind = expected_evidence_kind(pull, repository=repository)
@@ -867,6 +870,11 @@ def validate_reviewed_release_baseline(
         evidence_kind in {"copilot", "release-app"},
         "release-baseline-review-kind",
     )
+    # A human-reviewed, content-identical current-base successor is not an App
+    # dispatch or an ancestry-only exemption. Its full current-head Copilot,
+    # threads, native checks, and exact release-content proof remain mandatory.
+    if reviewed_successor:
+        require(evidence_kind == "copilot", "release-baseline-successor-review-kind")
     # The existing release-back-sync producer uses this exact alternate title.
     # It still needs the authenticated App identity and ordinary review proof.
     if pull.get("title") == controller_title:

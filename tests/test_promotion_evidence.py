@@ -295,6 +295,96 @@ def evidence_api(
 
 
 class PromotionEvidenceTests(unittest.TestCase):
+    def test_reviewed_release_successor_proves_real_metadata_only_ancestry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            environment = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+            for name in ("GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"):
+                environment.pop(name, None)
+
+            def git(*arguments: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(repository), "-c", "user.name=test",
+                     "-c", "user.email=test@example.test", *arguments],
+                    env=environment, text=True, stderr=subprocess.DEVNULL,
+                ).strip()
+
+            git("init", "--quiet")
+            (repository / "galaxy.yml").write_text("namespace: lit\nversion: 1.15.0\n", encoding="utf-8")
+            (repository / "runtime").write_text("original\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "original")
+            original = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "released")
+            (repository / "galaxy.yml").write_text("namespace: lit\nversion: 1.16.0\n", encoding="utf-8")
+            git("commit", "--quiet", "-am", "published version metadata")
+            released = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "develop", original)
+            (repository / "runtime").write_text("reviewed feature\n", encoding="utf-8")
+            git("commit", "--quiet", "-am", "reviewed develop")
+            previous = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "successor")
+            git("merge", "--quiet", "--no-ff", "released", "-m", "preserve main ancestry")
+            head = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "develop")
+            git("merge", "--quiet", "--no-ff", "successor", "-m", "protected merge")
+            merge = {"base_sha": previous, "head_sha": head, "merge_sha": git("rev-parse", "HEAD")}
+            pull = ingress_pull()
+            pull["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+            pull["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+            with mock.patch.dict(os.environ, environment, clear=True):
+                MODULE.validate_reviewed_release_baseline(
+                    repository, repository="lightning-it/example",
+                    expected_main=released, merge=merge, pull=pull,
+                )
+                # The naming compatibility must never admit runtime edits.
+                git("switch", "--quiet", "successor")
+                (repository / "runtime").write_text("unreviewed runtime alteration\n", encoding="utf-8")
+                git("commit", "--quiet", "-am", "forbidden runtime change")
+                altered = git("rev-parse", "HEAD")
+                with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-content-scope"):
+                    MODULE.validate_reviewed_release_baseline(
+                        repository, repository="lightning-it/example",
+                        expected_main=released,
+                        merge={"base_sha": previous, "head_sha": altered, "merge_sha": altered},
+                        pull=pull,
+                    )
+
+    def test_reviewed_release_successor_still_requires_main_introduction(self) -> None:
+        pull = ingress_pull()
+        pull["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+        pull["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+        merge = {"base_sha": BASE, "head_sha": HEAD, "merge_sha": MERGE}
+        with mock.patch.object(MODULE, "is_ancestor", return_value=False):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-main-introduction"):
+                MODULE.validate_reviewed_release_baseline(
+                    Path("unused"), repository="lightning-it/example",
+                    expected_main="5" * 40, merge=merge, pull=pull,
+                )
+
+    def test_reviewed_release_successor_identity_fails_closed(self) -> None:
+        original = ingress_pull()
+        original["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+        original["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+        merge = {"base_sha": BASE, "head_sha": HEAD, "merge_sha": MERGE}
+        for reference, title, user in (
+            ("backsync/release-v1.16.0-li139-current-base", "arbitrary", original["user"]),
+            ("backsync/release-v1.16.0-li139-current-base", "chore: preserve v1.16.1 release ancestry on current develop", original["user"]),
+            ("backsync/release-v1.16.0-arbitrary", original["title"], original["user"]),
+            ("backsync/release-v01.16.0-li139-current-base", original["title"], original["user"]),
+            ("backsync/release-v1.16.0-li139-current-base", original["title"], {
+                "login": "lightning-it-release-automation[bot]", "id": 307565056, "type": "Bot"}),
+        ):
+            pull = json.loads(json.dumps(original))
+            pull["head"]["ref"], pull["title"], pull["user"] = reference, title, user
+            with self.subTest(reference=reference, title=title, user=user), mock.patch.object(MODULE, "is_ancestor") as ancestry:
+                with self.assertRaises(MODULE.EvidenceError):
+                    MODULE.validate_reviewed_release_baseline(
+                        Path("unused"), repository="lightning-it/example",
+                        expected_main="5" * 40, merge=merge, pull=pull,
+                    )
+                ancestry.assert_not_called()
+
     def test_github_api_proxy_accepts_only_exact_connect_target(self) -> None:
         accepted = (
             b"CONNECT api.github.com:443 HTTP/1.1\r\n"
