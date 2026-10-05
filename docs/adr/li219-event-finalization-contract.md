@@ -1,8 +1,71 @@
-# LI-219 event finalization contract (not operationalized)
+# LI-219 event finalization contract
 
 Task profile — Work item: LI-219; risk: high; model/reasoning: frontier/high;
 rationale: organization-wide Required-Workflow provenance and event ordering;
 escalate only if: ruleset, check identity, App identity, or provenance changes.
+
+## Selected implementation, 2026-10-05
+
+The owner has selected option 1 below: retain Required-Workflow authority and
+permit one event-bound verifier re-evaluation. The implementation candidate
+uses the existing protected producer, refresh and rerun helper. It does not
+activate the separate App/journal proposal. The historical pure-model and
+platform analysis below remains applicable; its statement that production
+polling is unchanged describes the earlier design-only revision.
+
+The review request job runs only on attempt 1. An unavailable review leaves
+the initial verifier failed and merge-blocking after one observation. A later
+review event, producer completion or scheduled reconciliation resumes the same
+PR and head. It never requests another AI review. Re-running the producer run
+re-evaluates its policy/publication and dispatch jobs; the AI-request job is
+skipped, and the Required verifier checks the retained successful first-attempt
+request and single native request timeline. The Required Workflow itself and
+the independent dot-github Required job retain their single re-evaluation limit.
+
+`review-event-reconcile.yml` runs from the immutable default-branch controller
+source on completion and every ten minutes. Its inputs are locators, not
+authority. Refresh hydrates them from the live API; existing current-head,
+review-content, thread, owner and source checks run before mutation. The helper
+continues to verify the complete protected producer and reservation bindings.
+The Required verifier accepts a separately checked receipt for a protected
+dispatch, including controller ancestry and exact native job/step ordering.
+This also permits an event queued before the initial failure to execute after
+that job has ended. Historical native review-event evidence remains supported.
+
+Producer, refresh and helper share the same repository-ID/head concurrency
+group with cancellation disabled and the full pending queue retained. Before
+an effective rerun, the sole active writer creates a native `Review event
+operation` consumption marker, bound to PR, base, head and target run. It reads
+the marker back before sending the rerun. A later worker finding that marker
+never sends another rerun POST. Ambiguous marker creation is read back at most
+three times; ambiguous rerun delivery is reconciled from native run attempts,
+without repeating the mutation. Duplicate/malformed marker inventory blocks.
+
+This is serialized ownership, **not a GitHub Checks CAS or external-ID uniqueness
+guarantee**. Its production guarantee depends on the shared Actions concurrency
+lane and complete native API inventory. A crash after claim but before delivery,
+or persistently ambiguous API visibility, deliberately remains blocked and
+requires diagnosis. It is not reported as a successful review or live acceptance.
+The marker is operational native history, not a duplicate release-evidence
+package and not a replacement required check.
+
+Reservations expire seven days after the original run creation time. Expiry
+prevents refresh/helper claims and leaves the original required failure
+blocking. Missing events can be reconciled within that interval; expiry never
+authorizes another review. No pending custom check is used to weaken admission.
+
+The predecessor evidence run and current PR's elected rerun owner are separate
+identities. Reused evidence remains bound to the closed, unmerged predecessor
+PR and original run; invalidation and current-PR retry ownership stay with the
+current PR. Regression fixtures use different run IDs for those roles.
+
+Deployment requires the canonical Shared Assets workflow/template changes,
+distribution of the reconciler and script, the protected `.github` Required
+source update, and the independently protected dot-github source rollout.
+Local tests do not prove any of those live transitions. Operational acceptance
+still requires delayed-review, missing-event, duplicate/uncertain-response and
+stale-head canaries on `.github`, Shared Assets and one representative consumer.
+Median/P95 and false-negative rates must be measured from actual protected runs.
 
 ## Scope and status
 

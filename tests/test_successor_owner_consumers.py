@@ -47,14 +47,26 @@ class SuccessorOwnerConsumerTests(unittest.TestCase):
                       "output": {"summary": json.dumps(summary)}}]
             script = "\n".join((
                 "set -euo pipefail",
+                contracts.CopilotReviewRefreshTests._rfn("validate_refresh_owner_run"),
                 contracts.CopilotReviewRefreshTests._rfn("va"),
-                "oa() { printf '%s\\n' \"${OWNER_PR}\"; }",
+                "oa() { printf '%s\\n' \"${OWNER_RUN}\"; }",
                 'va "${CHECK}"',
             ))
             extra = {
                 "CHECK": json.dumps(check), "BASE_REF": "develop",
                 "HEAD_REF": "fix/final", "PR_AUTHOR": "litroc",
-                "current_external_kind": "copilot", "owner_run_id": "77",
+                "current_external_kind": "copilot", "owner_run_id": "88",
+                "OWNER_RUN": json.dumps(drift.get("owner_run", {
+                    "id": 77, "event": "pull_request_target",
+                    "path": ".github/workflows/copilot-review.yml",
+                    "name": "Current revision review gate", "run_attempt": 1,
+                    "head_branch": "fix/final", "head_sha": self.head,
+                    "repository": {"full_name": self.repository},
+                    "head_repository": {"full_name": self.repository},
+                    "pull_requests": [{"number": self.owner,
+                        "base": {"sha": self.base},
+                        "head": {"sha": self.head, "ref": "fix/final"}}],
+                })),
             }
         else:
             current_pr = self._pr(self.current, "open")
@@ -96,6 +108,11 @@ class SuccessorOwnerConsumerTests(unittest.TestCase):
             self.assertNotEqual(
                 0, self._run(consumer, owner, summary=summary).returncode
             )
+
+    def test_refresh_rejects_forged_predecessor_run(self) -> None:
+        result = self._run("refresh", self._pr(self.owner, "closed"),
+                           owner_run={"id": 88})
+        self.assertNotEqual(0, result.returncode)
 
     def test_required_verifier_binds_owner_and_current_successor(self) -> None:
         workflow = REQUIRED.read_text(encoding="utf-8")

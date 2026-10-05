@@ -3499,7 +3499,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     jq, "-e", "--arg", "head", head,
                     "--arg", "failed_at", failed,
                     "--arg", "producer_started_at", started,
-                    "--argjson", "refresh", json.dumps(run), ordering_filter,
+                    "--argjson", "refresh", json.dumps(run),
+                    "--argjson", "event_claim", "false", ordering_filter,
                 ],
                 input=json.dumps(pages), text=True, capture_output=True, check=False,
             )
@@ -5484,8 +5485,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "failure_stage='permanent-producer-inventory'", 1
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
-        self.assertIn("for evidence_observation in $(seq 1 450)", permanent)
-        self.assertIn("sleep 2", permanent)
+        self.assertIn("for evidence_observation in 1", permanent)
+        self.assertNotIn("sleep 2", permanent)
         self.assertIn('current_pr="$(gh api', permanent)
         for binding in (
             '.state == "open"',
@@ -5505,7 +5506,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('^(queued|in_progress)$', permanent)
         self.assertIn(
-            "The protected current-revision result did not become successful in time.",
+            "Awaiting protected producer event; merge remains blocked.",
             permanent,
         )
 
@@ -5599,13 +5600,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
         self.assertIn('"${producer_kind}" = copilot', permanent)
-        self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn("for producer_observation in 1", permanent)
 
         self.assertIn('if [ "${producer_status}" = queued ]', permanent)
         self.assertIn(
-            "The protected producer run did not start in time.", permanent
+            "Awaiting producer event.", permanent
         )
-        self.assertIn("continue", permanent)
+        self.assertNotIn("sleep 1", permanent)
         self.assertIn(
             '^(requested|waiting|pending|in_progress|completed)$', permanent
         )
@@ -5911,7 +5912,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
         )
         producer_loop = permanent.split(
-            "for producer_observation in $(seq 1 60)", 1
+            "for producer_observation in 1", 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
             producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
@@ -5932,7 +5933,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(producer_attempt_guard, permanent)
         self.assertLess(
             permanent.index(producer_attempt_guard),
-            permanent.index("for producer_observation in $(seq 1 60)"),
+            permanent.index("for producer_observation in 1"),
         )
         self.assertNotIn(
             '&& [ "${producer_kind}" = copilot ]; then', permanent
@@ -5993,7 +5994,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
         self.assertLess(
-            permanent.index("for evidence_observation in $(seq 1 450)"),
+            permanent.index("for evidence_observation in 1"),
             permanent.index("producer_evidence_ready=false"),
         )
         self.assertLess(

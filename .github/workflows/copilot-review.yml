@@ -212,6 +212,7 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == 'litroc' &&
+      github.run_attempt == 1 &&
       github.actor == 'litroc' &&
       github.triggering_actor == 'litroc'
     permissions:
@@ -1183,7 +1184,7 @@ jobs:
           declare -A rejected_review_ids=()
           review_complete=false
           head_sha=""
-          for attempt in $(seq 1 40); do
+          for attempt in $(seq 1 1); do
             head_sha=""
             before=""
             request_failed=false
@@ -1269,7 +1270,7 @@ jobs:
               fi
             done
 
-            if [ "${attempt}" -eq 40 ]; then
+            if [ "${attempt}" -eq 1 ]; then
               if [ "${request_failed}" = true ]; then
                 echo "Unable to verify the Copilot review after repeated API or head-change failures." >&2
               else
@@ -1316,7 +1317,7 @@ jobs:
           GRAPHQL
 
           findings_resolved=false
-          for resolution_attempt in $(seq 1 20); do
+          for resolution_attempt in $(seq 1 1); do
             after=""
             unresolved_copilot_threads=0
             request_failed=false
@@ -1388,7 +1389,7 @@ jobs:
               findings_resolved=true
               break
             fi
-            if [ "${resolution_attempt}" -eq 20 ]; then
+            if [ "${resolution_attempt}" -eq 1 ]; then
               if [ "${request_failed}" = true ]; then
                 echo "Unable to verify Copilot review threads after repeated API or head-change failures." >&2
               else

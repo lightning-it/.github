@@ -3404,6 +3404,7 @@ jobs:
               == 'lightning-it/shared-assets-lit'
           )
         env:
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -3452,6 +3453,12 @@ jobs:
                 producer_run_id="${BASH_REMATCH[2]}"
               fi
               break
+            fi
+            if [ "${PR_AUTHOR_TYPE:-}" = User ]; then
+              # Let the bound admission below create and fail its reservation.
+              # This locator is not review success and cannot satisfy the gate.
+              printf 'producer_kind=copilot\nproducer_run_id=\n' >>"${GITHUB_OUTPUT}"
+              exit 0
             fi
             test "${observation}" -lt 450
             sleep 2
@@ -5327,7 +5334,7 @@ jobs:
           ($job.completed_at | epoch) as $job_completed |
           (.started_at | epoch) as $step_started |
           (.completed_at | epoch) as $step_completed |
-          $created >= $failed
+          ($event_claim or $created >= $failed)
           and $created <= $job_started
           and $job_started <= $step_started
           and $step_started > $failed
@@ -5378,6 +5385,80 @@ jobs:
           and .controller_sha==$controller and .producer_run_id==$run_id
           and .run_url==$run_url and .review_path==$review_path
           JQ
+
+      - name: Materialize event recovery receipt verification
+        run: |
+          set -euo pipefail
+          umask 077
+          cat >"${RUNNER_TEMP}/event-recovery.sh" <<'EVENT_RECOVERY'
+          validate_recorded_ref() {
+            jq -e --argjson owner "${owner_pr_number}" \
+              -f "${RUNNER_TEMP}/current-revision-owner-run.jq" \
+              <<<"$1" >/dev/null
+          }
+          verify_event_recovery() {
+            local key pages claims claim receipt refresh_id refresh_run refresh_jobs
+            local source_sha source_ancestry
+            key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
+            pages="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" || return 1
+            claims="$(jq -ce --arg key "${key}" '
+              select(type == "array" and length > 0 and length <= 10)
+              | select(all(.[]; (.check_runs | type) == "array"))
+              | [.[].check_runs[] | select(.external_id == $key)]
+              | select(length <= 1)' <<<"${pages}")" || return 1
+            [ "$(jq length <<<"${claims}")" -ne 0 ] || return 10
+            claim="$(jq -ce --arg head "${EVENT_HEAD}" --arg failed "${first_verifier_completed_at}" '
+              .[0] | select(.name == "Review event operation" and .head_sha == $head
+                and .app.id == 15368 and .app.slug == "github-actions"
+                and .status == "completed" and .conclusion == "neutral"
+                and .output.title == "Verifier mutation consumed"
+                and (.started_at | fromdateiso8601) >= ($failed | fromdateiso8601))
+              ' <<<"${claims}")" || return 1
+            receipt="$(jq -cer --arg key "${key}" '
+              .output.summary | fromjson
+              | select((keys | sort) == ["claim_attempt","claim_run","operation"])
+              | select(.operation == $key and .claim_attempt == "1")
+              | select(.claim_run | type == "string" and test("^[1-9][0-9]*$"))
+              ' <<<"${claim}")" || return 1
+            refresh_id="$(jq -r .claim_run <<<"${receipt}")"
+            refresh_run="$(gh api "repos/${REPOSITORY}/actions/runs/${refresh_id}")" || return 1
+            jq -e --arg repo "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+              --arg base "${EVENT_BASE}" --arg branch "${controller_branch}" \
+              --argjson id "${refresh_id}" --argjson pr "${owner_pr_number}" '
+                .id == $id and .run_attempt == 1
+                and .path == ".github/workflows/copilot-review-refresh.yml"
+                and .name == "Refresh Copilot review gate"
+                and .repository.full_name == $repo and .head_repository.full_name == $repo
+                and .status == "completed" and .conclusion == "success"
+                and (if .event == "workflow_dispatch" then
+                  .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]"
+                  and .head_branch == $branch
+                  and .display_title == ("Reconcile review PR #" + ($pr|tostring) + " head " + $head)
+                else
+                  (.event | IN("pull_request_review", "pull_request_review_comment"))
+                  and .head_sha == $head
+                  and .triggering_actor.login == .actor.login
+                  and (.pull_requests | length) == 1
+                  and .pull_requests[0].number == $pr
+                  and .pull_requests[0].head.sha == $head and .pull_requests[0].base.sha == $base
+                end)
+              ' <<<"${refresh_run}" >/dev/null || return 1
+            if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
+              source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
+              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${controller_head}")" || return 1
+              jq -e --arg source "${source_sha}" '
+                .status == "identical" or (.status == "ahead" and .behind_by == 0
+                  and .merge_base_commit.sha == $source)
+                ' <<<"${source_ancestry}" >/dev/null || return 1
+            fi
+            refresh_jobs="$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${refresh_id}/attempts/1/jobs?per_page=100")" || return 1
+            jq -e --arg head "$(jq -r .head_sha <<<"${refresh_run}")" \
+              --arg failed_at "${first_verifier_completed_at}" \
+              --arg producer_started_at "$(jq -er '.run_started_at | strings' <<<"${producer}")" \
+              --argjson refresh "${refresh_run}" --argjson event_claim true \
+              -f "${RUNNER_TEMP}/native-recovery-ordering.jq" <<<"${refresh_jobs}" >/dev/null || return 1
+          }
+          EVENT_RECOVERY
 
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
@@ -6415,7 +6496,7 @@ jobs:
             --arg repository "${REPOSITORY}" \
             -f "${RUNNER_TEMP}/current-revision-live-pr.jq" \
             <<<"${current_pr}" >/dev/null
-          for evidence_observation in $(seq 1 450); do
+          for evidence_observation in 1; do
             neutral_pages="$(gh api --paginate --slurp \
               "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
             neutral="$(jq -c '
@@ -6446,11 +6527,10 @@ jobs:
               fi
               [[ "${neutral_status}" =~ ^(queued|in_progress)$ ]]
             fi
-            if [ "${evidence_observation}" -eq 450 ]; then
-              echo 'The protected current-revision result did not become successful in time.' >&2
+            if [ "${evidence_observation}" -eq 1 ]; then
+              echo 'Awaiting protected producer event; merge remains blocked.' >&2
               exit 1
             fi
-            sleep 2
           done
           current_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
@@ -6575,11 +6655,8 @@ jobs:
             fi
             producer_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${producer_run_id}"
             producer="$(gh api "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
-            validate_recorded_ref() {
-              jq -e --argjson owner "${owner_pr_number}" \
-                -f "${RUNNER_TEMP}/current-revision-owner-run.jq" \
-                <<<"$1" >/dev/null
-            }
+            # shellcheck source=/dev/null
+            source "${RUNNER_TEMP}/event-recovery.sh"
             controller_sha="$(jq -er '.controller_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
               <<<"${summary}")"
             controller_branch="$(jq -er \
@@ -6605,19 +6682,17 @@ jobs:
             producer_evidence_ready=false
             if [ "${producer_run_attempt}" -eq 1 ]; then
               test "$INLINE_POLICY_STEP" || { echo >&2 'No inline policy step'; exit 1; }
-              for producer_observation in $(seq 1 60); do
+              for producer_observation in 1; do
                 producer="$(gh api \
                   "repos/${REPOSITORY}/actions/runs/${producer_run_id}")"
                 producer_status="$(jq -er \
                   '.status | select(type == "string" and length > 0)' \
                   <<<"${producer}")"
                 if [ "${producer_status}" = queued ]; then
-                  if [ "${producer_observation}" -eq 60 ]; then
-                    echo 'The protected producer run did not start in time.' >&2
+                  if [ "${producer_observation}" -eq 1 ]; then
+                    echo 'Awaiting producer event.' >&2
                     exit 1
                   fi
-                  sleep 1
-                  continue
                 fi
                 [[ "${producer_status}" =~ ^(requested|waiting|pending|in_progress|completed)$ ]]
                 producer_jobs_pages="$(gh api --paginate --slurp \
@@ -6676,19 +6751,17 @@ jobs:
                         and .conclusion == "success")]
                     ' <<<"${evidence_jobs}")"
                   test "$(jq 'length' <<<"${critical_steps}")" -eq 2
-                  test "$(jq '[.[].name] | unique | length' \
-                    <<<"${critical_steps}")" -eq 2
+                  test "$(jq '[.[].name] | unique | length' <<<"${critical_steps}")" -eq 2
                   producer_evidence_ready=true
                 fi
                 [ "${producer_evidence_ready}" != true ] || break
                 if [ "${producer_status}" = completed ]; then
                   break
                 fi
-                if [ "${producer_observation}" -eq 60 ]; then
-                  echo 'The protected producer evidence job did not complete in time.' >&2
+                if [ "${producer_observation}" -eq 1 ]; then
+                  echo 'Awaiting producer evidence.' >&2
                   exit 1
                 fi
-                sleep 1
               done
             fi
             validate_recorded_ref "${producer}"
@@ -6776,6 +6849,9 @@ jobs:
               review="$(jq -c '.[0]' <<<"${reviews}")"
               review_submitted_at="$(jq -r .submitted_at <<<"${review}")"
 
+              recovery_status=0
+              verify_event_recovery || recovery_status=$?
+              if [ "${recovery_status}" -eq 10 ]; then
               refresh_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}&per_page=100")"
               refresh_runs="$(jq -c \
@@ -6840,8 +6916,13 @@ jobs:
                 --arg producer_started_at "$(jq -er '.run_started_at | strings' \
                   <<<"${producer}")" \
                 --argjson refresh "${refresh_run}" \
-                -f "${RUNNER_TEMP}/native-recovery-ordering.jq" \
+                --argjson event_claim false \
+              -f "${RUNNER_TEMP}/native-recovery-ordering.jq" \
                 <<<"${refresh_jobs}" >/dev/null
+
+              else
+                test "${recovery_status}" -eq 0
+              fi
 
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
               jq -e --arg actor "${author}" \

@@ -1133,6 +1133,8 @@ jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
             with tempfile.TemporaryDirectory() as tmp:
                 lfile = Path(tmp) / "log"
                 script = r'''set -euo pipefail
+claim_review_operation() { :; }
+usable_current_review() { :; }
 revalidate_refresh_state() { printf S >>"${LOG_FILE}"; }
 validate_refresh_owner_run() { printf O >>"${LOG_FILE}"; }
 read_refresh_review_state() { printf V >>"${LOG_FILE}"; printf %s "${STATE}"; }
@@ -1143,7 +1145,9 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
                        "RUN": json.dumps({"id": 77, "status": "completed",
                                           "conclusion": "failure", "run_attempt": 1}),
                        "STATE": json.dumps(state, separators=(",", ":")),
-                       "owner_run_id": "77", "refresh_expected_count": "0",
+                       "owner_run_id": "77", "PR_NUMBER": "123",
+                       "HEAD_SHA": "b" * 40, "BASE_SHA": "a" * 40,
+                       "refresh_expected_count": "0",
                        "refresh_expected_snapshot": "null"}
                 res = self._run_bash(script, env)
                 return res.returncode, lfile.read_text() if lfile.exists() else ""
@@ -1152,7 +1156,7 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
         superseded = {**resolved, "event_current": False}
         for name, state, want_log in (
             ("producer timeout before resolution", unresolved, "SGOV"),
-            ("resolution before lane acquire", resolved, "SGOVSGP"),
+            ("resolution before lane acquire", resolved, "SGOVSGSSP"),
             ("stale event superseded", superseded, "SGOV"),
         ):
             with self.subTest(name=name):
@@ -1161,7 +1165,7 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
                 self.assertEqual(want_log, log)
         # Only the later resolved lane turn may consume attempt two.
         self.assertEqual((0, "SGOV"), execute(unresolved))
-        self.assertEqual((0, "SGOVSGP"), execute(resolved))
+        self.assertEqual((0, "SGOVSGSSP"), execute(resolved))
     def test_superseded_event(self):
         function = self._rfn("invalidate_refresh_check")
         def execute(state, reason):
@@ -1933,6 +1937,7 @@ printf 'POST_AUTHORIZED\n'
                 self._rerun_shell_function(
                     "authorize_cross_rerun_transaction"
                 ),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_cross_job_once"),
                 FAKE_TIMEOUT_PASSTHROUGH,
                 r'''revalidate_neutral_authorization() {
@@ -2121,6 +2126,7 @@ sleep() { printf 'ORDER:sleep:%s\n' "${1}" >&2; }''',
                 self._rerun_shell_function(
                     "authorize_protected_rerun_transaction"
                 ),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function(
                     "rerun_protected_verifier_once"
                 ),
@@ -2764,9 +2770,16 @@ gh() {
                 "set -euo pipefail",
                 self._rerun_shell_function("require_deadline"),
                 self._rerun_shell_function("bounded_gh_api"),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_protected_verifier_once"),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_cross_job_once"),
-                r'''authorize_protected_rerun_transaction() { :; }
+                r'''claim_review_operation() { :; }
+EXPECTED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+EXPECTED_BASE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+PR_NUMBER=123
+cross_run_id=901
+authorize_protected_rerun_transaction() { :; }
 authorize_cross_rerun_transaction() { :; }
 wait_for_protected_attempt_two_success() { printf 'POLL\n' >&2; }
 wait_for_cross_attempt_two_success() { printf 'POLL\n' >&2; }
@@ -3853,8 +3866,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         stderr_lines = accepted.stderr.splitlines()
         observed_order = [stderr_lines.index(item) for item in ordered_reads]
         self.assertEqual(sorted(observed_order), observed_order)
-        self.assertEqual(3, stderr_lines.count("ORDER:protected_detail"))
-        self.assertEqual(3, stderr_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(6, stderr_lines.count("ORDER:protected_detail"))
+        self.assertEqual(6, stderr_lines.count("ORDER:protected_jobs"))
         self.assertGreater(
             len(stderr_lines)
             - 1
@@ -3902,7 +3915,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         self.assertEqual(0, converged.returncode, converged.stderr)
         self.assertIn("ORDER:POST", converged.stderr)
         self.assertEqual(
-            4, converged.stderr.splitlines().count("ORDER:protected_detail")
+            7, converged.stderr.splitlines().count("ORDER:protected_detail")
         )
 
         def reverse_key_order(value: object) -> object:
@@ -3931,9 +3944,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             0, key_order_converged.returncode, key_order_converged.stderr
         )
         key_order_lines = key_order_converged.stderr.splitlines()
-        self.assertEqual(3, key_order_lines.count("ORDER:protected_detail"))
-        self.assertEqual(3, key_order_lines.count("ORDER:protected_jobs"))
-        self.assertEqual(1, key_order_lines.count("ORDER:sleep:2"))
+        self.assertEqual(6, key_order_lines.count("ORDER:protected_detail"))
+        self.assertEqual(6, key_order_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(2, key_order_lines.count("ORDER:sleep:2"))
         self.assertEqual(1, key_order_lines.count("ORDER:POST"))
         self.assertIn("jq -Scn", RERUN_WORKFLOW.read_text(encoding="utf-8"))
 
@@ -3963,8 +3976,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             for index, line in enumerate(snapshot_lines)
             if line == "ORDER:sleep:2"
         ]
-        self.assertEqual(5, len(job_reads))
-        self.assertEqual(3, len(sleeps))
+        self.assertEqual(8, len(job_reads))
+        self.assertEqual(4, len(sleeps))
         self.assertLess(job_reads[0], sleeps[0])
         self.assertLess(sleeps[0], job_reads[1])
         self.assertLess(job_reads[1], sleeps[1])
