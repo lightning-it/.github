@@ -5331,6 +5331,87 @@ jobs:
           and $job_completed <= $updated
           JQ
 
+      - name: Prepare bounded reservation API readback
+        run: |
+          set -euo pipefail
+          cat >"${RUNNER_TEMP}/reservation-readback.sh" <<'SH'
+          patch_reservation_with_readback() {
+            local reservation_attempt reservation_response reservation_snapshot live_pr
+            local reservation_error="${RUNNER_TEMP}/reservation-api-error"
+            local reservation_title='Protected verifier is evaluating the live revision'
+            local reservation_summary="PR #${PR_NUMBER}; head ${EVENT_HEAD}."
+            if [ "${reservation_count}" -eq 1 ]; then
+              reservation_title='Protected verifier is re-evaluating the live revision'
+            fi
+            for reservation_attempt in 1 2 3 4 5; do
+              live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
+              jq -e --arg head "${EVENT_HEAD}" --arg base "${EVENT_BASE}" \
+                --arg repo "${REPOSITORY}" --argjson number "${PR_NUMBER}" '
+                  .number == $number and .state == "open"
+                  and .head.sha == $head and .base.sha == $base
+                  and .base.repo.full_name == $repo
+                ' <<<"${live_pr}" >/dev/null || return 1
+              if reservation_response="$(gh api "$@" 2>"${reservation_error}")"; then
+                jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                  --arg external_id "${reservation_external_id}" \
+                  --arg title "${reservation_title}" --arg summary "${reservation_summary}" \
+                  --arg url "${reservation_url}" --argjson check_id "${reservation_id}" '
+                    .id == $check_id and .head_sha == $head and .name == $name
+                    and .external_id == $external_id and .details_url == $url
+                    and .status == "in_progress" and .conclusion == null
+                    and .output.title == $title and .output.summary == $summary
+                    and .app.id == 15368 and .app.slug == "github-actions"
+                  ' <<<"${reservation_response}" >/dev/null || return 1
+                if reservation_snapshot="$(gh api \
+                  "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+                  2>"${reservation_error}")"; then
+                  jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                    --argjson check_id "${reservation_id}" '
+                      .id == $check_id and .head_sha == $head and .name == $name
+                      and .app.id == 15368 and .app.slug == "github-actions"
+                    ' <<<"${reservation_snapshot}" >/dev/null || return 1
+                  if jq -e --arg external_id "${reservation_external_id}" \
+                    --arg title "${reservation_title}" --arg summary "${reservation_summary}" \
+                    --arg url "${reservation_url}" '
+                      .external_id == $external_id and .details_url == $url
+                      and .status == "in_progress" and .conclusion == null
+                      and .output.title == $title and .output.summary == $summary
+                    ' <<<"${reservation_snapshot}" >/dev/null; then
+                    printf '%s\n' "${reservation_snapshot}"
+                    return 0
+                  fi
+                  # A different owner is not a propagation delay.
+                  jq -e --arg current "${reservation_external_id}" \
+                    --arg prior "${prior_external_id:-${reservation_external_id}}" '
+                      .external_id == $current or .external_id == $prior
+                    ' <<<"${reservation_snapshot}" >/dev/null || return 1
+                elif ! grep -Eq '^gh: .*\(HTTP 404\)$' "${reservation_error}"; then
+                  cat "${reservation_error}" >&2
+                  return 1
+                fi
+              elif ! grep -Eq '^gh: .*\(HTTP 404\)$' "${reservation_error}"; then
+                cat "${reservation_error}" >&2
+                return 1
+              fi
+              if [ "${reservation_attempt}" -eq 5 ]; then
+                echo 'Reservation PATCH/readback did not converge within five observations.' >&2
+                return 1
+              fi
+              sleep 2
+            done
+          }
+          validate_created_reservation() {
+            jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+              --arg external_id "${reservation_external_id}" '
+                .head_sha == $head and .name == $name
+                and .external_id == $external_id and .status == "in_progress"
+                and .conclusion == null
+                and .app.id == 15368 and .app.slug == "github-actions"
+              ' <<<"${reservation}" >/dev/null
+          }
+          SH
+          chmod 0400 "${RUNNER_TEMP}/reservation-readback.sh"
+
       - name: Verify one protected result for the exact live revision
         id: protected-verifier
         if: >-
@@ -5656,6 +5737,10 @@ jobs:
             exit 1
           fi
           failure_stage='reservation-materialization'
+          # A newly created check may briefly be absent from the check-ID API.
+          # Retry only the idempotent PATCH, never the check-creation POST.
+          # shellcheck source=/dev/null
+          source "${RUNNER_TEMP}/reservation-readback.sh"
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
@@ -5689,7 +5774,7 @@ jobs:
                 ' <<<"${prior_verifier_run}" >/dev/null
             fi
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
-            reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+            reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
@@ -5716,8 +5801,9 @@ jobs:
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+            validate_created_reservation
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
-            reservation="$(gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+            reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \

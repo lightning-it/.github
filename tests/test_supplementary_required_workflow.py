@@ -4558,6 +4558,170 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent.index('-f external_id="${reservation_external_id}"'),
         )
 
+    def test_reservation_patch_readback_converges_only_for_the_live_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "patch_reservation_with_readback() {" + workflow.split(
+            "          patch_reservation_with_readback() {", 1
+        )[1].split('          SH\n', 1)[0]
+        head, base = "a" * 40, "b" * 40
+        external_id = f"rep60-required-workflow:v3:201:225:{base}:{head}"
+        prior_id = f"rep60-required-workflow:v3:200:225:{base}:{head}"
+        check = {
+            "id": 901, "name": "Protected current-revision verifier",
+            "head_sha": head, "external_id": external_id,
+            "details_url": "https://github.com/lightning-it/example/runs/901",
+            "status": "in_progress", "conclusion": None,
+            "app": {"id": 15368, "slug": "github-actions"},
+            "output": {"title": "Protected verifier is evaluating the live revision", "summary": f"PR #225; head {head}."},
+        }
+        live_pr = {
+            "number": 225, "state": "open", "head": {"sha": head},
+            "base": {"sha": base, "repo": {"full_name": "lightning-it/example"}},
+        }
+        scenarios = (
+            ("normal", {}, True, 1),
+            ("patch_404", {"patch_error": 404}, True, 2),
+            ("readback_404", {"readback_error": 404}, True, 2),
+            ("permanent_404", {"patch_error": 404, "permanent": True}, False, 5),
+            ("forbidden", {"patch_error": 403}, False, 1),
+            ("server_error", {"readback_error": 500}, False, 1),
+            ("wrong_app", {"snapshot": {**check, "app": {"id": 7, "slug": "other"}}}, False, 1),
+            ("wrong_head", {"snapshot": {**check, "head_sha": "c" * 40}}, False, 1),
+            ("foreign_owner", {"snapshot": {**check, "external_id": "foreign"}}, False, 1),
+            ("malformed_patch", {"response": {**check, "id": "901"}}, False, 1),
+            ("wrong_output", {"response": {**check, "output": {"title": "forged", "summary": "forged"}}}, False, 1),
+            ("stale_readback", {"snapshot": {**check, "details_url": None}}, True, 2),
+            ("moving_base", {"live_pr": {**live_pr, "base": {**live_pr["base"], "sha": "c" * 40}}}, False, 0),
+            ("closed_pr", {"live_pr": {**live_pr, "state": "closed"}}, False, 0),
+            ("reevaluation", {"reservation_count": 1}, True, 1),
+            ("retained_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}}, True, 2),
+            ("foreign_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": "foreign"}}, False, 1),
+            ("prior_owner_wrong_app", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "app": {"id": 7, "slug": "other"}}}, False, 1),
+            ("prior_owner_wrong_head", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "head_sha": "c" * 40}}, False, 1),
+            ("permanent_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}, "retain_snapshot": True}, False, 5),
+        )
+        for name, changes, accepted, patches in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                expected = copy.deepcopy(check)
+                if changes.get("reservation_count") == 1:
+                    expected["output"]["title"] = "Protected verifier is re-evaluating the live revision"
+                payload = {"response": expected, "snapshot": expected, "live_pr": live_pr, **changes}
+                for key in ("response", "snapshot", "live_pr"):
+                    (fixture / f"{key}.json").write_text(json.dumps(payload[key]), encoding="utf-8")
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    export PATH={TEST_TOOL_PATH}
+                    RUNNER_TEMP={json.dumps(directory)}
+                    REPOSITORY=lightning-it/example
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    EVENT_BASE={base}
+                    reservation_id=901
+                    reservation_count={payload.get('reservation_count', 0)}
+                    prior_external_id={payload.get('prior_external_id', external_id)}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={external_id}
+                    reservation_url=https://github.com/lightning-it/example/runs/901
+                    sleep() {{ printf '%s\\n' "$*" >>"$RUNNER_TEMP/sleeps"; }}
+                    gh() {{
+                      if [ "$1" != api ]; then return 90; fi
+                      shift
+                      if [ "$1" = repos/lightning-it/example/pulls/225 ]; then
+                        cat "$RUNNER_TEMP/live_pr.json"; return 0
+                      fi
+                      local count=0
+                      if [ -f "$RUNNER_TEMP/patches" ]; then
+                        read -r count <"$RUNNER_TEMP/patches"
+                      fi
+                      if [ "$1" = --method ]; then
+                        [ "$2" = PATCH ] && [ "$3" = repos/lightning-it/example/check-runs/901 ] || return 91
+                        count=$((count + 1))
+                        printf '%s\\n' "$count" >"$RUNNER_TEMP/patches"
+                        if [ {payload.get('patch_error', 0)} -ne 0 ] && {{ [ "$count" -eq 1 ] || [ {int(payload.get('permanent', False))} -eq 1 ]; }}; then
+                          echo 'gh: Not Found (HTTP {payload.get('patch_error', 0)})' >&2; return 1
+                        fi
+                        cat "$RUNNER_TEMP/response.json"; return 0
+                      fi
+                      [ "$1" = repos/lightning-it/example/check-runs/901 ] || return 92
+                      if [ "$count" -eq 1 ] || [ {int(payload.get('retain_snapshot', False))} -eq 1 ]; then
+                        if [ {payload.get('readback_error', 0)} -ne 0 ]; then
+                          echo 'gh: Not Found (HTTP {payload.get('readback_error', 0)})' >&2; return 1
+                        fi
+                        cat "$RUNNER_TEMP/snapshot.json"
+                      else
+                        cat "$RUNNER_TEMP/response.json"
+                      fi
+                    }}
+                    """) + helper + '\npatch_reservation_with_readback --method PATCH repos/lightning-it/example/check-runs/901\n'
+                result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                count_file = fixture / "patches"
+                self.assertEqual(int(count_file.read_text()) if count_file.exists() else 0, patches)
+                sleeps = fixture / "sleeps"
+                self.assertEqual(sleeps.read_text().splitlines() if sleeps.exists() else [], ["2"] * max(0, patches - 1))
+                if accepted:
+                    self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_reservation_creation_is_not_retried_or_patched_with_a_foreign_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "validate_created_reservation() {" + workflow.split(
+            "          validate_created_reservation() {", 1
+        )[1].split("          SH\n", 1)[0]
+        creation = 'reservation="$(gh api --method POST' + workflow.split(
+            "failure_stage='reservation-materialization'", 1
+        )[1].split('          else\n            reservation="$(gh api --method POST', 1)[1].split(
+            "          fi\n\n          finalize_failure()", 1
+        )[0]
+        head, base = "a" * 40, "b" * 40
+        check = {
+            "id": 901, "name": "Protected current-revision verifier",
+            "head_sha": head,
+            "external_id": f"rep60-required-workflow:v3:201:225:{base}:{head}",
+            "status": "in_progress", "conclusion": None,
+            "details_url": "https://github.com/lightning-it/example/runs/901",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        cases = (
+            (check, False, True),
+            (check, True, False),
+            ({**check, "id": "901"}, False, False),
+            ({**check, "head_sha": "c" * 40}, False, False),
+            ({**check, "name": "other"}, False, False),
+            ({**check, "external_id": "foreign"}, False, False),
+            ({**check, "app": {"id": 7, "slug": "other"}}, False, False),
+        )
+        for response, fail_post, accepted in cases:
+            with self.subTest(response=response, fail_post=fail_post), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                (fixture / "response.json").write_text(json.dumps(response), encoding="utf-8")
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    export PATH={TEST_TOOL_PATH}
+                    RUNNER_TEMP={json.dumps(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={check['external_id']}
+                    gh() {{
+                      [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = POST ] || return 90
+                      printf '%s\\n' POST >>"$RUNNER_TEMP/calls"
+                      if [ {int(fail_post)} -eq 1 ]; then
+                        echo 'gh: Not Found (HTTP 404)' >&2; return 1
+                      fi
+                      cat "$RUNNER_TEMP/response.json"
+                    }}
+                    patch_reservation_with_readback() {{
+                      printf '%s\\n' PATCH >>"$RUNNER_TEMP/calls"
+                      cat "$RUNNER_TEMP/response.json"
+                    }}
+                    """) + helper + "\n" + creation
+                result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual((fixture / "calls").read_text().splitlines(), ["POST", "PATCH"] if accepted else ["POST"])
+
     def test_only_proven_same_workflow_foreign_reservations_are_retired(
         self,
     ) -> None:
@@ -6700,6 +6864,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         for step_name in (
             "Bind the protected Required Workflow source",
+            "Prepare bounded reservation API readback",
             "Verify one protected result for the exact live revision",
         ):
             with self.subTest(step_name=step_name):
