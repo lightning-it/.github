@@ -9270,14 +9270,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             head_sha: str,
             previous_body: str,
             repository: str = "lightning-it/example",
+            event_action: str | None = None,
         ) -> int:
             return subprocess.run(
                 [bash, "-c", aggregate_transition],
                 env={
                     "EVENT_ACTION": (
-                        "edited"
+                        event_action or ("edited"
                         if repository == "lightning-it/.github"
-                        else "opened"
+                        else "opened")
                     ),
                     "EVENT_BASE": base_sha,
                     "EVENT_BODY": current_body,
@@ -9336,6 +9337,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertEqual(0, returncode)
         self.assertEqual("true", values["promotion_candidate"])
         self.assertEqual("false", values["promotion_pending"])
+        self.assertEqual(0, aggregate_transition_result(
+            base_sha=base_sha, current_body=evidence_body, head_sha=head_sha,
+            previous_body="", event_action="ready_for_review",
+        ))
         self.assertEqual(
             0,
             aggregate_transition_result(
@@ -9345,6 +9350,42 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 previous_body="",
             ),
         )
+
+        ready = {**opened, "SENDER_LOGIN": "litroc", "SENDER_ID": "76040632",
+                 "SENDER_TYPE": "User"}
+        returncode, values, _ = route_result(
+            "ready_for_review", repository="lightning-it/example",
+            base_ref="main", head_ref="develop", **ready,
+        )
+        self.assertEqual(0, returncode)
+        self.assertEqual("true", values["promotion_candidate"])
+        self.assertEqual("false", values["promotion_pending"])
+        for field, value in (
+            ("SENDER_LOGIN", "other"), ("SENDER_ID", "76040633"),
+            ("SENDER_TYPE", "Bot"), ("EVENT_BODY", evidence_body + "\n"),
+            ("EVENT_BODY", evidence_body.replace(evidence_ready, "")),
+            ("EVENT_BODY", evidence_body.replace(run_marker, "<!-- lit-promotion-run:12345:2 -->")),
+        ):
+            with self.subTest(invalid_ready_promotion=field, value=value):
+                returncode, _, _ = route_result(
+                    "ready_for_review", repository="lightning-it/example",
+                    base_ref="main", head_ref="develop", **{**ready, field: value},
+                )
+                self.assertNotEqual(0, returncode)
+
+        # The final aggregator independently checks the event sender before
+        # loading any evidence or using the protected ingress-reuse path.
+        sender_start = aggregate_script.index('if [ "${REPOSITORY}" !=')
+        sender_end = aggregate_script.index('head_marker=', sender_start)
+        sender_gate = "set -euo pipefail\n" + aggregate_script[sender_start:sender_end]
+        for sender, expected_rc in ((ready, 0), (opened, 1), ({**ready, "SENDER_ID": "76040633"}, 1)):
+            observed = subprocess.run(
+                [bash, "-c", sender_gate],
+                env={"PATH": TEST_TOOL_PATH, "REPOSITORY": "lightning-it/example",
+                     "EVENT_ACTION": "ready_for_review", **sender},
+                capture_output=True, check=False,
+            ).returncode
+            self.assertEqual(observed == 0, expected_rc == 0)
 
         returncode, values, _ = route_result(
             "edited",

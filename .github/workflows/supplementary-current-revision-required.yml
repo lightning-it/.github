@@ -73,10 +73,18 @@ jobs:
             && [ "${HEAD_REF}" = develop ] \
             && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ]; then
             if [ "${REPOSITORY}" != 'lightning-it/.github' ] \
-              && [ "${EVENT_ACTION}" = opened ]; then
-              test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
-              test "${SENDER_ID:-}" = 307565056
-              test "${SENDER_TYPE:-}" = Bot
+              && [[ "${EVENT_ACTION}" =~ ^(opened|ready_for_review)$ ]]; then
+              # Ready revalidates existing App-proven aggregation metadata;
+              # it never requests AI review or reruns an old workflow attempt.
+              if [ "${EVENT_ACTION}" = ready_for_review ]; then
+                test "${SENDER_LOGIN:-}" = litroc
+                test "${SENDER_ID:-}" = 76040632
+                test "${SENDER_TYPE:-}" = User
+              else
+                test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
+                test "${SENDER_ID:-}" = 307565056
+                test "${SENDER_TYPE:-}" = Bot
+              fi
               [[ "${BASE_SHA}" =~ ^[0-9a-f]{40}$ ]]
               [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]
               head_marker="<!-- lit-promotion-head:${HEAD_SHA} -->"
@@ -2169,9 +2177,16 @@ jobs:
           mkdir -m 0700 "${verifier_home}" "${gh_config_dir}"
           output="${verifier_runtime}/promotion-evidence.json"
           [[ "${DEVTOOLS_IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]
-          test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
-          test "${SENDER_ID}" = 307565056
-          test "${SENDER_TYPE}" = Bot
+          if [ "${REPOSITORY}" != 'lightning-it/.github' ] \
+            && [ "${EVENT_ACTION}" = ready_for_review ]; then
+            test "${SENDER_LOGIN}" = litroc
+            test "${SENDER_ID}" = 76040632
+            test "${SENDER_TYPE}" = User
+          else
+            test "${SENDER_LOGIN}" = 'lightning-it-release-automation[bot]'
+            test "${SENDER_ID}" = 307565056
+            test "${SENDER_TYPE}" = Bot
+          fi
           head_marker="<!-- lit-promotion-head:${EVENT_HEAD} -->"
           protocol_marker='<!-- lit-protected-promotion:v2 -->'
           dispatch_pending="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
@@ -2180,7 +2195,7 @@ jobs:
           if [ "${REPOSITORY}" = 'lightning-it/.github' ]; then
             test "${EVENT_ACTION}" = edited
           else
-            test "${EVENT_ACTION}" = opened
+            [[ "${EVENT_ACTION}" =~ ^(opened|ready_for_review)$ ]]
           fi
           jq -en \
             --arg before "${PREVIOUS_BODY}" \
