@@ -774,9 +774,9 @@ printf %s "${result}"
         cases = (
             ("102", runs, {101: [draft_job], 102: [self._job(102)]}),
             ("101", runs, {101: [done_job], 102: [self._job(102)]}),
-            ("102", runs, {101: [done_job, sync_req],
+            ("101", runs, {101: [done_job, sync_req],
                                   102: [self._job(102), rreq]}),
-            ("37156339900", [self._run(37155519577), self._run(37156339900)],
+            ("37155519577", [self._run(37155519577), self._run(37156339900)],
              {37155519577: [sync_pol, sync_req2],
               37156339900: [ready_pol, ready_req]}),
             ("101", [self._run(101)], {101: [done_job]}),
@@ -793,6 +793,25 @@ printf %s "${result}"
         self._owner(None, runs=runs,
             jobs={101: [bad_job], 102: [self._job(102)]},
             cond=True)
+    def test_skipped_requester_preserves_verification_owner_without_funding(self):
+        requester = self._req(101, status="completed", conclusion="skipped")
+        for guard in self._guards():
+            with self.subTest(guard=guard):
+                self._owner("101", guard=guard, runs=[self._run(101)],
+                    jobs={101: [self._job(101), requester]}, add_req=False)
+                self._owner(None, guard=guard, runs=[self._run(101)],
+                    jobs={101: [self._job(101, status="completed", conclusion="skipped"), requester]}, add_req=False)
+                self._owner(None, guard=guard, runs=[self._run(101)],
+                    jobs={101: [self._job(101)]}, add_req=False)
+                self._owner(None, guard=guard, runs=[self._run(101)],
+                    jobs={101: [self._job(101), dict(requester, head_sha="d" * 40)]}, add_req=False)
+                self._owner("101", guard=guard,
+                    runs=[self._run(101), self._run(102)],
+                    jobs={101: [self._job(101, status="completed", conclusion="failure"), requester], 102: [self._job(102), self._req(102)]}, add_req=False)
+                self._owner("101", guard=guard, runs=[self._run(101, attempt=2)],
+                    jobs={101: [self._job(101, attempt=2), self._req(101, attempt=2)]},
+                    first_jobs={101: [self._job(101), requester]}, add_req=False)
+
     def test_owner_original(self):
         skip_req = self._req(101)
         skip_req.update(status="completed", conclusion="skipped")
