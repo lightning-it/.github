@@ -393,8 +393,10 @@ if [ "${#changed_paths[@]}" -eq 1 ] \
   report_disposition noop
   exit 0
 fi
-[ "${promotion_patch_bytes}" -lt 200000 ] \
-  || fail_closed "The protected promotion patch exceeds 199999 bytes."
+# Cumulative promotion size is a planning signal, never a feature-PR gate.
+if [ "${promotion_patch_bytes}" -ge 500000 ]; then
+  printf 'Planning notice: complete promotion patch is %s bytes; admission and checks continue. No automatic PR splitting.\n' "${promotion_patch_bytes}" >&2
+fi
 
 stage_id="bounded-release-plan"
 trap - ERR
