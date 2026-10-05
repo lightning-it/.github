@@ -849,7 +849,7 @@ class ReleasePromotionOperationTests(StateFixture):
 
     def test_review_boundaries_and_unsafe_inputs_are_exact(self):
         policy = self.policy()
-        for size in (1, 199999):
+        for size in (1, 199999, 200000, 500000, 500001, 5_000_001):
             with self.subTest(accepted=size):
                 snapshot = self.snapshot(policy)
                 snapshot["git"]["patch_bytes"] = size
@@ -857,11 +857,6 @@ class ReleasePromotionOperationTests(StateFixture):
                 self.assertEqual(
                     "mutate", STATE.classify(policy, snapshot)["disposition"]
                 )
-        for size in (200000, 228508):
-            with self.subTest(rejected=size):
-                snapshot = self.snapshot(policy)
-                snapshot["git"]["patch_bytes"] = size
-                self.blocked("patch-oversized", policy, snapshot)
         for field, value, reason in (
             ("unsafe_delta", True, "unsafe-delta"),
             ("patch_format", "truncated", "patch-format"),
@@ -871,6 +866,27 @@ class ReleasePromotionOperationTests(StateFixture):
                 snapshot = self.snapshot(policy)
                 snapshot["git"][field] = value
                 self.blocked(reason, policy, snapshot)
+
+    def test_warning_policy_migrates_without_weakening_inventory_or_input_guards(self):
+        for warning in (500000, None):
+            policy = self.policy()
+            policy["review"].pop("maximum_bytes")
+            policy["review"]["warn_diff_bytes"] = warning
+            STATE.validate_policy(policy)
+            snapshot = self.snapshot(policy)
+            snapshot["git"]["patch_bytes"] = 5_000_001
+            self.refresh_operation_key(policy, snapshot)
+            self.assertEqual("mutate", STATE.classify(policy, snapshot)["disposition"])
+        for invalid in (True, 0, -1, "500000"):
+            policy = self.policy()
+            policy["review"].pop("maximum_bytes")
+            policy["review"]["warn_diff_bytes"] = invalid
+            with self.assertRaisesRegex(STATE.ContractError, "review-warning"):
+                STATE.validate_policy(policy)
+        policy = self.policy()
+        policy["lease"]["max_inventory_bytes"] = 64 * 1024 * 1024 + 1
+        with self.assertRaisesRegex(STATE.ContractError, "inventory-byte-limit"):
+            STATE.validate_policy(policy)
 
     def test_policy_rejects_recursive_tbd_and_noncanonical_reviewer_order(
         self,
@@ -2095,13 +2111,15 @@ class ReleasePromotionInertBoundaryTests(unittest.TestCase):
         self.assertIn("REVALIDATED_RUNTIME_INPUTS_SHA256", binder)
         self.assertIn('test "${mode}" = 100644', binder)
 
-    def test_shell_admission_is_first_attempt_and_review_bounded(self):
+    def test_shell_admission_is_first_attempt_with_advisory_size_only(self):
         preflight = (ROOT / "scripts/release-promotion-preflight.sh").read_text(
             encoding="utf-8"
         )
         self.assertIn('[ "${EVENT_NAME}" = push ]', preflight)
         self.assertIn('[ "${RUN_ATTEMPT}" = 1 ]', preflight)
-        self.assertIn('[ "${promotion_patch_bytes}" -lt 200000 ]', preflight)
+        self.assertNotIn('[ "${promotion_patch_bytes}" -lt 200000 ]', preflight)
+        self.assertIn('[ "${promotion_patch_bytes}" -ge 500000 ]', preflight)
+        self.assertIn("No automatic PR splitting.", preflight)
         self.assertIn('[ "${promotion_patch_bytes}" -eq 0 ]', preflight)
         self.assertIn("unset GH_TOKEN GITHUB_TOKEN", preflight)
         self.assertNotIn("${RUNNER_TEMP:-/tmp}", preflight)

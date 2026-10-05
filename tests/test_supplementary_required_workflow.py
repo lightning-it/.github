@@ -1149,6 +1149,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split(
             "      - name: Rebind and finalize the protected result\n", 1
         )[0]
+        self.assertLess(permanent.index('source "${RUNNER_TEMP}/required-init.sh"'),
+                        permanent.index('          validate_target_repository'))
+        initialization = workflow.split("<<'INITIALIZATION'\n", 1)[1].split("\n          INITIALIZATION", 1)[0]
+        validation = initialization.split('          validate_target_repository() {\n', 1)[1].split('\n          }', 1)[0]
+        permanent = permanent.replace('          validate_target_repository', validation, 1)
         assignment = 'target_repository="$(gh api "repos/${REPOSITORY}")"'
         self.assertEqual(1, permanent.count(assignment))
         assignment_offset = permanent.index(assignment)
@@ -2577,7 +2582,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:copilot:v6:([1-9][0-9]*):([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn(
@@ -3107,7 +3116,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('.event == "pull_request_review"', late)
         self.assertIn(
-            'pulls/${PR_NUMBER}/reviews?per_page=100',
+            'pulls/${owner_pr_number}/reviews?per_page=100',
             late,
         )
         self.assertIn(
@@ -3495,7 +3504,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     jq, "-e", "--arg", "head", head,
                     "--arg", "failed_at", failed,
                     "--arg", "producer_started_at", started,
-                    "--argjson", "refresh", json.dumps(run), ordering_filter,
+                    "--argjson", "refresh", json.dumps(run),
+                    "--argjson", "event_claim", "false", ordering_filter,
                 ],
                 input=json.dumps(pages), text=True, capture_output=True, check=False,
             )
@@ -4409,7 +4419,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
-        self.assertIn("and .controller_sha == $controller", human_path)
+        summary_filter = workflow.split(
+            '          cat >"${summary_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
+        self.assertIn("and .controller_sha==$controller", summary_filter)
         self.assertIn(".base.ref == $base_ref", human_path)
         self.assertNotIn(".head_branch == $controller_branch", human_path)
         self.assertNotIn(".head_sha == $controller_sha", human_path)
@@ -5477,7 +5490,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "failure_stage='permanent-producer-inventory'", 1
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
-        self.assertIn("for evidence_observation in $(seq 1 450)", permanent)
+        self.assertIn("evidence_limit=450", permanent)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" != enabled ] || evidence_limit=1', permanent)
         self.assertIn("sleep 2", permanent)
         self.assertIn('current_pr="$(gh api', permanent)
         for binding in (
@@ -5498,7 +5512,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('^(queued|in_progress)$', permanent)
         self.assertIn(
-            "The protected current-revision result did not become successful in time.",
+            "Protected producer evidence unavailable; merge remains blocked.",
             permanent,
         )
 
@@ -5540,7 +5554,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             nonterminal_handoff,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:",
+            "mlx90-current-revision:copilot:v6:",
+            terminal_wait,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:",
             terminal_wait,
         )
         self.assertIn(
@@ -5588,13 +5606,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
         self.assertIn('"${producer_kind}" = copilot', permanent)
-        self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn("producer_limit=60", permanent)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" != enabled ] || producer_limit=1', permanent)
 
         self.assertIn('if [ "${producer_status}" = queued ]', permanent)
         self.assertIn(
-            "The protected producer run did not start in time.", permanent
+            "Awaiting producer event.", permanent
         )
-        self.assertIn("continue", permanent)
+        self.assertIn("sleep 1", permanent)
         self.assertIn(
             '^(requested|waiting|pending|in_progress|completed)$', permanent
         )
@@ -5900,7 +5919,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
         )
         producer_loop = permanent.split(
-            "for producer_observation in $(seq 1 60)", 1
+            'for producer_observation in $(seq 1 "${producer_limit}")', 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
             producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
@@ -5921,7 +5940,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(producer_attempt_guard, permanent)
         self.assertLess(
             permanent.index(producer_attempt_guard),
-            permanent.index("for producer_observation in $(seq 1 60)"),
+            permanent.index('for producer_observation in $(seq 1 "${producer_limit}")'),
         )
         self.assertNotIn(
             '&& [ "${producer_kind}" = copilot ]; then', permanent
@@ -5982,7 +6001,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
         self.assertLess(
-            permanent.index("for evidence_observation in $(seq 1 450)"),
+            permanent.index('for evidence_observation in $(seq 1 "${evidence_limit}")'),
             permanent.index("producer_evidence_ready=false"),
         )
         self.assertLess(
@@ -6021,11 +6040,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n                \' <<<"${producer}" >/dev/null',
             1,
         )[0]
-        validator_start = permanent.index("            validate_recorded_ref() {")
-        validator_end = permanent.index("\n            }", validator_start)
-        validator = textwrap.dedent(
-            permanent[validator_start : validator_end + len("\n            }")]
-        )
+        owner_run_filter = workflow.split(
+            '          cat >"${owner_run_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
         jq = self._test_tool("jq")
         head = "a" * 40
         payload = {
@@ -6037,7 +6054,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "head_sha": head,
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "litroc"},
-            "pull_requests": [{"head": {"ref": "feature/original"}}],
+            "pull_requests": [
+                {"number": 1502, "head": {"ref": "feature/original"}}
+            ],
         }
 
         def accepts(
@@ -6055,8 +6074,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 candidate.pop("conclusion")
             script = "\n".join((
                 "set -euo pipefail",
-                validator,
-                'validate_recorded_ref "${CANDIDATE}"',
+                'jq -e --argjson owner 1502 "${OWNER_RUN_FILTER}" '
+                '<<<"${CANDIDATE}" >/dev/null',
                 'jq -e '
                     + " ".join([
                     "--arg",
@@ -6079,6 +6098,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     "CANDIDATE": json.dumps(candidate),
                     "FILTER": producer_filter,
                     "HEAD": head,
+                    "OWNER_RUN_FILTER": owner_run_filter,
                 },
             )
             return result.returncode == 0
@@ -6674,29 +6694,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         def normalized_payload(workflow_path: Path, step_name: str) -> str:
-            workflow = workflow_path.read_text(encoding="utf-8")
-            step = workflow.split(f"      - name: {step_name}\n", 1)[1]
-            script = step.split("        run: |\n", 1)[1]
-            script = script.split("\n      - name:", 1)[0]
-            script_lines = script.splitlines()
-            first_script_line = next(
-                line for line in script_lines if line.strip()
-            )
-            indentation_width = len(first_script_line) - len(
-                first_script_line.lstrip(" ")
-            )
-            self.assertGreater(indentation_width, 0)
-            indentation = " " * indentation_width
-            self.assertTrue(
-                all(
-                    not line.strip() or line.startswith(indentation)
-                    for line in script_lines
-                )
-            )
-            return "\n".join(
-                line[len(indentation) :] if line.startswith(indentation) else ""
-                for line in script_lines
-            ) + "\n"
+            import yaml
+            workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            scripts = [step["run"] for job in workflow["jobs"].values()
+                       for step in job.get("steps", []) if step.get("name") == step_name]
+            self.assertTrue(scripts)
+            self.assertEqual(1, len(set(scripts)))
+            return scripts[0]
 
         for step_name in (
             "Bind the protected Required Workflow source",
@@ -6881,6 +6885,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "mlx90-current-revision:managed-sync:v6:"
                 f"{pr_number}:789:{base}:{head}"
             ): "789",
+            f"mlx90-current-revision:copilot:v6:1498:790:{base}:{head}": "790",
             (
                 "mlx90-current-revision:renovate:v6:"
                 f"{pr_number}:901:{base}:{head}"
@@ -6893,7 +6898,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual(run_id, result.stdout)
 
         rejected = (
-            [f"mlx90-current-revision:copilot:v6:99:789:{base}:{head}"],
+            [f"mlx90-current-revision:managed-sync:v6:99:789:{base}:{head}"],
             [f"mlx90-current-revision:copilot:v5:789:{head}:{base}"],
             [
                 "mlx90-current-revision:renovate:v6:99:789:"

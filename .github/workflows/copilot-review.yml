@@ -14,6 +14,7 @@ permissions:
   pull-requests: read
 
 env:
+  LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
   COPILOT_REVIEWER_LOGIN: copilot-pull-request-reviewer
   NO_FILES_REVIEW_MARKER: was not able to review any files
   UNABLE_REVIEW_MARKER: unable to review this pull request
@@ -22,7 +23,7 @@ env:
   SUPPRESSED_COMMENTS_MARKER: suppressed comments
 
 concurrency:
-  group: current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}
+  group: current-revision-${{ github.repository_id }}-head-${{ github.event.pull_request.head.sha }}-check-current-revision-review
   cancel-in-progress: false
   queue: max
 
@@ -208,23 +209,170 @@ jobs:
       needs.classify-main-trust-root-handoff.outputs.active != 'true' &&
       github.event_name == 'pull_request_target' &&
       (github.event.action == 'opened' ||
-        github.event.action == 'ready_for_review') &&
+        github.event.action == 'ready_for_review' ||
+        (github.event.action == 'synchronize' && (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)))) &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.user.login == 'litroc' &&
+      github.run_attempt == 1 &&
       github.actor == 'litroc' &&
       github.triggering_actor == 'litroc'
     permissions:
       actions: read
-      contents: read
+      contents: write
       issues: write
       pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
+      - name: Materialize the protected operation claim
+        run: |
+          set -euo pipefail
+          umask 077
+          cat >"${RUNNER_TEMP}/request-operation.sh" <<'CLAIM'
+          claim_review_operation() {
+            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 0
+            # The data ref is the CAS authority; Check inventory is never a lock.
+            local target="$1" head="$2" base="$3" pr="$4"
+            local key path action target_run created now prior snapshot record payload response committed marker rows attempt
+            [[ "${target}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${pr}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${head}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "${base}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "${GITHUB_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [ "${GITHUB_RUN_ATTEMPT}" = 1 ] || return 1
+            action="${5:-rerun}"
+            case "${action}" in
+              rerun) [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ] || return 1 ;;
+              request) [ "${GITHUB_EVENT_NAME}" = pull_request_target ] || return 1 ;;
+              *) return 1 ;;
+            esac
+            [ "${GITHUB_REF_PROTECTED}" = true ] || return 1
+            [[ "${GITHUB_REF}" =~ ^refs/heads/(develop|main)$ ]] || return 1
+            [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            operation_api() {
+              if declare -F bounded_gh_api >/dev/null; then
+                bounded_gh_api "$@"
+              else
+                timeout --foreground --signal=TERM --kill-after=2s 30s gh api "$@"
+              fi
+            }
+            operation_ref() {
+              local result
+              result="$(operation_api "repos/${REPOSITORY}/git/ref/heads/lit-review-operations")" || return 1
+              jq -er 'select(.ref == "refs/heads/lit-review-operations" and .object.type == "commit")
+                | .object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${result}"
+            }
+            operation_snapshot() {
+              # Source commit, manifest and operation are one immutable snapshot. Never
+              # combine a mutable ref read with a separately resolved branch:path read.
+              local oid="$1" result
+              result="$(operation_api graphql -f query='query($owner:String!,$name:String!,$oid:String!,$manifest:String!,$record:String!){
+                repository(owner:$owner,name:$name){nameWithOwner
+                  source:object(expression:$oid){__typename oid}
+                  manifest:object(expression:$manifest){__typename ... on Blob{isTruncated byteSize text}}
+                  record:object(expression:$record){__typename ... on Blob{isTruncated byteSize text}}
+                }}' -f "owner=${REPOSITORY%%/*}" -f "name=${REPOSITORY#*/}" \
+                -f "oid=${oid}" -f "manifest=${oid}:manifest.json" -f "record=${oid}:${path}")" || return 1
+              jq -ce --arg oid "${oid}" --arg repo "${REPOSITORY}" --arg repo_id "${GITHUB_REPOSITORY_ID}" '
+                select(has("errors") | not) | .data.repository
+                | select(.nameWithOwner == $repo and .source.__typename == "Commit" and .source.oid == $oid)
+                | select(.manifest.__typename == "Blob" and .manifest.isTruncated == false
+                    and (.manifest.byteSize | type) == "number" and .manifest.byteSize > 0 and .manifest.byteSize <= 4096)
+                | select((.manifest.text | fromjson) == {schema:1,repository:$repo,repository_id:$repo_id,ref:"refs/heads/lit-review-operations"})
+                | select(has("record"))
+                | if .record == null then {present:false} else
+                    .record | select(.__typename == "Blob" and .isTruncated == false
+                      and (.byteSize | type) == "number" and .byteSize > 0 and .byteSize <= 4096)
+                    | {present:true,record:(.text | fromjson)} end
+                ' <<<"${result}"
+            }
+            target_run="$(operation_api "repos/${REPOSITORY}/actions/runs/${target}")" || return 1
+            created="$(jq -er --argjson id "${target}" '
+              select(.id == $id and .run_attempt == 1) | .created_at | fromdateiso8601
+              ' <<<"${target_run}")" || return 1
+            now="$(date +%s)"
+            if [ "$((now - created))" -gt 604800 ] || [ "${created}" -gt "${now}" ]; then
+              echo 'Verifier event reservation expired; merge remains blocked.' >&2
+              return 1
+            fi
+            key="li219-verifier-operation:v1:${pr}:${base}:${head}:${target}"
+            if [ "${action}" = request ]; then
+              # Base changes and fresh producer run IDs cannot buy another AI call.
+              key="li219-review-request:v1:${GITHUB_REPOSITORY_ID}:${pr}:${head}"
+            fi
+            path="operations/$(printf '%s' "${key}" | sha256sum | cut -d ' ' -f 1).json"
+            prior="$(operation_ref)" || return 1
+            snapshot="$(operation_snapshot "${prior}")" || return 1
+            if [ "$(jq -r .present <<<"${snapshot}")" != false ]; then
+              echo 'Verifier operation already consumed; only native-state reconciliation is allowed.' >&2
+              return 1
+            fi
+            record="$(jq -cn --arg key "${key}" --arg repo "${REPOSITORY}" --arg run "${GITHUB_RUN_ID}" \
+              --arg source "${WORKFLOW_SHA}" --arg repo_id "${GITHUB_REPOSITORY_ID}" --arg action "${action}" '{schema:1,repository:$repo,repository_id:$repo_id,action:$action,operation:$key,claim_run:$run,claim_attempt:"1",source_sha:$source}')" || return 1
+            payload="$(jq -cn --arg repo "${REPOSITORY}" --arg prior "${prior}" --arg path "${path}" \
+              --arg content "$(printf '%s' "${record}" | base64 -w 0)" '{
+                query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid parents(first:2){nodes{oid}}}}}",
+                variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:"lit-review-operations"},
+                  expectedHeadOid:$prior,message:{headline:"Consume LI-219 verifier operation"},
+                  fileChanges:{additions:[{path:$path,contents:$content}]}}}}')" || return 1
+            # Exactly one CAS attempt. A lost response or conflict is NOT permission to
+            # retry a mutation, even if readback finds our record. Only confirmed winners
+            # may reach the single rerun POST in this invocation.
+            committed=''
+            if response="$(operation_api graphql --input - <<<"${payload}")"; then
+              committed="$(jq -er --arg prior "${prior}" '
+                select(has("errors") | not) | .data.createCommitOnBranch.commit
+                | select(.parents.nodes == [{oid:$prior}])
+                | .oid | strings | select(test("^[0-9a-f]{40}$") and . != $prior)
+                ' <<<"${response}")" || committed=''
+            fi
+            if [ -z "${committed}" ]; then
+              for attempt in 1 2 3; do
+                if prior="$(operation_ref)" && snapshot="$(operation_snapshot "${prior}")" \
+                    && [ "$(jq -r .present <<<"${snapshot}")" = true ]; then break; fi
+                [ "${attempt}" -eq 3 ] || sleep 2
+              done
+              echo 'CAS conflict or uncertain claim response; reconciliation only, no rerun sent.' >&2
+              return 1
+            fi
+            snapshot="$(operation_snapshot "${committed}")" || return 1
+            jq -e --argjson record "${record}" '.present == true and .record == $record' \
+              <<<"${snapshot}" >/dev/null || return 1
+            if [ "${action}" = request ]; then
+              CLAIM_COMMIT="${committed}"
+              return 0
+            fi
+            marker="$(jq -cn --arg key "${key}" --arg run "${GITHUB_RUN_ID}" \
+              --arg commit "${committed}" '{operation:$key,claim_run:$run,claim_attempt:"1",journal_commit:$commit}')" || return 1
+            operation_api --method POST "repos/${REPOSITORY}/check-runs" \
+              -f 'name=Review event operation' -f "head_sha=${head}" -f "external_id=${key}" \
+              -f status=completed -f conclusion=neutral -f 'output[title]=Verifier mutation consumed' \
+              -f "output[summary]=${marker}" >/dev/null || true
+            for attempt in 1 2 3; do
+              if rows="$(operation_api --paginate --slurp \
+                  "repos/${REPOSITORY}/commits/${head}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" \
+                && jq -e --arg marker "${marker}" --arg key "${key}" --arg head "${head}" '
+                  select(type == "array" and length > 0 and length <= 10)
+                  | select(all(.[]; (.check_runs | type) == "array"))
+                  | [.[].check_runs[] | select(.external_id == $key)]
+                  | length == 1 and .[0].output.summary == $marker
+                    and .[0].name == "Review event operation" and .[0].head_sha == $head
+                    and .[0].app.id == 15368 and .[0].app.slug == "github-actions"
+                    and .[0].status == "completed" and .[0].conclusion == "neutral"
+                    and .[0].output.title == "Verifier mutation consumed"
+                  ' <<<"${rows}" >/dev/null; then return 0; fi
+              [ "${attempt}" -eq 3 ] || sleep 2
+            done
+            echo 'Consumed operation receipt not visible; no rerun sent.' >&2
+            return 1
+          }
+          CLAIM
       - name: Request Copilot review for the current revision
         env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
@@ -289,22 +437,17 @@ jobs:
             jq -e \
               --arg reviewer "${reviewer}" \
               --arg head "${EXPECTED_HEAD}" \
-              --arg retry_unable "${UNABLE_REVIEW_MARKER}" \
-              --arg retry_no_files "${NO_FILES_REVIEW_MARKER}" \
-              --arg retry_quota_exhausted "${QUOTA_EXHAUSTED_MARKER}" \
-              --arg retry_quota_exceeded "${QUOTA_EXCEEDED_MARKER}" \
-              --arg retry_suppressed "${SUPPRESSED_COMMENTS_MARKER}" '
-                any(add[];
+              'any(add[];
                   .user.login == $reviewer
                   and .commit_id == $head
-                  and (((.body // "") | ascii_downcase) as $body
-                    | ($body | contains($retry_unable) | not)
-                    and ($body | contains($retry_no_files) | not)
-                    and ($body | contains("able to review any files") | not)
-                    and ($body | contains($retry_quota_exhausted) | not)
-                    and ($body | contains($retry_quota_exceeded) | not)
-                    and ($body | contains($retry_suppressed) | not)
-                    and ($body | contains("encountered an error") | not))
+                  and (((.body // "") | ascii_downcase
+                    | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                    | ["unabletoreviewthispullrequest", "nofilestoreview",
+                       "wasnotabletoreviewanyfiles", "abletoreviewanyfiles",
+                       "premiumrequestquota", "premiumrequestsquota",
+                       "quotaexhausted", "quotaexceeded", "suppressedcomments",
+                       "encounteredanerror"]
+                    | all(.[]; . as $marker | $body | contains($marker) | not))
                 )
               ' <<<"${reviews}" >/dev/null
           }
@@ -327,38 +470,74 @@ jobs:
             <<<"${comments}" >/dev/null; then
             marker_exists=true
           fi
+          if [ "${marker_exists}" = true ]; then
+            echo "The exact-head Copilot request is consumed; no second request is permitted."
+            exit 0
+          fi
           if reviewer_is_requested; then
-            if [ "${marker_exists}" = false ]; then
-              gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-                -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
-            fi
-            echo "Copilot review is already pending for the exact finalized head."
+            # requested_reviewers is PR-scoped, not proof of a request for this
+            # head. Do not consume the new head merely because an older request
+            # remains pending, and never send a concurrent second request.
+            echo "A review is pending; awaiting head-bound evidence without another request."
             exit 0
           else
             request_status=$?
-            if [ "${request_status}" -ne 1 ]; then
-              exit "${request_status}"
-            fi
+            [ "${request_status}" -eq 1 ] || exit "${request_status}"
           fi
-          if [ "${marker_exists}" = true ]; then
-            echo "The one exact-head Copilot request was already consumed; automatic retry is forbidden." >&2
-            exit 1
+          revalidate_request_head() {
+            local current
+            current="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
+            jq -e --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" \
+              --arg repo "${REPOSITORY}" --argjson pr "${PR_NUMBER}" '
+                .number == $pr and .state == "open" and .draft == false
+                and .user.login == "litroc"
+                and .head.sha == $head and .base.sha == $base
+                and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+              ' <<<"${current}" >/dev/null
+          }
+          record_request_marker() {
+            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -f "body=${claim_body}" >/dev/null || true
+            claim_confirmed=false
+            for observation in 1 2 3; do
+              comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+              if jq -e --arg marker "${marker}" --arg body "${claim_body}" '
+                [.[][] | select(.user.login == "github-actions[bot]")
+                  | select(.body | contains($marker))]
+                | length == 1 and .[0].body == $body
+                ' <<<"${comments}" >/dev/null; then
+                claim_confirmed=true
+                break
+              fi
+              [ "${observation}" -eq 3 ] || sleep 2
+            done
+            test "${claim_confirmed}" = true
+          }
+          revalidate_request_head
+          claim_body="${marker}Copilot review requested for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}."
+          if [ "${LI219_EVENT_MODE:-disabled}" = enabled ]; then
+            # shellcheck source=/dev/null
+            source "${RUNNER_TEMP}/request-operation.sh"
+            claim_review_operation "${GITHUB_RUN_ID}" "${EXPECTED_HEAD}" "${EXPECTED_BASE}" "${PR_NUMBER}" request || exit 0
+            claim_body="${marker}Copilot review request reserved for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}. CAS commit ${CLAIM_COMMIT}."
+            record_request_marker
+            revalidate_request_head
           fi
           if ! gh api --method POST "${requested_reviewers_url}" \
               -f "reviewers[]=${reviewer}"; then
-            # A concurrent protected request may win after the pre-check.
-            # Accept only the verified idempotent outcome; every API failure
-            # without the expected live reviewer remains fail-closed.
+            # Never retry POST in this invocation. In pilot mode the CAS stays
+            # consumed; legacy mode records only a confirmed accepted request.
             if reviewer_is_requested; then
-              echo "A concurrent workflow already requested Copilot review."
+              echo "Uncertain response reconciled from the pending reviewer."
             else
-              verification_status=$?
-              exit "${verification_status}"
+              echo "Review request response remains uncertain; no retry sent." >&2
+              exit 1
             fi
           fi
-          if [ "${marker_exists}" = false ]; then
-            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-              -f body="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->Copilot review request accepted for finalized head ${EXPECTED_HEAD}." >/dev/null
+          if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+            # Legacy ordering: an interruption before POST must not leave a
+            # consumed marker that suppresses the first actual review request.
+            record_request_marker
           fi
 
   verify-current-revision-policy:
@@ -393,6 +572,7 @@ jobs:
       producer_owner: ${{ steps.producer-owner.outputs.owner }}
       producer_owner_mode: ${{ steps.producer-owner.outputs.owner_mode }}
       producer_run_id: ${{ steps.producer-owner.outputs.owner_run_id }}
+      owns_result: ${{ steps.publish-bound-neutral-result.outputs.owns_result }}
       trusted_kind: ${{ steps.trusted-automation.outputs.kind }}
     permissions:
       actions: read
@@ -1130,6 +1310,11 @@ jobs:
                               or contains($quota_exhausted)
                               or contains($quota_exceeded)
                               or contains($suppressed)
+                              or contains("nofilestoreview")
+                              or contains("abletoreviewanyfiles")
+                              or contains("premiumrequestquota")
+                              or contains("premiumrequestsquota")
+                              or contains("encounteredanerror")
                             )
                         )
                     ] | length),
@@ -1178,7 +1363,9 @@ jobs:
           declare -A rejected_review_ids=()
           review_complete=false
           head_sha=""
-          for attempt in $(seq 1 40); do
+          review_observations=40
+          [ "${LI219_EVENT_MODE:-disabled}" != enabled ] || review_observations=1
+          for attempt in $(seq 1 "${review_observations}"); do
             head_sha=""
             before=""
             request_failed=false
@@ -1264,7 +1451,7 @@ jobs:
               fi
             done
 
-            if [ "${attempt}" -eq 40 ]; then
+            if [ "${attempt}" -eq "${review_observations}" ]; then
               if [ "${request_failed}" = true ]; then
                 echo "Unable to verify the Copilot review after repeated API or head-change failures." >&2
               else
@@ -1311,7 +1498,9 @@ jobs:
           GRAPHQL
 
           findings_resolved=false
-          for resolution_attempt in $(seq 1 20); do
+          resolution_observations=20
+          [ "${LI219_EVENT_MODE:-disabled}" != enabled ] || resolution_observations=1
+          for resolution_attempt in $(seq 1 "${resolution_observations}"); do
             after=""
             unresolved_copilot_threads=0
             request_failed=false
@@ -1383,7 +1572,7 @@ jobs:
               findings_resolved=true
               break
             fi
-            if [ "${resolution_attempt}" -eq 20 ]; then
+            if [ "${resolution_attempt}" -eq "${resolution_observations}" ]; then
               if [ "${request_failed}" = true ]; then
                 echo "Unable to verify Copilot review threads after repeated API or head-change failures." >&2
               else
@@ -1405,6 +1594,7 @@ jobs:
           bash "${verification_script}"
 
       - name: Publish bound neutral result
+        id: publish-bound-neutral-result
         if: steps.producer-owner.outputs.owner == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1736,22 +1926,151 @@ jobs:
           publish_once() {
             local check_name="$1" external_id="$2" title="$3"
             local checks named count check_id check_url completed_at created
+            local owner_attempt owner_id owner_jobs owner_pr owner_run owner_snapshot
             local recovered recovery_attempt updated
             read_named_checks() {
               checks="$(api_read --paginate --slurp \
                 "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=$(jq -rn --arg value "${check_name}" '$value|@uri')&filter=all&per_page=100")" || return 1
-              jq -c \
+              jq -ce \
                 --arg name "${check_name}" \
-                '[.[].check_runs[]? |
+                'select(type == "array" and length > 0
+                  and all(.[]; type == "object"
+                    and (.total_count | type == "number" and . >= 0 and floor == .)
+                    and (.check_runs | type == "array"))) |
+                [.[].check_runs[]] as $inventory |
+                select(all(.[]; .total_count == ($inventory | length))
+                  and ($inventory | all(.[]; type == "object"
+                    and (.id | type == "number" and . > 0 and floor == .)
+                    and (.name | type == "string")
+                    and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+                    and (.status | type == "string")
+                    and has("conclusion")
+                    and (.external_id | type | IN("string", "null"))
+                    and (.details_url | type | IN("string", "null"))
+                    and (.output | type == "object")
+                    and (.output.summary | type | IN("string", "null"))
+                    and (.app | type == "object")
+                    and (.app.id | type == "number" and . > 0 and floor == .)
+                    and (.app.slug | type == "string" and length > 0)))
+                  and ($inventory | map(.id) | unique | length) == ($inventory | length)) |
+                [$inventory[] |
                   select(.name == $name) |
                   select(.app.id == 15368 and .app.slug == "github-actions")]' \
                 <<<"${checks}"
             }
-            named="$(read_named_checks)"
+            reuse_permanent_owner() {
+              owner_snapshot="${named}"
+              owner_id="$(jq -er '.[0].output.summary | fromjson |
+                .producer_run_id | select(type == "number" and . > 0 and floor == .)' \
+                <<<"${named}")" || return 1
+              owner_pr="$(jq -er '.[0].output.summary | fromjson |
+                .pull_request_number |
+                select(type == "number" and . > 0 and floor == .)' \
+                <<<"${named}")" || return 1
+              jq -e --argjson expected "${evidence}" \
+                --argjson owner "${owner_id}" --argjson owner_pr "${owner_pr}" \
+                --arg repository "${REPOSITORY}" \
+                --arg server "${GITHUB_SERVER_URL}" --arg title "${result_title}" '
+                  .[0] as $check | ($check.output.summary | fromjson) as $actual |
+                  $check.head_sha == $expected.head_sha
+                  and $check.status == "completed" and $check.conclusion == "success"
+                  and $check.output.title == $title
+                  and ($check.id | type == "number" and . > 0 and floor == .)
+                  and $check.details_url == ($server + "/" + $repository + "/runs/" + ($check.id|tostring))
+                  and $check.external_id == ("mlx90-current-revision:copilot:v6:"
+                    + ($owner_pr|tostring) + ":" + ($owner|tostring)
+                    + ":" + $expected.base_sha + ":" + $expected.head_sha)
+                  and $actual.run_url == ($server + "/" + $repository + "/actions/runs/" + ($owner|tostring))
+                  and $actual.pull_request_number == $owner_pr
+                  and ($actual | del(.pull_request_number, .producer_run_id, .run_url))
+                    == ($expected | del(.pull_request_number, .producer_run_id, .run_url))
+                ' <<<"${named}" >/dev/null || return 1
+              owner_run="$(api_read "repos/${REPOSITORY}/actions/runs/${owner_id}")" || return $?
+              owner_attempt="$(jq -er '
+                .run_attempt | select(type == "number" and (. == 1 or . == 2))
+                ' <<<"${owner_run}")" || return 1
+              jq -e --argjson owner "${owner_id}" --argjson owner_pr "${owner_pr}" \
+                --argjson owner_attempt "${owner_attempt}" \
+                --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                --arg base "${EVENT_BASE}" --arg ref "${EVENT_HEAD_REF}" \
+                --arg api "${GITHUB_API_URL}" '
+                  .id == $owner and .run_attempt == $owner_attempt
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/copilot-review.yml"
+                  and .name == "Current revision review gate"
+                  and .repository.full_name == $repository
+                  and .head_repository.full_name == $repository
+                  and .head_sha == $head and .head_branch == $ref
+                  and (.status == "completed" and .conclusion == "success")
+                  and (.pull_requests | type == "array" and length == 1)
+                  and .pull_requests[0].number == $owner_pr
+                  and .pull_requests[0].base.sha == $base
+                  and .pull_requests[0].base.repo.url == ($api + "/repos/" + $repository)
+                  and .pull_requests[0].head.sha == $head
+                  and .pull_requests[0].head.ref == $ref
+                  and .pull_requests[0].head.repo.url == ($api + "/repos/" + $repository)
+                ' <<<"${owner_run}" >/dev/null || return 1
+              owner_jobs="$(api_read --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs/${owner_id}/attempts/${owner_attempt}/jobs?filter=all&per_page=100")" || return $?
+              jq -e --argjson owner "${owner_id}" \
+                --argjson owner_attempt "${owner_attempt}" --arg head "${EVENT_HEAD}" '
+                select(type == "array" and length > 0 and length <= 10
+                  and all(.[]; type == "object"
+                    and (.total_count | type == "number" and . >= 1 and floor == .)
+                    and (.jobs | type == "array"))) |
+                [.[].jobs[]] as $all |
+                select(all(.[]; .total_count == ($all | length))
+                  and ($all | map(.id) | unique | length) == ($all | length)
+                  and ($all | all(.[];
+                    type == "object"
+                    and (.id | type == "number" and . > 0 and floor == .)
+                    and (.name | type == "string" and length > 0)
+                    and .run_id == $owner and .run_attempt == $owner_attempt
+                    and .head_sha == $head
+                    and .status == "completed"
+                    and (.conclusion | IN("success", "skipped"))
+                    and (.steps | type == "array")
+                    and all(.steps[]?;
+                      type == "object"
+                      and (.name | type == "string" and length > 0)
+                      and .status == "completed"
+                      and (.conclusion | IN("success", "skipped")))))) |
+                [$all[] | select(.name == "Verify current revision policy")] as $jobs |
+                select(($jobs | length) == 1) |
+                $jobs[0] as $policy |
+                [$policy.steps[] | select(.name == "Verify current Copilot review and resolved findings"
+                  or .name == "Publish bound neutral result")] as $critical |
+                select(
+                  ($policy.runner_id | type == "number" and . > 0 and floor == .)
+                  and $policy.conclusion == "success"
+                  and ($critical | length) == 2
+                  and ($critical | map(.name) | unique | length) == 2
+                  and ($critical | all(.[]; .conclusion == "success")))
+                ' <<<"${owner_jobs}" >/dev/null || return 1
+              if [ "${TRUSTED_KIND}" = none ]; then
+                test -f "${RUNNER_TEMP}/verify-current-copilot-review.sh" || return 1
+                test ! -L "${RUNNER_TEMP}/verify-current-copilot-review.sh" || return 1
+                bash "${RUNNER_TEMP}/verify-current-copilot-review.sh" >&2 || return 1
+              else
+                return 1
+              fi
+              ro || return 1
+              named="$(read_named_checks)" || return $?
+              test "$(jq -cS . <<<"${named}")" = \
+                "$(jq -cS . <<<"${owner_snapshot}")" || return 1
+              printf 'reused:%s' "$(jq -er '.[0].id' <<<"${named}")"
+            }
+            named="$(read_named_checks)" || return $?
             count="$(jq 'length' <<<"${named}")"
             if [ "${count}" -gt 1 ]; then
               echo "Multiple protected ${check_name} results exist for ${EVENT_HEAD}." >&2
-              exit 1
+              return 1
+            fi
+            if [ "${count}" -eq 1 ] && [ "${external_kind}" = copilot ] \
+              && [ "$(jq -r '.[0].output.summary | fromjson | .producer_run_id' \
+                <<<"${named}")" != "${GITHUB_RUN_ID}" ]; then
+              reuse_permanent_owner
+              return $?
             fi
             if [ "${count}" -eq 1 ]; then
               check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${named}")"
@@ -1791,9 +2110,35 @@ jobs:
                   and .conclusion == "success"
                   and .output.summary == $evidence
                 ' <<<"${updated}" >/dev/null
+              printf '%s' "${check_id}"
               return
             fi
+            # The repository/head/check-name publisher lane is serialized above. Re-elect
+            # the immutable owner and require two identical complete zero-check
+            # inventories before the only allowed create. A queued loser can
+            # therefore only validate and reuse the permanent owner.
             ro
+            owner_snapshot="$(read_named_checks)" || return $?
+            sleep 2
+            ro
+            named="$(read_named_checks)" || return $?
+            test "$(jq -cS . <<<"${named}")" = \
+              "$(jq -cS . <<<"${owner_snapshot}")" || return 1
+            count="$(jq 'length' <<<"${named}")"
+            if [ "${count}" -gt 1 ]; then
+              echo "Multiple protected ${check_name} results exist for ${EVENT_HEAD}." >&2
+              return 1
+            fi
+            if [ "${count}" -eq 1 ]; then
+              if [ "${external_kind}" = copilot ] \
+                && [ "$(jq -r '.[0].output.summary | fromjson | .producer_run_id' \
+                  <<<"${named}")" != "${GITHUB_RUN_ID}" ]; then
+                reuse_permanent_owner
+                return $?
+              fi
+              echo "Serialized publisher inventory changed before create." >&2
+              return 1
+            fi
             if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
                 -f name="${check_name}" \
                 -f head_sha="${EVENT_HEAD}" \
@@ -1855,12 +2200,31 @@ jobs:
                 and .status == "completed"
                 and .conclusion == "success"
                 and .output.summary == $evidence
-              ' <<<"${created}" >/dev/null
+                ' <<<"${created}" >/dev/null
+            named="$(read_named_checks)" || return $?
+            test "$(jq 'length' <<<"${named}")" -eq 1
+            test "$(jq -er '.[0].id' <<<"${named}")" = "${check_id}"
+            test "$(jq -er '.[0].external_id' <<<"${named}")" = "${external_id}"
+            printf '%s' "${check_id}"
           }
-          publish_once \
+          record_publication_ownership() {
+            local published_check_id="$1"
+            if [[ "${published_check_id}" =~ ^reused:[1-9][0-9]*$ ]]; then
+              echo 'owns_result=false' >>"${GITHUB_OUTPUT}"
+              return 0
+            fi
+            [[ "${published_check_id}" =~ ^[1-9][0-9]*$ ]] || return 1
+            echo 'owns_result=true' >>"${GITHUB_OUTPUT}"
+          }
+          published_check_id="$(publish_once \
             'Current revision review' \
             "mlx90-current-revision:${external_kind}:v6:${PR_NUMBER}:${GITHUB_RUN_ID}:${EVENT_BASE}:${EVENT_HEAD}" \
-            "${result_title}"
+            "${result_title}")" || exit $?
+          record_publication_ownership "${published_check_id}" || exit $?
+          if [[ "${published_check_id}" =~ ^reused:[1-9][0-9]*$ ]]; then
+            echo 'Exact review evidence already has a protected producer; ownership retained.'
+            exit 0
+          fi
 
   request-protected-verifier-reevaluation:
     name: Request protected verifier re-evaluation
@@ -1869,6 +2233,7 @@ jobs:
       always() &&
       needs['verify-current-revision-policy'].result == 'success' &&
       needs['verify-current-revision-policy'].outputs.producer_owner == 'true' &&
+      needs['verify-current-revision-policy'].outputs.owns_result == 'true' &&
       needs['verify-current-revision-policy'].outputs.trusted_kind != 'renovate'
     permissions:
       actions: write

@@ -268,14 +268,18 @@ def validate_policy(policy: Any) -> JSON:
         maximum=300000,
     )
 
-    review = exact_keys(
-        policy["review"],
-        {"canonical_diff_format", "maximum_bytes", "minimum_bytes"},
-        "policy-review",
-    )
+    review = policy["review"]
+    require(isinstance(review, dict), "policy-review")
+    common = {"canonical_diff_format", "minimum_bytes"}
+    require(set(review) in (common | {"maximum_bytes"}, common | {"warn_diff_bytes"}), "policy-review")
     require(review["canonical_diff_format"] == CANONICAL_DIFF_FORMAT, "review-format")
-    require(review["minimum_bytes"] == 1, "review-minimum")
-    require(review["maximum_bytes"] == 199999, "review-maximum")
+    require(type(review["minimum_bytes"]) is int and review["minimum_bytes"] == 1, "review-minimum")
+    if "maximum_bytes" in review:
+        # Accept the old version-2 shape without restoring its retired byte
+        # gate. Its exact value remains policy-digest/operation-key bound.
+        require(type(review["maximum_bytes"]) is int and review["maximum_bytes"] == 199999, "review-maximum")
+    else:
+        require(review["warn_diff_bytes"] is None or (type(review["warn_diff_bytes"]) is int and review["warn_diff_bytes"] > 0), "review-warning")
     require(b"TBD" not in canonical(policy), "policy-tbd")
     return policy
 
@@ -485,7 +489,6 @@ def operation_record(policy: JSON, snapshot: JSON) -> JSON:
     require(type(git["unsafe_delta"]) is bool, "unsafe-delta-type")
     require(git["unsafe_delta"] is False, "unsafe-delta")
     patch_bytes = integer(git["patch_bytes"], "patch-empty")
-    require(patch_bytes <= policy["review"]["maximum_bytes"], "patch-oversized")
     runtime_inputs = normalize_runtime_inputs(git["runtime_inputs"])
     return {
         "candidate_sha": git["candidate_sha"],
