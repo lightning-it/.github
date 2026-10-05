@@ -8,6 +8,7 @@ import tempfile
 import textwrap
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from tests import test_copilot_review_refresh as contracts
 
@@ -36,20 +37,27 @@ class ReviewEventTests(unittest.TestCase):
         self.assertFalse(EVENT.clean_review(self.review(), [{"body": "Suppressed comments"}], self.head))
         self.assertTrue(EVENT.clean_review(self.review(body=""), [{"body": "Reviewed files"}], self.head))
 
-    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None):
+    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None):
         prefix = "repos/lightning-it/.github"
         pr = {"id": 23, "number": 23, "draft": False, "state": "open",
               "user": {"login": "litroc", "type": "User"},
               "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": "lightning-it/.github"}},
               "base": {"sha": self.base, "ref": "develop"}}
-        run = {"id": 77, "path": EVENT.PRODUCER, "head_sha": self.head,
-               "head_branch": "fix/final", "pull_requests": [{"number": 23}],
+        run = {"id": 77, "path": EVENT.PRODUCER, "event": "pull_request_target",
+               "repository": {"full_name": "lightning-it/.github"},
+               "head_repository": {"full_name": "lightning-it/.github"}, "run_attempt": 1, "head_sha": self.head,
+               "head_branch": "fix/final", "pull_requests": [],
                "status": state, "created_at": (self.now - dt.timedelta(seconds=delay)).isoformat()}
         inventories = {
 
-            f"{prefix}/pulls?state=open": [pr],
+            f"{prefix}/pulls?state=open": [{**pr, "id": 23 + i, "number": 23 + i} for i in range(pr_count)],
             f"{prefix}/actions/runs?event=pull_request_target&head_sha={self.head}": [run],
-            f"{prefix}/commits/{self.head}/check-runs?filter=all": [],
+            f"{prefix}/actions/runs?head_sha={self.head}": [run, *(required if required is not None else [self.required_run()])],
+            f"{prefix}/actions/runs/77/attempts/1/jobs": [{"id": 78, "name": "Verify current revision policy",
+                                                        "status": "completed", "conclusion": "success"}],
+            f"{prefix}/commits/{self.head}/check-runs?filter=all": [{"id": 79, "name": "Current revision review",
+                "app": {"id": 15368, "slug": "github-actions"}, "status": "completed", "conclusion": "success",
+                "output": {"summary": '{"producer_run_id":77}'}}] if neutral else [],
             f"{prefix}/pulls/23/reviews": [] if missing else [self.review(body=review_body)],
             f"{prefix}/pulls/23/reviews/17/comments": [] if comment_body is None else [{"body": comment_body}],
         }
@@ -61,14 +69,19 @@ class ReviewEventTests(unittest.TestCase):
                 if uncertain:
                     raise TimeoutError("response lost after server accepted dispatch")
                 return None
+            if "/actions/workflows/" in route:
+                response = self.inventory_response(history, route)
+                return transform(route, response) if transform else response
+            if route == f"{prefix}/actions/runs/77":
+                return run
             if route == prefix:
                 return {"default_branch": "develop"}
-            if route == f"{prefix}/pulls/23":
+            if route.startswith(f"{prefix}/pulls/"):
                 return {**pr, "head": {**pr["head"], "sha": self.base}} if drift else pr
             raise AssertionError(route)
 
         with patch.object(EVENT, "api", side_effect=api), \
-                patch.object(EVENT, "pages", side_effect=lambda route, key=None: [] if "/actions/workflows/" in route else inventories[route]), \
+                patch.object(EVENT, "pages", side_effect=lambda route, key=None: inventories[route.replace("/pulls/24/", "/pulls/23/").replace("/pulls/25/", "/pulls/23/")]), \
                 patch.dict(os.environ, LI219_EVENT_MODE="enabled", GITHUB_REF="refs/heads/develop", GITHUB_REF_PROTECTED="true"):
             if uncertain:
                 with self.assertRaises(TimeoutError):
@@ -106,6 +119,217 @@ class ReviewEventTests(unittest.TestCase):
                "event": "workflow_dispatch", "display_title": "bound", "status": "queued"}
         self.assertTrue(EVENT.recent_dispatch([run], EVENT.REFRESH, "bound"))
         self.assertFalse(EVENT.recent_dispatch([run], EVENT.REFRESH, "foreign"))
+
+    def required_run(self):
+        repo = "lightning-it/.github"
+        api_url = f"https://api.github.com/repos/{repo}"
+        return {"id": 88, "workflow_id": 999, "event": "pull_request_target",
+                "path": ".github/workflows/dot-github-current-revision-required.yml",
+                "workflow_url": f"{api_url}/actions/required_workflows/999",
+                "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
+                "head_sha": self.head, "head_branch": "fix/final", "status": "completed", "conclusion": "failure",
+                "name": "Protected dot-github current-revision verifier",
+                "display_title": f"Cross-protect .github PR #23 opened {self.head}",
+                "pull_requests": [{"number": 23, "url": f"{api_url}/pulls/23",
+                    "head": {"sha": self.head, "ref": "fix/final", "repo": {"url": api_url}},
+                    "base": {"sha": self.base, "ref": "develop", "repo": {"url": api_url}}}]}
+
+    def test_required_recovery_uses_unfiltered_native_authority_inventory(self):
+        # The event-filtered inventory contains ONLY the producer. The no-event
+        # inventory also contains the actual organization Required run.
+        calls = self.reconcile(neutral=True)
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0][0].endswith("current-revision-rerun.yml/dispatches"))
+        self.assertEqual("77", calls[0][1]["inputs"]["producer_run_id"])
+        self.assertEqual([], self.reconcile(neutral=True, required=[]))
+        run = self.required_run()
+        run["conclusion"] = "success"
+        self.assertEqual([], self.reconcile(neutral=True, required=[run]))
+
+    def test_local_foreign_stale_or_ambiguous_runs_never_stand_in_for_required(self):
+        for field, value in (
+            ("workflow_url", "https://api.github.com/repos/lightning-it/.github/actions/workflows/999"),
+            ("path", ".github/workflows/supplementary-current-revision-required.yml"),
+            ("event", "push"), ("head_sha", self.base), ("head_branch", "foreign"),
+            ("repository", {"full_name": "lightning-it/foreign"}),
+            ("head_repository", {"full_name": "lightning-it/foreign"}),
+            ("display_title", f"Cross-protect .github PR #24 opened {self.head}"),
+            ("workflow_id", True), ("status", "in_progress"),
+        ):
+            with self.subTest(field=field):
+                run = self.required_run()
+                run[field] = value
+                self.assertEqual([], self.reconcile(neutral=True, required=[run]))
+        for side in ("base", "head"):
+            run = self.required_run()
+            run["pull_requests"][0][side]["sha"] = "c" * 40
+            self.assertEqual([], self.reconcile(neutral=True, required=[run]))
+        run = self.required_run()
+        run["pull_requests"][0]["number"] = 24
+        self.assertEqual([], self.reconcile(neutral=True, required=[run]))
+        self.assertEqual([], self.reconcile(neutral=True, required=[self.required_run(), {**self.required_run(), "id": 89}]))
+
+    def test_other_pilots_bind_the_central_organization_required_path(self):
+        for repo in ("lightning-it/shared-assets-lit", "lightning-it/ansible-collection-supplementary"):
+            run = self.required_run()
+            import json
+            run = json.loads(json.dumps(run).replace("lightning-it/.github", repo))
+            run["path"] = ".github/workflows/supplementary-current-revision-required.yml"
+            run["name"] = "Protected current-revision evidence verifier"
+            run["display_title"] = f"Protected current revision PR #23 opened {self.head}"
+            pr = {"number": 23, "head": {"sha": self.head, "ref": "fix/final"},
+                  "base": {"sha": self.base, "ref": "develop"}}
+            self.assertTrue(EVENT.required_locator(run, repo, pr))
+            run["workflow_url"] = run["workflow_url"].replace("required_workflows", "workflows")
+            self.assertFalse(EVENT.required_locator(run, repo, pr))
+
+    def locator(self, index, *, pr=99, workflow=EVENT.REFRESH, **changes):
+        created = self.now - dt.timedelta(seconds=1 + index * 600)
+        return {
+            "id": 10000 + index,
+            "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "updated_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "path": f".github/workflows/{workflow}",
+            "event": "workflow_dispatch",
+            "display_title": f"Reconcile review PR #{pr} head {self.head}",
+            "status": "completed",
+            **changes,
+        }
+
+    @staticmethod
+    def inventory_response(history, route):
+        parsed = urlsplit(route)
+        query = parse_qs(parsed.query)
+        lower, upper = query["created"][0].split("..")
+        workflow = parsed.path.split("/workflows/")[1].split("/")[0]
+        selected = sorted(
+            (run for run in history if lower <= run["created_at"] <= upper
+             and run["path"] == f".github/workflows/{workflow}"),
+            key=lambda run: run["id"], reverse=True,
+        )
+        page = int(query["page"][0])
+        # Emulate the server's 1000-result ceiling, not an unlimited list.
+        # Native filtered-search totals can be clipped independently of pages.
+        return {"total_count": min(2500, len(selected)), "workflow_runs": selected[:1000][(page - 1) * 100:page * 100]}
+
+    def inventory(self, history, transform=None):
+        routes = []
+
+        def api(route, payload=None):
+            self.assertIsNone(payload)
+            routes.append(route)
+            response = self.inventory_response(history, route)
+            return transform(route, response) if transform else response
+
+        with patch.object(EVENT, "api", side_effect=api):
+            result = EVENT.dispatch_inventory("repos/lightning-it/.github", self.now)
+        self.assertLessEqual(len(routes), EVENT.DISPATCH_INVENTORY_REQUESTS)
+        self.assertTrue(all(int(parse_qs(urlsplit(route).query)["page"][0]) <= 10 for route in routes))
+        return result
+
+    def test_dispatch_inventory_boundaries_and_full_seven_day_volume(self):
+        for count in (0, 99, 100, 999, 1000, 1008):
+            with self.subTest(count=count):
+                history = [self.locator(i) for i in range(count)]
+                self.assertEqual({run["id"] for run in history}, {run["id"] for run in self.inventory(history)})
+        # Ten PRs each generating 1008 locators, including both consumers.
+        history = [self.locator(i, id=10000 + pr * 1008 + i, pr=pr,
+                                workflow=EVENT.REFRESH if pr % 2 else EVENT.HELPER)
+                   for pr in range(10) for i in range(1008)]
+        self.assertEqual(10080, len(self.inventory(history)))
+
+    def test_clipped_parent_2500_retains_all_10080_disjoint_child_results(self):
+        history = [self.locator(i, id=10000 + pr * 1008 + i, pr=pr)
+                   for pr in range(10) for i in range(1008)]
+        result = self.inventory(history)
+        self.assertEqual(10080, len(result))
+        self.assertEqual({run["id"] for run in history}, {run["id"] for run in result})
+
+    def test_large_history_reaches_real_caller_and_keeps_per_pr_event_dedup(self):
+        history = [self.locator(i) for i in range(1008)]
+        history.append(self.locator(0, id=99999, pr=24, status="in_progress"))
+        calls = self.reconcile(history=history, pr_count=3, delay=86400)
+        self.assertEqual(["23", "25"], [payload["inputs"]["pr_number"] for _, payload in calls])
+        self.assertTrue(all(route.endswith("/dispatches") for route, _ in calls))
+
+    def test_unknown_post_later_native_inventory_suppresses_duplicate(self):
+        history = [self.locator(i) for i in range(1008)]
+        self.assertEqual(1, len(self.reconcile(history=history, uncertain=True)))
+        accepted = self.locator(0, id=99999, pr=23, status="queued")
+        self.assertEqual([], self.reconcile(history=[*history, accepted]))
+        accepted["status"] = "completed"
+        self.assertEqual([], self.reconcile(history=[*history, accepted]))
+        accepted["updated_at"] = (self.now - dt.timedelta(minutes=11)).isoformat()
+        self.assertEqual(1, len(self.reconcile(history=[*history, accepted])))
+        # These are locators only; actual rerun CAS is covered by the real writer suite.
+
+    def test_split_boundaries_are_disjoint_and_include_both_ttl_endpoints(self):
+        middle = self.now - EVENT.TTL / 2
+        stamps = (self.now - EVENT.TTL, middle, middle + dt.timedelta(seconds=1), self.now)
+        history = [self.locator(i, created_at=stamps[i % 4].strftime("%Y-%m-%dT%H:%M:%SZ"))
+                   for i in range(1008)]
+        self.assertEqual(1008, len(self.inventory(history)))
+
+    def test_incomplete_duplicate_or_racing_inventory_prevents_all_dispatches(self):
+        history = [self.locator(i) for i in range(200)]
+
+        def duplicate(route, response):
+            if "page=2" in route and response["workflow_runs"]:
+                response["workflow_runs"][0] = history[-1]
+            return response
+
+        def count_race(route, response):
+            if "page=2" in route:
+                response["total_count"] += 1
+            return response
+
+        def partial(route, response):
+            response["workflow_runs"] = response["workflow_runs"][:-1]
+            return response
+
+        for transform in (duplicate, count_race, partial):
+            with self.subTest(transform=transform.__name__), self.assertRaises(ValueError):
+                self.reconcile(history=history, transform=transform)
+
+    def test_split_count_race_and_cross_workflow_duplicate_fail_before_dispatch(self):
+        history = [self.locator(i) for i in range(1008)]
+        def split_race(route, response):
+            if response["total_count"] == 1008:
+                response["total_count"] = 1009
+            return response
+        with self.assertRaisesRegex(ValueError, "changed while splitting"):
+            self.reconcile(history=history, transform=split_race)
+        history = [self.locator(0), self.locator(0, workflow=EVENT.HELPER)]
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.reconcile(history=history)
+
+    def test_long_running_locator_beyond_first_thousand_still_suppresses_dispatch(self):
+        history = [self.locator(i) for i in range(1008)]
+        history[0] = self.locator(0, pr=23, status="in_progress")
+        self.assertEqual([], self.reconcile(history=history))
+
+    def test_source_default_mirror_is_identical_when_present(self):
+        mirror = ROOT / "default/scripts/review-event-reconcile.py"
+        if mirror.exists():
+            self.assertEqual((ROOT / "scripts/review-event-reconcile.py").read_bytes(), mirror.read_bytes())
+
+    def test_saturated_second_and_budget_exhaustion_fail_closed(self):
+        history = [self.locator(i, created_at=self.now.strftime("%Y-%m-%dT%H:%M:%SZ")) for i in range(1000)]
+        with self.assertRaisesRegex(ValueError, "within one second"):
+            self.reconcile(history=history)
+        with patch.object(EVENT, "DISPATCH_INVENTORY_REQUESTS", 1):
+            with self.assertRaisesRegex(ValueError, "budget exhausted"):
+                self.reconcile(history=[self.locator(i) for i in range(1008)])
+
+    def test_unbound_and_malformed_inventory_is_never_accepted(self):
+        for field, value in (("id", True), ("event", "push"), ("created_at", "invalid"),
+                             ("created_at", "2020-01-01T00:00:00Z"), ("path", "foreign")):
+            def change(route, response):
+                if response["workflow_runs"]:
+                    response["workflow_runs"][0] = {**response["workflow_runs"][0], field: value}
+                return response
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                self.reconcile(history=[self.locator(0)], transform=change)
 
     def test_all_rerun_writers_share_the_exact_head_lane(self):
         helper = (ROOT / ".github/workflows/current-revision-rerun.yml").read_text()

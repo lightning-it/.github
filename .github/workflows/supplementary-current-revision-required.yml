@@ -5272,9 +5272,18 @@ jobs:
           cat >"${classifier}" <<'JQ'
           def runnerless:
             has("runner_id") and .runner_id==null and .steps==[];
+          def inactive_pilot_handoff:
+            $ARGS.named.event_mode=="enabled" and $ARGS.named.author_type=="User"
+            and .run_id==$run_id and .run_attempt==$attempt and .head_sha==$head
+            and runnerless
+            and (if $ARGS.named.repository=="lightning-it/shared-assets-lit" then
+              .name=="Inactive legacy handoff"
+            elif $ARGS.named.repository=="lightning-it/ansible-collection-supplementary" then
+              (.name|IN("Inactive legacy develop handoff","Inactive legacy main pin","Inactive legacy main handoff"))
+            else false end);
           def allowed_skip:
             .conclusion=="skipped" and
-            (.name=="Request Copilot review for current revision"
+            (inactive_pilot_handoff or .name=="Request Copilot review for current revision"
             or (.name=="Validate protected main helper pin" and runnerless)
             or (.name=="Dispatch protected managed-sync finalizer re-evaluation" and runnerless)
             or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
@@ -5416,6 +5425,179 @@ jobs:
           and .run_url==$run_url and .review_path==$review_path
           JQ
 
+      - name: Materialize protected request origin verification
+        run: |
+          set -euo pipefail
+          umask 077
+          cat >"${RUNNER_TEMP}/request-origin.py" <<'REQUEST_ORIGIN'
+          """Read-only proof for the pilot's protected automated review request.
+
+          The request journal is consumption evidence, never review acceptance. A native
+          successful request step and exactly one bound Bot timeline event are required
+          as well; an uncertain POST without that native evidence cannot pass.
+          """
+          import datetime as dt
+          import hashlib
+          import json
+          import re
+          import subprocess
+          import sys
+
+
+          def require(value, message):
+              if not value:
+                  raise ValueError(message)
+
+
+          def positive(value):
+              return type(value) is int and value > 0
+
+
+          def epoch(value):
+              require(isinstance(value, str), "missing native timestamp")
+              parsed = dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+              require(parsed.strftime("%Y-%m-%dT%H:%M:%SZ") == value, "noncanonical timestamp")
+              return parsed.replace(tzinfo=dt.timezone.utc).timestamp()
+
+
+          def api(*args):
+              result = subprocess.run(["gh", "api", *args], check=True, capture_output=True,
+                                      text=True, timeout=30)
+              return json.loads(result.stdout)
+
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  require(key not in result, "duplicate record key")
+                  result[key] = value
+              return result
+
+
+          def blob(value):
+              require(isinstance(value, dict) and value.get("__typename") == "Blob"
+                      and value.get("isTruncated") is False, "missing or truncated journal blob")
+              text = value.get("text")
+              require(isinstance(text, str) and positive(value.get("byteSize"))
+                      and value["byteSize"] == len(text.encode()) <= 4096, "invalid journal size")
+              return json.loads(text, object_pairs_hook=unique_object)
+
+
+          def verify(context):
+              repo, repo_id = context["repository"], context["repository_id"]
+              require(repo in {"lightning-it/.github", "lightning-it/shared-assets-lit",
+                               "lightning-it/ansible-collection-supplementary"}, "nonpilot")
+              require(context["author"] == "litroc" and context["controller_branch"] == "develop", "request authority")
+              require(isinstance(repo_id, str) and re.fullmatch(r"[1-9][0-9]*", repo_id), "repository ID")
+              owner, run_id = context["owner"], context["run_id"]
+              require(positive(owner) and positive(run_id), "owner identity")
+              head, base, source = (context[key] for key in ("head", "base", "controller"))
+              require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
+                          for value in (head, base, source)), "revision binding")
+              first, producer = context["first"], context["producer"]
+              for run, attempt, conclusion, trigger in ((first, 1, "failure", "litroc"),
+                                                      (producer, 2, "success", "github-actions[bot]")):
+                  require(type(run["id"]) is int and run["id"] == run_id
+                          and type(run["run_attempt"]) is int and run["run_attempt"] == attempt
+                          and run["event"] == "pull_request_target" and run["status"] == "completed"
+                          and run["conclusion"] == conclusion and run["head_sha"] == head
+                          and run["path"] == ".github/workflows/copilot-review.yml"
+                          and run["name"] == "Current revision review gate"
+                          and run["actor"]["login"] == "litroc" and run["triggering_actor"]["login"] == trigger
+                          and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo,
+                          "producer attempt binding")
+                  prs = run["pull_requests"]
+                  require(isinstance(prs, list) and len(prs) == 1, "recorded owner inventory")
+                  pr = prs[0]
+                  require(pr["number"] == owner and pr["head"]["sha"] == head and pr["base"]["sha"] == base
+                          and pr["head"]["ref"] == run["head_branch"]
+                          and pr["base"]["ref"] == context["base_ref"]
+                          and pr["head"]["repo"]["url"] == f"https://api.github.com/repos/{repo}"
+                          and pr["base"]["repo"]["url"] == f"https://api.github.com/repos/{repo}", "recorded PR binding")
+              require(context["base_ref"] in {"develop", "main"}, "base branch")
+              metadata = api(f"repos/{repo}")
+              require(metadata["full_name"] == repo and str(metadata["id"]) == repo_id
+                      and metadata["default_branch"] == "develop", "live repository binding")
+              branch = api(f"repos/{repo}/branches/develop")
+              require(branch["name"] == "develop" and branch["protected"] is True, "unprotected request controller")
+              require(branch["commit"]["sha"] == context["controller_head"], "controller moved during verification")
+              ancestry = api(f"repos/{repo}/compare/{source}...{context['controller_head']}")
+              require(ancestry.get("status") == "identical" or (
+                  ancestry.get("status") == "ahead" and ancestry.get("behind_by") == 0
+                  and ancestry.get("merge_base_commit", {}).get("sha") == source), "untrusted request source")
+              key = f"li219-review-request:v1:{repo_id}:{owner}:{head}"
+              path = f"operations/{hashlib.sha256(key.encode()).hexdigest()}.json"
+              ref = api(f"repos/{repo}/git/ref/heads/lit-review-operations")
+              require(ref["ref"] == "refs/heads/lit-review-operations" and ref["object"]["type"] == "commit", "journal ref")
+              oid = ref["object"]["sha"]
+              require(isinstance(oid, str) and re.fullmatch(r"[0-9a-f]{40}", oid), "journal commit")
+              snapshot = api("graphql", "-f", "query=query($owner:String!,$name:String!,$oid:String!,$manifest:String!,$record:String!){repository(owner:$owner,name:$name){nameWithOwner source:object(expression:$oid){__typename oid} manifest:object(expression:$manifest){__typename ... on Blob{isTruncated byteSize text}} record:object(expression:$record){__typename ... on Blob{isTruncated byteSize text}}}}",
+                             "-f", f"owner={repo.split('/')[0]}", "-f", f"name={repo.split('/')[1]}",
+                             "-f", f"oid={oid}", "-f", f"manifest={oid}:manifest.json", "-f", f"record={oid}:{path}")
+              require("errors" not in snapshot, "partial journal response")
+              data = snapshot["data"]["repository"]
+              require(data["nameWithOwner"] == repo and data["source"] == {"__typename": "Commit", "oid": oid}, "mixed journal snapshot")
+              require(type(blob(data["manifest"]).get("schema")) is int
+                      and blob(data["manifest"]) == {"schema": 1, "repository": repo, "repository_id": repo_id,
+                                                "ref": "refs/heads/lit-review-operations"}, "foreign journal manifest")
+              require(type(blob(data["record"]).get("schema")) is int
+                      and blob(data["record"]) == {"schema": 1, "repository": repo, "repository_id": repo_id,
+                      "action": "request", "operation": key, "claim_run": str(run_id), "claim_attempt": "1",
+                      "source_sha": source}, "request CAS mismatch")
+              pages = context["jobs"]
+              require(isinstance(pages, list) and 0 < len(pages) <= 10, "job pagination")
+              require(all(isinstance(page, dict) and positive(page.get("total_count"))
+                          and isinstance(page.get("jobs"), list) and len(page["jobs"]) <= 100 for page in pages), "job page shape")
+              require(len({page["total_count"] for page in pages}) == 1, "changing job inventory")
+              jobs = [job for page in pages for job in page["jobs"]]
+              require(len(jobs) == pages[0]["total_count"], "incomplete job inventory")
+              require(all(isinstance(job, dict) and positive(job.get("id")) and isinstance(job.get("name"), str)
+                          and type(job.get("run_id")) is int and job.get("run_id") == run_id
+                          and type(job.get("run_attempt")) is int and job.get("run_attempt") == 1
+                          and job.get("head_sha") == head and job.get("status") == "completed" for job in jobs), "job identity")
+              require(len({job["id"] for job in jobs}) == len(jobs)
+                      and len({job["name"] for job in jobs}) == len(jobs), "duplicate jobs")
+              selected = [job for job in jobs if job["name"] == "Request Copilot review for current revision"]
+              require(len(selected) == 1, "request job inventory")
+              job = selected[0]
+              require(job["conclusion"] == "success" and positive(job.get("runner_id")), "request not confirmed")
+              steps = job["steps"]
+              names = ["Set up job", "Materialize the protected operation claim", "Request Copilot review for the current revision", "Complete job"]
+              require(isinstance(steps, list) and len(steps) == len(names), "request step inventory")
+              last = epoch(job["started_at"])
+              require(epoch(first["created_at"]) <= last, "request predates producer")
+              for number, (step, name) in enumerate(zip(steps, names), 1):
+                  require(step["name"] == name and type(step["number"]) is int and step["number"] == number
+                          and step["status"] == "completed" and step["conclusion"] == "success", "request step binding")
+                  require(last <= epoch(step["started_at"]) <= epoch(step["completed_at"]), "request step order")
+                  last = epoch(step["completed_at"])
+              require(last <= epoch(job["completed_at"]) <= epoch(first["updated_at"]), "request job order")
+              timeline = context["timeline"]
+              require(isinstance(timeline, list) and 0 < len(timeline) <= 10
+                      and all(isinstance(page, list) and len(page) <= 100 for page in timeline), "timeline pagination")
+              events = [event for page in timeline for event in page]
+              require(all(isinstance(event, dict) for event in events), "timeline shape")
+              # Commit timeline entries use a SHA, not an issue-event numeric ID.
+              requests = [event for event in events if event.get("event") == "review_requested"
+                          and event.get("requested_reviewer", {}).get("login") == "Copilot"]
+              require(all(positive(event.get("id")) for event in requests), "request timeline identity")
+              require(len({event["id"] for event in requests}) == len(requests), "duplicate request timeline")
+              start, end = epoch(first["created_at"]), epoch(context["review_submitted_at"])
+              requests = [event for event in requests if start <= epoch(event.get("created_at")) <= end]
+              require(len(requests) == 1, "ambiguous request timeline")
+              event = requests[0]
+              require(event["actor"]["login"] == "github-actions[bot]" and event["actor"]["type"] == "Bot", "request actor")
+              require(epoch(steps[2]["started_at"]) <= epoch(event["created_at"]) <= epoch(steps[2]["completed_at"]), "request outside effect step")
+
+
+          if __name__ == "__main__":
+              try:
+                  verify(json.load(sys.stdin))
+              except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+                  print(f"Protected request origin rejected: {exc}", file=sys.stderr)
+                  sys.exit(1)
+          REQUEST_ORIGIN
+
       - name: Materialize event recovery receipt verification
         run: |
           set -euo pipefail
@@ -5444,6 +5626,26 @@ jobs:
             jq -e --argjson owner "${owner_pr_number}" \
               -f "${RUNNER_TEMP}/current-revision-owner-run.jq" \
               <<<"$1" >/dev/null
+          }
+          verify_request_origin() {
+            local tl="$1"
+            # Preserve the existing contributor-funded author route exactly.
+            if jq -e --arg actor "${author}" \
+              --arg start "$(jq -er '.created_at | strings' <<<"${producer}")" \
+              --arg submitted "${review_submitted_at}" \
+              '[add[]? | select(.event=="review_requested" and .actor.login == $actor and .requested_reviewer.login=="Copilot" and .created_at>=$start and .created_at<=$submitted)] | length == 1' \
+              <<<"${tl}" >/dev/null; then return 0; fi
+            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1
+            [ "${recovery_status}" -eq 0 ] || return 1
+            jq -cn --arg repository "${REPOSITORY}" --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+              --arg author "${author}" --arg head "${EVENT_HEAD}" --arg base "${EVENT_BASE}" \
+              --arg controller "${controller_sha}" --arg controller_branch "${controller_branch}" \
+              --arg controller_head "${controller_head}" --arg base_ref "${base_ref}" \
+              --arg review_submitted_at "${review_submitted_at}" \
+              --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
+              --argjson first "${attempt_one}" --argjson producer "${producer}" \
+              --argjson jobs "${attempt_one_jobs}" --argjson timeline "${tl}" \
+              '$ARGS.named' | python3 "${RUNNER_TEMP}/request-origin.py"
           }
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
@@ -6802,6 +7004,8 @@ jobs:
                   ' <<<"${producer_jobs_pages}")"
                 d='^Request protected verifier re-evaluation( / (Diagnose Release-App reusable context and fail closed|Re-run the one protected verifier attempt))?$'
                 terminal_job_inventory="$(jq -c \
+                  --arg repository "${REPOSITORY}" --arg event_mode "${LI219_EVENT_MODE:-disabled}" \
+                  --arg author_type "$(jq -er '.user.type | strings' <<<"${pr}")" \
                   --arg d "${d}" \
                   --arg head "${EVENT_HEAD}" \
                   --argjson attempt "${producer_run_attempt}" \
@@ -6989,11 +7193,7 @@ jobs:
               fi
 
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
-              jq -e --arg actor "${author}" \
-                --arg start "$(jq -er '.created_at | strings' <<<"${producer}")" \
-                --arg end "${review_submitted_at}" \
-                '[add[]? | select(.event=="review_requested" and .actor.login == $actor and .requested_reviewer.login=="Copilot" and .created_at>=$start and .created_at<=$end)] | length == 1' \
-                <<<"${tl}" >/dev/null
+              verify_request_origin "${tl}"
               jq -e \
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
