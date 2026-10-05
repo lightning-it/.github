@@ -37,7 +37,20 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def test_serialization(self):
         group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
-        self.assertIn(block, COPILOT_WORKFLOW.read_text(encoding="utf-8"))
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(block, workflow)
+        publisher_group = (
+            "current-revision-publisher-${{ github.repository_id }}-pr-"
+            "${{ github.event.pull_request.number }}-"
+            "${{ github.event.pull_request.base.sha }}-"
+            "${{ github.event.pull_request.head.sha }}"
+        )
+        policy = workflow.split("\n  verify-current-revision-policy:", 1)[1].split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[0]
+        self.assertIn(publisher_group, policy)
+        self.assertIn("concurrency:\n      group: >-", policy)
+        self.assertIn("cancel-in-progress: false", policy)
         refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         expression = refresh.split("group: >-", 1)[1].split("cancel-in-progress", 1)[0]
         for value in ("format('current-revision-{0}-pr-{1}'", "format('current-revision-quarantine-{0}'", "github.run_id", "cancel-in-progress: false", "queue: max"):
@@ -198,6 +211,51 @@ gh() {
         self.assertIn("if: steps.producer-owner.outputs.owner == 'true'", publish)
         self.assertIn("needs['verify-current-revision-policy'].outputs.producer_owner "
                       "== 'true'", dispatch)
+        self.assertIn("needs['verify-current-revision-policy'].outputs.owns_result "
+                      "== 'true'", dispatch)
+
+    def test_publisher_retains_permanent_foreign_owner_read_only(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        policy = workflow.split("\n  verify-current-revision-policy:", 1)[1].split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[0]
+        publisher = policy.split("      - name: Publish bound neutral result\n", 1)[1]
+        reuse = publisher.split("            reuse_permanent_owner() {\n", 1)[1].split(
+            "\n            }\n            named=", 1
+        )[0]
+        self.assertIn("outputs.owns_result", workflow)
+        self.assertIn("owner_snapshot=", reuse)
+        self.assertIn("attempts/1/jobs?filter=all&per_page=100", reuse)
+        self.assertIn(".run_attempt == 1", reuse)
+        self.assertIn(".status == \"completed\" and .conclusion == \"success\"", reuse)
+        self.assertIn("(.steps | type == \"array\")", reuse)
+        self.assertIn("map(.id) | unique | length", reuse)
+        self.assertIn("verify-current-copilot-review.sh", reuse)
+        self.assertIn("ro || return 1", reuse)
+        self.assertIn("read_named_checks", reuse)
+        self.assertNotIn("--method POST", reuse)
+        self.assertNotIn("api_patch_bound", reuse)
+        self.assertIn("printf 'reused:%s'", reuse)
+        self.assertIn("echo 'owns_result=false'", publisher)
+        self.assertIn("echo 'owns_result=true'", publisher)
+
+    def test_publisher_rechecks_complete_zero_inventory_before_create(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publisher = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        create = publisher.index(
+            'if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs"'
+        )
+        before_create = publisher[:create]
+        after_create = publisher[create:]
+        self.assertIn("total_count == ($inventory | length)", publisher)
+        self.assertIn("map(.id) | unique | length", publisher)
+        self.assertGreaterEqual(before_create.count("read_named_checks"), 4)
+        self.assertIn('owner_snapshot="$(read_named_checks)"', before_create)
+        self.assertIn('named="$(read_named_checks)"', before_create)
+        self.assertIn('test "$(jq -cS . <<<"${named}")" =', before_create)
+        self.assertIn('named="$(read_named_checks)"', after_create)
+        self.assertIn('test "$(jq \'length\' <<<"${named}")" -eq 1', after_create)
+        self.assertIn('test "$(jq -er \'.[0].external_id\'', after_create)
     def test_owner_queued(self):
         owner = self._run(101)
         queued = self._run(102)

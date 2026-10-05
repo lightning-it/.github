@@ -393,6 +393,7 @@ jobs:
       producer_owner: ${{ steps.producer-owner.outputs.owner }}
       producer_owner_mode: ${{ steps.producer-owner.outputs.owner_mode }}
       producer_run_id: ${{ steps.producer-owner.outputs.owner_run_id }}
+      owns_result: ${{ steps.publish-bound-neutral-result.outputs.owns_result }}
       trusted_kind: ${{ steps.trusted-automation.outputs.kind }}
     permissions:
       actions: read
@@ -400,6 +401,10 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+    concurrency:
+      group: >-
+        current-revision-publisher-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.base.sha }}-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -1409,6 +1414,7 @@ jobs:
           bash "${verification_script}"
 
       - name: Publish bound neutral result
+        id: publish-bound-neutral-result
         if: steps.producer-owner.outputs.owner == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1740,22 +1746,136 @@ jobs:
           publish_once() {
             local check_name="$1" external_id="$2" title="$3"
             local checks named count check_id check_url completed_at created
+            local owner_id owner_jobs owner_run owner_snapshot
             local recovered recovery_attempt updated
             read_named_checks() {
               checks="$(api_read --paginate --slurp \
                 "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=$(jq -rn --arg value "${check_name}" '$value|@uri')&filter=all&per_page=100")" || return 1
-              jq -c \
+              jq -ce \
                 --arg name "${check_name}" \
-                '[.[].check_runs[]? |
+                'select(type == "array" and length > 0
+                  and all(.[]; type == "object"
+                    and (.total_count | type == "number" and . >= 0 and floor == .)
+                    and (.check_runs | type == "array"))) |
+                [.[].check_runs[]] as $inventory |
+                select(all(.[]; .total_count == ($inventory | length))
+                  and ($inventory | all(.[]; type == "object"
+                    and (.id | type == "number" and . > 0 and floor == .)
+                    and (.name | type == "string")
+                    and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
+                    and (.status | type == "string")
+                    and has("conclusion")
+                    and (.external_id | type | IN("string", "null"))
+                    and (.details_url | type | IN("string", "null"))
+                    and (.output | type == "object")
+                    and (.output.summary | type | IN("string", "null"))
+                    and (.app | type == "object")
+                    and (.app.id | type == "number" and . > 0 and floor == .)
+                    and (.app.slug | type == "string" and length > 0)))
+                  and ($inventory | map(.id) | unique | length) == ($inventory | length)) |
+                [$inventory[] |
                   select(.name == $name) |
                   select(.app.id == 15368 and .app.slug == "github-actions")]' \
                 <<<"${checks}"
             }
-            named="$(read_named_checks)"
+            reuse_permanent_owner() {
+              owner_snapshot="${named}"
+              owner_id="$(jq -er '.[0].output.summary | fromjson |
+                .producer_run_id | select(type == "number" and . > 0 and floor == .)' \
+                <<<"${named}")" || return 1
+              jq -e --argjson expected "${evidence}" \
+                --argjson owner "${owner_id}" --arg repository "${REPOSITORY}" \
+                --arg server "${GITHUB_SERVER_URL}" '
+                  .[0] as $check | ($check.output.summary | fromjson) as $actual |
+                  $check.head_sha == $expected.head_sha
+                  and $check.status == "completed" and $check.conclusion == "success"
+                  and ($check.id | type == "number" and . > 0 and floor == .)
+                  and $check.details_url == ($server + "/" + $repository + "/runs/" + ($check.id|tostring))
+                  and $check.external_id == ("mlx90-current-revision:copilot:v6:"
+                    + ($expected.pull_request_number|tostring) + ":" + ($owner|tostring)
+                    + ":" + $expected.base_sha + ":" + $expected.head_sha)
+                  and $actual.run_url == ($server + "/" + $repository + "/actions/runs/" + ($owner|tostring))
+                  and ($actual | del(.producer_run_id, .run_url))
+                    == ($expected | del(.producer_run_id, .run_url))
+                ' <<<"${named}" >/dev/null || return 1
+              owner_run="$(api_read "repos/${REPOSITORY}/actions/runs/${owner_id}")" || return $?
+              jq -e --argjson owner "${owner_id}" --argjson pr "${PR_NUMBER}" \
+                --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                --arg base "${EVENT_BASE}" --arg ref "${EVENT_HEAD_REF}" \
+                --arg api "${GITHUB_API_URL}" '
+                  .id == $owner and .run_attempt == 1
+                  and .event == "pull_request_target"
+                  and .path == ".github/workflows/copilot-review.yml"
+                  and .name == "Current revision review gate"
+                  and .repository.full_name == $repository
+                  and .head_repository.full_name == $repository
+                  and .head_sha == $head and .head_branch == $ref
+                  and (.status == "completed" and .conclusion == "success")
+                  and (.pull_requests | type == "array" and length == 1)
+                  and .pull_requests[0].number == $pr
+                  and .pull_requests[0].base.sha == $base
+                  and .pull_requests[0].base.repo.url == ($api + "/repos/" + $repository)
+                  and .pull_requests[0].head.sha == $head
+                  and .pull_requests[0].head.ref == $ref
+                  and .pull_requests[0].head.repo.url == ($api + "/repos/" + $repository)
+                ' <<<"${owner_run}" >/dev/null || return 1
+              owner_jobs="$(api_read --paginate --slurp \
+                "repos/${REPOSITORY}/actions/runs/${owner_id}/attempts/1/jobs?filter=all&per_page=100")" || return $?
+              jq -e --argjson owner "${owner_id}" --arg head "${EVENT_HEAD}" '
+                select(type == "array" and length > 0 and length <= 10
+                  and all(.[]; type == "object"
+                    and (.total_count | type == "number" and . >= 1 and floor == .)
+                    and (.jobs | type == "array"))) |
+                [.[].jobs[]] as $all |
+                select(all(.[]; .total_count == ($all | length))
+                  and ($all | map(.id) | unique | length) == ($all | length)
+                  and ($all | all(.[];
+                    type == "object"
+                    and (.id | type == "number" and . > 0 and floor == .)
+                    and (.name | type == "string" and length > 0)
+                    and .run_id == $owner and .run_attempt == 1
+                    and .head_sha == $head
+                    and .status == "completed"
+                    and (.conclusion | IN("success", "skipped"))
+                    and (.steps | type == "array")
+                    and all(.steps[]?;
+                      type == "object"
+                      and (.name | type == "string" and length > 0)
+                      and .status == "completed"
+                      and (.conclusion | IN("success", "skipped"))))) |
+                [$all[] | select(.name == "Verify current revision policy")] as $jobs |
+                select(($jobs | length) == 1 and ($jobs[0] |
+                  (.runner_id | type == "number" and . > 0 and floor == .)
+                  and .conclusion == "success"
+                  and ([.steps[] | select(.name == "Verify current Copilot review and resolved findings"
+                    or .name == "Publish bound neutral result")] | length == 2
+                    and (map(.name) | unique | length) == 2
+                    and all(.[]; .conclusion == "success"))))
+                ' <<<"${owner_jobs}" >/dev/null || return 1
+              if [ "${TRUSTED_KIND}" = none ]; then
+                test -f "${RUNNER_TEMP}/verify-current-copilot-review.sh" || return 1
+                test ! -L "${RUNNER_TEMP}/verify-current-copilot-review.sh" || return 1
+                bash "${RUNNER_TEMP}/verify-current-copilot-review.sh" >&2 || return 1
+              else
+                return 1
+              fi
+              ro || return 1
+              named="$(read_named_checks)" || return $?
+              test "$(jq -cS . <<<"${named}")" = \
+                "$(jq -cS . <<<"${owner_snapshot}")" || return 1
+              printf 'reused:%s' "$(jq -er '.[0].id' <<<"${named}")"
+            }
+            named="$(read_named_checks)" || return $?
             count="$(jq 'length' <<<"${named}")"
             if [ "${count}" -gt 1 ]; then
               echo "Multiple protected ${check_name} results exist for ${EVENT_HEAD}." >&2
-              exit 1
+              return 1
+            fi
+            if [ "${count}" -eq 1 ] && [ "${external_kind}" = copilot ] \
+              && [ "$(jq -r '.[0].output.summary | fromjson | .producer_run_id' \
+                <<<"${named}")" != "${GITHUB_RUN_ID}" ]; then
+              reuse_permanent_owner
+              return $?
             fi
             if [ "${count}" -eq 1 ]; then
               check_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${named}")"
@@ -1795,9 +1915,35 @@ jobs:
                   and .conclusion == "success"
                   and .output.summary == $evidence
                 ' <<<"${updated}" >/dev/null
+              printf '%s' "${check_id}"
               return
             fi
+            # The exact PR/base/head publisher lane is serialized above. Re-elect
+            # the immutable owner and require two identical complete zero-check
+            # inventories before the only allowed create. A queued loser can
+            # therefore only validate and reuse the permanent owner.
             ro
+            owner_snapshot="$(read_named_checks)" || return $?
+            sleep 2
+            ro
+            named="$(read_named_checks)" || return $?
+            test "$(jq -cS . <<<"${named}")" = \
+              "$(jq -cS . <<<"${owner_snapshot}")" || return 1
+            count="$(jq 'length' <<<"${named}")"
+            if [ "${count}" -gt 1 ]; then
+              echo "Multiple protected ${check_name} results exist for ${EVENT_HEAD}." >&2
+              return 1
+            fi
+            if [ "${count}" -eq 1 ]; then
+              if [ "${external_kind}" = copilot ] \
+                && [ "$(jq -r '.[0].output.summary | fromjson | .producer_run_id' \
+                  <<<"${named}")" != "${GITHUB_RUN_ID}" ]; then
+                reuse_permanent_owner
+                return $?
+              fi
+              echo "Serialized publisher inventory changed before create." >&2
+              return 1
+            fi
             if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
                 -f name="${check_name}" \
                 -f head_sha="${EVENT_HEAD}" \
@@ -1859,12 +2005,24 @@ jobs:
                 and .status == "completed"
                 and .conclusion == "success"
                 and .output.summary == $evidence
-              ' <<<"${created}" >/dev/null
+                ' <<<"${created}" >/dev/null
+            named="$(read_named_checks)" || return $?
+            test "$(jq 'length' <<<"${named}")" -eq 1
+            test "$(jq -er '.[0].id' <<<"${named}")" = "${check_id}"
+            test "$(jq -er '.[0].external_id' <<<"${named}")" = "${external_id}"
+            printf '%s' "${check_id}"
           }
-          publish_once \
+          published_check_id="$(publish_once \
             'Current revision review' \
             "mlx90-current-revision:${external_kind}:v6:${PR_NUMBER}:${GITHUB_RUN_ID}:${EVENT_BASE}:${EVENT_HEAD}" \
-            "${result_title}"
+            "${result_title}")" || exit $?
+          if [[ "${published_check_id}" =~ ^reused:[1-9][0-9]*$ ]]; then
+            echo 'owns_result=false' >>"${GITHUB_OUTPUT}"
+            echo 'Exact review evidence already has a protected producer; ownership retained.'
+            exit 0
+          fi
+          [[ "${published_check_id}" =~ ^[1-9][0-9]*$ ]]
+          echo 'owns_result=true' >>"${GITHUB_OUTPUT}"
 
   request-protected-verifier-reevaluation:
     name: Request protected verifier re-evaluation
@@ -1873,6 +2031,7 @@ jobs:
       always() &&
       needs['verify-current-revision-policy'].result == 'success' &&
       needs['verify-current-revision-policy'].outputs.producer_owner == 'true' &&
+      needs['verify-current-revision-policy'].outputs.owns_result == 'true' &&
       needs['verify-current-revision-policy'].outputs.trusted_kind != 'renovate'
     permissions:
       actions: write
