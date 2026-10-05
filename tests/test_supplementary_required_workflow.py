@@ -4599,6 +4599,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("prior_owner_wrong_app", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "app": {"id": 7, "slug": "other"}}}, False, 1),
             ("prior_owner_wrong_head", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "head_sha": "c" * 40}}, False, 1),
             ("permanent_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}, "retain_snapshot": True}, False, 5),
+            ("null_status", {"snapshot": {**check, "status": None}}, False, 1),
+            ("unknown_status", {"snapshot": {**check, "status": "unknown"}}, False, 1),
+            ("null_title", {"snapshot": {**check, "output": {**check["output"], "title": None}}}, False, 1),
+            ("numeric_summary", {"snapshot": {**check, "output": {**check["output"], "summary": 7}}}, False, 1),
+            ("object_url", {"snapshot": {**check, "details_url": {}}}, False, 1),
+            ("boolean_conclusion", {"snapshot": {**check, "conclusion": False}}, False, 1),
+            ("malformed_retained_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "status": "unknown"}}, False, 1),
+            ("numeric_status", {"snapshot": {**check, "status": 7}}, False, 1),
+            ("array_output", {"snapshot": {**check, "output": []}}, False, 1),
+            ("completed_without_conclusion", {"snapshot": {**check, "status": "completed"}}, False, 1),
+            ("active_with_conclusion", {"snapshot": {**check, "conclusion": "success"}}, False, 1),
+            ("missing_conclusion", {"snapshot": {key: value for key, value in check.items() if key != "conclusion"}}, False, 1),
+            ("missing_url", {"snapshot": {key: value for key, value in check.items() if key != "details_url"}}, False, 1),
+            ("valid_terminal_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "status": "completed", "conclusion": "failure"}}, True, 2),
         )
         for name, changes, accepted, patches in scenarios:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:

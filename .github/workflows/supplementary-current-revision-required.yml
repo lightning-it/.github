@@ -5369,6 +5369,22 @@ jobs:
                     --argjson check_id "${reservation_id}" '
                       .id == $check_id and .head_sha == $head and .name == $name
                       and .app.id == 15368 and .app.slug == "github-actions"
+                      and (.external_id | type) == "string"
+                      and has("details_url")
+                      and (.details_url == null or (.details_url | type) == "string")
+                      and (.output | type) == "object"
+                      and (.output.title | type) == "string"
+                      and (.output.summary | type) == "string"
+                      and has("conclusion")
+                      and (
+                        if .status == "completed" then
+                          (.conclusion | IN("success", "failure", "neutral", "cancelled",
+                            "timed_out", "action_required", "skipped", "stale"))
+                        else
+                          (.status | IN("queued", "in_progress", "waiting", "pending", "requested"))
+                          and .conclusion == null
+                        end
+                      )
                     ' <<<"${reservation_snapshot}" >/dev/null || return 1
                   if jq -e --arg external_id "${reservation_external_id}" \
                     --arg title "${reservation_title}" --arg summary "${reservation_summary}" \
