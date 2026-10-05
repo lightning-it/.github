@@ -4565,6 +4565,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split('          SH\n', 1)[0]
         head, base = "a" * 40, "b" * 40
         external_id = f"rep60-required-workflow:v3:201:225:{base}:{head}"
+        prior_id = f"rep60-required-workflow:v3:200:225:{base}:{head}"
         check = {
             "id": 901, "name": "Protected current-revision verifier",
             "head_sha": head, "external_id": external_id,
@@ -4592,11 +4593,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("stale_readback", {"snapshot": {**check, "details_url": None}}, True, 2),
             ("moving_base", {"live_pr": {**live_pr, "base": {**live_pr["base"], "sha": "c" * 40}}}, False, 0),
             ("closed_pr", {"live_pr": {**live_pr, "state": "closed"}}, False, 0),
+            ("reevaluation", {"reservation_count": 1}, True, 1),
+            ("retained_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}}, True, 2),
+            ("foreign_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": "foreign"}}, False, 1),
+            ("prior_owner_wrong_app", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "app": {"id": 7, "slug": "other"}}}, False, 1),
+            ("prior_owner_wrong_head", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "head_sha": "c" * 40}}, False, 1),
+            ("permanent_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}, "retain_snapshot": True}, False, 5),
         )
         for name, changes, accepted, patches in scenarios:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 fixture = Path(directory)
-                payload = {"response": check, "snapshot": check, "live_pr": live_pr, **changes}
+                expected = copy.deepcopy(check)
+                if changes.get("reservation_count") == 1:
+                    expected["output"]["title"] = "Protected verifier is re-evaluating the live revision"
+                payload = {"response": expected, "snapshot": expected, "live_pr": live_pr, **changes}
                 for key in ("response", "snapshot", "live_pr"):
                     (fixture / f"{key}.json").write_text(json.dumps(payload[key]), encoding="utf-8")
                 script = textwrap.dedent(f"""\
@@ -4608,7 +4618,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     EVENT_HEAD={head}
                     EVENT_BASE={base}
                     reservation_id=901
-                    reservation_count=0
+                    reservation_count={payload.get('reservation_count', 0)}
+                    prior_external_id={payload.get('prior_external_id', external_id)}
                     reservation_name='Protected current-revision verifier'
                     reservation_external_id={external_id}
                     reservation_url=https://github.com/lightning-it/example/runs/901
@@ -4633,7 +4644,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         cat "$RUNNER_TEMP/response.json"; return 0
                       fi
                       [ "$1" = repos/lightning-it/example/check-runs/901 ] || return 92
-                      if [ "$count" -eq 1 ]; then
+                      if [ "$count" -eq 1 ] || [ {int(payload.get('retain_snapshot', False))} -eq 1 ]; then
                         if [ {payload.get('readback_error', 0)} -ne 0 ]; then
                           echo 'gh: Not Found (HTTP {payload.get('readback_error', 0)})' >&2; return 1
                         fi
@@ -4650,7 +4661,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 sleeps = fixture / "sleeps"
                 self.assertEqual(sleeps.read_text().splitlines() if sleeps.exists() else [], ["2"] * max(0, patches - 1))
                 if accepted:
-                    self.assertEqual(json.loads(result.stdout), check)
+                    self.assertEqual(json.loads(result.stdout), expected)
 
     def test_reservation_creation_is_not_retried_or_patched_with_a_foreign_identity(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
