@@ -416,3 +416,27 @@ class RequestOriginRecoveryTests(unittest.TestCase):
                 record['intent'][field] = value
                 data['REQUEST_JOURNAL'] = snapshot(record)
                 self.assertNotEqual(0, self.run_caller(data).returncode)
+
+    def test_actual_required_resume_preserves_complete_terminal_content_policy(self):
+        baseline = self.resume_fixture()
+        review_path = f'repos/{REPO}/pulls/{PR}/reviews/16'
+        for marker in ('Copilot was not able to review this pull request.',
+                       "Copilot wasn't able to review this pull request.",
+                       'Copilot wasn’t able to review this pull request.',
+                       'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST'):
+            for inline in (False, True):
+                with self.subTest(marker=marker, inline=inline):
+                    data = copy.deepcopy(baseline)
+                    if inline:
+                        data['EXTRA_ROUTES'][review_path + '/comments'] = [{'id': 1001, 'body': marker}]
+                    else:
+                        data['EXTRA_ROUTES'][review_path]['body'] = marker
+                    self.assertNotEqual(0, self.run_caller(data).returncode)
+        for body, comments in ((None, []), ({}, []), ('\u2003', []), ('Reviewed.', [None]), ('Reviewed.', [17])):
+            with self.subTest(body=body, comments=comments):
+                data = copy.deepcopy(baseline)
+                data['EXTRA_ROUTES'][review_path]['body'] = body
+                data['EXTRA_ROUTES'][review_path + '/comments'] = [{'id': 1001 + index, 'body': value} for index, value in enumerate(comments)]
+                self.assertNotEqual(0, self.run_caller(data).returncode)
+        result = self.run_caller(baseline)
+        self.assertEqual(0, result.returncode, result.stderr)

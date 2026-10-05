@@ -278,6 +278,54 @@ class ContinuationTests(unittest.TestCase):
                     self.assertNotEqual(0, self.consumer().returncode)
                     self.assertEqual([], self.state['requests'])
 
+    def test_real_consumer_preserves_contractions_singular_marker_and_content_shapes(self):
+        self.assertEqual(0, self.defer().returncode)
+        baseline = copy.deepcopy(self.state)
+        markers = ('Copilot was not able to review this pull request.',
+                   "Copilot wasn't able to review this pull request.",
+                   'Copilot wasn’t able to review this pull request.',
+                   'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
+        for marker in markers:
+            for inline in (False, True):
+                with self.subTest(marker=marker, inline=inline):
+                    self.state = copy.deepcopy(baseline)
+                    if inline:
+                        self.route('/pulls/23/reviews/17/comments').append({'id': 18, 'body': marker})
+                    else:
+                        self.route('/pulls/23/reviews/17')['body'] = marker
+                    result = self.consumer()
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual([], self.state['requests'])
+                    self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
+        for body, comments in (({}, []), (None, []), ('\u2003', []), ('Reviewed.', [None]), ('Reviewed.', [False])):
+            with self.subTest(body=body, comments=comments):
+                self.state = copy.deepcopy(baseline)
+                self.route('/pulls/23/reviews/17')['body'] = body
+                self.route('/pulls/23/reviews/17/comments').extend({'id': 18 + index, 'body': value} for index, value in enumerate(comments))
+                self.assertNotEqual(0, self.consumer().returncode)
+                self.assertEqual([], self.state['requests'])
+        self.state = copy.deepcopy(baseline)
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.state['requests']))
+
+    def test_writer_and_readonly_content_contract_match_canonical_policy(self):
+        import ast
+        names = {'FAILURE_MARKERS', 'ReviewContentError', 'normalize', 'require_usable_review_content'}
+        def definitions(path):
+            result = {}
+            for node in ast.parse(path.read_text()).body:
+                name = node.targets[0].id if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) else getattr(node, 'name', None)
+                if name in names:
+                    result[name] = ast.dump(node, include_attributes=False)
+            self.assertEqual(names, set(result))
+            return result
+        writer = definitions(ROOT / 'scripts/review_request_continuation.py')
+        self.assertEqual(writer, definitions(ROOT / 'scripts/review_request_provenance.py'))
+        canonical = ROOT / 'scripts/review_content_markers.py'
+        if canonical.exists():
+            self.assertEqual(writer, definitions(canonical))
+
     def test_unknown_cas_and_post_and_existing_schema1_never_repeat(self):
         for mode in ('lose_cas', 'lost_cas_response', 'lost_post_response', 'schema1'):
             with self.subTest(mode=mode):
