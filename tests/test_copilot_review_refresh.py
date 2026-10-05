@@ -230,8 +230,10 @@ gh() {
         )[0]
         self.assertIn("outputs.owns_result", workflow)
         self.assertIn("owner_snapshot=", reuse)
-        self.assertIn("attempts/1/jobs?filter=all&per_page=100", reuse)
-        self.assertIn(".run_attempt == 1", reuse)
+        self.assertIn("attempts/${owner_attempt}/jobs?filter=all&per_page=100", reuse)
+        self.assertIn(".run_attempt == $owner_attempt", reuse)
+        self.assertIn(".pull_requests[0].number == $owner_pr", reuse)
+        self.assertIn("$actual.pull_request_number == $owner_pr", reuse)
         self.assertIn(".status == \"completed\" and .conclusion == \"success\"", reuse)
         self.assertIn("(.steps | type == \"array\")", reuse)
         self.assertIn("map(.id) | unique | length", reuse)
@@ -261,6 +263,7 @@ gh() {
         }
         current_evidence = {
             **owner_evidence,
+            "pull_request_number": 780,
             "producer_run_id": current,
             "run_url": f"{server}/{repository}/actions/runs/{current}",
         }
@@ -350,7 +353,7 @@ api_read() {
       printf %s "$((reads + 1))" >"${CHECK_COUNTER}"
       [ "${reads}" -eq 0 ] && printf %s "${CHECKS_FIRST}" || printf %s "${CHECKS_SECOND}"
       ;;
-    */attempts/1/jobs*) printf %s "${OWNER_JOBS}" ;;
+    */attempts/1/jobs*|*/attempts/2/jobs*) printf %s "${OWNER_JOBS}" ;;
     */actions/runs/*) printf %s "${OWNER_RUN}" ;;
     *) return 92 ;;
   esac
@@ -377,7 +380,7 @@ printf %s "${result}"
                     "MUTATION": str(mutation),
                     "OWNER_JOBS": json.dumps(jobs, separators=(",", ":")),
                     "OWNER_RUN": json.dumps(run, separators=(",", ":")),
-                    "PR_NUMBER": "779",
+                    "PR_NUMBER": "780",
                     "REPOSITORY": repository,
                     "RUNNER_TEMP": tmp,
                     "TRUSTED_KIND": "none",
@@ -398,21 +401,51 @@ printf %s "${result}"
         self.assertEqual("owns_result=false\n", ownership)
         self.assertFalse(mutated)
 
+        owner_run_attempt2 = json.loads(json.dumps(owner_run))
+        owner_run_attempt2["run_attempt"] = 2
+        good_jobs_attempt2 = json.loads(json.dumps(good_jobs))
+        for job in good_jobs_attempt2[0]["jobs"]:
+            job["run_attempt"] = 2
+        accepted, ownership, mutated = execute(
+            run=owner_run_attempt2, jobs=good_jobs_attempt2
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertEqual("reused:42", accepted.stdout)
+        self.assertEqual("owns_result=false\n", ownership)
+        self.assertFalse(mutated)
+
         drifted = json.loads(json.dumps(good_pages))
         drifted[0]["check_runs"][0]["output"]["title"] = "drifted"
-        malformed_run = {**owner_run, "run_attempt": 2}
         malformed_jobs = json.loads(json.dumps(good_jobs))
         del malformed_jobs[0]["jobs"][1]["steps"]
+        mismatched_jobs = json.loads(json.dumps(good_jobs))
+        mismatched_jobs[0]["jobs"][1]["run_attempt"] = 2
+        wrong_owner_pr = json.loads(json.dumps(owner_run))
+        wrong_owner_pr["pull_requests"][0]["number"] = 780
+        wrong_external_id = json.loads(json.dumps(good_pages))
+        wrong_external_id[0]["check_runs"][0]["external_id"] = (
+            f"mlx90-current-revision:copilot:v6:780:{owner}:{base}:{head}"
+        )
         bad_title = json.loads(json.dumps(good_pages))
         bad_title[0]["check_runs"][0]["output"]["title"] = "wrong"
         for kwargs in (
             {"second": drifted},
-            {"run": malformed_run},
             {"jobs": malformed_jobs},
+            {"jobs": mismatched_jobs},
+            {"run": wrong_owner_pr},
+            {"first": wrong_external_id, "second": wrong_external_id},
             {"first": bad_title, "second": bad_title},
         ):
             with self.subTest(kwargs=tuple(kwargs)):
                 rejected, ownership, mutated = execute(**kwargs)
+                self.assertNotEqual(0, rejected.returncode)
+                self.assertEqual("", ownership)
+                self.assertFalse(mutated)
+
+        for invalid_attempt in (None, "2", 0, 1.5, 3):
+            malformed_run = {**owner_run, "run_attempt": invalid_attempt}
+            with self.subTest(invalid_attempt=invalid_attempt):
+                rejected, ownership, mutated = execute(run=malformed_run)
                 self.assertNotEqual(0, rejected.returncode)
                 self.assertEqual("", ownership)
                 self.assertFalse(mutated)
