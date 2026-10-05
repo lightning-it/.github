@@ -1009,14 +1009,13 @@ jobs:
           fi
           if ! gh api --method POST "${requested_reviewers_url}" \
               -f "reviewers[]=${reviewer}"; then
-            # Never retry POST in this invocation. In pilot mode the CAS stays
-            # consumed; legacy mode records only a confirmed accepted request.
+            # Pending is PR-scoped and cannot confirm this head's POST.
+            # Read back existing state only; never retry or publish acceptance.
             if reviewer_is_requested; then
-              echo "Uncertain response reconciled from the pending reviewer."
-            else
-              echo "Review request response remains uncertain; no retry sent." >&2
-              exit 1
+              echo "A reviewer is pending; exact-head request acceptance remains unconfirmed." >&2
             fi
+            echo "Review request response remains uncertain; no retry sent." >&2
+            exit 1
           fi
           if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
             # Legacy ordering: an interruption before POST must not leave a

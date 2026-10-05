@@ -95,9 +95,12 @@ elif post and route.endswith('/check-runs'):
 elif route.endswith('/requested_reviewers'):
     if post:
         call['request'] = True
+        if mode == 'rejected-old-pending':
+            call['accepted'] = False
+            s['pending_head'] = 'a' * 40
         rc = 0 if mode == 'confirmed' else 42
     else:
-        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode == 'accepted-unknown' and any(c.get('request') for c in s['calls'])) else []}
+        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode in ('accepted-unknown', 'accepted-unknown-cleared', 'rejected-old-pending') and (mode != 'accepted-unknown-cleared' or worker == '500') and any(c.get('request') for c in s['calls'])) else []}
 elif '/comments' in route:
     if post:
         s.setdefault('comments', []).append({'user': {'login': 'github-actions[bot]'}, 'body': fields['body']})
@@ -317,6 +320,7 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
             workers = [('500', BASE, HEAD), ('501', 'd' * 40, HEAD)]
             if new_head:
                 workers.append(('502', 'd' * 40, 'e' * 40))
+            outcomes = []
             for worker, base, head in workers:
                 env = {**os.environ, 'STATE': str(state), 'MOCK_GH': str(mock), 'RUNNER_TEMP': tmp,
                        'GITHUB_RUN_ID': worker, 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
@@ -328,7 +332,10 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                        'QUOTA_EXHAUSTED_MARKER': 'quota exhausted', 'QUOTA_EXCEEDED_MARKER': 'quota exceeded', 'SUPPRESSED_COMMENTS_MARKER': 'suppressed comments'}
                 result = subprocess.run(['bash', '-c', shell], env=env, capture_output=True, text=True, timeout=30, check=False)
                 self.assertIn(result.returncode, (0, 1, 91), result.stderr)
-            return json.loads(state.read_text())
+                outcomes.append(result.returncode)
+            final = json.loads(state.read_text())
+            final['outcomes'] = outcomes
+            return final
 
     def test_invisible_comment_stale_ref_new_run_and_base_cannot_repeat_request(self):
         for mode in ('consistent', 'stale-ref'):
@@ -352,9 +359,9 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                     self.assertFalse(any(c.get('cas') for c in state['calls']))
 
 
-    def test_legacy_confirmed_and_unknown_accepted_request_precedes_marker_without_cas(self):
+    def test_legacy_confirmed_request_precedes_marker_without_cas(self):
         for repository in ('lightning-it/.github', 'lightning-it/nonpilot'):
-            for mode in ('confirmed', 'accepted-unknown'):
+            for mode in ('confirmed',):
                 with self.subTest(repository=repository, mode=mode):
                     state = self.probe(mode, event_mode='disabled', repository=repository)
                     calls = state['calls']
@@ -390,6 +397,49 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
             else:
                 self.assertEqual([], state.get('comments', []))
                 self.assertFalse(any(c.get('cas') for c in state['calls']))
+
+
+    def test_lost_original_post_response_never_publishes_accepted_marker(self):
+        for flag in ("", "disabled", "enabled"):
+            for new_head in (False, True):
+                with self.subTest(flag=flag, new_head=new_head):
+                    state = self.probe("accepted-unknown", new_head=new_head, event_mode=flag)
+                    self.assertEqual(1, state["outcomes"][0])
+                    self.assertEqual(1, sum(bool(c.get("request")) for c in state["calls"]))
+                    self.assertEqual(int(flag == "enabled"), sum(bool(c.get("cas")) for c in state["calls"]))
+                    comments = state.get("comments", [])
+                    self.assertEqual(int(flag == "enabled"), len(comments))
+                    # Pilot reservation predates POST and proves consumption only.
+                    self.assertTrue(all("request reserved" in item["body"] for item in comments))
+                    for index, call in enumerate(state["calls"]):
+                        if call.get("request"):
+                            self.assertFalse(any(later.get("post") and later["route"].endswith('/comments')
+                                                 for later in state["calls"][index + 1:]))
+
+    def test_lost_original_post_keeps_claim_consumed_after_pending_clears(self):
+        for new_head in (False, True):
+            with self.subTest(new_head=new_head):
+                state = self.probe("accepted-unknown-cleared", new_head=new_head)
+                expected = ["500", "502"] if new_head else ["500"]
+                self.assertEqual(expected, [c["worker"] for c in state["calls"] if c.get("request")])
+                self.assertEqual(len(expected), sum(bool(c.get("cas")) for c in state["calls"]))
+                self.assertTrue(all("request reserved" in item["body"] for item in state.get("comments", [])))
+
+
+    def test_rejected_original_post_then_old_pending_never_accepts_new_head(self):
+        for flag in ("", "disabled", "enabled"):
+            for new_head in (False, True):
+                with self.subTest(flag=flag, new_head=new_head):
+                    state = self.probe("rejected-old-pending", new_head=new_head, event_mode=flag)
+                    attempts = [c for c in state["calls"] if c.get("request")]
+                    self.assertEqual(1, len(attempts))
+                    self.assertIs(False, attempts[0]["accepted"])
+                    self.assertEqual(BASE, state["pending_head"])
+                    self.assertEqual(1, state["outcomes"][0])
+                    self.assertEqual(int(flag == "enabled"), sum(bool(c.get("cas")) for c in state["calls"]))
+                    comments = state.get("comments", [])
+                    self.assertEqual(int(flag == "enabled"), len(comments))
+                    self.assertTrue(all("request reserved" in item["body"] for item in comments))
 
 
 class PilotActivationTests(unittest.TestCase):
