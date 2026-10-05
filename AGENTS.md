@@ -26,13 +26,28 @@
 - Local validation is deterministic only. It must never invoke Codex, GitHub
   Copilot, another model, or an external AI endpoint. Authoritative AI review
   runs only in the protected GitHub pipeline and binds the exact PR head.
-- Lightning IT automation may request and fund one GitHub Copilot review only
-  when the exact PR author is `litroc`, and only at the finalization boundary;
+- By default, Lightning IT automation may request and fund one GitHub Copilot
+  review only when the exact PR author is `litroc`, at the finalization boundary;
   intermediate `synchronize` pushes must not trigger AI review. Any finding
-  requires correction and a final current-head re-review. The request is
-  consumed once per head; unavailable or quota-blocked reviews fail closed
-  without an automatic retry. Organization-funded Codex remediation and its
-  single re-review are likewise restricted to `litroc`.
+  requires correction and a final current-head re-review. An unavailable or
+  quota-blocked review never authorizes an automatic retry. Organization-funded
+  Codex remediation and its single re-review are likewise restricted to `litroc`.
+- The owner-approved LI-216 / LI-219 amendment dated 2026-10-05 is a scoped
+  exception: only `lightning-it/.github`, `lightning-it/shared-assets-lit` and
+  `lightning-it/ansible-collection-supplementary`, with `LI219_EVENT_MODE=enabled`,
+  may request review on `synchronize` for a genuinely new head of a ready,
+  same-repository PR authored and updated by `litroc`. The protected source and
+  actor guards remain mandatory. Consume at most one AI request per repository
+  ID / PR / head through Git CAS before its effect; base drift or a new producer
+  run does not grant another request. Attempt 2 must never request AI review.
+  Keep native Required-Workflow authority and one fully bound event-authorized
+  verifier reevaluation. Non-pilots and disabled/default mode retain the legacy
+  request-then-confirmed-marker ordering and wait paths, without CAS mutation.
+- This exception implements REP-40 page 2878440201 version 12 and REP-60 page
+  2887909377 version 13, amendment added 2026-10-05. Scoped owner-authorized
+  project-rule overrides are permitted for this bounded completion; they do
+  not supersede global policy or authorize bypasses, weaker required checks,
+  additional AI requests, or a global review-size threshold migration.
 - Every other human or external contributor supplies any required current-head
   Copilot review under their own entitlement and cost. Lightning IT verifies
   valid evidence but never requests or funds that review, and personal tokens or

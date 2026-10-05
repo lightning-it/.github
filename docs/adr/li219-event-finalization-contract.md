@@ -14,11 +14,14 @@ only consumes operations under the retained Required-Workflow authority. The his
 platform analysis below remains applicable; its statement that production
 polling is unchanged describes the earlier design-only revision.
 
-The review request job runs only on attempt 1. For a ready, same-repository PR
-authored and updated by `litroc`, `synchronize` may request review of a genuinely
-new head. This explicitly supersedes the older blanket prohibition on
-`synchronize` requests: the protected job records and reads back the durable
-head claim **before** its single request. A consumed claim prevents another
+The review request job runs only on attempt 1. The owner-approved amendment
+added on 2026-10-05 to [REP-40 page 2878440201, version 12][rep40] and
+[REP-60 page 2887909377, version 13][rep60] permits the scoped project-rule
+exception recorded in `AGENTS.md`. Only the exact three enabled pilots below
+may request review on `synchronize` for a genuinely new head of a ready,
+same-repository PR authored and updated by `litroc`. This is not a blanket
+supersession of the default prohibition. In that enabled path the protected job
+records and reads back the durable head CAS claim **before** its single request. A consumed claim prevents another
 request even after an uncertain response. An already-pending, PR-scoped
 reviewer is not relabelled as a new head's request. `edited`, `labeled`, draft
 PRs and attempt 2 cannot request AI review. An unavailable review leaves
@@ -56,7 +59,8 @@ locators. The refresh writer runs exclusively by bot dispatch from the protected
 default branch; the helper runs by bot dispatch from the protected base branch.
 These writer jobs have contents-write. The AI request job is separately bounded
 to the existing protected pull_request_target source and exact litroc actor;
-its static job permission ceiling is contents-write, while content mutation is
+the owner explicitly accepts its static job permission ceiling of contents-write
+under this scoped mandate, while content mutation is
 possible only inside the enabled pilot branch. No PR checkout is executed and
 no token is passed to the data ref or stored in its commits.
 
@@ -73,7 +77,13 @@ A rerun key binds PR, base, head and target run within that repository store.
 The separate AI-request key binds native repository ID, PR and head; base drift
 and a fresh producer run never create a new request entitlement for that head.
 Existing current-head review and PR-scoped pending request remain read-only
-no-ops. Check-run and comment markers are projections, never exclusivity locks.
+no-ops. In enabled pilots, check-run and comment markers are projections, never
+exclusivity locks. Disabled/default mode and non-pilots use no CAS: send the
+legacy request first, then publish its marker only after a successful response
+or confirmed pending reviewer readback. An interrupted pre-request execution
+leaves no marker. An uncertain response without confirmation sends no retry
+and creates no legacy marker; it does not gain the pilot's atomic consumption
+guarantee. A lost marker response uses bounded readback without another POST.
 
 A writer may make **one** `createCommitOnBranch(expectedHeadOid)` attempt against
 the exact snapshot. Only an unambiguous successful response with the expected
@@ -243,3 +253,6 @@ before/after cohorts. No after-rollout measurement exists yet; local simulated
 time must never be reported as a live latency reduction.
 
 [triggers]: https://docs.github.com/en/enterprise-cloud@latest/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#supported-event-triggers
+
+[rep40]: https://wiki.cloud.l-it.io/wiki/spaces/LIT/pages/2878440201
+[rep60]: https://wiki.cloud.l-it.io/wiki/spaces/LIT/pages/2887909377

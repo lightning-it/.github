@@ -500,43 +500,49 @@ jobs:
                 and .head.repo.full_name == $repo and .base.repo.full_name == $repo
               ' <<<"${current}" >/dev/null
           }
+          record_request_marker() {
+            gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -f "body=${claim_body}" >/dev/null || true
+            claim_confirmed=false
+            for observation in 1 2 3; do
+              comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
+              if jq -e --arg marker "${marker}" --arg body "${claim_body}" '
+                [.[][] | select(.user.login == "github-actions[bot]")
+                  | select(.body | contains($marker))]
+                | length == 1 and .[0].body == $body
+                ' <<<"${comments}" >/dev/null; then
+                claim_confirmed=true
+                break
+              fi
+              [ "${observation}" -eq 3 ] || sleep 2
+            done
+            test "${claim_confirmed}" = true
+          }
           revalidate_request_head
+          claim_body="${marker}Copilot review requested for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}."
           if [ "${LI219_EVENT_MODE:-disabled}" = enabled ]; then
             # shellcheck source=/dev/null
             source "${RUNNER_TEMP}/request-operation.sh"
             claim_review_operation "${GITHUB_RUN_ID}" "${EXPECTED_HEAD}" "${EXPECTED_BASE}" "${PR_NUMBER}" request || exit 0
+            claim_body="${marker}Copilot review request reserved for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}. CAS commit ${CLAIM_COMMIT}."
+            record_request_marker
+            revalidate_request_head
           fi
-          claim_body="${marker}Copilot review request reserved for finalized head ${EXPECTED_HEAD}; producer ${GITHUB_RUN_ID}."
-          if [ "${LI219_EVENT_MODE:-disabled}" = enabled ]; then
-            claim_body="${claim_body} CAS commit ${CLAIM_COMMIT}."
-          fi
-          gh api --method POST "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            -f "body=${claim_body}" >/dev/null || true
-          claim_confirmed=false
-          for observation in 1 2 3; do
-            comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100")"
-            if jq -e --arg marker "${marker}" --arg body "${claim_body}" '
-              [.[][] | select(.user.login == "github-actions[bot]")
-                | select(.body | contains($marker))]
-              | length == 1 and .[0].body == $body
-              ' <<<"${comments}" >/dev/null; then
-              claim_confirmed=true
-              break
-            fi
-            [ "${observation}" -eq 3 ] || sleep 2
-          done
-          test "${claim_confirmed}" = true
-          revalidate_request_head
           if ! gh api --method POST "${requested_reviewers_url}" \
               -f "reviewers[]=${reviewer}"; then
-            # Never retry the AI request. The durable claim remains consumed;
-            # subsequent review/completion events can reconcile accepted work.
+            # Never retry POST in this invocation. In pilot mode the CAS stays
+            # consumed; legacy mode records only a confirmed accepted request.
             if reviewer_is_requested; then
               echo "Uncertain response reconciled from the pending reviewer."
             else
-              echo "Review request response remains uncertain; exact-head claim retained." >&2
+              echo "Review request response remains uncertain; no retry sent." >&2
               exit 1
             fi
+          fi
+          if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+            # Legacy ordering: an interruption before POST must not leave a
+            # consumed marker that suppresses the first actual review request.
+            record_request_marker
           fi
 
   verify-current-revision-policy:

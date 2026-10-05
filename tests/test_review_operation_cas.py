@@ -95,15 +95,15 @@ elif post and route.endswith('/check-runs'):
 elif route.endswith('/requested_reviewers'):
     if post:
         call['request'] = True
-        rc = 42
+        rc = 0 if mode == 'confirmed' else 42
     else:
-        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' else []}
+        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode == 'accepted-unknown' and any(c.get('request') for c in s['calls'])) else []}
 elif '/comments' in route:
     if post:
         s.setdefault('comments', []).append({'user': {'login': 'github-actions[bot]'}, 'body': fields['body']})
         rc = 42
     else:
-        result = [[] if worker == '501' else s.get('comments', [])]
+        result = [[] if worker == '501' and mode not in ('confirmed', 'accepted-unknown', 'uncertain') else s.get('comments', [])]
 elif '/reviews?' in route:
     result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'body': 'Review complete.',
                 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}] if mode == 'existing-review' else []]
@@ -228,8 +228,33 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
             self.assertIn("github.actor == 'github-actions[bot]'", job['if'])
 
 
+    def test_request_job_static_write_ceiling_is_protected_and_pilot_mutation_only(self):
+        import yaml
+        source = (ROOT / '.github/workflows/copilot-review.yml').read_text()
+        workflow = yaml.safe_load(source)
+        job = workflow['jobs']['request-current-revision-review']
+        self.assertEqual({'actions': 'read', 'contents': 'write', 'issues': 'write', 'pull-requests': 'write'}, job['permissions'])
+        for guard in ("github.event_name == 'pull_request_target'", "github.actor == 'litroc'",
+                      "github.triggering_actor == 'litroc'", "github.event.pull_request.user.login == 'litroc'",
+                      'github.run_attempt == 1', 'github.event.pull_request.head.repo.full_name == github.repository',
+                      'github.event.pull_request.draft == false'):
+            self.assertIn(guard, job['if'])
+        self.assertFalse(any('uses' in step for step in job['steps']))
+        call = job['steps'][-1]
+        self.assertEqual('${{ github.workflow_sha }}', call['env']['TRUSTED_WORKFLOW_SHA'])
+        self.assertEqual('${{ github.workflow_ref }}', call['env']['TRUSTED_WORKFLOW_REF'])
+        self.assertNotIn('GH_TOKEN', job['steps'][0].get('env', {}))
+        script = call['run']
+        for fragment in ('${REPOSITORY}/.github/workflows/copilot-review.yml@refs/heads/${DEFAULT_BRANCH}',
+                         'compare/${TRUSTED_WORKFLOW_SHA}...${default_head}',
+                         '.merge_base_commit.sha == $controller'):
+            self.assertLess(script.index(fragment), script.index('claim_review_operation '))
+        self.assertIn('if [ "${LI219_EVENT_MODE:-disabled}" = enabled ]; then', script)
+        self.assertLess(script.index('claim_review_operation '), script.index('if ! gh api --method POST'))
+
+
 class ReviewRequestCASTests(unittest.TestCase):
-    def probe(self, mode, new_head=False):
+    def probe(self, mode, new_head=False, event_mode="enabled", interrupt="", repository="lightning-it/.github"):
         import textwrap
         source = (ROOT / '.github/workflows/copilot-review.yml').read_text()
         raw = source.split("<<'CLAIM'\n", 1)[1].split('\n          CLAIM', 1)[0]
@@ -239,7 +264,11 @@ class ReviewRequestCASTests(unittest.TestCase):
         caller = textwrap.dedent('          review_exists_for_head() {\n' + raw)
         shell = """set -euo pipefail
 sleep() { :; }
-gh() { python3 "${MOCK_GH}" "$@"; }
+gh() {
+  if [ "${GITHUB_RUN_ID}" = 500 ] && [[ "$*" == *"--method POST"*requested_reviewers* ]] && [ "${INTERRUPT}" = before_request ]; then exit 91; fi
+  if [ "${GITHUB_RUN_ID}" = 500 ] && [[ "$*" == *"--method POST"*comments* ]] && [ "${INTERRUPT}" = before_marker ]; then exit 91; fi
+  python3 "${MOCK_GH}" "$@"
+}
 timeout() { while [ "$1" != gh ]; do shift; done; "$@"; }
 marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
 """ + caller
@@ -247,7 +276,7 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
             state, mock = Path(tmp) / 'state', Path(tmp) / 'mock.py'
             state.write_text(json.dumps({'mode': mode, 'oid': INITIAL,
                                          'versions': {INITIAL: {}}, 'markers': [], 'calls': []}))
-            mock.write_text(MOCK)
+            mock.write_text(MOCK.replace('lightning-it/.github', repository))
             (Path(tmp) / 'request-operation.sh').write_text(claim)
             workers = [('500', BASE, HEAD), ('501', 'd' * 40, HEAD)]
             if new_head:
@@ -256,13 +285,13 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                 env = {**os.environ, 'STATE': str(state), 'MOCK_GH': str(mock), 'RUNNER_TEMP': tmp,
                        'GITHUB_RUN_ID': worker, 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
                        'GITHUB_REF_PROTECTED': 'true', 'GITHUB_REF': 'refs/heads/develop',
-                       'WORKFLOW_SHA': SOURCE, 'GITHUB_REPOSITORY_ID': '1112629689', 'LI219_EVENT_MODE': 'enabled',
-                       'REPOSITORY': 'lightning-it/.github', 'PR_NUMBER': '23', 'EXPECTED_HEAD': head, 'EXPECTED_BASE': base,
-                       'reviewer': 'copilot-pull-request-reviewer[bot]', 'requested_reviewers_url': 'repos/lightning-it/.github/pulls/23/requested_reviewers',
+                       'WORKFLOW_SHA': SOURCE, 'GITHUB_REPOSITORY_ID': '1112629689', 'LI219_EVENT_MODE': event_mode, 'INTERRUPT': interrupt,
+                       'REPOSITORY': repository, 'PR_NUMBER': '23', 'EXPECTED_HEAD': head, 'EXPECTED_BASE': base,
+                       'reviewer': 'copilot-pull-request-reviewer[bot]', 'requested_reviewers_url': f'repos/{repository}/pulls/23/requested_reviewers',
                        'UNABLE_REVIEW_MARKER': 'unable to review this pull request', 'NO_FILES_REVIEW_MARKER': 'was not able to review any files',
                        'QUOTA_EXHAUSTED_MARKER': 'quota exhausted', 'QUOTA_EXCEEDED_MARKER': 'quota exceeded', 'SUPPRESSED_COMMENTS_MARKER': 'suppressed comments'}
                 result = subprocess.run(['bash', '-c', shell], env=env, capture_output=True, text=True, timeout=30, check=False)
-                self.assertIn(result.returncode, (0, 1), result.stderr)
+                self.assertIn(result.returncode, (0, 1, 91), result.stderr)
             return json.loads(state.read_text())
 
     def test_invisible_comment_stale_ref_new_run_and_base_cannot_repeat_request(self):
@@ -285,6 +314,46 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                 self.assertFalse(any(c.get('request') for c in state['calls']))
                 if mode in ('existing-review', 'pending-review'):
                     self.assertFalse(any(c.get('cas') for c in state['calls']))
+
+
+    def test_legacy_confirmed_and_unknown_accepted_request_precedes_marker_without_cas(self):
+        for repository in ('lightning-it/.github', 'lightning-it/nonpilot'):
+            for mode in ('confirmed', 'accepted-unknown'):
+                with self.subTest(repository=repository, mode=mode):
+                    state = self.probe(mode, event_mode='disabled', repository=repository)
+                    calls = state['calls']
+                    self.assertFalse(any(c.get('cas') for c in calls))
+                    effects = [c for c in calls if c.get('post')]
+                    self.assertEqual(2, len(effects))
+                    self.assertTrue(effects[0].get('request'))
+                    self.assertTrue(effects[1]['route'].endswith('/comments'))
+                    self.assertEqual(1, len(state['comments']))
+
+    def test_interrupted_legacy_pre_request_does_not_consume_marker_but_pilot_cas_does(self):
+        for event_mode, expected_workers in (('disabled', ['501']), ('enabled', [])):
+            with self.subTest(event_mode=event_mode):
+                state = self.probe('confirmed', event_mode=event_mode, interrupt='before_request')
+                self.assertEqual(expected_workers, [c['worker'] for c in state['calls'] if c.get('request')])
+                self.assertEqual(event_mode == 'enabled', any(c.get('cas') for c in state['calls']))
+                first_posts = [c for c in state['calls'] if c['worker'] == '500' and c.get('post')]
+                self.assertEqual(0 if event_mode == 'disabled' else 1, len(first_posts))
+
+    def test_interruption_before_marker_preserves_legacy_request_and_pilot_consumption(self):
+        for event_mode, expected_workers in (('disabled', ['500']), ('enabled', [])):
+            state = self.probe('accepted-unknown', event_mode=event_mode, interrupt='before_marker')
+            self.assertEqual(expected_workers, [c['worker'] for c in state['calls'] if c.get('request')])
+            self.assertEqual([], state.get('comments', []))
+
+    def test_unknown_unconfirmed_response_has_no_same_invocation_retry_in_either_mode(self):
+        for event_mode in ('disabled', 'enabled'):
+            state = self.probe('uncertain', event_mode=event_mode)
+            requests = [c for c in state['calls'] if c.get('request')]
+            self.assertTrue(all(sum(c['worker'] == worker for c in requests) <= 1 for worker in ('500', '501')))
+            if event_mode == 'enabled':
+                self.assertEqual(1, len(requests))
+            else:
+                self.assertEqual([], state.get('comments', []))
+                self.assertFalse(any(c.get('cas') for c in state['calls']))
 
 
 class PilotActivationTests(unittest.TestCase):
@@ -340,3 +409,62 @@ class PilotActivationTests(unittest.TestCase):
                                         capture_output=True, text=True, check=False,
                                         env={**os.environ, 'LI219_EVENT_MODE': mode})
                 self.assertEqual(str(expected), result.stdout)
+
+
+class RequestSourceAndPolicyTests(unittest.TestCase):
+    def test_actual_request_source_prefix_rejects_untrusted_bindings(self):
+        import textwrap
+        import yaml
+        job = yaml.safe_load((ROOT / '.github/workflows/copilot-review.yml').read_text())['jobs']['request-current-revision-review']
+        script = job['steps'][-1]['run'].split('reviewer_login=', 1)[0]
+        run = {'event': 'pull_request_target', 'name': 'Current revision review gate',
+               'path': '.github/workflows/copilot-review.yml', 'head_branch': 'fix/final', 'head_sha': HEAD,
+               'repository': {'full_name': 'lightning-it/.github'}, 'head_repository': {'full_name': 'lightning-it/.github'}}
+        pr = {'state': 'open', 'draft': False, 'user': {'login': 'litroc'},
+              'base': {'ref': 'develop', 'sha': BASE, 'repo': {'full_name': 'lightning-it/.github'}},
+              'head': {'sha': HEAD, 'repo': {'full_name': 'lightning-it/.github'}}}
+        shell = r'''gh() {
+  case "$*" in
+    *'/branches/develop'*) printf %s "${WORKFLOW_SHA}" ;;
+    *'/compare/'*) printf %s "${ANCESTRY}" ;;
+    *'/actions/runs/'*) printf %s "${RUN}" ;;
+    *'/pulls/23') printf %s "${PR}" ;;
+    *) exit 99 ;;
+  esac
+}
+''' + textwrap.dedent(script) + '\nprintf AUTHORIZED\n'
+        cases = [({}, True), ({'TRUSTED_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review.yml@refs/pull/23/merge'}, False),
+                 ({'DEFAULT_BRANCH': 'main'}, False), ({'TRUSTED_WORKFLOW_SHA': 'malformed'}, False),
+                 ({'ANCESTRY': json.dumps({'status': 'behind'})}, False)]
+        for field, value in (('event', 'pull_request'), ('path', '.github/workflows/foreign.yml'),
+                             ('head_sha', BASE), ('repository', {'full_name': 'mallory/foreign'}),
+                             ('head_repository', {'full_name': 'mallory/fork'})):
+            cases.append(({'RUN': json.dumps({**run, field: value})}, False))
+        for field, value in (('state', 'closed'), ('draft', True), ('user', {'login': 'mallory'}),
+                             ('head', {'sha': BASE, 'repo': {'full_name': 'lightning-it/.github'}})):
+            cases.append(({'PR': json.dumps({**pr, field: value})}, False))
+        for changes, accepted in cases:
+            result = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, check=False,
+                env={**os.environ, 'EXPECTED_BASE': BASE, 'EXPECTED_HEAD': HEAD, 'EXPECTED_HEAD_REF': 'fix/final',
+                     'TRUSTED_WORKFLOW_SHA': SOURCE, 'WORKFLOW_SHA': SOURCE, 'DEFAULT_BRANCH': 'develop',
+                     'TRUSTED_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review.yml@refs/heads/develop',
+                     'GITHUB_RUN_ID': '500', 'REPOSITORY': 'lightning-it/.github', 'PR_NUMBER': '23',
+                     'ANCESTRY': json.dumps({'status': 'identical'}), 'RUN': json.dumps(run), 'PR': json.dumps(pr), **changes})
+            self.assertEqual(accepted, result.returncode == 0 and result.stdout.endswith('AUTHORIZED'), result.stderr)
+
+    def test_canonical_amendment_and_instruction_hash_are_scoped_and_bound(self):
+        import hashlib
+        agents = (ROOT / 'AGENTS.md').read_bytes()
+        policy = agents.decode()
+        instructions = (ROOT / '.github/copilot-instructions.md').read_text()
+        adr = (ROOT / 'docs/adr/li219-event-finalization-contract.md').read_text()
+        self.assertIn('AGENTS_SHA256: ' + hashlib.sha256(agents).hexdigest(), instructions)
+        for text in ('2878440201', '2887909377', '2026-10-05', 'LI219_EVENT_MODE=enabled',
+                     'lightning-it/.github', 'lightning-it/shared-assets-lit', 'lightning-it/ansible-collection-supplementary',
+                     'Attempt 2 must never request AI review', 'Non-pilots and disabled/default mode retain the legacy'):
+            self.assertIn(text, policy)
+        self.assertIn('version 12', policy)
+        self.assertIn('version 13', policy)
+        self.assertIn('intermediate `synchronize` pushes must not trigger AI review', policy)
+        self.assertNotIn('explicitly supersedes the older blanket prohibition', adr)
+        self.assertIn('only after a successful response', adr)

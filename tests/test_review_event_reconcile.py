@@ -205,7 +205,7 @@ gh() {
         self.assertNotIn("seq 1 40", verifier)
         self.assertNotIn("seq 1 20", verifier)
 
-    def test_new_head_requests_once_and_lost_response_cannot_repeat_same_head(self):
+    def test_legacy_confirmed_request_records_marker_once_per_head(self):
         workflow = (ROOT / ".github/workflows/copilot-review.yml").read_text()
         fragment = workflow.split('          reviewer_is_requested() {\n', 1)[1].split('\n  verify-current-revision-policy:', 1)[0]
         fragment = textwrap.dedent('          reviewer_is_requested() {\n' + fragment)
@@ -217,7 +217,7 @@ gh() {
   if [[ " $* " == *" --method POST "* ]]; then
     if [[ "$*" == *requested_reviewers* ]]; then
       printf '%s\n' "${EXPECTED_HEAD}" >>"${REQUESTS}"
-      return 42
+      return 0
     fi
     jq -c --arg body "${body}" '.[0]+=[{user:{login:"github-actions[bot]"},body:$body}]' "${COMMENTS}" >"${COMMENTS}.next"
     mv "${COMMENTS}.next" "${COMMENTS}"
