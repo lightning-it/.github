@@ -1230,6 +1230,47 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # Exercise the actual promotion evidence reader, including inline text.
+        positives = ('Copilot was able to review this pull request.', 'able to review this pull request',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                     "Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     "Copilot isn't able to review any files.",
+                     "Copilot isn’t able to review any files.",
+                     "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                     "The bots aren't able to review any files.",
+                     "The bots weren’t able to review any files.",
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, usable in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    review = valid_review if inline else valid_review | {'body': valid_review['body'] + '\n' + text}
+                    extra = {'review_comment': {'id': 18001, 'body': text}} if inline else {}
+                    with self.subTest(text=text, inline=inline), mock.patch.object(
+                        MODULE, 'gh_json', side_effect=evidence_api(run, review=review, **extra)
+                    ):
+                        def verify():
+                            return MODULE.bound_review_check(
+                                [{'check_runs': [check]}], repository='lightning-it/example',
+                                pull=ingress_pull(), pull_number=17, base_sha=BASE, head_sha=HEAD)
+                        if usable:
+                            self.assertEqual(88, verify()['producer_run_id'])
+                        else:
+                            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                                verify()
+
         for marker in (
             "Unable to review this pull request",
             "No files to review",
@@ -2141,6 +2182,29 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
         self.assertEqual(88, evidence["producer_run_id"])
+
+        # Real native helper name, projected onto this fixture's bound run.
+        native = json.loads((ROOT / "tests/fixtures/native-inactive-producer-job.json").read_text())
+        native.update(id=6, run_id=88, head_sha=HEAD,
+                      run_url="https://api.github.com/repos/lightning-it/example/actions/runs/88")
+        for changes, accepted in (({}, True), ({"runner_id": 7}, False),
+                                  ({"steps": [{"name": "effect"}]}, False),
+                                  ({"run_attempt": 2}, False), ({"head_sha": BASE}, False),
+                                  ({"workflow_name": "unknown"}, False),
+                                  ({"name": native["name"] + " unexpected"}, False)):
+            with self.subTest(native_helper=changes), mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run, jobs=[*exact_jobs, {**native, **changes}])
+            ):
+                def verify():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example", pull=ingress_pull(),
+                        pull_number=17, base_sha=BASE, head_sha=HEAD)
+                if accepted:
+                    self.assertEqual(88, verify()["producer_run_id"])
+                else:
+                    with self.assertRaises(MODULE.EvidenceError):
+                        verify()
 
         # The successful policy job can publish its bound check before the
         # job itself reaches its terminal success, and the protected handoff

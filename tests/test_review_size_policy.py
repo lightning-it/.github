@@ -34,48 +34,65 @@ class ReviewSizePolicyTests(unittest.TestCase):
                 threshold(review)
 
     def planned(self, size, review, untracked=None, tracked=None):
-        patch = tracked if tracked is not None else '+' + 'x' * (size - 1)
+        payload = tracked if tracked is not None else "+" + "x" * (size - 1)
+
         def git(*args):
-            if args[0] == 'rev-parse':
-                return 'a' * 40
-            if '--name-only' in args:
-                return 'ordinary.txt\0'
-            return patch
+            if args[0] == "rev-parse":
+                return "a" * 40
+            if "--name-only" in args:
+                return "ordinary.txt\0"
+            self.fail(f"Unexpected buffered Git call: {args}")
+
+        def decoded(*args, **kwargs):
+            self.assertEqual("diff", args[0])
+            self.assertEqual("strict", kwargs["errors"])
+            self.assertFalse(kwargs["universal_newlines"])
+            for offset in range(0, len(payload), 16384):
+                yield payload[offset:offset + 16384]
+
         overrides = {
-            'git_output': git, 'tree_fingerprint': lambda: 'f' * 64,
-            'resolve_base': lambda *a, **kw: ('refs/remotes/origin/develop', 'b' * 40, 'b' * 40),
-            'untracked_names': lambda: ['new.txt'] if untracked is not None else [],
-            'read_repository_file': mock.Mock(return_value=(untracked, 0o100644)),
-            'ensure_review_safe': mock.Mock(), 'secret_fixture_manifest_for_change': lambda *a, **kw: {},
+            "git_output": git,
+            "decoded_git_chunks": decoded,
+            "tree_fingerprint": lambda: "f" * 64,
+            "resolve_base": lambda *a, **kw: ("refs/remotes/origin/develop", "b" * 40, "b" * 40),
+            "untracked_names": lambda: ["new.txt"] if untracked is not None else [],
+            "ensure_review_safe": mock.Mock(),
+            "secret_fixture_manifest_for_change": lambda *a, **kw: {},
         }
         stream = io.StringIO()
-        with mock.patch.dict(self.g, overrides), redirect_stderr(stream):
-            change = self.ns['planned_change']({'review': review})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            if untracked is not None:
+                (root / "new.txt").write_bytes(untracked)
+            overrides["ROOT"] = root
+            with mock.patch.dict(self.g, overrides), redirect_stderr(stream):
+                change = self.ns["planned_change"]({"review": review})
+        self.addCleanup(change.patch.close)
         return change, stream.getvalue(), overrides
 
     def test_complete_patch_warning_boundaries_do_not_truncate_or_enforce_old_ceiling(self):
         for size in (199999, 200000, 499999, 500000, 500001, 5_000_001):
             with self.subTest(size=size):
-                change, warning, _ = self.planned(size, {'max_diff_bytes': 200000})
-                self.assertEqual(size, len(change.diff.encode()))
-                self.assertEqual(size >= 500000, 'Planning notice:' in warning)
+                change, warning, _ = self.planned(size, {"max_diff_bytes": 200000})
+                self.assertEqual(size, change.patch.size)
+                self.assertEqual(b"+" + b"x" * (size - 1), b"".join(change.patch.chunks()))
+                self.assertEqual(size >= 500000, "Planning notice:" in warning)
                 if warning:
-                    self.assertIn('all deterministic checks still run', warning)
-                    self.assertIn('No automatic PR splitting', warning)
-        _, warning, _ = self.planned(500001, {'warn_diff_bytes': None})
-        self.assertEqual('', warning)
+                    self.assertIn("all deterministic checks still run", warning)
+                    self.assertIn("No automatic PR splitting", warning)
+        _, warning, _ = self.planned(500001, {"warn_diff_bytes": None})
+        self.assertEqual("", warning)
 
-    def test_untracked_content_uses_fingerprint_resource_budget_not_review_size(self):
-        change, warning, overrides = self.planned(500001, {'max_diff_bytes': 1}, untracked=b'new content\n')
-        self.assertIn('+new content\n', change.diff)
-        self.assertIn('new.txt', change.untracked_sha256)
-        overrides['read_repository_file'].assert_called_once_with(
-            'new.txt', purpose='Untracked fingerprint', max_bytes=100_000_000)
-        self.assertIn('Planning notice:', warning)
-        with self.assertRaisesRegex(RuntimeError, 'binary content'):
-            self.planned(0, {}, tracked='GIT binary patch\n')
-        with self.assertRaisesRegex(RuntimeError, 'binary untracked'):
-            self.planned(1, {}, untracked=b'\0')
+    def test_untracked_content_streams_complete_bytes_without_review_size_gate(self):
+        import hashlib
+        change, warning, _ = self.planned(500001, {"max_diff_bytes": 1}, untracked=b"new content\n")
+        self.assertIn("+new content\n", change.patch)
+        self.assertEqual(hashlib.sha256(b"new content\n").hexdigest(), change.untracked_sha256["new.txt"])
+        self.assertIn("Planning notice:", warning)
+        with self.assertRaisesRegex(RuntimeError, "binary content"):
+            self.planned(0, {}, tracked="GIT binary patch\n")
+        with self.assertRaisesRegex(RuntimeError, "binary untracked"):
+            self.planned(1, {}, untracked=b"\0")
 
     def test_safe_file_reader_still_rejects_overflow_and_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -101,11 +118,12 @@ class ReviewSizePolicyTests(unittest.TestCase):
         self.assertEqual(barrier['if'], action['if'])
         self.assertNotIn('continue-on-error', barrier)
         self.assertNotIn('always()', action['if'])
-        result = subprocess.run(['bash', '-eu', '-c', barrier['run']], capture_output=True, text=True, check=False)
+        result = subprocess.run(['bash', '-eu', '-c', barrier['run']], capture_output=True, text=True, check=False,
+                                env={**os.environ, 'BUDGETED_GATEWAY_INSTALLED': ''})
         self.assertEqual(1, result.returncode)
         self.assertIn('complete-request token budget is not bound', result.stderr)
         self.assertIn('schema:4,', (ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())
-        self.assertIn('"schema_version": 5', (ROOT / 'scripts/materialize-exact-revision-review.py').read_text())
+        self.assertIn('"schema_version": 7 if single_mode(arguments) else 5', (ROOT / 'scripts/materialize-exact-revision-review.py').read_text())
 
     def test_required_accepts_bound_reuse_with_skipped_guard_but_rejects_failed_new_call(self):
         source = (ROOT / '.github/workflows/supplementary-current-revision-required.yml').read_text()
@@ -175,7 +193,10 @@ class ReviewSizePolicyTests(unittest.TestCase):
                     result = self.ns['main']()
                 self.assertEqual(0 if code == 0 else 1, result, stream.getvalue())
                 self.assertEqual('lint\ntests\nbuild\n', record.read_text())
-                self.assertIn('Planning notice:', stream.getvalue())
+                # Successful validation materializes the full patch after the
+                # profile. A failed profile still runs completely but does not
+                # require a diff or issue its optional size advisory.
+                self.assertEqual(code == 0, 'Planning notice:' in stream.getvalue())
                 self.assertEqual('', git('status', '--porcelain'))
                 self.assertEqual(1, len(git('for-each-ref', '--format=%(refname)', 'refs/heads').splitlines()))
             self.assertEqual({'warn_diff_bytes': 500000}, config['review'])

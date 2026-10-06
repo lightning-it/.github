@@ -1478,14 +1478,15 @@ jobs:
                 | select(all(.[]; type == "array"))
                 | [$review.body, .[][].body]
                 | select(all(.[]; type == "string" or . == null))
-                | map((. // "") | ascii_downcase | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; ""))
+                | map((. // "") | ascii_downcase | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; ""))
                 ' <<<"${comments}")" || return 1
               if jq -e '
                 any(.[]; length > 0) and all(.[];
                   (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
+                   or contains("notabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
-                   or contains("suppressedcomments") or contains("nofilestoreview")
-                   or contains("abletoreviewanyfiles") or contains("premiumrequestquota")
+                   or contains("suppressedcomments") or contains("nofilestoreview") or contains("nofileswerereviewed")
+                   or contains("notabletoreviewanyfiles") or contains("unabletoreviewanyfiles") or contains("premiumrequestquota")
                    or contains("premiumrequestsquota") or contains("encounteredanerror")) | not)
                 ' <<<"${texts}" >/dev/null; then return 0; fi
             done < <(jq -r '.[].id' <<<"${candidates}")

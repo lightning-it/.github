@@ -948,6 +948,77 @@ va() {
         start = workflow.index(marker) + len(marker)
         end = workflow.index("\n          VERIFY_COPILOT_REVIEW", start)
         return textwrap.dedent(workflow[start:end])
+    def test_any_files_negation_in_actual_policy_and_refresh_callers(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index('          review_comments_clean() {\n')
+        end = workflow.index('\n          }\n', start) + len('\n          }\n')
+        policy = textwrap.dedent(workflow[start:end])
+        start = workflow.index('          review_exists_for_head() {\n')
+        end = workflow.index('\n          }\n', start) + len('\n          }\n')
+        request_dedupe = textwrap.dedent(workflow[start:end])
+        positives = ('Copilot was able to review this pull request.', 'able to review this pull request',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                     "Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     "Copilot isn't able to review any files.",
+                     "Copilot isn’t able to review any files.",
+                     "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                     "The bots aren't able to review any files.",
+                     "The bots weren’t able to review any files.",
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, usable in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    review = {'id': 17, 'commit_id': 'b' * 40, 'state': 'COMMENTED',
+                              'user': {'login': 'copilot-pull-request-reviewer[bot]'},
+                              'body': 'Review complete.' if inline else text}
+                    comments = [{'body': text}] if inline else []
+                    graphql = {'data': {'node': {'body': review['body'],
+                        'commit': {'oid': 'b' * 40}, 'pullRequest': {'headRefOid': 'b' * 40},
+                        'comments': {'nodes': comments, 'pageInfo': {'hasNextPage': False}}}}}
+                    env = {'PATH': TEST_TOOL_PATH, 'HEAD_SHA': 'b' * 40,
+                           'EXPECTED_HEAD': 'b' * 40, 'reviewer': 'copilot-pull-request-reviewer[bot]',
+                           'REPOSITORY': 'lightning-it/.github', 'PR_NUMBER': '23',
+                           'current_external_kind': 'copilot', 'REVIEW': json.dumps(review),
+                           'COMMENTS': json.dumps([comments]), 'PAGE': json.dumps(graphql),
+                           'review_comments_query': 'transport fixture',
+                           'UNABLE_REVIEW_MARKER': 'unable to review this pull request',
+                           'NO_FILES_REVIEW_MARKER': 'was not able to review any files',
+                           'QUOTA_EXHAUSTED_MARKER': 'quota exhausted',
+                           'QUOTA_EXCEEDED_MARKER': 'quota exceeded',
+                           'SUPPRESSED_COMMENTS_MARKER': 'suppressed comments'}
+                    shell = r'''set -euo pipefail
+graphql() { printf '%s' "${PAGE}"; }
+gh() { oa "$@"; }
+oa() {
+  case "${*: -1}" in
+    */reviews?per_page=100) printf '[[%s]]' "${REVIEW}";;
+    */reviews/17) printf '%s' "${REVIEW}";;
+    */reviews/17/comments?per_page=100) printf '%s' "${COMMENTS}";;
+    *) return 91;;
+  esac
+}
+'''
+                    for name, runtime in (
+                        ('policy', policy + '\nreview_comments_clean 17 "${HEAD_SHA}"\n'),
+                        ('refresh', self._rfn('usable_current_review') + '\nusable_current_review\n')) + (
+                            (('request dedupe', request_dedupe + '\nreview_exists_for_head\n'),) if not inline else ()):
+                        with self.subTest(text=text, inline=inline, caller=name):
+                            result = self._run_bash(shell + runtime, env)
+                            self.assertEqual(0 if usable or name == "request dedupe" else 1, result.returncode, result.stderr)
+
     def test_successor_head(self):
         bhead = "b" * 40
         def evaluate(lhead):
