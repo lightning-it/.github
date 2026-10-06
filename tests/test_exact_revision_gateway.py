@@ -381,6 +381,51 @@ class SingleReviewGatewayTests(unittest.TestCase):
             self.assertIn('endpoint=http://127.0.0.1:42555/responses', output.read_text())
             self.assertIn('installed=true', output.read_text())
 
+    def test_actual_collection_shell_preserves_pinned_runtime_uid_and_readonly_inputs(self):
+        import re
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())
+        steps = workflow['jobs']['exact-revision-codex-review']['steps']
+        shell = next(step['run'] for step in steps if step.get('id') == 'bounded-collect')
+        workspace = Path(self.temporary.name) / 'collection-workspace'
+        review_directory = workspace / 'exact-revision-review'
+        review_directory.mkdir(parents=True)
+        result_file = review_directory / 'result.json'
+        result_file.write_text('Untrusted action output')
+        binary = workspace / 'bin'
+        binary.mkdir()
+        calls = workspace / 'docker-args.json'
+        (binary / 'docker').write_text(
+            '#!/usr/bin/env python3\nimport json, os, sys\n'
+            'from pathlib import Path\nPath(os.environ["CALLS"]).write_text(json.dumps(sys.argv[1:]))\n'
+        )
+        (binary / 'docker').chmod(0o755)
+        result = subprocess.run(['bash', '-c', shell], text=True, capture_output=True, check=False,
+                                env={**os.environ, 'PATH': str(binary) + os.pathsep + os.environ['PATH'],
+                                     'BOUNDED_MODE': 'single', 'GITHUB_RUN_ID': '42',
+                                     'GITHUB_WORKSPACE': str(workspace), 'CALLS': str(calls)})
+        self.assertEqual(0, result.returncode, result.stderr)
+        args = json.loads(calls.read_text())
+        engine = (ROOT / 'scripts/lit-push-ready.py').read_text()
+        image = re.search(r'quay\.io/l-it/ee-wunder-devtools-ubi9:[^"\s]+@sha256:[0-9a-f]{64}', engine).group()
+        self.assertIn(image, args)
+        self.assertEqual(f'{os.getuid()}:{os.getgid()}', args[args.index('--user') + 1])
+        self.assertEqual('none', args[args.index('--network') + 1])
+        self.assertIn('--read-only', args)
+        self.assertEqual('ALL', args[args.index('--cap-drop') + 1])
+        self.assertEqual('no-new-privileges', args[args.index('--security-opt') + 1])
+        self.assertEqual([
+            'type=bind,src=/run/exact-review-42,dst=/run/exact-review-42,readonly',
+            f'type=bind,src={review_directory},dst=/review,readonly',
+            f'type=bind,src={result_file},dst=/review/result.json',
+        ], [args[i + 1] for i, value in enumerate(args) if value == '--mount'])
+        self.assertEqual(['-B', '-E', '-s', '/run/exact-review-42/code/exact_revision_gateway.py',
+                          'collect', '--run-id', '42', '--review-directory', '/review'],
+                         args[args.index(image) + 1:])
+        self.assertEqual('', result_file.read_text())
+        self.assertEqual(0o600, result_file.stat().st_mode & 0o777)
+
     def test_actual_fleet_copy_blocks_install_complete_closure(self):
         workflows = ('sync-ee-containers.yml', 'sync-ansible-collections.yml',
                      'sync-ansible-inventories.yml', 'sync-playbook-runbook-repos.yml')

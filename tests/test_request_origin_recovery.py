@@ -678,8 +678,9 @@ os.execvp(command[0], command)
     def test_selected_clean_review_between_step_start_and_request_is_historically_valid(self):
         for helper in ('review_request_continuation.py', 'review_request_provenance.py'):
             (self.root / 'review_request_continuation.py').write_bytes((ROOT / 'scripts' / helper).read_bytes())
-            for seconds, accepted in (('35', True), ('41', False)):
+            for seconds, accepted, login in (('35', True, 'copilot-pull-request-reviewer[bot]'), ('35', True, 'copilot-pull-request-reviewer'), ('41', False, 'copilot-pull-request-reviewer')):
                 data = self.resume_fixture()
                 data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']['submitted_at'] = '2026-10-05T17:59:' + seconds + 'Z'
+                data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']['user']['login'] = login
                 result = self.run_caller(data)
                 self.assertEqual(accepted, result.returncode == 0, result.stderr)

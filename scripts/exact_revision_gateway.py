@@ -453,7 +453,9 @@ def protected_instructions(metadata: dict[str, Any]) -> dict[str, Any]:
     by_path = {item["path"]: item for item in files}
     expected_marker = f"<!-- AGENTS_SHA256: {by_path['AGENTS.md']['sha256']} -->"
     marker_lines = [
-        line for line in by_path[".github/copilot-instructions.md"]["content"].splitlines() if "AGENTS_SHA256" in line
+        line
+        for line in by_path[".github/copilot-instructions.md"]["content"].splitlines()
+        if re.search(r"<!--.*\bAGENTS_SHA256\b|^\s*AGENTS_SHA256\b|\bAGENTS_SHA256\s*[:=]", line)
     ]
     review.require(marker_lines == [expected_marker], "single-instructions-agents-marker")
     return bundle

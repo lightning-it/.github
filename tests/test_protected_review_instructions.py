@@ -47,15 +47,13 @@ class GitPolicies:
         subprocess.run(["git", "init", "--bare", "--quiet", str(self.directory)], check=True, env=self.environment)
         self.module = materializer()
         self.files = {
-            "AGENTS.md": "Protected root policy: do not split or truncate; verify vollständige Änderung.\n",
-            ".github/copilot-instructions.md": "Follow protected AGENTS.md and retain review authority.\n",
+            "AGENTS.md": (ROOT / "AGENTS.md").read_text(),
+            ".github/copilot-instructions.md": (ROOT / ".github/copilot-instructions.md").read_text(),
             "src/AGENTS.md": "Scoped src policy: inspect every changed call.\n",
             ".github/instructions/python.instructions.md": '---\napplyTo: "**/*.py"\n---\nProtected Python review policy.\n',
             "docs/untrusted.txt": "Not a governing instruction file.\n",
         }
-        self.files[".github/copilot-instructions.md"] += (
-            f"<!-- AGENTS_SHA256: {hashlib.sha256(self.files['AGENTS.md'].encode()).hexdigest()} -->\n"
-        )
+
 
     def git(self, *arguments, data=None):
         return subprocess.run(
@@ -80,12 +78,13 @@ class GitPolicies:
 
 def invalid_policy_markers(files):
     copilot = files[".github/copilot-instructions.md"]
-    marker = next(line for line in copilot.splitlines() if "AGENTS_SHA256" in line)
+    marker = next(line for line in copilot.splitlines() if line.startswith("<!-- AGENTS_SHA256:"))
     for label, replacement in (
         ("missing", ""),
         ("mismatched", "<!-- AGENTS_SHA256: " + "0" * 64 + " -->"),
         ("duplicate", marker + "\n" + marker),
         ("duplicate-malformed", marker + "\nAGENTS_SHA256: invalid"),
+        ("duplicate-bare", marker + "\nAGENTS_SHA256 invalid"),
         ("malformed", "prefix " + marker),
         ("malformed-delimiter", marker.replace("SHA256:", "SHA256=")),
     ):

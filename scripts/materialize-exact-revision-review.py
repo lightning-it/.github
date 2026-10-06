@@ -874,7 +874,7 @@ def protected_review_instructions(git, git_dir, revision, environment):
     expected_marker = f"<!-- AGENTS_SHA256: {by_path['AGENTS.md']['sha256']} -->"
     marker_lines = [
         line for line in by_path[".github/copilot-instructions.md"]["content"].splitlines()
-        if "AGENTS_SHA256" in line
+        if re.search(r"<!--.*\bAGENTS_SHA256\b|^\s*AGENTS_SHA256\b|\bAGENTS_SHA256\s*[:=]", line)
     ]
     if marker_lines != [expected_marker]:
         fail("Protected Copilot AGENTS_SHA256 marker is missing, duplicate, malformed or stale.")

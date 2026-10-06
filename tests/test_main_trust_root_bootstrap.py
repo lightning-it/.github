@@ -1302,6 +1302,33 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
             ):
                 MODULE.verify(self.args(api), api)
 
+    def test_complete_failure_vocabulary_rejects_body_inline_and_thread_only(self) -> None:
+        phrases = (
+            ('No files to review.', False),
+            ("Copilot wasn't able to review any files.", False),
+            ("Copilot isn't able to review any files.", False),
+            ('COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.', False),
+            ('Copilot is unable to review any files.', False),
+            ('Copilot was able to review any files.', True),
+            ('Copilot is able to review this pull request.', True),
+        )
+        for text, usable in phrases:
+            for location in ('body', 'inline', 'thread'):
+                api = FakeAPI()
+                if location == 'body':
+                    api.review['body'] = text
+                elif location == 'inline':
+                    api.review_comments = [{'body': text}]
+                else:
+                    api.graphql_payload['data']['repository']['pullRequest']['reviewThreads'][
+                        'nodes'][0]['comments']['nodes'][0]['body'] = text
+                with self.subTest(text=text, location=location):
+                    if usable:
+                        MODULE.verify(self.args(api), api)
+                    else:
+                        with self.assertRaisesRegex(MODULE.VerificationError, 'rejected marker'):
+                            MODULE.verify(self.args(api), api)
+
     def test_ready_and_request_are_exactly_once(self) -> None:
         for mutation in ("ready", "request"):
             api = FakeAPI()

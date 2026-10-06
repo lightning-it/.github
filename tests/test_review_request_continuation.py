@@ -209,22 +209,27 @@ class ContinuationTests(unittest.TestCase):
                             {'GITHUB_EVENT_NAME': 'workflow_run' if companion else 'pull_request_review'})
 
     def test_actual_pending_then_both_locators_and_duplicate_consumer_share_one_request(self):
-        result = self.defer()
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn(INTENT, self.state['versions'][self.state['oid']])
-        self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
-        self.assertEqual([], self.state['requests'])
-        for companion in (False, True):
-            result = self.locator(companion)
+        baseline = copy.deepcopy(self.state)
+        for login in (BOT, BOT.removesuffix('[bot]')):
+            self.state = copy.deepcopy(baseline)
+            self.route('/pulls/23/reviews/17')['user']['login'] = login
+            self.route('/pulls/23/reviews')[0]['user']['login'] = login
+            result = self.defer()
             self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(2, len(self.state['dispatches']))
-        result = self.consumer()
-        self.assertEqual(0, result.returncode, result.stderr)
-        receipt = self.state['versions'][self.state['oid']][REQUEST]
-        self.assertEqual(2, receipt['schema'])
-        self.assertEqual((OLD, HEAD, SOURCE), (receipt['old_head'], receipt['intent']['head'], receipt['source_sha']))
-        self.assertNotEqual(0, self.consumer(GITHUB_RUN_ID='89').returncode)
-        self.assertEqual(1, len(self.state['requests']))
+            self.assertIn(INTENT, self.state['versions'][self.state['oid']])
+            self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
+            self.assertEqual([], self.state['requests'])
+            for companion in (False, True):
+                result = self.locator(companion)
+                self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(2, len(self.state['dispatches']))
+            result = self.consumer()
+            self.assertEqual(0, result.returncode, result.stderr)
+            receipt = self.state['versions'][self.state['oid']][REQUEST]
+            self.assertEqual(2, receipt['schema'])
+            self.assertEqual((OLD, HEAD, SOURCE), (receipt['old_head'], receipt['intent']['head'], receipt['source_sha']))
+            self.assertNotEqual(0, self.consumer(GITHUB_RUN_ID='89').returncode)
+            self.assertEqual(1, len(self.state['requests']))
 
     def test_old_completion_before_intent_is_recovered_by_owner_completion(self):
         self.assertEqual(0, self.locator().returncode)
@@ -459,6 +464,8 @@ class ContinuationTests(unittest.TestCase):
             'draft': lambda: self.route('/pulls/23').update(draft=True),
             'spent attempt': lambda: self.route('/actions/runs/77').update(run_attempt=2),
             'current head review': lambda: self.route('/pulls/23/reviews').append({**self.route('/pulls/23/reviews/17'), 'id': 19, 'commit_id': HEAD}),
+            'current head review suffixless': lambda: self.route('/pulls/23/reviews').append({**self.route('/pulls/23/reviews/17'), 'id': 19, 'commit_id': HEAD, 'user': {'login': BOT.removesuffix('[bot]'), 'type': 'Bot'}}),
+            'pending suffixless': lambda: self.route('/pulls/23/requested_reviewers')['users'].append({'login': BOT.removesuffix('[bot]')}),
             'pending': lambda: self.route('/pulls/23/requested_reviewers')['users'].append({'login': BOT}),
             'source': lambda: self.state.update(ancestry={'status': 'diverged'}),
             'unsuccessful step': lambda: self.route('/actions/runs/77/attempts/1/jobs')['jobs'][0]['steps'][2].update(conclusion='failure'),
@@ -468,6 +475,10 @@ class ContinuationTests(unittest.TestCase):
                 self.setUp()
                 self.assertEqual(0, self.defer().returncode)
                 mutate()
+                if name.startswith(('current head review', 'pending')):
+                    for companion in (False, True):
+                        self.assertNotEqual(0, self.locator(companion).returncode)
+                    self.assertEqual([], self.state['dispatches'])
                 self.assertNotEqual(0, self.consumer().returncode)
                 self.assertEqual([], self.state['requests'])
                 self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])

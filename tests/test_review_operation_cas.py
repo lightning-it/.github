@@ -100,7 +100,7 @@ elif route.endswith('/requested_reviewers'):
             s['pending_head'] = 'a' * 40
         rc = 0 if mode == 'confirmed' else 42
     else:
-        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode in ('accepted-unknown', 'accepted-unknown-cleared', 'legacy-terminal-cleared', 'rejected-old-pending') and (mode not in ('accepted-unknown-cleared', 'legacy-terminal-cleared') or worker == '500') and any(c.get('request') for c in s['calls'])) else []}
+        result = {'users': [{'login': os.environ.get('OBSERVED_REVIEW_LOGIN', 'copilot-pull-request-reviewer[bot]')}] if mode == 'pending-review' or (mode in ('accepted-unknown', 'accepted-unknown-cleared', 'legacy-terminal-cleared', 'rejected-old-pending') and (mode not in ('accepted-unknown-cleared', 'legacy-terminal-cleared') or worker == '500') and any(c.get('request') for c in s['calls'])) else []}
 elif '/comments' in route:
     if post:
         s.setdefault('comments', []).append({'user': {'login': 'github-actions[bot]'}, 'body': fields['body']})
@@ -111,12 +111,12 @@ elif '/reviews?' in route:
     if mode.startswith('unsuccessful-review-'):
         result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': mode.removeprefix('unsuccessful-review-'),
                    'body': "Copilot isn’t able to review this pull request.",
-                   'user': {'login': 'copilot-pull-request-reviewer[bot]'}}]]
+                   'user': {'login': os.environ.get('OBSERVED_REVIEW_LOGIN', 'copilot-pull-request-reviewer[bot]')}}]]
     elif mode == 'legacy-terminal-cleared' and worker != '500':
-        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Copilot was not able to review any files.', 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}]]
+        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Copilot was not able to review any files.', 'user': {'login': os.environ.get('OBSERVED_REVIEW_LOGIN', 'copilot-pull-request-reviewer[bot]')}}]]
     else:
         result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Review complete.',
-                'user': {'login': 'copilot-pull-request-reviewer[bot]'}}] if mode == 'existing-review' else []]
+                'user': {'login': os.environ.get('OBSERVED_REVIEW_LOGIN', 'copilot-pull-request-reviewer[bot]')}}] if mode == 'existing-review' else []]
 elif route.endswith('/pulls/23'):
     result = {'number': 23, 'state': 'open', 'draft': False, 'user': {'login': 'litroc'},
               'head': {'sha': os.environ['EXPECTED_HEAD'], 'repo': {'full_name': 'lightning-it/.github'}},
@@ -299,15 +299,16 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
 
 class ReviewRequestCASTests(unittest.TestCase):
     def test_completed_unsuccessful_review_without_marker_or_pending_consumes_slot(self):
-        for flag in ('disabled', 'enabled'):
-            for state_name in ('COMMENTED', 'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
-                for prefix in ("",):
-                    with self.subTest(flag=flag, state=state_name, source=prefix):
-                        state = self.probe('unsuccessful-review-' + state_name, event_mode=flag)
-                        self.assertEqual([0, 0], state['outcomes'])
-                        self.assertFalse(any(c.get('post') or c.get('cas') for c in state['calls']))
-                        self.assertEqual([], state.get('comments', []))
-                        self.assertFalse(any(c['route'].endswith('/requested_reviewers') for c in state['calls']))
+        for login in ("copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"):
+            for flag in ('disabled', 'enabled'):
+                for state_name in ('COMMENTED', 'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
+                    for prefix in ("",):
+                        with self.subTest(flag=flag, state=state_name, source=prefix, reviewer=login):
+                            state = self.probe('unsuccessful-review-' + state_name, event_mode=flag, review_login=login)
+                            self.assertEqual([0, 0], state['outcomes'])
+                            self.assertFalse(any(c.get('post') or c.get('cas') for c in state['calls']))
+                            self.assertEqual([], state.get('comments', []))
+                            self.assertFalse(any(c['route'].endswith('/requested_reviewers') for c in state['calls']))
 
     def test_request_reservations_serialize_across_event_actions(self):
         import yaml
@@ -319,7 +320,7 @@ class ReviewRequestCASTests(unittest.TestCase):
             self.assertEqual({'group': 'copilot-review-request-${{ github.event.pull_request.number }}',
                               'cancel-in-progress': False}, request['concurrency'])
 
-    def probe(self, mode, new_head=False, event_mode="enabled", interrupt="", repository="lightning-it/.github"):
+    def probe(self, mode, new_head=False, event_mode="enabled", interrupt="", repository="lightning-it/.github", review_login="copilot-pull-request-reviewer[bot]"):
         import textwrap
         source = (ROOT / '.github/workflows/copilot-review.yml').read_text()
         raw = source.split("<<'CLAIM'\n", 1)[1].split('\n          CLAIM', 1)[0]
@@ -354,7 +355,7 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                        'GITHUB_RUN_ID': worker, 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
                        'GITHUB_REF_PROTECTED': 'true', 'GITHUB_REF': 'refs/heads/develop',
                        'WORKFLOW_SHA': SOURCE, 'GITHUB_REPOSITORY_ID': '1112629689', 'LI219_EVENT_MODE': event_mode, 'INTERRUPT': interrupt,
-                       'REPOSITORY': repository, 'PR_NUMBER': '23', 'EXPECTED_HEAD': head, 'EXPECTED_BASE': base,
+                       'OBSERVED_REVIEW_LOGIN': review_login, 'REPOSITORY': repository, 'PR_NUMBER': '23', 'EXPECTED_HEAD': head, 'EXPECTED_BASE': base,
                        'reviewer': 'copilot-pull-request-reviewer[bot]', 'requested_reviewers_url': f'repos/{repository}/pulls/23/requested_reviewers',
                        'UNABLE_REVIEW_MARKER': 'unable to review this pull request', 'NO_FILES_REVIEW_MARKER': 'was not able to review any files',
                        'QUOTA_EXHAUSTED_MARKER': 'quota exhausted', 'QUOTA_EXCEEDED_MARKER': 'quota exceeded', 'SUPPRESSED_COMMENTS_MARKER': 'suppressed comments'}
