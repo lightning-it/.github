@@ -68,7 +68,7 @@ class ProtectedReviewBranchTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(["main"], [v["ref"] for v in f.state["dispatches"]])
 
-    def refresh(self, branch, consumer=False, execution_branch=None, controller=None, fence_only=False, protected_source=None):
+    def refresh(self, branch, consumer=False, execution_branch=None, controller=None, fence_only=False, protected_source=None, head_repository=continuation.REPO, expected_repository=None):
         workflow = yaml.safe_load((ROOT / ".github/workflows/copilot-review-refresh.yml").read_text())
         if fence_only:
             text = workflow["jobs"]["refresh-canonical-gate"]["steps"][1]["run"]
@@ -82,8 +82,8 @@ class ProtectedReviewBranchTests(unittest.TestCase):
             "number": 23,
             "state": "open",
             "draft": False,
-            "user": {"login": "litroc"},
-            "head": {"sha": continuation.HEAD, "ref": "fix/new", "repo": {"full_name": continuation.REPO}},
+            "user": {"login": "litroc", "type": "User"},
+            "head": {"sha": continuation.HEAD, "ref": "fix/new", "repo": {"full_name": head_repository}},
             "base": {"sha": continuation.BASE, "ref": branch, "repo": {"full_name": continuation.REPO}},
         }
         review = {"id": 17, "commit_id": continuation.HEAD, "user": {"login": continuation.BOT}, "state": "COMMENTED"}
@@ -123,6 +123,8 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
                     "PROTECTED_SOURCE": protected_source or continuation.BASE,
                     "EXPECTED_HEAD": continuation.HEAD,
                     "EXPECTED_BASE": continuation.BASE,
+                    "EXPECTED_HEAD_REPOSITORY": expected_repository or head_repository, "HEAD_REPOSITORY": expected_repository or head_repository,
+                    "EXPECTED_HEAD_REF": "fix/new", "EXPECTED_BASE_REF": branch, "EXPECTED_AUTHOR": "litroc",
                     "LOCATOR_PR": "23",
                     "LOCATOR_HEAD": continuation.HEAD,
                     "LOCATOR_BASE": continuation.BASE,
@@ -143,6 +145,23 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
                 else []
             )
         return result, dispatches
+
+    def test_authenticated_fork_refresh_uses_protected_ref_without_review_request(self):
+        for branch in ("develop", "main"):
+            for consumer, fence in ((False, False), (True, False), (False, True)):
+                with self.subTest(branch=branch, consumer=consumer, fence=fence):
+                    result, calls = self.refresh(branch, consumer=consumer, fence_only=fence, head_repository="contributor/core")
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(0 if consumer or fence else 1, len(calls))
+                    self.assertFalse(any("requested_reviewers" in arg for call in calls for arg in call))
+        for fence in (False, True):
+            result, calls = self.refresh("main", fence_only=fence, head_repository="other/core", expected_repository="contributor/core")
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual([], calls)
+        for repository in ("", "owner/repo/extra"):
+            result, calls = self.refresh("main", consumer=True, head_repository=repository)
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual([], calls)
 
     def test_refresh_locator_dispatches_authenticated_base_instead_of_default(self):
         for branch in ("develop", "main"):

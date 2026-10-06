@@ -197,8 +197,10 @@ os.execvp(command[0], command)
                                    'requested_reviewer': {'login': 'Copilot'}, 'created_at': '2026-10-05T17:50:10Z'}]]}
 
     def run_caller(self, data=None, **env):
+        data = data or self.data
+        controller = data.get('CONTROLLER', SOURCE)
         fixture, calls = self.root / 'fixture.json', self.root / 'calls.jsonl'
-        fixture.write_text(json.dumps(data or self.data))
+        fixture.write_text(json.dumps(data))
         calls.write_text('')
         result = subprocess.run(['bash', '-c', self.shell], text=True, capture_output=True, timeout=30, check=False,
                                 env={**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
@@ -206,7 +208,7 @@ os.execvp(command[0], command)
                                      'LI219_EVENT_MODE': 'enabled', 'GITHUB_REPOSITORY_ID': '1112629689',
                                      'GITHUB_API_URL': 'https://api.github.com', 'REPOSITORY': REPO, 'author': 'litroc',
                                      'owner_pr_number': '23', 'EVENT_BASE': BASE, 'EVENT_HEAD': HEAD, 'base_ref': 'develop',
-                                     'controller_branch': 'develop', 'controller_head': SOURCE, 'controller_sha': SOURCE,
+                                     'controller_branch': 'develop', 'controller_head': controller, 'controller_sha': controller,
                                      'producer_run_id': '77', 'producer': json.dumps(self.producer), **env})
         self.calls = [json.loads(line) for line in calls.read_text().splitlines()]
         return result
@@ -343,13 +345,23 @@ os.execvp(command[0], command)
 
     def resume_fixture(self):
         data = copy.deepcopy(self.data)
+        # A resumed writer executes the exact protected PR base, unlike the
+        # separate direct/historical fixtures whose controller may be older.
+        data['CONTROLLER'] = BASE
+        data['BRANCH']['commit']['sha'] = BASE
+        data['REFRESH']['head_sha'] = BASE
+        for refresh_job in data['REFRESH_JOBS'][0]['jobs']:
+            refresh_job['head_sha'] = BASE
+        rerun_record = json.loads(data['RERUN_JOURNAL']['data']['repository']['record']['text'])
+        rerun_record['source_sha'] = BASE
+        data['RERUN_JOURNAL'] = snapshot(rerun_record)
         intent = {'schema': 1, 'kind': 'deferred-first-request', 'repository': REPO, 'repository_id': '1112629689',
                   'operation': REQUEST_KEY, 'pr': PR, 'base': BASE, 'head': HEAD, 'base_ref': 'develop', 'head_ref': 'fix/final',
-                  'owner_run': RUN, 'owner_attempt': 1, 'source_sha': SOURCE, 'event': 'pull_request_target', 'action': 'synchronize',
+                  'owner_run': RUN, 'owner_attempt': 1, 'source_sha': BASE, 'event': 'pull_request_target', 'action': 'synchronize',
                   'author': 'litroc', 'actor': 'litroc', 'triggering_actor': 'litroc', 'created_at': '2026-10-05T17:50:10Z'}
         historical = '2' * 40
         old_head = 'd' * 40
-        record = {**self.record, 'schema': 2, 'claim_run': '88', 'intent': intent,
+        record = {**self.record, 'schema': 2, 'claim_run': '88', 'source_sha': BASE, 'intent': intent,
                   'intent_commit': historical, 'old_review': 16, 'old_head': old_head}
         data['REQUEST_JOURNAL'] = snapshot(record)
         def history(value):
@@ -367,7 +379,7 @@ os.execvp(command[0], command)
                   'display_title': f'First review PR #{PR} head {HEAD} owner {RUN} old review 16',
                   'created_at': '2026-10-05T17:59:31Z', 'updated_at': '2026-10-05T17:59:59Z'}
         job = copy.deepcopy(data['FIRST_JOBS'][0]['jobs'][0])
-        job.update(id=880, run_id=88, head_sha=SOURCE, name='Resume deferred first review request',
+        job.update(id=880, run_id=88, head_sha=BASE, name='Resume deferred first review request',
                    started_at='2026-10-05T17:59:32Z', completed_at='2026-10-05T17:59:59Z')
         names = ['Set up job', 'Materialize protected first-request continuation', 'Resume the deferred first request', 'Complete job']
         times = [('32', '33'), ('33', '34'), ('34', '58'), ('58', '59')]
@@ -415,6 +427,7 @@ os.execvp(command[0], command)
         original = self.resume_fixture()
         prefix = f'repos/{REPO}'
         mutations = {
+            'old default controller instead of exact base': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_sha=SOURCE),
             'PR head masquerading as writer source': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_sha=HEAD),
             'unprotected writer branch': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_branch='fix/final'),
             'wrong event': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(event='pull_request_review'),

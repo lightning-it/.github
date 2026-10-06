@@ -90,17 +90,23 @@ class ReviewEventTests(unittest.TestCase):
         self.assertFalse(EVENT.clean_review(self.review(), [{"body": "Suppressed comments"}], self.head))
         self.assertTrue(EVENT.clean_review(self.review(body=""), [{"body": "Reviewed files"}], self.head))
 
-    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None, base_ref="develop"):
+    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None, base_ref="develop", head_repository="lightning-it/.github", producer_repository=None, live_repository=None):
         prefix = "repos/lightning-it/.github"
         pr = {"id": 23, "number": 23, "draft": False, "state": "open",
               "user": {"login": "litroc", "type": "User"},
-              "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": "lightning-it/.github"}},
-              "base": {"sha": self.base, "ref": base_ref}}
+              "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": head_repository}},
+              "base": {"sha": self.base, "ref": base_ref, "repo": {"full_name": "lightning-it/.github"}}}
         run = {"id": 77, "path": EVENT.PRODUCER, "event": "pull_request_target",
                "repository": {"full_name": "lightning-it/.github"},
-               "head_repository": {"full_name": "lightning-it/.github"}, "run_attempt": 1, "head_sha": self.head,
+               "head_repository": {"full_name": producer_repository or head_repository}, "run_attempt": 1, "head_sha": self.head,
                "head_branch": "fix/final", "pull_requests": [],
                "status": state, "created_at": (self.now - dt.timedelta(seconds=delay)).isoformat()}
+        if required is None:
+            native = self.required_run()
+            native["head_repository"]["full_name"] = head_repository
+            native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + head_repository
+            native["pull_requests"][0]["base"]["ref"] = base_ref
+            required = [native]
         inventories = {
 
             f"{prefix}/pulls?state=open": [{**pr, "id": 23 + i, "number": 23 + i} for i in range(pr_count)],
@@ -138,6 +144,8 @@ class ReviewEventTests(unittest.TestCase):
             if route == prefix:
                 return {"default_branch": "develop"}
             if route.startswith(f"{prefix}/pulls/"):
+                if live_repository is not None:
+                    return {**pr, "head": {**pr["head"], "repo": {"full_name": live_repository}}}
                 return {**pr, "head": {**pr["head"], "sha": self.base}} if drift else pr
             raise AssertionError(route)
 
@@ -150,6 +158,27 @@ class ReviewEventTests(unittest.TestCase):
             else:
                 EVENT.reconcile("lightning-it/.github", self.now)
         return mutations
+
+    def test_authenticated_fork_completion_and_periodic_required_locator(self):
+        for branch in ("develop", "main"):
+            for neutral in (False, True):
+                with self.subTest(branch=branch, neutral=neutral):
+                    calls = self.reconcile(base_ref=branch, head_repository="contributor/core", neutral=neutral)
+                    self.assertEqual(1, len(calls))
+                    expected = EVENT.HELPER if neutral else EVENT.REFRESH
+                    self.assertTrue(calls[0][0].endswith(expected + "/dispatches"))
+                    self.assertEqual(branch, calls[0][1]["ref"])
+                    self.assertNotIn("requested_reviewers", calls[0][0])
+
+    def test_fork_identity_swap_and_missing_evidence_do_not_dispatch(self):
+        for neutral in (False, True):
+            with self.subTest(neutral=neutral):
+                self.assertEqual([], self.reconcile(head_repository="contributor/core", producer_repository="other/core", neutral=neutral))
+                self.assertEqual([], self.reconcile(head_repository="contributor/core", live_repository="other/core", neutral=neutral))
+        self.assertEqual([], self.reconcile(head_repository="contributor/core", missing=True))
+        for malformed in ("", "../other/core", "owner/repo/extra"):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                self.reconcile(head_repository=malformed)
 
     def test_main_refresh_dispatch_uses_authenticated_main_base(self):
         calls = self.reconcile(base_ref="main")
@@ -259,7 +288,7 @@ class ReviewEventTests(unittest.TestCase):
             run["path"] = ".github/workflows/supplementary-current-revision-required.yml"
             run["name"] = "Protected current-revision evidence verifier"
             run["display_title"] = f"Protected current revision PR #23 opened {self.head}"
-            pr = {"number": 23, "head": {"sha": self.head, "ref": "fix/final"},
+            pr = {"number": 23, "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": repo}},
                   "base": {"sha": self.base, "ref": "develop"}}
             self.assertTrue(EVENT.required_locator(run, repo, pr))
             run["workflow_url"] = run["workflow_url"].replace("required_workflows", "workflows")
