@@ -732,20 +732,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          root="/run/exact-review-${GITHUB_RUN_ID}"
-          review_directory="${GITHUB_WORKSPACE}/exact-revision-review"
-          # Discard the action output and expose only its replacement as writable.
-          rm -f -- "${review_directory}/result.json"
-          (umask 077; set -o noclobber; : >"${review_directory}/result.json")
-          docker run --rm --network none --read-only --cap-drop ALL \
-            --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
-            --mount "type=bind,src=${root},dst=${root},readonly" \
-            --mount "type=bind,src=${review_directory},dst=/review,readonly" \
-            --mount "type=bind,src=${review_directory}/result.json,dst=/review/result.json" \
-            --entrypoint python3 \
-            quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08 \
-            -B -E -s "${root}/code/exact_revision_gateway.py" collect \
-            --run-id "${GITHUB_RUN_ID}" --review-directory /review
+          python3 -B -E -s "/run/exact-review-${GITHUB_RUN_ID}/code/exact_revision_gateway.py" consume --run-id "${GITHUB_RUN_ID}"
 
       - name: Re-prove exact revision and enforce the Codex verdict
         env:

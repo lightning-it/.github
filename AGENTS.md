@@ -180,6 +180,27 @@ model/reasoning choice, rationale, and a concrete escalation condition.
   must not be silently reinterpreted as token budgets or globally removed;
   Source/Governance coordinates a new producer/consumer version before cutover.
 
+
+### Protected SINGLE controller host exception (2026-10-06)
+
+The owner-authorized exception to the Devtools execution boundary applies only
+in the protected Exact-Revision SINGLE workflow. Its immutable controller may
+use host Python for tuple-bound materialization and regeneration, host/cgroup
+resource admission, root-owned `/run` bootstrap and loopback supervision, and
+the authenticated receipt lifecycle. Controller and imported runtime assets
+must remain bound to the protected workflow/base Git blobs; candidate code is
+review data and must never be imported or executed.
+
+These narrowly admitted controller checks are not generic host acceptance
+evidence or native review acceptance. Lint, test, build, package and unrelated
+validators remain in pinned Devtools. The deterministic receipt collector must
+start before `drop-sudo`, with the original runner UID/GID, read-only inputs and
+no network or service-socket mount. Its existing protected supervisor may
+publish only the successful collector's bounded output. No sudo/Docker access
+is restored after privilege removal. This exception grants no extra inference,
+request, retry, replay, funding or promotion authority; Devtools still never
+runs a model invocation.
+
 <!-- LIT review sizing governance: end -->
 
 <!-- LIT at-most-once review funding: start -->

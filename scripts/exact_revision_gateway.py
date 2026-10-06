@@ -13,8 +13,10 @@ import http.server
 import io
 import os
 import re
+import select
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,10 @@ import single_review_resources as resources
 from bounded_review_provider import ResponseBudget
 
 VERSION = "exact-revision-gateway/v3"
+# Same protected, centrally managed image as the push-ready engine.
+COLLECTOR_IMAGE = "quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08"
+COLLECTOR_STARTUP_SECONDS = 120
+COLLECTOR_READY = b"single-collector-ready\n"
 CLOSURE = (
     "exact_revision_gateway.py",
     "bounded_review.py",
@@ -526,7 +532,9 @@ def prepare(root: Path, directory: Path, run_id: int, owner: int):
 def install(directory: Path, run_id: int):
     review.require(os.geteuid() == 0, "single-install-root")
     owner = int(os.environ["SUDO_UID"])
+    group = int(os.environ["SUDO_GID"])
     review.integer(owner, 1, 2**31 - 1, "single-install-owner")
+    review.integer(group, 1, 2**31 - 1, "single-install-group")
     root = root_for(run_id)
     owned_directory(root.parent, 0)
     prepare(root, directory, run_id, owner)
@@ -539,6 +547,12 @@ def install(directory: Path, run_id: int):
             "serve",
             "--run-id",
             str(run_id),
+            "--review-directory",
+            str(directory.resolve(strict=True)),
+            "--owner-uid",
+            str(owner),
+            "--owner-gid",
+            str(group),
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -547,7 +561,7 @@ def install(directory: Path, run_id: int):
         env={"PATH": os.defpath},
         start_new_session=True,
     )
-    for _ in range(50):
+    for _ in range((COLLECTOR_STARTUP_SECONDS + 5) * 10):
         if (root / "public/port.json").exists():
             return
         review.require(child.poll() is None, "single-gateway-start")
@@ -585,35 +599,145 @@ def context(root: Path, run_id: int, *, uid: int = 0):
     return state, prompt
 
 
-def serve(run_id: int):
+def stop_collector(process):
+    if process.poll() is None:
+        try:
+            # EOF without the supervisor's completion byte rejects collection.
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def start_collector(root: Path, directory: Path, run_id: int, owner: int, group: int):
+    """Establish the container and its stdin/stdout channel before drop-sudo."""
+    review.integer(owner, 1, 2**31 - 1, "single-collector-owner")
+    review.integer(group, 1, 2**31 - 1, "single-collector-group")
+    command = [
+        "/usr/bin/docker",
+        "run",
+        "--rm",
+        "-i",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--user",
+        f"{owner}:{group}",
+        "--mount",
+        f"type=bind,src={root},dst={root},readonly",
+        "--mount",
+        f"type=bind,src={directory},dst=/review,readonly",
+        "--entrypoint",
+        "python3",
+        COLLECTOR_IMAGE,
+        "-B",
+        "-E",
+        "-s",
+        str(root / "code/exact_revision_gateway.py"),
+        "collect",
+        "--run-id",
+        str(run_id),
+        "--review-directory",
+        "/review",
+        "--supervised",
+    ]
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        cwd=root,
+        env={"PATH": os.defpath},
+        bufsize=0,
+    )
+    try:
+        ready, _, _ = select.select([process.stdout], [], [], COLLECTOR_STARTUP_SECONDS)
+        review.require(bool(ready), "single-collector-start-timeout")
+        review.require(
+            process.stdout.readline(len(COLLECTOR_READY) + 1) == COLLECTOR_READY, "single-collector-start"
+        )
+        return process
+    except BaseException:
+        stop_collector(process)
+        raise
+
+
+def finish_collector(process, root: Path, run_id: int):
+    """Publish only stdout from the successful, already attached pinned collector."""
+    try:
+        # Receipt publication is complete before this byte is sent. The
+        # container never races a partially written receipt or opens Docker.
+        wire, _ = process.communicate(input=b"1", timeout=30)
+        review.require(
+            process.returncode == 0 and 0 < len(wire) <= transport.MAX_RESPONSE_BYTES, "single-collector-result"
+        )
+        temporary = root / "public/collected-result.tmp"
+        destination = root / "public/collected-result.json"
+        review.require(not destination.exists(), "single-collector-already-published")
+        write_bytes(temporary, wire)
+        # The result becomes visible only after the complete validated bytes
+        # have been written. Both paths remain in the root-owned directory.
+        os.rename(temporary, destination)
+    except BaseException:
+        write_once(root / "public/collection-failure.json", {"version": VERSION, "run_id": run_id})
+        raise
+
+
+def serve(run_id: int, directory: Path, owner: int, group: int):
     review.require(os.geteuid() == 0, "single-root-boundary")
     root = root_for(run_id)
     owned_directory(root.parent, 0)
     state, prompt = context(root, run_id)
     reviewer = Reviewer(state, prompt, root / "public")
-    with http.server.HTTPServer(("127.0.0.1", 0), handler_for(reviewer)) as server:
-        server.timeout = 0.5
-        write_once(root / "public/port.json", {"port": server.server_address[1]})
-        while not reviewer.done:
-            if transport.monotonic_ms() >= reviewer.deadline:
-                reviewer.fail()
-                break
-            server.handle_request()
-    return 1 if reviewer.failed else 0
+    collector = start_collector(root, directory, run_id, owner, group)
+    try:
+        with http.server.HTTPServer(("127.0.0.1", 0), handler_for(reviewer)) as server:
+            server.timeout = 0.5
+            # Install reports readiness only after the collector is attached.
+            write_once(root / "public/port.json", {"port": server.server_address[1]})
+            while not reviewer.done:
+                if transport.monotonic_ms() >= reviewer.deadline:
+                    reviewer.fail()
+                    break
+                server.handle_request()
+        if reviewer.failed:
+            return 1
+        finish_collector(collector, root, run_id)
+        return 0
+    finally:
+        stop_collector(collector)
 
 
-def collect(directory: Path, run_id: int):
+def collect(directory: Path, run_id: int, *, supervised: bool = False):
     root = root_for(run_id)
     state, _ = context(root, run_id)
+    if supervised:
+        current = transport.strict_json(
+            read_owned(directory / "review-metadata.json", os.geteuid(), MAX_CONTROL_BYTES)
+        )
+        review.require(current == state["metadata"], "single-metadata-drift")
+        sys.stdout.buffer.write(COLLECTOR_READY)
+        sys.stdout.buffer.flush()
+        review.require(sys.stdin.buffer.read(2) == b"1", "single-collector-not-completed")
     review.require(not (root / "public/failure.json").exists(), "single-provider-failed")
     receipt = transport.strict_json(read_owned(root / "public/receipt.json", 0, transport.MAX_RESPONSE_BYTES))
     review.require(
         receipt["version"] == VERSION and receipt["state_sha256"] == review.sha(review.canonical(state)),
         "single-receipt-binding",
     )
-    current = transport.strict_json(read_owned(directory / "review-metadata.json", os.geteuid(), MAX_CONTROL_BYTES))
+    current = transport.strict_json(
+        read_owned(directory / "review-metadata.json", os.geteuid(), MAX_CONTROL_BYTES)
+    )
     review.require(current == state["metadata"], "single-metadata-drift")
     validate_result(receipt["result"], current)
+    if supervised:
+        sys.stdout.buffer.write(review.canonical(receipt["result"]))
+        sys.stdout.buffer.flush()
+        return
     # Discard the action's writable local answer. Only the root-owned receipt,
     # constructed from authenticated provider output, reaches the verdict step.
     result = directory / "result.json"
@@ -622,15 +746,45 @@ def collect(directory: Path, run_id: int):
         stream.write(review.canonical(receipt["result"]))
 
 
+def consume(directory: Path, run_id: int):
+    """Copy the protected collector output after privilege loss; no engine call."""
+    root = root_for(run_id)
+    owned_directory(root, 0)
+    owned_directory(root / "public", 0)
+    deadline = transport.monotonic_ms() + 30_000
+    while True:
+        review.require(
+            not (root / "public/failure.json").exists()
+            and not (root / "public/collection-failure.json").exists(),
+            "single-collection-failed",
+        )
+        try:
+            wire = read_owned(root / "public/collected-result.json", 0, transport.MAX_RESPONSE_BYTES)
+            break
+        except FileNotFoundError:
+            review.require(transport.monotonic_ms() < deadline, "single-collection-missing")
+            time.sleep(0.1)
+    descriptor = os.open(
+        directory / "result.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(wire)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("install", "serve", "collect"))
+    parser.add_argument("operation", choices=("install", "serve", "collect", "consume"))
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--review-directory", type=Path, default=Path("exact-revision-review"))
+    parser.add_argument("--owner-uid", type=int)
+    parser.add_argument("--owner-gid", type=int)
+    parser.add_argument("--supervised", action="store_true")
     args = parser.parse_args()
     if args.operation == "serve":
-        raise SystemExit(serve(args.run_id))
+        raise SystemExit(serve(args.run_id, args.review_directory, args.owner_uid, args.owner_gid))
     elif args.operation == "install":
         install(args.review_directory, args.run_id)
+    elif args.operation == "consume":
+        consume(args.review_directory, args.run_id)
     else:
-        collect(args.review_directory, args.run_id)
+        collect(args.review_directory, args.run_id, supervised=args.supervised)
