@@ -75,8 +75,7 @@ jobs:
             && [ "${BASE_REF}" = main ] \
             && [ "${HEAD_REF}" = develop ] \
             && [ "${HEAD_REPOSITORY:-}" = "${REPOSITORY}" ]; then
-            if [ "${REPOSITORY}" != 'lightning-it/.github' ] \
-              && [ "${EVENT_ACTION}" = opened ]; then
+            if [ "${EVENT_ACTION}" = opened ]; then
               test "${SENDER_LOGIN:-}" = 'lightning-it-release-automation[bot]'
               test "${SENDER_ID:-}" = 307565056
               test "${SENDER_TYPE:-}" = Bot
@@ -2180,8 +2179,8 @@ jobs:
           dispatch_pending="<!-- lit-promotion-dispatch-pending:${EVENT_BASE}:${EVENT_HEAD} -->"
           dispatch_success="<!-- lit-promotion-dispatch-succeeded:${EVENT_BASE}:${EVENT_HEAD} -->"
           evidence_ready="<!-- lit-promotion-evidence-ready:${EVENT_BASE}:${EVENT_HEAD} -->"
-          if [ "${REPOSITORY}" = 'lightning-it/.github' ]; then
-            test "${EVENT_ACTION}" = edited
+          if [ "${EVENT_ACTION}" = edited ]; then
+            test "${REPOSITORY}" = 'lightning-it/.github'
           else
             test "${EVENT_ACTION}" = opened
           fi
@@ -2193,7 +2192,7 @@ jobs:
             --arg dispatch_pending "${dispatch_pending}" \
             --arg dispatch_success "${dispatch_success}" \
             --arg evidence_ready "${evidence_ready}" \
-            --arg repository "${REPOSITORY}" \
+            --arg event_action "${EVENT_ACTION}" \
             --arg summary 'Automated protected promotion of changes already reviewed on develop.' \
             --arg detail 'The organization Required Workflow aggregates exact ingress evidence; it does not request a second AI review of the cumulative diff.' '
               ($before | split("\n")) as $before_lines
@@ -2202,7 +2201,7 @@ jobs:
                 select(startswith("<!-- lit-promotion-run:"))]) as $before_run
               | ([$current_lines[] |
                 select(startswith("<!-- lit-promotion-run:"))]) as $current_run
-              | if $repository != "lightning-it/.github" then
+              | if $event_action == "opened" then
                   ($current_run | length) == 1
                   and ($current_run[0] | test(
                     "^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"
@@ -4924,7 +4923,7 @@ jobs:
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
                         | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                        | ["unabletoreviewthispullrequest","nofilestoreview",
+                        | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -7525,7 +7524,7 @@ jobs:
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
                   [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7903,7 +7902,7 @@ jobs:
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
                     | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","nofilestoreview",
+                    | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",

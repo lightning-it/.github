@@ -55,7 +55,9 @@ def strict_json(payload: bytes | str, *, json_limits: tuple[int, int] | None = N
         raise ReviewError("transport-invalid-json") from None
 
 
-def completed_response(payload: bytes, *, streaming: bool) -> dict[str, Any]:
+def completed_response(
+    payload: bytes, *, streaming: bool, json_limits: tuple[int, int] | None = None
+) -> dict[str, Any]:
     """Find one complete upstream response before releasing any response bytes.
 
     Source: https://developers.openai.com/api/reference/resources/responses/streaming-events
@@ -64,7 +66,7 @@ def completed_response(payload: bytes, *, streaming: bool) -> dict[str, Any]:
     """
     require(0 < len(payload) <= MAX_RESPONSE_BYTES, "transport-response-size")
     if not streaming:
-        response = strict_json(payload)
+        response = strict_json(payload, json_limits=json_limits)
         require(type(response) is dict, "transport-response-shape")
         return response
     text = payload.decode("utf-8", errors="strict")
@@ -96,7 +98,7 @@ def completed_response(payload: bytes, *, streaming: bool) -> dict[str, Any]:
             require(event_name is None, "transport-sse-data")
             continue
         require(result is None, "transport-after-completion")
-        event = strict_json("\n".join(data))
+        event = strict_json("\n".join(data), json_limits=json_limits)
         require(type(event) is dict, "transport-sse-event")
         kind = event.get("type")
         require(type(kind) is str and kind.startswith("response."), "transport-sse-event")
@@ -145,8 +147,10 @@ COUNT_FIELDS = frozenset(
 )
 
 
-def count_request(request: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(canonical({key: value for key, value in request.items() if key in COUNT_FIELDS}))
+def count_request(request: dict[str, Any], *, json_limits: tuple[int, int] | None = None) -> dict[str, Any]:
+    return strict_json(
+        canonical({key: value for key, value in request.items() if key in COUNT_FIELDS}), json_limits=json_limits
+    )
 
 
 def fetch_once(request: dict[str, Any], credential: str, timeout: float, *, counting: bool = False) -> bytes:
@@ -252,11 +256,20 @@ def exchange(
         digest, bounded = ledger.reserve(request, now_ms=monotonic_ms())
         options = {} if worker_input_limit is None else {"input_limit": worker_input_limit}
         if json_limits is not None:
-            options["json_limits"] = json_limits
-        count = strict_json(run_worker(count_request(bounded), credential, ledger.deadline, counting=True, **options))
+            # Only the local worker envelope gets framing overhead. Provider data
+            # and inner JSON retain the actual admitted node/depth allowance.
+            from single_review_resources import ENVELOPE_NODES
+
+            options["json_limits"] = (json_limits[0] + ENVELOPE_NODES, json_limits[1] + 1)
+        count = strict_json(
+            run_worker(
+                count_request(bounded, json_limits=json_limits), credential, ledger.deadline, counting=True, **options
+            ),
+            json_limits=json_limits,
+        )
         ledger.admit_tokens(digest, bounded, count, now_ms=monotonic_ms())
         payload = run_worker(bounded, credential, ledger.deadline, **options)
-        response = completed_response(payload, streaming=bounded.get("stream", False))
+        response = completed_response(payload, streaming=bounded.get("stream", False), json_limits=json_limits)
         ledger.complete(digest, response, now_ms=monotonic_ms())
         return payload
     except BaseException:

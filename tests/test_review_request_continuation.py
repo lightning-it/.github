@@ -341,7 +341,9 @@ class ContinuationTests(unittest.TestCase):
     def test_positive_any_files_body_and_inline_remain_usable(self):
         self.assertEqual(0, self.defer().returncode)
         baseline = copy.deepcopy(self.state)
-        for text in ('The bot was able to review any files.', 'able to review any files',
+        for text in ('Copilot was able to review this pull request.',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
                      'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES'):
             for inline in (False, True):
                 self.state = copy.deepcopy(baseline)

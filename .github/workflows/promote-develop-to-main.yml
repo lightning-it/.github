@@ -30,6 +30,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Reject reruns before credential minting
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" -eq 1
+
       - name: Mint release automation App token
         id: release-app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -86,7 +91,7 @@ jobs:
           }
 
       - name: Create or update protected promotion
-        id: exact-review-target
+        id: promotion-target
         env:
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
           REPOSITORY: ${{ github.repository }}
@@ -177,8 +182,16 @@ jobs:
           expected_head="$(git rev-parse origin/develop)"
           head_marker="<!-- lit-promotion-head:${expected_head} -->"
           run_marker="<!-- lit-promotion-run:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
-          pending_marker="<!-- lit-promotion-dispatch-pending:${expected_base}:${expected_head} -->"
-          dispatch_review=false
+          ready_marker="<!-- lit-promotion-evidence-ready:${expected_base}:${expected_head} -->"
+          body_detail='The organization Required Workflow aggregates exact ingress evidence;'
+          body_detail="${body_detail} it does not request a second AI review of the cumulative diff."
+          body_text="$(printf '%s\n%s\n%s' \
+            '<!-- lit-protected-promotion:v2 -->' \
+            'Automated protected promotion of changes already reviewed on develop.' \
+            "${body_detail}")"
+          ready_body="$(printf '%s\n%s\n%s\n%s' \
+            "${head_marker}" "${run_marker}" "${ready_marker}" "${body_text}")"
+          publish_evidence=false
           open_promotions="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/pulls?state=open&per_page=100")"
           open_candidates="$(jq -c \
@@ -238,10 +251,38 @@ jobs:
                 --repo "${REPOSITORY}" --comment "${close_comment}"
               pr_number=''
             else
+              # Accept the exact v2 body or the historical dispatch binding.
+              # A ready marker only selects native aggregation; it is not PASS.
+              evidence_ready=false
+              if jq -e \
+                --arg head_marker "${head_marker}" \
+                --arg ready_marker "${ready_marker}" \
+                --arg body_text "${body_text}" '
+                  ((.body // "") | split("\n")) as $lines
+                  | ($lines | length) == 6
+                  and $lines[0] == $head_marker
+                  and ($lines[1] | test("^<!-- lit-promotion-run:[1-9][0-9]*:1 -->$"))
+                  and $lines[2] == $ready_marker
+                  and ($lines[3:] | join("\n")) == $body_text
+                ' <<<"${existing}" >/dev/null; then
+                evidence_ready=true
+              fi
               state_markers="$(jq -c '[
                 (.body // "") | split("\n")[] |
                 select(startswith("<!-- lit-promotion-dispatch-"))
               ]' <<<"${existing}")"
+              if [ "${evidence_ready}" = true ]; then
+                # Normalize only the already validated v2 binding for the
+                # existing history checks; never write a legacy marker.
+                state_markers="$(jq -cn --arg base "${expected_base}" \
+                  --arg head "${expected_head}" \
+                  '["<!-- lit-promotion-dispatch-succeeded:" + $base + ":" + $head + " -->"]')"
+              elif jq -e '(.body // "") | contains("<!-- lit-protected-promotion:")
+                  or contains("<!-- lit-promotion-evidence-")' \
+                  <<<"${existing}" >/dev/null; then
+                echo '::error::Existing v2 promotion body is stale or malformed.'
+                exit 1
+              fi
               run_markers="$(jq -c '[
                 (.body // "") | split("\n")[] |
                 select(startswith("<!-- lit-promotion-run:"))
@@ -378,8 +419,7 @@ jobs:
               echo "cleanup_planned_head=${expected_head}"
               echo "cleanup_required=true"
             } >>"${GITHUB_OUTPUT}"
-            body="${head_marker}"$'\n'"${run_marker}"$'\n'"${pending_marker}"$'\n\n'
-            body+='Automated protected promotion of reviewed changes from develop to main.'
+            body="${ready_body}"
             created="$(gh api --method POST "repos/${REPOSITORY}/pulls" \
               -f "base=main" \
               -f "head=develop" \
@@ -398,7 +438,7 @@ jobs:
               echo "cleanup_expected_base=${created_base}"
               echo "cleanup_expected_head=${created_head}"
             } >>"${GITHUB_OUTPUT}"
-            dispatch_review=true
+            publish_evidence=true
           fi
 
           promotion="$(gh pr view "${pr_number}" \
@@ -424,109 +464,26 @@ jobs:
             echo "base_ref=$(jq -r .baseRefName <<<"${promotion}")"
             echo "expected_base=${expected_base}"
             echo "expected_head=${expected_head}"
-            echo "dispatch_review=${dispatch_review}"
+            echo "publish_evidence=${publish_evidence}"
           } >>"${GITHUB_OUTPUT}"
-          if [ "${dispatch_review}" = true ]; then
-            echo "Promotion PR ${pr_number} is ready for protected Human approval and its one Exact-Revision review."
+          if [ "${publish_evidence}" = true ]; then
+            live="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"
+            jq -e --arg body "${ready_body}" \
+              --arg base "${expected_base}" --arg head "${expected_head}" \
+              --arg repository "${REPOSITORY}" --arg title "${title}" \
+              --argjson number "${pr_number}" '
+                .number == $number and .state == "open" and .draft == false
+                and .user.login == "lightning-it-release-automation[bot]"
+                and .user.id == 307565056 and .user.type == "Bot"
+                and .base.ref == "main" and .base.sha == $base
+                and .head.ref == "develop" and .head.sha == $head
+                and .base.repo.full_name == $repository
+                and .head.repo.full_name == $repository
+                and .title == $title and .body == $body
+              ' <<<"${live}" >/dev/null
+            echo "Promotion PR ${pr_number} is ready for native ingress aggregation; zero new AI calls."
           else
-            echo "Promotion PR ${pr_number} already exists; automatic review redispatch is forbidden."
-          fi
-
-      - name: Mint protected review dispatch token
-        if: steps.exact-review-target.outputs.dispatch_review == 'true'
-        id: review-dispatch-app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-actions: write
-          permission-contents: read
-
-      - name: Dispatch protected Exact-Revision review
-        if: steps.exact-review-target.outputs.dispatch_review == 'true'
-        env:
-          GH_TOKEN: ${{ steps.review-dispatch-app.outputs.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.exact-review-target.outputs.pr_number }}
-          BASE_REF: ${{ steps.exact-review-target.outputs.base_ref }}
-          EXPECTED_BASE: ${{ steps.exact-review-target.outputs.expected_base }}
-          EXPECTED_HEAD: ${{ steps.exact-review-target.outputs.expected_head }}
-        run: |
-          set -euo pipefail
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
-          gh workflow run release-bot-exact-head-review.yml \
-            -f bounded_mode=single \
-            --repo "${REPOSITORY}" \
-            --ref "${BASE_REF}" \
-            -f "pr_number=${PR_NUMBER}" \
-            -f "base_ref=${BASE_REF}" \
-            -f "expected_base=${EXPECTED_BASE}" \
-            -f "expected_head=${EXPECTED_HEAD}"
-
-      - name: Finalize accepted Exact-Revision review dispatch
-        if: steps.exact-review-target.outputs.dispatch_review == 'true'
-        env:
-          GH_TOKEN: ${{ steps.release-app.outputs.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ steps.exact-review-target.outputs.pr_number }}
-          EXPECTED_BASE: ${{ steps.exact-review-target.outputs.expected_base }}
-          EXPECTED_HEAD: ${{ steps.exact-review-target.outputs.expected_head }}
-        run: |
-          set -euo pipefail
-          [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]
-          [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
-          head_marker="<!-- lit-promotion-head:${EXPECTED_HEAD} -->"
-          run_marker="<!-- lit-promotion-run:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
-          pending_marker="<!-- lit-promotion-dispatch-pending:${EXPECTED_BASE}:${EXPECTED_HEAD} -->"
-          success_marker="<!-- lit-promotion-dispatch-succeeded:${EXPECTED_BASE}:${EXPECTED_HEAD} -->"
-          promotion="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-          jq -e \
-              --arg repository "${REPOSITORY}" \
-              --arg head_marker "${head_marker}" \
-              --arg run_marker "${run_marker}" \
-              --arg pending_marker "${pending_marker}" \
-              --arg base "${EXPECTED_BASE}" \
-              --arg head "${EXPECTED_HEAD}" '
-              .user.login == "lightning-it-release-automation[bot]"
-              and .state == "open"
-              and .base.repo.full_name == $repository
-              and .base.ref == "main"
-              and .base.sha == $base
-              and .head.repo.full_name == $repository
-              and .head.ref == "develop"
-              and .head.sha == $head
-              and [(.body // "") | split("\n")[] |
-                select(startswith("<!-- lit-promotion-head:"))] == [$head_marker]
-              and [(.body // "") | split("\n")[] |
-                select(startswith("<!-- lit-promotion-run:"))] == [$run_marker]
-              and [(.body // "") | split("\n")[] |
-                select(startswith("<!-- lit-promotion-dispatch-"))] == [$pending_marker]' \
-            <<<"${promotion}" | grep -qx true
-          updated_body="$(jq -er \
-            --arg pending_marker "${pending_marker}" \
-            --arg success_marker "${success_marker}" '
-            (.body // "") | split("\n") |
-            map(if . == $pending_marker then $success_marker else . end) |
-            join("\n")
-          ' <<<"${promotion}")"
-          dispatch_finalized=false
-          for attempt in $(seq 1 5); do
-            if gh api --method PATCH \
-              "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
-              -f "body=${updated_body}" >/dev/null; then
-              dispatch_finalized=true
-              break
-            fi
-            if [ "${attempt}" -lt 5 ]; then sleep 2; fi
-          done
-          if [ "${dispatch_finalized}" != true ]; then
-            echo '::error::Unable to persist the accepted review-dispatch binding.'
-            exit 1
+            echo "Promotion PR ${pr_number} already exists; native evidence remains authoritative; no AI dispatch."
           fi
 
       - name: Close unusable promotion after dispatch failure
@@ -534,12 +491,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.release-app.outputs.token }}
           REPOSITORY: ${{ github.repository }}
-          CAPTURED_PR_NUMBER: ${{ steps.exact-review-target.outputs.cleanup_pr_number }}
-          CAPTURED_BASE: ${{ steps.exact-review-target.outputs.cleanup_expected_base }}
-          CAPTURED_HEAD: ${{ steps.exact-review-target.outputs.cleanup_expected_head }}
-          PLANNED_BASE: ${{ steps.exact-review-target.outputs.cleanup_planned_base }}
-          PLANNED_HEAD: ${{ steps.exact-review-target.outputs.cleanup_planned_head }}
-          CLEANUP_REQUIRED: ${{ steps.exact-review-target.outputs.cleanup_required }}
+          CAPTURED_PR_NUMBER: ${{ steps.promotion-target.outputs.cleanup_pr_number }}
+          CAPTURED_BASE: ${{ steps.promotion-target.outputs.cleanup_expected_base }}
+          CAPTURED_HEAD: ${{ steps.promotion-target.outputs.cleanup_expected_head }}
+          PLANNED_BASE: ${{ steps.promotion-target.outputs.cleanup_planned_base }}
+          PLANNED_HEAD: ${{ steps.promotion-target.outputs.cleanup_planned_head }}
+          CLEANUP_REQUIRED: ${{ steps.promotion-target.outputs.cleanup_required }}
         run: |
           set -euo pipefail
           if [ "${CLEANUP_REQUIRED}" != true ]; then
@@ -663,6 +620,6 @@ jobs:
           echo '::error::Closed the failed promotion; a fresh PR bound to a new develop head is required.'
           exit 1
 
-  # The protected Exact-Revision producer owns the one verifier handoff after
-  # it has published a terminal neutral result. A promotion-level helper would
-  # race that producer and is therefore intentionally forbidden here.
+  # The App-created opened event selects the protected v2 aggregate verifier.
+  # Only its complete native ingress coverage can produce the neutral result.
+  # Promotion creation never dispatches an AI review or verifier rerun.

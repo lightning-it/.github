@@ -1082,7 +1082,7 @@ jobs:
                   and .commit_id == $head
                   and (((.body // "") | ascii_downcase
                     | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest", "nofilestoreview",
+                    | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest", "nofilestoreview",
                        "wasnotabletoreviewanyfiles", "notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota", "premiumrequestsquota",
                        "quotaexhausted", "quotaexceeded", "suppressedcomments",
@@ -1975,6 +1975,7 @@ jobs:
                               or contains($quota_exhausted)
                               or contains($quota_exceeded)
                               or contains($suppressed)
+                              or contains("wasnotabletoreviewthispullrequest")
                               or contains("nofilestoreview")
                               or contains("notabletoreviewanyfiles")
                               or contains("unabletoreviewanyfiles")

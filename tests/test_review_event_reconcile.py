@@ -51,9 +51,15 @@ class ReviewEventTests(unittest.TestCase):
                 "state": "COMMENTED", **changes}
 
     def test_any_files_marker_requires_explicit_negation_in_body_or_inline(self):
-        positives = ('The bot was able to review any files.', 'able to review any files',
+        positives = ('Copilot was able to review this pull request.', 'able to review this pull request',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
                      'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
-        negatives = ("Copilot wasn't able to review any files.",
+        negatives = ("Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                     "Copilot wasn't able to review any files.",
                      'Copilot wasn’t able to review any files.',
                      "Copilot isn't able to review any files.",
                      "Copilot isn’t able to review any files.",

@@ -635,6 +635,14 @@ def read_live_pull_request(
         "head_sha": head.get("sha"),
         "head_repository": head_repository.get("full_name"),
     }
+    if (
+        single_mode(arguments)
+        and base.get("ref") == "main"
+        and head.get("ref") == "develop"
+    ):
+        fail(
+            "Develop-to-main promotion requires native ingress coverage and aggregate verification; no new model review."
+        )
     if observed != expected:
         observed_json = json.dumps(observed, sort_keys=True)
         fail(f"Live pull-request binding changed or is unauthorized: {observed_json}")
@@ -796,6 +804,83 @@ def write_materialized_workspace(
         raise
 
 
+def protected_review_instructions(git, git_dir, revision, environment):
+    """Read only immutable protected-base instruction blobs, never head files.
+
+    Include directory-scoped AGENTS and all declared review-instruction files;
+    the model applies their original directory/frontmatter scopes. Inventory
+    and instruction metadata retain the existing protected-asset resource bound.
+    """
+    listing = git_output(
+        git,
+        git_dir,
+        ["ls-tree", "-r", "-z", revision],
+        environment=environment,
+        binary=True,
+        max_bytes=MAX_PROTECTED_ASSET_BYTES + 1,
+    )
+    files = []
+    total = 0
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        identity, separator, raw_path = entry.partition(b"\t")
+        if not separator:
+            fail("Protected instruction inventory is malformed.")
+        path = raw_path.decode("utf-8", errors="strict")
+        selected = (
+            Path(path).name == "AGENTS.md"
+            or path == ".github/copilot-instructions.md"
+            or path.startswith(".github/instructions/")
+            and path.endswith(".instructions.md")
+        )
+        if not selected:
+            continue
+        parts = identity.decode("ascii").split()
+        if (
+            len(parts) != 3
+            or parts[0] not in {"100644", "100755"}
+            or parts[1] != "blob"
+        ):
+            fail("Protected review instructions must be regular Git blobs.")
+        object_id = require_sha(parts[2], "Protected instruction blob")
+        content = git_output(
+            git,
+            git_dir,
+            ["cat-file", "blob", object_id],
+            environment=environment,
+            binary=True,
+            max_bytes=MAX_PROTECTED_ASSET_BYTES + 1,
+        )
+        text = content.decode("utf-8", errors="strict")
+        if not text.strip():
+            fail("Protected review instruction file is empty.")
+        total += len(content)
+        if total > MAX_PROTECTED_ASSET_BYTES:
+            fail("Protected instruction metadata exceeds its resource limit.")
+        files.append(
+            {
+                "path": path,
+                "blob_sha": object_id,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "content": text,
+            }
+        )
+    files.sort(key=lambda value: value["path"])
+    names = {value["path"] for value in files}
+    if not {"AGENTS.md", ".github/copilot-instructions.md"} <= names:
+        fail("Protected AGENTS.md and Copilot review instructions are required.")
+    by_path = {value["path"]: value for value in files}
+    expected_marker = f"<!-- AGENTS_SHA256: {by_path['AGENTS.md']['sha256']} -->"
+    marker_lines = [
+        line for line in by_path[".github/copilot-instructions.md"]["content"].splitlines()
+        if "AGENTS_SHA256" in line
+    ]
+    if marker_lines != [expected_marker]:
+        fail("Protected Copilot AGENTS_SHA256 marker is missing, duplicate, malformed or stale.")
+    return {"version": 1, "source_sha": revision, "files": files}
+
+
 def materialize(
     arguments: argparse.Namespace,
     output_directory: Path,
@@ -937,7 +1022,7 @@ def materialize(
 
         read_live_pull_request(arguments, home=home)
         metadata = {
-            "schema_version": 6 if single_mode(arguments) else 5,
+            "schema_version": 7 if single_mode(arguments) else 5,
             "repository": arguments.repository,
             "pull_request": arguments.pull_request,
             "base_ref": arguments.base_ref,
@@ -950,6 +1035,15 @@ def materialize(
             "trusted_workflow_sha": arguments.trusted_workflow_sha,
             "trigger": arguments.trigger,
         }
+        if single_mode(arguments):
+            instructions = protected_review_instructions(
+                git, git_dir, arguments.trusted_workflow_sha, git_environment
+            )
+            encoded = json.dumps(
+                instructions, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            metadata["review_instructions"] = instructions
+            metadata["instructions_sha256"] = hashlib.sha256(encoded).hexdigest()
         write_materialized_workspace(
             output_directory, diff, metadata, maximum=maximum, single_runtime=single_mode(arguments)
         )
@@ -1000,6 +1094,8 @@ def verify(
     if not isinstance(expected_metadata, dict):
         fail("Review metadata must be a JSON object.")
     expected_keys = set(IMMUTABLE_METADATA_KEYS)
+    if single_mode(arguments):
+        expected_keys.update({"review_instructions", "instructions_sha256"})
     observed_keys = set(expected_metadata)
     if observed_keys != expected_keys:
         missing = sorted(expected_keys - observed_keys)
@@ -1023,7 +1119,7 @@ def verify(
             regenerated / "change.patch", "regenerated diff", maximum=maximum, single_runtime=single_mode(arguments)
         ):
             fail("The full binary diff changed during exact-revision verification.")
-    for key in IMMUTABLE_METADATA_KEYS:
+    for key in sorted(expected_keys):
         if expected_metadata.get(key) != actual_metadata.get(key):
             fail(f"Exact-revision metadata changed during verification: {key}")
     return actual_metadata

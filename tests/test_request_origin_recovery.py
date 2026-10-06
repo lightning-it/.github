@@ -493,8 +493,38 @@ os.execvp(command[0], command)
         result = self.run_caller(self.resume_fixture())
         self.assertNotEqual(0, result.returncode)
 
+    def test_all_required_inline_jq_content_classifiers_reject_this_pr_negation(self):
+        import re
+        workflow = WORKFLOW.read_text()
+        # Execute the three actual historical/selection content predicates without
+        # replacing their normalization or marker lists with a test-side copy.
+        classifiers = list(re.finditer(
+            r'\["unabletoreviewthispullrequest"[^\]]+\]\s*\|\s*all\(\.\[\];.*?\|\s*not\)',
+            workflow, re.S))
+        self.assertEqual(3, len(classifiers))
+        positives = ('Copilot was able to review this pull request.',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST')
+        negatives = ("Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
+        for classifier in classifiers:
+            before = workflow[classifier.start() - 220:classifier.start()]
+            normalizers = re.findall(r'ascii_downcase\s*\|\s*gsub\([^)]*\)\s*\|\s*gsub\([^)]*\)', before)
+            self.assertEqual(1, len(normalizers))
+            variable = re.search(r'as (\$[a-z]+)\s*\|\s*$', before)[1]
+            program = '(' + normalizers[0] + ') as ' + variable + ' | ' + classifier[0]
+            for texts, usable in ((positives, True), (negatives, False)):
+                for body in texts:
+                    with self.subTest(offset=classifier.start(), body=body):
+                        result = subprocess.run(['jq', '-e', program], input=json.dumps(body),
+                                                text=True, capture_output=True, check=False)
+                        self.assertEqual(0 if usable else 1, result.returncode, result.stderr)
+
     def test_actual_required_positive_any_files_body_and_inline(self):
-        for text in ('The bot was able to review any files.', 'able to review any files',
+        for text in ('Copilot was able to review this pull request.',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
                      'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES'):
             for inline in (False, True):
                 data = self.resume_fixture()

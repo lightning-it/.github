@@ -1,13 +1,11 @@
 """Exercise the single-review protected gateway without any provider traffic."""
 import copy
-import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
@@ -27,8 +25,20 @@ class SingleReviewGatewayTests(unittest.TestCase):
         prompt = (ROOT / ".github/codex/prompts/review-exact-head.md").read_bytes()
         schema = (ROOT / ".github/codex/schemas/exact-head-review.schema.json").read_bytes()
         self.metadata = {key: "a" * (64 if key.endswith("sha256") else 40) for key in gateway.BINDINGS}
-        self.metadata.update(schema_version=6, diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload),
+        self.metadata.update(schema_version=7, diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload),
                              prompt_sha256=gateway.review.sha(prompt), schema_sha256=gateway.review.sha(schema))
+        import hashlib
+        policy_files = []
+        agents = "Complete deterministic checks regardless of diff size; no automatic splitting.\n"
+        marker = f"<!-- AGENTS_SHA256: {gateway.review.sha(agents.encode())} -->\n"
+        for path, content in ((".github/copilot-instructions.md", "Follow protected AGENTS.md.\n" + marker),
+                              ("AGENTS.md", agents)):
+            encoded = content.encode()
+            policy_files.append({"path": path, "content": content, "sha256": gateway.review.sha(encoded),
+                                 "blob_sha": hashlib.sha1(b"blob " + str(len(encoded)).encode() + b"\0" + encoded).hexdigest()})
+        instructions = {"version": 1, "source_sha": self.metadata["base_sha"], "files": policy_files}
+        self.metadata.update(trusted_workflow_sha=self.metadata["base_sha"], review_instructions=instructions,
+                             instructions_sha256=gateway.review.sha(gateway.review.canonical(instructions)))
         for name, data in (("change.patch", self.payload), ("review-prompt.md", prompt),
                            ("review-schema.json", schema), ("review-metadata.json", gateway.review.canonical(self.metadata))):
             (self.directory / name).write_bytes(data)

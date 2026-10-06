@@ -61,6 +61,7 @@ COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
 COPILOT_REVIEWER_ID = 175728472
 COPILOT_REVIEW_FAILURE_MARKERS = (
     "unabletoreviewthispullrequest",
+    "wasnotabletoreviewthispullrequest",
     "nofilestoreview",
     "wasnotabletoreviewanyfiles",
     "notabletoreviewanyfiles",
