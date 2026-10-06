@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = 'lightning-it/.github'
 RID = '1112629689'
 BASE, HEAD, SOURCE, OLD, INITIAL = (char * 40 for char in 'abcde')
+SOURCE = BASE
 KEY = f'li219-review-request:v1:{RID}:23:{HEAD}'
 REQUEST = 'operations/' + hashlib.sha256(KEY.encode()).hexdigest() + '.json'
 INTENT = REQUEST.replace('operations/', 'deferred/')
@@ -494,7 +495,7 @@ class ContinuationTests(unittest.TestCase):
             for chunk in chunks:
                 self.assertEqual(helper, textwrap.dedent(chunk.split('\n          CONTINUATION', 1)[0]).strip())
         job = self.workflow['jobs']['resume']
-        for guard in ("github.ref_protected", "github.ref == 'refs/heads/develop'", "github.actor == 'github-actions[bot]'",
+        for guard in ("github.ref_protected", "contains(fromJSON('[\"refs/heads/develop\",\"refs/heads/main\"]'), github.ref)", "github.actor == 'github-actions[bot]'",
                       "github.triggering_actor == 'github-actions[bot]'", "github.run_attempt == 1", "vars.LI219_EVENT_MODE == 'enabled'"):
             self.assertIn(guard, job['if'])
         self.assertEqual('read', self.workflow['jobs']['locate']['permissions']['contents'])
@@ -642,3 +643,99 @@ class ContinuationTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertNotIn(INTENT, self.state['versions'][self.state['oid']])
                 self.assertEqual([], self.state['requests'])
+
+    def prepare_readonly_provenance(self):
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        receipt = self.state["versions"][self.state["oid"]][REQUEST]
+        original = self.route("/actions/runs/77")
+        start = dt.datetime.strptime(original["updated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC)
+
+        def at(seconds):
+            return (start + dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        run = self.route("/actions/runs/88/attempts/1")
+        run.update(status="completed", conclusion="success", created_at=at(0), updated_at=at(8))
+        names = [
+            "Set up job",
+            "Materialize protected first-request continuation",
+            "Resume the deferred first request",
+            "Complete job",
+        ]
+        steps = [
+            {
+                "name": name,
+                "number": index + 1,
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": at(index + 1),
+                "completed_at": at(index + 2),
+            }
+            for index, name in enumerate(names)
+        ]
+        job = {
+            "id": 180,
+            "run_id": 88,
+            "run_attempt": 1,
+            "head_sha": SOURCE,
+            "name": "Resume deferred first review request",
+            "status": "completed",
+            "conclusion": "success",
+            "runner_id": 4,
+            "started_at": at(1),
+            "completed_at": at(6),
+            "steps": steps,
+        }
+        steps[2].update(started_at=at(34), completed_at=at(58))
+        steps[3].update(started_at=at(58), completed_at=at(59))
+        job["completed_at"] = at(59)
+        run["updated_at"] = at(60)
+        locator = {
+            "id": 181,
+            "run_id": 88,
+            "run_attempt": 1,
+            "head_sha": SOURCE,
+            "name": "Locate deferred first review request",
+            "status": "completed",
+            "conclusion": "skipped",
+            "runner_id": None,
+            "steps": [],
+        }
+        self.state["routes"]["repos/" + REPO + "/actions/runs/88/attempts/1/jobs"] = {
+            "total_count": 2,
+            "jobs": [job, locator],
+        }
+        context = {
+            "repository": REPO,
+            "repository_id": RID,
+            "owner": 23,
+            "head": HEAD,
+            "base": BASE,
+            "base_ref": "develop",
+            "run_id": 77,
+            "controller": SOURCE,
+            "review_submitted_at": at(61),
+            "timeline": [
+                [
+                    {
+                        "id": 700,
+                        "event": "review_requested",
+                        "requested_reviewer": {"login": "Copilot"},
+                        "actor": {"login": "github-actions[bot]", "type": "Bot"},
+                        "created_at": at(40),
+                    }
+                ]
+            ],
+        }
+        check = self.root / "verify_provenance.py"
+        check.write_text(
+            "import importlib.util, json, os\n"
+            + "spec = importlib.util.spec_from_file_location('provenance', "
+            + repr(str(ROOT / "scripts/review_request_provenance.py"))
+            + ")\n"
+            + "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)\n"
+            + "module.verify_receipt(json.loads(os.environ['CONTEXT']), json.loads(os.environ['RECEIPT']))\n"
+        )
+        return receipt, context, check

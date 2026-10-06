@@ -90,12 +90,12 @@ class ReviewEventTests(unittest.TestCase):
         self.assertFalse(EVENT.clean_review(self.review(), [{"body": "Suppressed comments"}], self.head))
         self.assertTrue(EVENT.clean_review(self.review(body=""), [{"body": "Reviewed files"}], self.head))
 
-    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None):
+    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None, base_ref="develop"):
         prefix = "repos/lightning-it/.github"
         pr = {"id": 23, "number": 23, "draft": False, "state": "open",
               "user": {"login": "litroc", "type": "User"},
               "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": "lightning-it/.github"}},
-              "base": {"sha": self.base, "ref": "develop"}}
+              "base": {"sha": self.base, "ref": base_ref}}
         run = {"id": 77, "path": EVENT.PRODUCER, "event": "pull_request_target",
                "repository": {"full_name": "lightning-it/.github"},
                "head_repository": {"full_name": "lightning-it/.github"}, "run_attempt": 1, "head_sha": self.head,
@@ -150,6 +150,12 @@ class ReviewEventTests(unittest.TestCase):
             else:
                 EVENT.reconcile("lightning-it/.github", self.now)
         return mutations
+
+    def test_main_refresh_dispatch_uses_authenticated_main_base(self):
+        calls = self.reconcile(base_ref="main")
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0][0].endswith("copilot-review-refresh.yml/dispatches"))
+        self.assertEqual("main", calls[0][1]["ref"])
 
     def test_late_review_after_ten_minutes_dispatches_same_pr_without_review_request(self):
         for delay in (180, 601, 3600):

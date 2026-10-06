@@ -5811,13 +5811,14 @@ jobs:
                   return None if data["record"] is None else blob(data["record"])
 
 
-          def repository(repo, repo_id, source):
+          def repository(repo, repo_id, source, base_ref="develop"):
               require(repo in PILOTS and re.fullmatch(r"[1-9][0-9]*", repo_id) and sha(source), "pilot/source")
               meta = api(f"repos/{repo}")
               require(meta["full_name"] == repo and str(meta["id"]) == repo_id
                       and meta["default_branch"] == "develop", "repository")
-              branch = api(f"repos/{repo}/branches/develop")
-              require(branch["name"] == "develop" and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
+              require(base_ref in {"develop", "main"}, "protected base ref")
+              branch = api(f"repos/{repo}/branches/{base_ref}")
+              require(branch["name"] == base_ref and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
               ancestry = api(f"repos/{repo}/compare/{source}...{branch['commit']['sha']}")
               require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
                       and ancestry.get("behind_by") == 0 and ancestry.get("merge_base_commit", {}).get("sha") == source), "source ancestry")
@@ -5946,7 +5947,7 @@ jobs:
                       and intent["base_ref"] in {"develop", "main"} and isinstance(intent["head_ref"], str) and intent["head_ref"]
                       and all(sha(intent[field]) for field in ("base", "head", "source_sha")), "deferred intent")
               require(key == key_for(repo_id, intent["pr"], intent["head"]), "intent budget key")
-              repository(repo, repo_id, intent["source_sha"])
+              repository(repo, repo_id, intent["source_sha"], intent["base_ref"])
               run = original_run(repo, intent)
               job = native_job(repo, run, "Request Copilot review for current revision", ORIGINAL_STEPS)
               require(epoch(job["steps"][2]["started_at"]) <= epoch(intent["created_at"]) <= epoch(job["steps"][2]["completed_at"]), "intent outside original step")
@@ -5980,7 +5981,7 @@ jobs:
               require(type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
                       and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
                       and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
-                      and run["head_sha"] == source and run["head_branch"] == "develop"
+                      and run["head_sha"] == source == intent["base"] and run["head_branch"] == intent["base_ref"]
                       and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"
                       and run["display_title"] == f"First review PR #{intent['pr']} head {intent['head']} owner {intent['owner_run']} old review {review_id}", "resume native run")
               if completed:
@@ -6009,7 +6010,7 @@ jobs:
               journal = Journal(repo, repo_id)
               journal.oid = record["intent_commit"]
               require(journal.read(record_path(key, True)) == intent and journal.read(record_path(key)) is None, "pre-request intent snapshot")
-              repository(repo, repo_id, record["source_sha"])
+              repository(repo, repo_id, record["source_sha"], intent["base_ref"])
               run = native_resume_run(repo, record["claim_run"], record["source_sha"], intent, record["old_review"])
               job = native_job(repo, run, "Resume deferred first review request", RESUME_STEPS)
               start, end = epoch(job["steps"][2]["started_at"]), epoch(job["steps"][2]["completed_at"])

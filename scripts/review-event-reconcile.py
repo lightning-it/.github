@@ -356,11 +356,11 @@ def reconcile(repository, now):
                     continue
                 if inputs is None:
                     continue
-                path, ref = CONTINUATION, branch
+                path, ref = CONTINUATION, pr["base"]["ref"]
                 title = f"First review PR #{number} head {head} owner {inputs['owner_run']} old review {inputs['old_review']}"
             else:
                 review = max(usable, key=lambda item: item["id"])
-                path, ref = REFRESH, branch
+                path, ref = REFRESH, pr["base"]["ref"]
                 title = f"Reconcile review PR #{number} head {head}"
                 inputs = dict(pr_number=str(number), expected_head=head, expected_base=base,
                               review_id=str(review["id"]))
@@ -369,7 +369,8 @@ def reconcile(repository, now):
         # Re-read after inventory. No mutation on a changed/closed/draft PR.
         live = api(f"{prefix}/pulls/{number}")
         if (live["state"] != "open" or live["draft"]
-                or live["head"]["sha"] != head or live["base"]["sha"] != base):
+                or live["head"]["sha"] != head or live["base"]["sha"] != base
+                or live["base"]["ref"] != pr["base"]["ref"]):
             continue
         api(f"{prefix}/actions/workflows/{path}/dispatches", {"ref": ref, "inputs": inputs})
         print(f"PR {number}: dispatched protected locator {path}")
