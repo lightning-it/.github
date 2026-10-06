@@ -101,7 +101,8 @@ class ReviewSizePolicyTests(unittest.TestCase):
         self.assertEqual(barrier['if'], action['if'])
         self.assertNotIn('continue-on-error', barrier)
         self.assertNotIn('always()', action['if'])
-        result = subprocess.run(['bash', '-eu', '-c', barrier['run']], capture_output=True, text=True, check=False)
+        result = subprocess.run(['bash', '-eu', '-c', barrier['run']], capture_output=True, text=True, check=False,
+                                env={**os.environ, 'BUDGETED_GATEWAY_INSTALLED': ''})
         self.assertEqual(1, result.returncode)
         self.assertIn('complete-request token budget is not bound', result.stderr)
         self.assertIn('schema:4,', (ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())

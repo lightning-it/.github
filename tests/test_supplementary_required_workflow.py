@@ -3181,7 +3181,12 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('| length == 1', origin)
         self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1', origin)
         self.assertIn('[ "${recovery_status}" -eq 0 ] || return 1', origin)
-        self.assertIn('python3 "${RUNNER_TEMP}/request-origin.py"', origin)
+        self.assertIn('run_request_proof /proof/request-origin.py', origin)
+        launcher = workflow.split('          run_request_proof() {\n', 1)[1].split('          validate_recorded_ref() {', 1)[0]
+        self.assertIn('docker run --rm -i --read-only --cap-drop=ALL', launcher)
+        self.assertEqual(2, launcher.count(',readonly'))
+        self.assertNotIn('/var/run/docker.sock', launcher)
+        self.assertIn('sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08', launcher)
         self.assertIn('| length == 1', late)
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
