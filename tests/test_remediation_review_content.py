@@ -29,13 +29,13 @@ class RemediationReviewContentTests(unittest.TestCase):
         predicate = workflow.split('review_content_usable() {', 1)[1].split('\n          }', 1)[0]
         markers = re.search(r'(\["unabletoreviewthispullrequest".*?\]) as \$markers', predicate, re.S)
         self.assertEqual(canonical, tuple(json.loads(markers[1])))
-        self.assertEqual(2, workflow.count('| review_content_usable; then'))
+        self.assertEqual(2, len(re.findall(r'\| review_content_usable(?: true)?; then', workflow)))
         self.assertIn('contains("unabletoreview") or contains("notabletoreview")', predicate)
         mirror = ROOT / 'default/.github/workflows/codex-copilot-remediation.yml'
         if mirror.exists():
             self.assertEqual(WORKFLOW.read_bytes(), mirror.read_bytes())
 
-    def test_actual_inspect_rejects_no_files_before_eligibility_or_actionability(self):
+    def test_actual_inspect_requires_usable_content_before_eligibility_or_actionability(self):
         workflow = yaml.safe_load(WORKFLOW.read_text())
         script = workflow['jobs']['inspect']['steps'][0]['run']
         current = {'author': {'login': LOGIN}, 'body': 'Fix the incorrect return value.',
@@ -84,11 +84,30 @@ class RemediationReviewContentTests(unittest.TestCase):
                         values, calls = inspect(body, comments)
                         self.assertEqual({'eligible': 'false', 'actionable': 'false'}, values)
                         self.assertNotIn('/issues/', calls)
-            for body in (None, 'Review overview.'):
+            blanks = (None, '', ' \t\n\u00a0\u2003')
+            for body in blanks:
+                for comments in ([], [{**current, 'body': ''}],
+                                 [{**current, 'body': ' \t\n\u00a0\u2003'}],
+                                 [{**current, 'author': {'login': 'contributor'}}],
+                                 [{**current, 'pullRequestReview': {'commit': {'oid': 'b' * 40}}}]):
+                    with self.subTest(empty_body=body, comments=comments):
+                        values, calls = inspect(body, comments)
+                        self.assertEqual({'eligible': 'false', 'actionable': 'false'}, values)
+                        self.assertNotIn('/issues/', calls)
+            for body in (*blanks, 'Review overview.'):
                 values, _ = inspect(body, [current])
                 self.assertEqual('true', values['eligible'])
                 self.assertEqual('true', values['actionable'])
                 self.assertEqual('1', values['round'])
+            for comments in ([], [{**current, 'body': ''}],
+                             [{**current, 'body': ' \t\n\u00a0\u2003'}]):
+                values, _ = inspect('Review complete; no findings.', comments)
+                self.assertEqual('true', values['eligible'])
+                self.assertEqual('false', values['actionable'])
+            valid, _ = inspect(None, [current])
+            mixed, _ = inspect(None, [{**current, 'body': ' \u00a0'}, current, {**current, 'body': ''}])
+            self.assertEqual(valid['finding_hash'], mixed['finding_hash'])
+            self.assertEqual('true', mixed['actionable'])
             # Unrelated/old comments do not become current-head failure evidence.
             values, _ = inspect('Review overview.', [current,
                 {**current, 'body': 'No files were reviewed.', 'author': {'login': 'contributor'}},

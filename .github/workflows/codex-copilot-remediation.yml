@@ -255,7 +255,7 @@ jobs:
           # Shared review-content vocabulary; retain the remediation guard's
           # broader unable/not-able rejection. Both body and inline use this gate.
           review_content_usable() {
-            jq -e '
+            jq -e --argjson require_content "${1:-false}" '
               def normalize_review_text:
                 ascii_downcase | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "");
               ["unabletoreviewthispullrequest", "notabletoreviewthispullrequest",
@@ -266,6 +266,7 @@ jobs:
               all(.[]; normalize_review_text as $text |
                 ($text | contains("unabletoreview") or contains("notabletoreview") | not)
                 and all($markers[]; . as $marker | $text | contains($marker) | not))
+              and (($require_content | not) or any(.[]; normalize_review_text | length > 0))
             ' >/dev/null
           }
           if ! jq -nc --arg body "${review_body}" '[$body]' | review_content_usable; then
@@ -353,16 +354,24 @@ jobs:
           fi
           # A failed review is never an actionable finding, including when its
           # terminal message appears only in a current-head Copilot comment.
+          # Require content across body plus inline, preserving inline-only reviews.
           if ! jq -c --arg login "${COPILOT_LOGIN}" --arg sha "${head_sha}" \
-            '[.[] | .comments.nodes[] |
+            --arg body "${review_body}" '[$body] + [.[] | .comments.nodes[] |
               select(.author.login == $login and .pullRequestReview.commit.oid == $sha) | .body]' \
-            <<<"${threads}" | review_content_usable; then
-            echo "Copilot inline review is unavailable; automatic remediation is forbidden."
+            <<<"${threads}" | review_content_usable true; then
+            echo "Copilot review content is empty or unavailable; automatic remediation is forbidden."
             exit 0
           fi
-          count="$(jq --arg login "${COPILOT_LOGIN}" --arg sha "${head_sha}" '[.[] | select(.isResolved == false) | select(any(.comments.nodes[]; .author.login == $login and .pullRequestReview.commit.oid == $sha))] | length' <<<"${threads}")"
+          # Count and hash exactly the same nonempty current-head finding bodies.
+          findings="$(jq -cS --arg login "${COPILOT_LOGIN}" --arg sha "${head_sha}" '
+            [.[] | select(.isResolved == false) |
+              [.comments.nodes[] |
+                select(.author.login == $login and .pullRequestReview.commit.oid == $sha) |
+                select(.body | gsub("\\s"; "") | length > 0) | .body] |
+              select(length > 0)]' <<<"${threads}")"
+          count="$(jq 'length' <<<"${findings}")"
           if [ "${count}" -gt 0 ]; then actionable=true; fi
-          finding_hash="$(jq -cS --arg login "${COPILOT_LOGIN}" --arg sha "${head_sha}" '[.[] | select(.isResolved == false) | [.comments.nodes[] | select(.author.login == $login and .pullRequestReview.commit.oid == $sha) | .body]]' <<<"${threads}" | sha256sum | cut -d' ' -f1)"
+          finding_hash="$(printf '%s\n' "${findings}" | sha256sum | cut -d' ' -f1)"
 
           comments="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${pr_number}/comments?per_page=100")"
           round="$(jq '[add[] | select(.user.login == "github-actions[bot]") | .body | capture("<!-- codex-remediation round=(?<round>[0-9]+) head=[0-9a-f]+")? | .round // empty | tonumber] | max // 0' <<<"${comments}")"
