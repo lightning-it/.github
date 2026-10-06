@@ -5937,8 +5937,10 @@ jobs:
               expected = {"schema", "kind", "repository", "repository_id", "operation", "pr", "base", "head",
                           "base_ref", "head_ref", "owner_run", "owner_attempt", "source_sha", "event", "action",
                           "author", "actor", "triggering_actor", "created_at"}
+              if isinstance(intent, dict) and intent.get("schema") == 2:
+                  expected.add("source_ref")
               require(isinstance(intent, dict) and set(intent) == expected and type(intent["schema"]) is int
-                      and intent["schema"] == 1 and intent["kind"] == "deferred-first-request"
+                      and intent["schema"] in (1, 2) and intent["kind"] == "deferred-first-request"
                       and intent["repository"] == repo and intent["repository_id"] == repo_id and intent["operation"] == key
                       and positive(intent["pr"]) and positive(intent["owner_run"]) and type(intent["owner_attempt"]) is int
                       and intent["owner_attempt"] == 1 and intent["event"] == "pull_request_target"
@@ -5947,7 +5949,15 @@ jobs:
                       and intent["base_ref"] in {"develop", "main"} and isinstance(intent["head_ref"], str) and intent["head_ref"]
                       and all(sha(intent[field]) for field in ("base", "head", "source_sha")), "deferred intent")
               require(key == key_for(repo_id, intent["pr"], intent["head"]), "intent budget key")
-              repository(repo, repo_id, intent["source_sha"], intent["base_ref"])
+              if intent["schema"] == 1:
+                  # Legacy facts retain their original meaning; they cannot describe a
+                  # default-controller/Main-base split that the old schema never carried.
+                  require(intent["base_ref"] == "develop" and intent["source_sha"] == intent["base"], "legacy original controller")
+                  source_ref = "develop"
+              else:
+                  require(intent["source_ref"] == "develop", "original default controller ref")
+                  source_ref = intent["source_ref"]
+              repository(repo, repo_id, intent["source_sha"], source_ref)
               run = original_run(repo, intent)
               job = native_job(repo, run, "Request Copilot review for current revision", ORIGINAL_STEPS)
               require(epoch(job["steps"][2]["started_at"]) <= epoch(intent["created_at"]) <= epoch(job["steps"][2]["completed_at"]), "intent outside original step")
@@ -6107,7 +6117,7 @@ jobs:
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
             local key pages claims claim receipt refresh_id refresh_run refresh_jobs
-            local source_sha source_ancestry journal_commit journal_head journal_path journal_snapshot journal_record
+            local source_sha source_ancestry source_branch source_head journal_commit journal_head journal_path journal_snapshot journal_record
             key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
             pages="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" || return 1
             claims="$(jq -ce --arg key "${key}" '
@@ -6161,7 +6171,7 @@ jobs:
             refresh_id="$(jq -r .claim_run <<<"${receipt}")"
             refresh_run="$(gh api "repos/${REPOSITORY}/actions/runs/${refresh_id}")" || return 1
             jq -e --arg repo "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
-              --arg base "${EVENT_BASE}" --arg branch "${controller_branch}" \
+              --arg base "${EVENT_BASE}" --arg branch "${base_ref}" \
               --argjson id "${refresh_id}" --argjson pr "${owner_pr_number}" '
                 .id == $id and .run_attempt == 1
                 and .path == ".github/workflows/copilot-review-refresh.yml"
@@ -6186,7 +6196,13 @@ jobs:
               ' <<<"${refresh_run}" >/dev/null || return 1
             if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
               source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
-              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${controller_head}")" || return 1
+              [[ "${base_ref}" =~ ^(develop|main)$ ]] || return 1
+              source_branch="$(gh api "repos/${REPOSITORY}/branches/${base_ref}")" || return 1
+              source_head="$(jq -er --arg ref "${base_ref}" '
+                select(.name == $ref and .protected == true)
+                | .commit.sha | strings | select(test("^[0-9a-f]{40}$"))
+                ' <<<"${source_branch}")" || return 1
+              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${source_head}")" || return 1
               jq -e --arg source "${source_sha}" '
                 .status == "identical" or (.status == "ahead" and .behind_by == 0
                   and .merge_base_commit.sha == $source)

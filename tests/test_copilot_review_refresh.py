@@ -1530,7 +1530,7 @@ ro() { :; }
         self.assertIn("PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}", dispatch)
         self.assertNotIn("EXECUTED_WORKFLOW_SHA", dispatch)
         self.assertIn(
-            'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
+            'test "${GITHUB_REF}" = "refs/heads/${DEFAULT_BRANCH}"',
             dispatch,
         )
         self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', dispatch)

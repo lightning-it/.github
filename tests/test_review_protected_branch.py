@@ -30,7 +30,18 @@ class ProtectedReviewBranchTests(unittest.TestCase):
         }
         for run in ("88", "89"):
             fixture.route("/actions/runs/" + run + "/attempts/1")["head_branch"] = branch
-        fixture.env["GITHUB_REF"] = "refs/heads/" + branch
+        # Real pull_request_target execution is always protected default develop.
+        # A Main-target PR deliberately has a different original controller.
+        original_source = "c" * 40 if branch == "main" else continuation.BASE
+        fixture.route("/branches/develop")["commit"]["sha"] = original_source
+        fixture.env.update(GITHUB_REF="refs/heads/develop", WORKFLOW_SHA=original_source,
+                           GITHUB_SHA=original_source)
+        consumer = fixture.consumer
+        fixture.consumer = lambda **changes: consumer(**{
+            "GITHUB_REF": "refs/heads/" + branch,
+            "WORKFLOW_SHA": continuation.BASE, "GITHUB_SHA": continuation.BASE,
+            **changes,
+        })
         return fixture
 
     def test_develop_and_main_locator_and_consumer_share_exact_protected_ref(self):
@@ -39,6 +50,13 @@ class ProtectedReviewBranchTests(unittest.TestCase):
                 f = self.fixture(branch)
                 result = f.defer()
                 self.assertEqual(0, result.returncode, result.stderr)
+                intent = f.state["versions"][f.state["oid"]][continuation.INTENT]
+                self.assertEqual(2, intent["schema"])
+                self.assertEqual("develop", intent["source_ref"])
+                self.assertEqual(f.env["WORKFLOW_SHA"], intent["source_sha"])
+                self.assertEqual(branch, intent["base_ref"])
+                if branch == "main":
+                    self.assertNotEqual(intent["source_sha"], intent["base"])
                 for companion in (False, True):
                     result = f.locator(companion)
                     self.assertEqual(0, result.returncode, result.stderr)
@@ -203,8 +221,10 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
         result = fixture.execute("python3 " + str(check), {}, environment)
         self.assertEqual(0, result.returncode, result.stderr)
         fixture.route("/branches/main")["commit"]["sha"] = "d" * 40
-        fixture.state["ancestry"] = {"status": "ahead", "behind_by": 0,
-                                    "merge_base_commit": {"sha": continuation.BASE}}
+        fixture.state["ancestry_by_route"] = {
+            "repos/" + continuation.REPO + "/compare/" + continuation.BASE + "..." + "d" * 40:
+                {"status": "ahead", "behind_by": 0, "merge_base_commit": {"sha": continuation.BASE}},
+        }
         result = fixture.execute("python3 " + str(check), {}, environment)
         self.assertEqual(0, result.returncode, result.stderr)
         before = copy.deepcopy(fixture.state)
@@ -236,11 +256,80 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
                     mock.write_text(source)
                     result = fixture.consumer()
                     self.assertNotEqual(0, result.returncode)
-                    self.assertIn('protected source drift', result.stderr)
+                    self.assertIn('controller drift', result.stderr)
                     self.assertEqual(after_claim, continuation.REQUEST in fixture.state['versions'][fixture.state['oid']])
                     self.assertEqual([], fixture.state['requests'])
                     self.assertNotEqual(0, fixture.consumer().returncode)
                     self.assertEqual([], fixture.state['requests'])
+
+    def test_original_default_or_main_drift_around_intent_CAS_fails_closed(self):
+        for changed_branch in ("develop", "main"):
+            for after_claim in (False, True):
+                with self.subTest(branch=changed_branch, after_claim=after_claim):
+                    fixture = self.fixture("main")
+                    mock = fixture.root / "gh"
+                    source = mock.read_text()
+                    if after_claim:
+                        needle = "        if s.get('drift_after_cas') and item['path'].startswith('operations/'):"
+                        insertion = ("        if item['path'].startswith('deferred/'):\n"
+                                     "            s['routes']['repos/' + s['repo'] + '/branches/" + changed_branch + "']['commit']['sha'] = 'e' * 40\n")
+                    else:
+                        needle = "elif '/git/ref/' in route:\n"
+                        insertion = (needle + "    s['routes']['repos/' + s['repo'] + '/branches/" + changed_branch + "']['commit']['sha'] = 'e' * 40\n")
+                        source = source.replace(needle, insertion)
+                        insertion = None
+                    if insertion is not None:
+                        source = source.replace(needle, insertion + needle)
+                    mock.write_text(source)
+                    result = fixture.defer()
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertEqual(after_claim, continuation.INTENT in fixture.state['versions'][fixture.state['oid']])
+                    self.assertNotIn(continuation.REQUEST, fixture.state['versions'][fixture.state['oid']])
+                    self.assertEqual([], fixture.state['requests'])
+
+    def test_main_unknown_write_outcomes_preserve_one_request_budget(self):
+        fixture = self.fixture("main")
+        fixture.state["lost_cas_response"] = True
+        result = fixture.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(fixture.state["versions"]) - 1)
+        self.assertIn(continuation.INTENT, fixture.state["versions"][fixture.state["oid"]])
+        fixture.state.pop("lost_cas_response")
+        fixture.state["lost_post_response"] = True
+        result = fixture.consumer()
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual(1, len(fixture.state["requests"]))
+        self.assertIn(continuation.REQUEST, fixture.state["versions"][fixture.state["oid"]])
+        self.assertNotEqual(0, fixture.consumer().returncode)
+        self.assertEqual(1, len(fixture.state["requests"]))
+        self.assertNotEqual(0, fixture.consumer(GITHUB_RUN_ATTEMPT="2").returncode)
+        self.assertEqual(1, len(fixture.state["requests"]))
+
+    def test_typed_main_receipt_preserves_original_and_resume_roles(self):
+        fixture = self.fixture("main")
+        receipt, context, check = fixture.prepare_readonly_provenance()
+        self.assertEqual("c" * 40, receipt["intent"]["source_sha"])
+        self.assertEqual(continuation.BASE, receipt["source_sha"])
+        self.assertEqual("main", context["base_ref"])
+        before = copy.deepcopy(fixture.state)
+        for role in ("resume-source", "original-source", "source-ref", "legacy-main"):
+            with self.subTest(role=role):
+                candidate = copy.deepcopy(receipt)
+                if role == "resume-source":
+                    candidate["source_sha"] = candidate["intent"]["source_sha"]
+                elif role == "original-source":
+                    candidate["intent"]["source_sha"] = candidate["source_sha"]
+                elif role == "source-ref":
+                    candidate["intent"]["source_ref"] = "main"
+                else:
+                    candidate["intent"]["schema"] = 1
+                    del candidate["intent"]["source_ref"]
+                result = fixture.execute("python3 " + str(check), {}, {
+                    "CONTEXT": json.dumps(context), "RECEIPT": json.dumps(candidate),
+                })
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(before["versions"], fixture.state["versions"])
+                self.assertEqual(before["requests"], fixture.state["requests"])
 
     def test_refresh_final_effect_fence_rechecks_protected_branch_head(self):
         for branch in ("develop", "main"):
@@ -265,10 +354,12 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
             with self.subTest(branch=branch):
                 fixture = self.fixture(branch)
                 fixture.route("/branches/" + branch)["commit"]["sha"] = "d" * 40
-                fixture.state["ancestry"] = {"status": "ahead", "behind_by": 0,
-                                            "merge_base_commit": {"sha": continuation.BASE}}
+                fixture.state["ancestry_by_route"] = {
+                    "repos/" + continuation.REPO + "/compare/" + continuation.BASE + "..." + "d" * 40:
+                        {"status": "ahead", "behind_by": 0, "merge_base_commit": {"sha": continuation.BASE}},
+                }
                 result = fixture.defer()
                 self.assertNotEqual(0, result.returncode)
-                self.assertIn("current original protected source", result.stderr)
+                self.assertIn("current default controller" if branch == "develop" else "current PR base", result.stderr)
                 self.assertNotIn(continuation.INTENT, fixture.state["versions"][fixture.state["oid"]])
                 self.assertEqual([], fixture.state["requests"])

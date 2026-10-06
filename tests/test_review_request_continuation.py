@@ -74,7 +74,7 @@ elif route == 'graphql':
 elif '/git/ref/' in route:
     result = {'ref': 'refs/heads/lit-review-operations', 'object': {'type': 'commit', 'sha': s.get('stale_ref', s['oid'])}}
 elif '/compare/' in route:
-    result = s.get('ancestry', {'status': 'identical'})
+    result = s.get('ancestry_by_route', {}).get(route, s.get('ancestry', {'status': 'identical'}))
 elif payload is not None:
     if route.endswith('/dispatches'):
         assert route.endswith('/review-request-continuation.yml/dispatches')
@@ -167,7 +167,8 @@ class ContinuationTests(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.root) + ':' + os.environ['PATH'], 'STATE': str(self.file),
                     'FIXTURE_NOW': str(self.now.timestamp()), 'PYTHONPATH': str(self.root),
                     'RUNNER_TEMP': str(self.root), 'GITHUB_EVENT_PATH': str(self.event), 'GITHUB_REPOSITORY': REPO,
-                    'GITHUB_REPOSITORY_ID': RID, 'WORKFLOW_SHA': SOURCE, 'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
+                    'GITHUB_REPOSITORY_ID': RID, 'WORKFLOW_SHA': SOURCE, 'GITHUB_SHA': SOURCE,
+                    'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/copilot-review.yml@refs/heads/develop', 'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
                     'GITHUB_RUN_ID': '77', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
                     'GITHUB_ACTOR': 'litroc', 'GITHUB_TRIGGERING_ACTOR': 'litroc', 'LI219_EVENT_MODE': 'enabled',
                     'PR_NUMBER': '23', 'EXPECTED_HEAD': HEAD, 'EXPECTED_BASE': BASE}
@@ -200,7 +201,8 @@ class ContinuationTests(unittest.TestCase):
         return self.execute('\n'.join(step['run'] for step in steps),
             {'inputs': {'pr_number': '23', 'expected_head': HEAD, 'owner_run': '77', 'old_review': '17'}},
             {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_ACTOR': 'github-actions[bot]',
-             'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]', 'GITHUB_RUN_ID': '88', **changes})
+             'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]', 'GITHUB_RUN_ID': '88',
+             'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/review-request-continuation.yml@' + changes.get('GITHUB_REF', self.env['GITHUB_REF']), **changes})
 
     def locator(self, companion=False):
         steps = self.workflow['jobs']['locate']['steps']
@@ -231,6 +233,23 @@ class ContinuationTests(unittest.TestCase):
             self.assertEqual((OLD, HEAD, SOURCE), (receipt['old_head'], receipt['intent']['head'], receipt['source_sha']))
             self.assertNotEqual(0, self.consumer(GITHUB_RUN_ID='89').returncode)
             self.assertEqual(1, len(self.state['requests']))
+
+    def test_authentic_unconsumed_legacy_develop_intent_retains_one_budget(self):
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        intent = self.state['versions'][self.state['oid']][INTENT]
+        intent['schema'] = 1
+        del intent['source_ref']
+        self.assertEqual('develop', intent['base_ref'])
+        self.assertEqual(intent['base'], intent['source_sha'])
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        receipt = self.state['versions'][self.state['oid']][REQUEST]
+        self.assertEqual(1, receipt['intent']['schema'])
+        self.assertNotIn('source_ref', receipt['intent'])
+        self.assertEqual(1, len(self.state['requests']))
+        self.assertNotEqual(0, self.consumer().returncode)
+        self.assertEqual(1, len(self.state['requests']))
 
     def test_old_completion_before_intent_is_recovered_by_owner_completion(self):
         self.assertEqual(0, self.locator().returncode)
@@ -679,7 +698,7 @@ class ContinuationTests(unittest.TestCase):
             "id": 180,
             "run_id": 88,
             "run_attempt": 1,
-            "head_sha": SOURCE,
+            "head_sha": receipt["source_sha"],
             "name": "Resume deferred first review request",
             "status": "completed",
             "conclusion": "success",
@@ -696,7 +715,7 @@ class ContinuationTests(unittest.TestCase):
             "id": 181,
             "run_id": 88,
             "run_attempt": 1,
-            "head_sha": SOURCE,
+            "head_sha": receipt["source_sha"],
             "name": "Locate deferred first review request",
             "status": "completed",
             "conclusion": "skipped",
@@ -713,9 +732,9 @@ class ContinuationTests(unittest.TestCase):
             "owner": 23,
             "head": HEAD,
             "base": BASE,
-            "base_ref": "develop",
+            "base_ref": receipt["intent"]["base_ref"],
             "run_id": 77,
-            "controller": SOURCE,
+            "controller": receipt["intent"]["source_sha"],
             "review_submitted_at": at(61),
             "timeline": [
                 [

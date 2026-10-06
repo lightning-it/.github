@@ -90,7 +90,8 @@ class SuccessorOwnerConsumerTests(unittest.TestCase):
             env={**os.environ, "PATH": contracts.TEST_TOOL_PATH,
                  "BASE_SHA": self.base, "HEAD_SHA": self.head,
                  "OWNER_PR": json.dumps(owner), "PR_NUMBER": str(self.current),
-                 "REPOSITORY": self.repository, **extra},
+                 "REPOSITORY": self.repository, "HEAD_REPOSITORY": self.repository,
+                 "hr": self.repository, **extra},
         )
 
     def test_refresh_and_rerun_bind_original_owner_fail_closed(self) -> None:
@@ -99,9 +100,12 @@ class SuccessorOwnerConsumerTests(unittest.TestCase):
             {**owner, "state": "open"},
             {**owner, "merged_at": "2026-10-05T00:00:00Z"},
             {**owner, "head": {**owner["head"], "ref": "other"}},
+            {**owner, "head": {**owner["head"],
+                               "repo": {"full_name": "other/fork"}}},
         )
         for consumer in ("refresh", "rerun"):
-            self.assertEqual(0, self._run(consumer, owner).returncode)
+            accepted = self._run(consumer, owner)
+            self.assertEqual(0, accepted.returncode, accepted.stderr)
             for drifted_owner in rejected:
                 self.assertNotEqual(0, self._run(consumer, drifted_owner).returncode)
             summary = {**self.summary, "pull_request_number": self.current}

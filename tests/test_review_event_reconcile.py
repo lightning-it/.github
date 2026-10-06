@@ -486,6 +486,7 @@ gh() {
     *'/attempts/1/jobs?'*) printf %s "${JOBS}" ;;
     *'/actions/runs/500') printf %s "${REFRESH}" ;;
     *'/compare/'*) printf %s "${ANCESTRY}" ;;
+    *'/branches/develop') printf %s "${BRANCH}" ;;
     *'/git/ref/'*) printf %s "1111111111111111111111111111111111111111" ;;
     *'graphql'*) printf %s "${JOURNAL}" ;;
     *) return 99;;
@@ -527,12 +528,13 @@ gh() {
             (Path(tmp) / "native-recovery-ordering.jq").write_text(textwrap.dedent(ordering))
             for changes, expected in cases:
                 data = {"CLAIMS": [{"check_runs": [claim]}], "REFRESH": run,
+                        "BRANCH": {"name": "develop", "protected": True, "commit": {"sha": "c" * 40}},
                         "JOBS": full_jobs, "ANCESTRY": {"status": "identical"}, "JOURNAL": journal, **changes}
                 result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
                                         env={**os.environ, "LI219_EVENT_MODE": "enabled", "GITHUB_REPOSITORY_ID": "1112629689", **{k: json.dumps(v) for k, v in data.items()},
                                              "RUNNER_TEMP": tmp, "owner_pr_number": "23", "EVENT_BASE": self.base,
                                              "EVENT_HEAD": self.head, "producer_run_id": "77",
-                                             "REPOSITORY": "lightning-it/.github", "controller_branch": "develop",
+                                             "REPOSITORY": "lightning-it/.github", "controller_branch": "develop", "base_ref": "develop",
                                              "controller_head": "c" * 40, "first_verifier_completed_at": "2026-10-05T17:59:00Z",
                                              "producer": json.dumps({"run_started_at": "2026-10-05T18:00:04Z"})})
                 self.assertEqual(expected, result.returncode, result.stderr)

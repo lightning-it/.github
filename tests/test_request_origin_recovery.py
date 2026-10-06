@@ -74,6 +74,8 @@ elif '/git/ref/' in route:
         print(state['OID']); sys.exit(0)
     result = state['REF']
 elif '/compare/' in route:
+    if 'ALLOWED_COMPARISONS' in state:
+        assert route in state['ALLOWED_COMPARISONS'], route
     result = state['ANCESTRY']
 elif route.endswith('/branches/develop'):
     result = state['BRANCH']
@@ -407,6 +409,46 @@ os.execvp(command[0], command)
         self.assertTrue(any('/actions/runs/88/attempts/1/jobs' in ' '.join(call) for call in self.calls))
         self.assertTrue(any('deferred/' in ' '.join(call) for call in self.calls))
         self.assertFalse(any('--method' in call for call in self.calls))
+
+    def main_typed_resume_fixture(self):
+        data = self.resume_fixture()
+        data['CONTROLLER'] = SOURCE
+        data['ALLOWED_COMPARISONS'] = [f'repos/{REPO}/compare/{SOURCE}...{SOURCE}', f'repos/{REPO}/compare/{BASE}...{BASE}', f'repos/{REPO}/compare/{JOURNAL}...{JOURNAL}']
+        data['BRANCH']['commit']['sha'] = SOURCE
+        data['FIRST']['pull_requests'][0]['base']['ref'] = 'main'
+        self.producer['pull_requests'][0]['base']['ref'] = 'main'
+        data['REFRESH']['head_branch'] = 'main'
+        data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1']['head_branch'] = 'main'
+        data['EXTRA_ROUTES'][f'repos/{REPO}/branches/main'] = {
+            'name': 'main', 'protected': True, 'commit': {'sha': BASE},
+        }
+        record = json.loads(data['REQUEST_JOURNAL']['data']['repository']['record']['text'])
+        record['intent'].update(schema=2, source_ref='develop', source_sha=SOURCE, base_ref='main')
+        data['REQUEST_JOURNAL'] = snapshot(record)
+        key = record['intent_commit'] + ':' + REQUEST_PATH.replace('operations/', 'deferred/')
+        old = data['EXTRA_JOURNALS'][key]
+        old['data']['repository']['record']['text'] = json.dumps(record['intent'])
+        old['data']['repository']['record']['byteSize'] = len(json.dumps(record['intent']).encode())
+        return data
+
+    def test_actual_required_main_resume_keeps_default_and_dispatch_sources_distinct(self):
+        data = self.main_typed_resume_fixture()
+        result = self.run_caller(data, base_ref='main')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/branches/main' in ' '.join(call) for call in self.calls))
+        self.assertTrue(any('/actions/runs/88/attempts/1/jobs' in ' '.join(call) for call in self.calls))
+        self.assertFalse(any('--method' in call for call in self.calls))
+        for field, value in (('head_branch', 'develop'), ('head_sha', SOURCE)):
+            with self.subTest(refresh_field=field):
+                drifted = copy.deepcopy(data)
+                drifted['REFRESH'][field] = value
+                self.assertNotEqual(0, self.run_caller(drifted, base_ref='main').returncode)
+        for field, value in (('name', 'develop'), ('protected', False), ('commit', {'sha': 'not-a-sha'})):
+            with self.subTest(protected_branch_field=field):
+                drifted = copy.deepcopy(data)
+                drifted['EXTRA_ROUTES'][f'repos/{REPO}/branches/main'][field] = value
+                self.assertNotEqual(0, self.run_caller(drifted, base_ref='main').returncode)
+                self.assertTrue(any('/branches/main' in ' '.join(call) for call in self.calls))
 
     def test_actual_required_allows_old_completion_before_owner_but_keeps_effect_age_limit(self):
         data = self.resume_fixture()
