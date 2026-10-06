@@ -193,6 +193,8 @@ COPILOT_REQUIRED_SAFETY_ARGUMENTS = (
 # Content is always spooled to an anonymous temporary file. CHUNK_BYTES is an
 # allocation size, never an admission limit on a diff, file, or review.
 CHUNK_BYTES = 64 * 1024
+# Aggregate tracked-workspace read budget, independent of PR/diff sizing.
+MAX_TRACKED_WORKSPACE_SCAN_BYTES = 500_000_000
 
 
 class PatchSpool:
@@ -810,6 +812,10 @@ def streaming_workspace_safe(workspace, documented, *, allow_packer=False):
                 if not chunk:
                     break
                 total += len(chunk)
+                if total > MAX_TRACKED_WORKSPACE_SCAN_BYTES:
+                    raise RuntimeError(
+                        "tracked workspace scan exceeds its 500000000-byte resource budget"
+                    )
                 if any(marker in tail + chunk for marker in (b"/*", b"*/", b"<<")):
                     packer = False
                 tail = chunk[-1:]
