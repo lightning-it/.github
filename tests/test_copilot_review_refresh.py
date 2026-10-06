@@ -957,6 +957,11 @@ va() {
                      'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
         negatives = ("Copilot wasn't able to review any files.",
                      'Copilot wasn’t able to review any files.',
+                     "Copilot isn't able to review any files.",
+                     "Copilot isn’t able to review any files.",
+                     "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                     "The bots aren't able to review any files.",
+                     "The bots weren’t able to review any files.",
                      'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
                      'Copilot is not able to review any files.',
                      'Copilot is unable to review any files.')

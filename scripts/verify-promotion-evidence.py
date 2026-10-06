@@ -225,7 +225,7 @@ def normalized_review_text(value: str) -> str:
     return re.sub(
         r"\s+",
         "",
-        value.lower().replace("wasn't", "was not").replace("wasn’t", "was not"),
+        value.lower().replace("n't", " not").replace("n’t", " not"),
     )
 
 

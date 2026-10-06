@@ -136,12 +136,14 @@ jobs:
           chmod 0500 trusted-controller/materialize.py
           if [ "${BOUNDED_MODE}" = single ]; then
             for asset in exact_revision_gateway.py bounded_review.py bounded_review_config.py \
-              bounded_review_provider.py bounded_review_transport.py; do
+              bounded_review_provider.py bounded_review_transport.py single_review_resources.py; do
               load_protected_asset "scripts/${asset}" "trusted-controller/${asset}"
               chmod 0400 "trusted-controller/${asset}"
             done
           fi
-          python3 trusted-controller/materialize.py materialize \
+          single_args=()
+          if [ "${BOUNDED_MODE}" = single ]; then single_args=(--single-runtime); fi
+          python3 trusted-controller/materialize.py materialize "${single_args[@]}" \
             --repository "${REPOSITORY}" \
             --pull-request "${PR_NUMBER}" \
             --base-ref "${BASE_REF}" \
@@ -751,7 +753,9 @@ jobs:
               sleep 5
             done
           }
-          python3 trusted-controller/materialize.py verify \
+          single_args=()
+          if [ "${BOUNDED_MODE}" = single ]; then single_args=(--single-runtime); fi
+          python3 trusted-controller/materialize.py verify "${single_args[@]}" \
             --repository "${REPOSITORY}" \
             --pull-request "${PR_NUMBER}" \
             --base-ref "${BASE_REF}" \

@@ -155,7 +155,7 @@ def clean_review(review, comments, head):
     if any(text is not None and not isinstance(text, str) for text in texts):
         raise ValueError("malformed review body")
     normalized = [re.sub(r"\s", "", (text or "").lower()
-                         .replace("wasn't", "was not").replace("wasn’t", "was not"))
+                         .replace("n't", " not").replace("n’t", " not"))
                   for text in texts]
     return any(normalized) and not any(
         re.sub(r"\s", "", marker) in text for marker in MARKERS for text in normalized)

@@ -29,7 +29,16 @@ MAX_WORKER_INPUT = 2_100_000
 WORKER_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
 
 
-def strict_json(payload: bytes | str) -> Any:
+def strict_json(payload: bytes | str, *, json_limits: tuple[int, int] | None = None) -> Any:
+    if json_limits is not None:
+        # Prevent json.loads byte auto-detection (UTF-16/32) from interpreting a
+        # different structure than the UTF-8 lexical allocation guard.
+        if type(payload) is bytes:
+            payload = payload.decode("utf-8", errors="strict")
+        from single_review_resources import preflight_json
+
+        preflight_json(payload, *json_limits)
+
     def pairs(items):
         result = {}
         for key, value in items:
@@ -175,7 +184,15 @@ def monotonic_ms() -> int:
     return time.monotonic_ns() // 1_000_000
 
 
-def run_worker(request: dict[str, Any], credential: str, deadline: int, *, counting: bool = False) -> bytes:
+def run_worker(
+    request: dict[str, Any],
+    credential: str,
+    deadline: int,
+    *,
+    counting: bool = False,
+    input_limit: int = MAX_WORKER_INPUT,
+    json_limits: tuple[int, int] | None = None,
+) -> bytes:
     """Perform one fixed-endpoint operation within the shared absolute deadline.
 
     A new process bounds DNS, connect, write and read together. Killing it stops
@@ -191,9 +208,11 @@ def run_worker(request: dict[str, Any], credential: str, deadline: int, *, count
         message = canonical(
             {"request": request, "credential": credential, "timeout_ms": remaining, "counting": counting}
         )
-        require(len(message) <= MAX_WORKER_INPUT, "transport-request-size")
+        integer(input_limit, 1, 2**63 - 1, "transport-resource-limit")
+        require(len(message) <= input_limit, "transport-request-size")
         child = subprocess.Popen(
-            [sys.executable, "-E", "-s", str(Path(__file__).resolve()), "--worker"],
+            [sys.executable, "-E", "-s", str(Path(__file__).resolve()), "--worker", str(len(message))]
+            + ([] if json_limits is None else [str(value) for value in json_limits]),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -216,7 +235,14 @@ def run_worker(request: dict[str, Any], credential: str, deadline: int, *, count
             child.communicate()
 
 
-def exchange(ledger: ResponseBudget, request: dict[str, Any], credential: str) -> bytes:
+def exchange(
+    ledger: ResponseBudget,
+    request: dict[str, Any],
+    credential: str,
+    *,
+    worker_input_limit: int | None = None,
+    json_limits: tuple[int, int] | None = None,
+) -> bytes:
     """Count the complete normalized input, admit its reserve, then send once.
 
     Both isolated workers share one absolute deadline. Count failures are terminal
@@ -224,9 +250,12 @@ def exchange(ledger: ResponseBudget, request: dict[str, Any], credential: str) -
     """
     try:
         digest, bounded = ledger.reserve(request, now_ms=monotonic_ms())
-        count = strict_json(run_worker(count_request(bounded), credential, ledger.deadline, counting=True))
+        options = {} if worker_input_limit is None else {"input_limit": worker_input_limit}
+        if json_limits is not None:
+            options["json_limits"] = json_limits
+        count = strict_json(run_worker(count_request(bounded), credential, ledger.deadline, counting=True, **options))
         ledger.admit_tokens(digest, bounded, count, now_ms=monotonic_ms())
-        payload = run_worker(bounded, credential, ledger.deadline)
+        payload = run_worker(bounded, credential, ledger.deadline, **options)
         response = completed_response(payload, streaming=bounded.get("stream", False))
         ledger.complete(digest, response, now_ms=monotonic_ms())
         return payload
@@ -235,11 +264,12 @@ def exchange(ledger: ResponseBudget, request: dict[str, Any], credential: str) -
         raise
 
 
-def worker() -> int:
+def worker(input_limit: int = MAX_WORKER_INPUT, json_limits: tuple[int, int] | None = None) -> int:
     try:
-        payload = sys.stdin.buffer.read(MAX_WORKER_INPUT + 1)
-        require(len(payload) <= MAX_WORKER_INPUT, "transport-request-size")
-        message = strict_json(payload)
+        integer(input_limit, 1, 2**63 - 1, "transport-resource-limit")
+        payload = sys.stdin.buffer.read(input_limit + 1)
+        require(len(payload) <= input_limit, "transport-request-size")
+        message = strict_json(payload, json_limits=json_limits)
         require(
             type(message) is dict and set(message) == {"request", "credential", "timeout_ms", "counting"},
             "transport-worker-input",
@@ -258,4 +288,7 @@ def worker() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) in (3, 5) and sys.argv[1] == "--worker":
+        limits = tuple(int(value) for value in sys.argv[3:]) if len(sys.argv) == 5 else None
+        raise SystemExit(worker(int(sys.argv[2]), limits))
     raise SystemExit(worker() if sys.argv[1:] == ["--worker"] else 2)

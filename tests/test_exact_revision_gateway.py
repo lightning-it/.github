@@ -27,7 +27,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
         prompt = (ROOT / ".github/codex/prompts/review-exact-head.md").read_bytes()
         schema = (ROOT / ".github/codex/schemas/exact-head-review.schema.json").read_bytes()
         self.metadata = {key: "a" * (64 if key.endswith("sha256") else 40) for key in gateway.BINDINGS}
-        self.metadata.update(diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload),
+        self.metadata.update(schema_version=6, diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload),
                              prompt_sha256=gateway.review.sha(prompt), schema_sha256=gateway.review.sha(schema))
         for name, data in (("change.patch", self.payload), ("review-prompt.md", prompt),
                            ("review-schema.json", schema), ("review-metadata.json", gateway.review.canonical(self.metadata))):
@@ -49,9 +49,128 @@ class SingleReviewGatewayTests(unittest.TestCase):
                 "output": [{"type": "message", "role": "assistant", "status": "completed",
                             "content": [{"type": "output_text", "text": json.dumps(self.result)}]}]}
 
+    def large_subject(self):
+        import shutil
+        shutil.rmtree(self.root)
+        self.payload = b"diff --git a/a b/a\n" + b"+complete input line\n" * 120_000
+        self.metadata.update(diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload))
+        (self.directory / "change.patch").write_bytes(self.payload)
+        (self.directory / "review-metadata.json").write_bytes(gateway.review.canonical(self.metadata))
+        gateway.prepare(self.root, self.directory, 42, os.getuid())
+        self.state, self.prompt = gateway.context(self.root, 42, uid=os.getuid())
+        self.reviewer = gateway.Reviewer(self.state, self.prompt, self.root / "public")
+        self.result.update({key: self.metadata[key] for key in gateway.BINDINGS})
+
+    def test_large_actual_http_and_worker_path_uses_full_tokens_once(self):
+        import http.client
+        import io
+        import threading
+        import tracemalloc
+        self.large_subject()
+        request = self.request()
+        request['instructions'] += ' complete system context' * 30_000
+        body = gateway.review.canonical(request)
+        self.assertGreater(len(body), 2_100_000)
+        calls = []
+        case = self
+
+        class Process:
+            returncode = None
+            def __init__(self, argv, **kwargs):
+                case.assertIn('--worker', argv)
+                index = argv.index('--worker')
+                self.limit = int(argv[index + 1])
+                self.json_limits = tuple(int(value) for value in argv[index + 2:])
+            def communicate(self, message=None, timeout=None):
+                if message is None:
+                    return b'', b''
+                self.encoded_size = len(message)
+                case.assertLessEqual(len(message), self.limit)
+                output = io.BytesIO()
+                with patch.object(gateway.transport.sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(message)})()), \
+                     patch.object(gateway.transport.sys, 'stdout', type('Output', (), {'buffer': output})()):
+                    self.returncode = gateway.transport.worker(self.limit, self.json_limits)
+                return output.getvalue(), b''
+            def poll(self):
+                return self.returncode
+
+        def upstream(payload, credential, timeout, *, counting=False):
+            calls.append((counting, copy.deepcopy(payload)))
+            if counting:
+                return gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 170_000})
+            response = self.response()
+            response['usage'] = {'input_tokens': 170_000, 'output_tokens': 5, 'total_tokens': 170_005}
+            return gateway.review.canonical(response)
+
+        tracemalloc.start()
+        with gateway.http.server.HTTPServer(('127.0.0.1', 0), gateway.handler_for(self.reviewer)) as server, \
+             patch.object(gateway.transport.subprocess, 'Popen', side_effect=Process), \
+             patch.object(gateway.transport, 'fetch_once', side_effect=upstream):
+            thread = threading.Thread(target=server.handle_request)
+            thread.start()
+            client = http.client.HTTPConnection(*server.server_address, timeout=20)
+            client.request('POST', '/responses', body, {'Authorization': 'Bearer fixture', 'Content-Type': 'application/json'})
+            response = client.getresponse()
+            response.read()
+            self.assertEqual(200, response.status)
+            client.close()
+            thread.join(20)
+            self.assertFalse(thread.is_alive())
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertLess(peak, len(body) * gateway.resources.COPIES)
+        self.assertEqual([True, False], [item[0] for item in calls])
+        self.assertEqual(calls[0][1], gateway.transport.count_request(calls[1][1]))
+        self.assertIn(self.payload.decode(), calls[0][1]['input'])
+        self.assertEqual(request['instructions'], calls[0][1]['instructions'])
+        self.assertEqual(1, json.loads((self.root / 'public/receipt.json').read_text())['provider']['request_count'])
+        self.resource_observation = {'wire_bytes': len(body), 'subject_bytes': len(self.payload),
+                                     'traced_peak_bytes': peak, 'memory_contract': self.state['resource_contract'],
+                                     'input_tokens': 170_000, 'model_requests': 1, 'count_requests': 1}
+
+    def test_oversized_http_framing_fails_before_token_or_model_effect(self):
+        import http.client
+        import threading
+        with gateway.http.server.HTTPServer(('127.0.0.1', 0), gateway.handler_for(self.reviewer)) as server, \
+             patch.object(gateway.transport, 'run_worker') as worker:
+            thread = threading.Thread(target=server.handle_request)
+            thread.start()
+            client = http.client.HTTPConnection(*server.server_address, timeout=10)
+            client.request('POST', '/responses', b'', {'Authorization': 'Bearer fixture',
+                'Content-Type': 'application/json', 'Content-Length': str(gateway.state_limit(self.state) + 1)})
+            response = client.getresponse()
+            response.read()
+            self.assertEqual(502, response.status)
+            client.close()
+            thread.join(10)
+            worker.assert_not_called()
+
+    def test_single_cannot_make_a_second_model_call_after_tool_output(self):
+        response = self.response()
+        response['output'] = [{'type': 'function_call', 'name': 'inspect', 'arguments': '{}', 'call_id': 'one'}]
+        with patch.object(gateway.transport, 'run_worker', side_effect=[
+            gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10}),
+            gateway.review.canonical(response),
+        ]) as worker:
+            self.reviewer.submit(self.request(), 'fixture')
+            request = self.request()
+            request['instructions'] += ' second turn'
+            with self.assertRaises(gateway.review.ReviewError):
+                self.reviewer.submit(request, 'fixture')
+            self.assertEqual(2, worker.call_count)
+        self.assertFalse((self.root / 'public/receipt.json').exists())
+
+    def test_hidden_payload_and_duplicate_prompt_fail_before_count(self):
+        for extra in ({'hidden_context': 'not counted'}, {'input': self.prompt * 2}):
+            reviewer = gateway.Reviewer(self.state, self.prompt, self.root / 'public')
+            with patch.object(gateway.transport, 'run_worker') as worker, self.assertRaises(gateway.review.ReviewError):
+                reviewer.submit(self.request() | extra, 'fixture')
+            worker.assert_not_called()
+            (self.root / 'public/failure.json').unlink()
+
     def test_full_context_count_precedes_paid_call_and_root_receipt_wins(self):
         calls = []
-        def worker(request, credential, deadline, *, counting=False):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
             calls.append((counting, copy.deepcopy(request)))
             if counting:
                 return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10})
@@ -76,8 +195,81 @@ class SingleReviewGatewayTests(unittest.TestCase):
             self.reviewer.submit(self.request(), "fixture-secret")
         worker.assert_not_called()
 
+    def test_json_node_and_depth_abuse_fail_in_actual_http_before_count(self):
+        import http.client
+        import threading
+        for schema in ({'enum': [{}] * 80_000}, {'enum': '[' * 65}):
+            request = self.request()
+            request['text']['format']['schema'] = schema
+            body = gateway.review.canonical(request)
+            if schema == {'enum': '[' * 65}:
+                body = b'[' * 65 + b'0' + b']' * 65
+            reviewer = gateway.Reviewer(self.state, self.prompt, self.root / 'public')
+            with gateway.http.server.HTTPServer(('127.0.0.1', 0), gateway.handler_for(reviewer)) as server, \
+                 patch.object(gateway.transport, 'run_worker') as worker:
+                thread = threading.Thread(target=server.handle_request)
+                thread.start()
+                client = http.client.HTTPConnection(*server.server_address, timeout=10)
+                client.request('POST', '/responses', body, {'Authorization': 'Bearer fixture', 'Content-Type': 'application/json'})
+                response = client.getresponse()
+                response.read()
+                self.assertEqual(502, response.status)
+                client.close()
+                thread.join(10)
+                worker.assert_not_called()
+            (self.root / 'public/failure.json').unlink()
+
+    def test_json_allocation_guard_cannot_be_bypassed_by_utf16_or_utf32(self):
+        for encoding in ('utf-16', 'utf-32'):
+            body = json.dumps({'enum': [{}] * 80_000}).encode(encoding)
+            with self.subTest(encoding=encoding), self.assertRaises((UnicodeError, ValueError)):
+                gateway.transport.strict_json(body, json_limits=(16384, 64))
+
+    def small_current_memory(self):
+        current = copy.deepcopy(self.state['resource_contract'])
+        current.update(observed={'fixture_available_bytes': 8 * 1024**2}, reserved_bytes=4 * 1024**2,
+                       max_json_nodes=2048)
+        current['max_wire_bytes'] = (current['reserved_bytes'] - (2048 + 64) * 1024) // 32
+        return current
+
+    def test_fresh_memory_snapshot_limits_json_nodes_before_actual_http_parse(self):
+        import http.client
+        import threading
+        current = self.small_current_memory()
+        request = self.request()
+        request['text']['format']['schema'] = {'enum': [{}] * 10_000}
+        body = gateway.review.canonical(request)
+        self.assertLess(len(body), current['max_wire_bytes'])
+        with gateway.http.server.HTTPServer(('127.0.0.1', 0), gateway.handler_for(self.reviewer)) as server, \
+             patch.object(gateway.resources, 'memory_contract', return_value=current) as snapshot, \
+             patch.object(gateway.transport, 'run_worker') as worker:
+            thread = threading.Thread(target=server.handle_request)
+            thread.start()
+            client = http.client.HTTPConnection(*server.server_address, timeout=10)
+            client.request('POST', '/responses', body, {'Authorization': 'Bearer fixture', 'Content-Type': 'application/json'})
+            response = client.getresponse()
+            response.read()
+            self.assertEqual(502, response.status)
+            client.close()
+            thread.join(10)
+            self.assertEqual(1, snapshot.call_count)
+            worker.assert_not_called()
+
+    def test_fresh_node_admission_is_bound_to_both_workers_and_receipt(self):
+        current = self.small_current_memory()
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+            self.assertEqual((current['max_json_nodes'] + gateway.resources.ENVELOPE_NODES, 65), json_limits)
+            return gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10} if counting else self.response())
+        with patch.object(gateway.resources, 'memory_contract', return_value=current) as snapshot, \
+             patch.object(gateway.transport, 'run_worker', side_effect=worker):
+            self.reviewer.submit(self.request(), 'fixture')
+            self.assertEqual(1, snapshot.call_count)
+        receipt = json.loads((self.root / 'public/receipt.json').read_text())
+        self.assertEqual(current, receipt['admission_resources']['observed_contract'])
+        self.assertEqual(2048, receipt['admission_resources']['node_limit'])
+
     def test_over_budget_never_calls_response_endpoint(self):
-        def worker(request, credential, deadline, *, counting=False):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
             self.assertTrue(counting)
             return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 400_001})
         with patch.object(gateway.transport, "run_worker", side_effect=worker) as worker, self.assertRaises(gateway.review.ReviewError):
@@ -87,7 +279,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertFalse((self.root / "public/receipt.json").exists())
 
     def test_unknown_response_terminal_no_second_count_or_model(self):
-        def worker(request, credential, deadline, *, counting=False):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
             if counting:
                 return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10})
             raise TimeoutError
@@ -106,7 +298,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
 
     def test_malformed_or_wrong_binding_never_yields_receipt(self):
         self.result["head_sha"] = "b" * 40
-        def worker(request, credential, deadline, *, counting=False):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
             return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10} if counting else self.response())
         with patch.object(gateway.transport, "run_worker", side_effect=worker), self.assertRaises(gateway.review.ReviewError):
             self.reviewer.submit(self.request(), "fixture")

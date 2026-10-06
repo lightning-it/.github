@@ -94,7 +94,14 @@ class ResponseBudget:
     """
 
     def __init__(
-        self, profile: dict[str, Any], *, max_cost_microusd: int, start_ms: int, timeout_ms: int, max_requests: int = 16
+        self,
+        profile: dict[str, Any],
+        *,
+        max_cost_microusd: int,
+        start_ms: int,
+        timeout_ms: int,
+        max_requests: int = 16,
+        request_byte_limit: int = 2_000_000,
     ):
         validate_profile(profile)
         integer(max_cost_microusd, 1, 1_000_000, "provider-cost-budget")
@@ -105,6 +112,8 @@ class ResponseBudget:
         self.limit = max_cost_microusd
         self.deadline = start_ms + timeout_ms
         self.last_ms = start_ms
+        integer(request_byte_limit, 1, 2**63 - 1, "provider-resource-bound")
+        self.request_byte_limit = request_byte_limit
         self.max_requests = max_requests
         self.requests: set[str] = set()
         self.responses: set[str] = set()
@@ -171,7 +180,9 @@ class ResponseBudget:
         try:
             require(not self.failed and self.active is None, "provider-active-or-terminal")
             self._clock(now_ms)
-            require(type(request) is dict and len(canonical(request)) <= 2_000_000, "provider-request-size")
+            require(
+                type(request) is dict and len(canonical(request)) <= self.request_byte_limit, "provider-request-size"
+            )
             require(set(request) <= REQUEST_KEYS, "provider-request-feature")
             require(request.get("model") == self.profile["model"], "provider-model-drift")
             require(request.get("service_tier", "default") in (None, "default"), "provider-service-tier")

@@ -106,7 +106,7 @@ class ReviewSizePolicyTests(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn('complete-request token budget is not bound', result.stderr)
         self.assertIn('schema:4,', (ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())
-        self.assertIn('"schema_version": 5', (ROOT / 'scripts/materialize-exact-revision-review.py').read_text())
+        self.assertIn('"schema_version": 6 if single_mode(arguments) else 5', (ROOT / 'scripts/materialize-exact-revision-review.py').read_text())
 
     def test_required_accepts_bound_reuse_with_skipped_guard_but_rejects_failed_new_call(self):
         source = (ROOT / '.github/workflows/supplementary-current-revision-required.yml').read_text()

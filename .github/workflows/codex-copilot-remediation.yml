@@ -246,7 +246,7 @@ jobs:
             else error("review.body must be null or a string")
             end
             | ascii_downcase
-            | gsub("wasn[\u0027\u2019]t"; "was not")
+            | gsub("n[\u0027\u2019]t"; " not")
             | gsub("\\s"; "")
           ' "${GITHUB_EVENT_PATH}")"; then
             echo "Copilot review body is malformed; remediation is forbidden." >&2

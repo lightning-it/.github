@@ -4923,7 +4923,7 @@ jobs:
                       and .[0].submitted_at == "2026-09-07T06:48:29Z"
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
-                        | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                        | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
                         | ["unabletoreviewthispullrequest","nofilestoreview",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
@@ -5662,7 +5662,7 @@ jobs:
           def normalize(value: str) -> str:
               """Match the protected gate's ASCII fold, contraction and Unicode whitespace rules."""
               ascii_lower = "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in value)
-              expanded = ascii_lower.replace("wasn't", "was not").replace("wasn’t", "was not")
+              expanded = ascii_lower.replace("n't", " not").replace("n’t", " not")
               return "".join(char for char in expanded if not char.isspace())
 
 
@@ -7525,7 +7525,7 @@ jobs:
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
                   [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("wasn[\u0027\u2019]t";"was not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7902,7 +7902,7 @@ jobs:
                   and .[0].submitted_at == "2026-09-07T06:48:29Z"
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
-                    | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
+                    | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
                     | ["unabletoreviewthispullrequest","nofilestoreview",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",

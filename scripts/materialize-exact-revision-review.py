@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import secrets
 import selectors
 import shutil
@@ -304,8 +305,12 @@ def validated_runner_temp() -> Path:
     return runner_temp
 
 
-def protected_asset_bytes(path: Path, name: str) -> bytes:
+def protected_asset_bytes(
+    path: Path, name: str, *, maximum: int = MAX_PROTECTED_ASSET_BYTES, single_runtime: bool = False
+) -> bytes:
     """Read one bounded regular protected asset through an anchored parent chain."""
+    if type(maximum) is not int or not 1 <= maximum <= (2**63 - 1 if single_runtime else MAX_PROTECTED_ASSET_BYTES):
+        fail("Invalid protected file resource boundary.")
     directory, no_follow, close_on_exec = open_owned_parent_directory(
         path,
         name,
@@ -330,10 +335,10 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
             fail(f"Protected {name} must be owned by the current user.")
         if details.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             fail(f"Protected {name} must not be group- or world-writable.")
-        if details.st_size <= 0 or details.st_size > MAX_PROTECTED_ASSET_BYTES:
-            fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
+        if details.st_size <= 0 or details.st_size > maximum:
+            fail(f"Protected {name} must contain 1..{maximum} bytes.")
         with os.fdopen(descriptor, "rb", closefd=False) as protected_asset:
-            payload = protected_asset.read(MAX_PROTECTED_ASSET_BYTES + 1)
+            payload = protected_asset.read(maximum + 1)
         if len(payload) != details.st_size:
             fail(f"Protected {name} changed while reading.")
         return payload
@@ -362,10 +367,14 @@ def protected_asset_bytes(path: Path, name: str) -> bytes:
             add_error_notes(active_error, cleanup_errors)
 
 
-def write_owned_regular_file(path: Path, payload: bytes, name: str) -> None:
+def write_owned_regular_file(
+    path: Path, payload: bytes, name: str, *, maximum: int = MAX_PROTECTED_ASSET_BYTES, single_runtime: bool = False
+) -> None:
     """Replace a bounded owned file without following its parent chain or target."""
-    if len(payload) <= 0 or len(payload) > MAX_PROTECTED_ASSET_BYTES:
-        fail(f"Protected {name} must contain 1..{MAX_PROTECTED_ASSET_BYTES} bytes.")
+    if type(maximum) is not int or not 1 <= maximum <= (2**63 - 1 if single_runtime else MAX_PROTECTED_ASSET_BYTES):
+        fail("Invalid protected file resource boundary.")
+    if len(payload) <= 0 or len(payload) > maximum:
+        fail(f"Protected {name} must contain 1..{maximum} bytes.")
     directory, no_follow, close_on_exec = open_owned_parent_directory(
         path,
         name,
@@ -541,6 +550,22 @@ def asset_paths_from_arguments(arguments: argparse.Namespace) -> dict[str, Path]
     return paths
 
 
+def single_memory_boundary() -> int:
+    # Loaded from the same immutable protected controller directory. This is
+    # runtime memory headroom, not a review-size or byte-to-token policy.
+    try:
+        return runpy.run_path(str(Path(__file__).with_name("single_review_resources.py")))["wire_limit"]()
+    except (OSError, ValueError, KeyError) as error:
+        fail(f"SINGLE memory resource evidence unavailable: {error}")
+
+
+def single_mode(arguments: argparse.Namespace) -> bool:
+    single = getattr(arguments, "single_runtime", False)
+    if type(single) is not bool or single and getattr(arguments, "bounded_runtime", False):
+        fail("Invalid SINGLE runtime mode.")
+    return single
+
+
 def validate_inputs(arguments: argparse.Namespace) -> None:
     if not REPOSITORY_PATTERN.fullmatch(arguments.repository):
         fail("Repository must use the owner/name form.")
@@ -559,6 +584,10 @@ def validate_inputs(arguments: argparse.Namespace) -> None:
         expected_dispatch_ref = f"refs/heads/{arguments.base_ref}"
         if arguments.dispatch_ref != expected_dispatch_ref:
             fail("App dispatch must execute from the protected pull-request base ref.")
+
+
+def review_boundary(arguments: argparse.Namespace) -> int:
+    return single_memory_boundary() if single_mode(arguments) else MAX_REVIEW_BYTES - 1
 
 
 def read_live_pull_request(
@@ -727,6 +756,9 @@ def write_materialized_workspace(
     output_directory: Path,
     diff: bytes,
     metadata: dict[str, Any],
+    *,
+    maximum: int = MAX_PROTECTED_ASSET_BYTES,
+    single_runtime: bool = False,
 ) -> None:
     """Publish the two-file review workspace or remove the exact partial output."""
     if output_directory.exists():
@@ -739,7 +771,7 @@ def write_materialized_workspace(
     patch = output_directory / "change.patch"
     metadata_path = output_directory / "review-metadata.json"
     try:
-        write_owned_regular_file(patch, diff, "review diff")
+        write_owned_regular_file(patch, diff, "review diff", maximum=maximum, single_runtime=single_runtime)
         write_owned_regular_file(
             metadata_path,
             (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8"),
@@ -769,6 +801,7 @@ def materialize(
     output_directory: Path,
 ) -> dict[str, Any]:
     validate_inputs(arguments)
+    maximum = review_boundary(arguments)
     runner_temp = validated_runner_temp()
     if output_directory.exists():
         fail(f"Review workspace already exists: {output_directory}")
@@ -891,13 +924,12 @@ def materialize(
             ],
             environment=git_environment,
             binary=True,
-            max_bytes=MAX_REVIEW_BYTES,
+            max_bytes=maximum + 1,
         )
         if not isinstance(diff, bytes):
             fail("Git returned an invalid diff representation.")
         review_bytes = len(diff)
-        if review_bytes <= 0 or review_bytes >= MAX_REVIEW_BYTES:
-            maximum = MAX_REVIEW_BYTES - 1
+        if review_bytes <= 0 or review_bytes > maximum:
             boundary = f"1..{maximum} bytes"
             message = f"Exact-revision review input must contain {boundary}"
             fail(f"{message}; observed {review_bytes}.")
@@ -905,7 +937,7 @@ def materialize(
 
         read_live_pull_request(arguments, home=home)
         metadata = {
-            "schema_version": 5,
+            "schema_version": 6 if single_mode(arguments) else 5,
             "repository": arguments.repository,
             "pull_request": arguments.pull_request,
             "base_ref": arguments.base_ref,
@@ -918,7 +950,9 @@ def materialize(
             "trusted_workflow_sha": arguments.trusted_workflow_sha,
             "trigger": arguments.trigger,
         }
-        write_materialized_workspace(output_directory, diff, metadata)
+        write_materialized_workspace(
+            output_directory, diff, metadata, maximum=maximum, single_runtime=single_mode(arguments)
+        )
         return metadata
 
 
@@ -948,6 +982,7 @@ def verify(
     asset_paths: dict[str, Path],
 ) -> dict[str, Any]:
     validate_inputs(arguments)
+    maximum = review_boundary(arguments)
     patch = review_directory / "change.patch"
     metadata_path = review_directory / "review-metadata.json"
     invalid_patch = not patch.is_file() or patch.is_symlink()
@@ -955,8 +990,8 @@ def verify(
     if invalid_patch or invalid_metadata:
         fail("The review diff and metadata must be regular, non-symlink files.")
     patch_size = patch.stat().st_size
-    if patch_size <= 0 or patch_size >= MAX_REVIEW_BYTES:
-        fail(f"The review diff must be between 1 and {MAX_REVIEW_BYTES - 1} bytes.")
+    if patch_size <= 0 or patch_size > maximum:
+        fail(f"The review diff must be between 1 and {maximum} bytes.")
     try:
         metadata_bytes = protected_asset_bytes(metadata_path, "review metadata")
         expected_metadata = json.loads(metadata_bytes.decode("utf-8"))
@@ -982,8 +1017,10 @@ def verify(
         regenerated = Path(temporary) / "review"
         regenerated_metadata = materialize(arguments, regenerated)
         actual_metadata = bind_protected_assets(regenerated_metadata, asset_paths)
-        if protected_asset_bytes(patch, "review diff") != protected_asset_bytes(
-            regenerated / "change.patch", "regenerated diff"
+        if protected_asset_bytes(
+            patch, "review diff", maximum=maximum, single_runtime=single_mode(arguments)
+        ) != protected_asset_bytes(
+            regenerated / "change.patch", "regenerated diff", maximum=maximum, single_runtime=single_mode(arguments)
         ):
             fail("The full binary diff changed during exact-revision verification.")
     for key in IMMUTABLE_METADATA_KEYS:
@@ -1007,6 +1044,7 @@ def parse_arguments() -> argparse.Namespace:
         choices=("ready_for_review", "app_dispatch"),
     )
     parser.add_argument("--dispatch-ref", default="")
+    parser.add_argument("--single-runtime", action="store_true")
     parser.add_argument("--review-directory", required=True, type=Path)
     parser.add_argument("--materializer-path", type=Path)
     parser.add_argument("--copilot-workflow-path", type=Path)

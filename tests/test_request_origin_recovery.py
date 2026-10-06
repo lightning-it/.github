@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,6 +11,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVTOOLS_IMAGE = runpy.run_path(str(ROOT / 'scripts/lit-push-ready.py'))['COPILOT_DEVTOOL_IMAGE']
 WORKFLOW = ROOT / '.github/workflows/supplementary-current-revision-required.yml'
 REPO = 'lightning-it/.github'
 BASE, HEAD, SOURCE, JOURNAL = 'a' * 40, 'b' * 40, 'c' * 40, '1' * 40
@@ -96,7 +98,7 @@ class RequestOriginRecoveryTests(unittest.TestCase):
 import os, sys
 from pathlib import Path
 args = sys.argv[1:]
-image = 'quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08'
+image = __EXPECTED_DEVTOOLS_IMAGE__
 assert args[:3] == ['run', '--rm', '-i']
 for flag in ('--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=64', '--network=bridge'):
     assert flag in args
@@ -111,7 +113,7 @@ assert command[0] == 'python3'
 command = [value.replace('/proof/', os.environ['RUNNER_TEMP'] + '/') for value in command]
 os.chdir(os.environ['RUNNER_TEMP'])
 os.execvp(command[0], command)
-""")
+""".replace("__EXPECTED_DEVTOOLS_IMAGE__", repr(DEVTOOLS_IMAGE)))
         docker.chmod(0o755)
         workflow = WORKFLOW.read_text()
         def heredoc(label):
@@ -450,6 +452,11 @@ os.execvp(command[0], command)
                        'Copilot wasn’t able to review this pull request.',
                        'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST',
                        "Copilot wasn't able to review any files.", 'Copilot wasn’t able to review any files.',
+                       "Copilot isn't able to review any files.",
+                       "Copilot isn’t able to review any files.",
+                       "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                       "The bots aren't able to review any files.",
+                       "The bots weren’t able to review any files.",
                        'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES'):
             for inline in (False, True):
                 with self.subTest(marker=marker, inline=inline):
@@ -467,6 +474,24 @@ os.execvp(command[0], command)
                 self.assertNotEqual(0, self.run_caller(data).returncode)
         result = self.run_caller(baseline)
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_actual_required_selected_review_has_precise_negation_policy(self):
+        for text, usable in (("Copilot isn't able to review any files.", False),
+                             ('Copilot isn’t able to review any files.', False),
+                             ('COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.', False),
+                             ('The bot was able to review any files.', True),
+                             ('THE BOT WAS ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.', True)):
+            with self.subTest(text=text):
+                data = self.resume_fixture()
+                data['REVIEWS'][0][0]['body'] = text
+                result = self.run_caller(data)
+                self.assertEqual(usable, result.returncode == 0, result.stderr)
+
+    def test_actual_required_proof_rejects_workflow_image_drift_from_engine(self):
+        self.assertIn(DEVTOOLS_IMAGE, self.shell)
+        self.shell = self.shell.replace(DEVTOOLS_IMAGE, DEVTOOLS_IMAGE.split('@')[0] + '@sha256:' + '0' * 64)
+        result = self.run_caller(self.resume_fixture())
+        self.assertNotEqual(0, result.returncode)
 
     def test_actual_required_positive_any_files_body_and_inline(self):
         for text in ('The bot was able to review any files.', 'able to review any files',

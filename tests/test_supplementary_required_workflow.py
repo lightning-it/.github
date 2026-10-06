@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import runpy
 import re
 import shutil
 import subprocess
@@ -15,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVTOOLS_IMAGE = runpy.run_path(str(ROOT / 'scripts/lit-push-ready.py'))['COPILOT_DEVTOOL_IMAGE']
 AGENTS = ROOT / "AGENTS.md"
 WORKFLOW = (
     ROOT / ".github" / "workflows" / "supplementary-current-revision-required.yml"
@@ -3186,7 +3188,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn('docker run --rm -i --read-only --cap-drop=ALL', launcher)
         self.assertEqual(2, launcher.count(',readonly'))
         self.assertNotIn('/var/run/docker.sock', launcher)
-        self.assertIn('sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08', launcher)
+        self.assertIn(DEVTOOLS_IMAGE, launcher)
         self.assertIn('| length == 1', late)
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)

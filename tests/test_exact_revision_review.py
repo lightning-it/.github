@@ -33,6 +33,36 @@ class ExactRevisionMaterializerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_materializer()
 
+    def test_single_schema_six_materializes_complete_large_subject(self) -> None:
+        import argparse
+        arguments = argparse.Namespace(repository='lightning-it/.github', pull_request=23,
+            base_ref='develop', expected_base='a' * 40, expected_head='b' * 40,
+            trusted_workflow_sha='a' * 40, trigger='app_dispatch', dispatch_ref='refs/heads/develop',
+            single_runtime=True)
+        payload = b'diff --git a/a b/a\n' + b'+complete line\n' * 170_000
+        def git_output(_git, _dir, command, **kwargs):
+            if command[:2] == ['rev-parse', 'refs/review/base^{commit}']: return 'a' * 40
+            if command[:2] == ['rev-parse', 'refs/review/head^{commit}']: return 'b' * 40
+            if command[0] == 'merge-base': return 'c' * 40
+            if command[0] == 'merge-tree': return 'd' * 40
+            if command[:2] == ['cat-file', '-t']: return 'tree'
+            if command[0] == 'diff': return payload
+            return ''
+        with tempfile.TemporaryDirectory() as temporary, \
+             mock.patch.dict(os.environ, {'RUNNER_TEMP': temporary, 'GH_TOKEN': 'fixture'}), \
+             mock.patch.object(self.module, 'read_live_pull_request', return_value={}), \
+             mock.patch.object(self.module, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+             mock.patch.object(self.module, 'git_output', side_effect=git_output):
+            output = Path(temporary).resolve() / 'review'
+            metadata = self.module.materialize(arguments, output)
+            self.assertEqual(6, metadata['schema_version'])
+            self.assertEqual(payload, (output / 'change.patch').read_bytes())
+            self.assertEqual(len(payload), metadata['review_bytes'])
+            self.assertGreater(len(payload), 2_000_000)
+            arguments.single_runtime = False
+            with self.assertRaises(self.module.MaterializationError):
+                self.module.materialize(arguments, Path(temporary).resolve() / 'legacy')
+
     def test_protected_review_dependency_closure_is_installed(self) -> None:
         for path in (MATERIALIZER, REVIEW_WORKFLOW, RERUN_WORKFLOW):
             with self.subTest(path=path):
