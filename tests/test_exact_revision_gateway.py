@@ -90,7 +90,10 @@ class SingleReviewGatewayTests(unittest.TestCase):
                 case.assertIn('--worker', argv)
                 index = argv.index('--worker')
                 self.limit = int(argv[index + 1])
-                self.json_limits = tuple(int(value) for value in argv[index + 2:])
+                suffix = argv.index("--response-byte-limit") if "--response-byte-limit" in argv else len(argv)
+                self.response_limit = int(argv[suffix + 1]) if suffix < len(argv) else None
+                self.destination = kwargs["stdout"] if self.response_limit is not None else None
+                self.json_limits = tuple(int(value) for value in argv[index + 2:suffix])
             def communicate(self, message=None, timeout=None):
                 if message is None:
                     return b'', b''
@@ -99,12 +102,19 @@ class SingleReviewGatewayTests(unittest.TestCase):
                 output = io.BytesIO()
                 with patch.object(gateway.transport.sys, 'stdin', type('Input', (), {'buffer': io.BytesIO(message)})()), \
                      patch.object(gateway.transport.sys, 'stdout', type('Output', (), {'buffer': output})()):
-                    self.returncode = gateway.transport.worker(self.limit, self.json_limits)
+                    self.returncode = gateway.transport.worker(self.limit, self.json_limits, response_byte_limit=self.response_limit)
+                if self.destination is not None:
+                    self.destination.write(output.getvalue())
+                    self.destination.flush()
+                    return None, None
                 return output.getvalue(), b''
             def poll(self):
                 return self.returncode
 
-        def upstream(payload, credential, timeout, *, counting=False):
+            def wait(self):
+                return self.returncode
+
+        def upstream(payload, credential, timeout, *, counting=False, response_byte_limit=None):
             calls.append((counting, copy.deepcopy(payload)))
             if counting:
                 return gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 170_000})
@@ -180,7 +190,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
 
     def test_full_context_count_precedes_paid_call_and_root_receipt_wins(self):
         calls = []
-        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None, response_byte_limit=None):
             calls.append((counting, copy.deepcopy(request)))
             if counting:
                 return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10})
@@ -267,7 +277,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
 
     def test_fresh_node_admission_is_bound_to_both_workers_and_receipt(self):
         current = self.small_current_memory()
-        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None, response_byte_limit=None):
             self.assertEqual((current['max_json_nodes'] + gateway.resources.ENVELOPE_NODES, 65), json_limits)
             return gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10} if counting else self.response())
         with patch.object(gateway.resources, 'memory_contract', return_value=current) as snapshot, \
@@ -279,7 +289,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertEqual(2048, receipt['admission_resources']['node_limit'])
 
     def test_over_budget_never_calls_response_endpoint(self):
-        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None, response_byte_limit=None):
             self.assertTrue(counting)
             return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 400_001})
         with patch.object(gateway.transport, "run_worker", side_effect=worker) as worker, self.assertRaises(gateway.review.ReviewError):
@@ -289,7 +299,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertFalse((self.root / "public/receipt.json").exists())
 
     def test_unknown_response_terminal_no_second_count_or_model(self):
-        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None, response_byte_limit=None):
             if counting:
                 return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10})
             raise TimeoutError
@@ -308,7 +318,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
 
     def test_malformed_or_wrong_binding_never_yields_receipt(self):
         self.result["head_sha"] = "b" * 40
-        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None):
+        def worker(request, credential, deadline, *, counting=False, input_limit=None, json_limits=None, response_byte_limit=None):
             return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10} if counting else self.response())
         with patch.object(gateway.transport, "run_worker", side_effect=worker), self.assertRaises(gateway.review.ReviewError):
             self.reviewer.submit(self.request(), "fixture")

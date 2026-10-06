@@ -275,7 +275,10 @@ class ProtectedGatewayInstructionTests(unittest.TestCase):
             def __init__(self, argv, **kwargs):
                 index = argv.index("--worker")
                 self.limit = int(argv[index + 1])
-                self.limits = tuple(map(int, argv[index + 2 :]))
+                suffix = argv.index("--response-byte-limit") if "--response-byte-limit" in argv else len(argv)
+                self.response_limit = int(argv[suffix + 1]) if suffix < len(argv) else None
+                self.destination = kwargs["stdout"] if self.response_limit is not None else None
+                self.limits = tuple(map(int, argv[index + 2 : suffix]))
 
             def communicate(self, message=None, timeout=None):
                 if message is None:
@@ -285,13 +288,20 @@ class ProtectedGatewayInstructionTests(unittest.TestCase):
                     patch.object(gateway.transport.sys, "stdin", type("Input", (), {"buffer": io.BytesIO(message)})()),
                     patch.object(gateway.transport.sys, "stdout", type("Output", (), {"buffer": output})()),
                 ):
-                    self.returncode = gateway.transport.worker(self.limit, self.limits)
+                    self.returncode = gateway.transport.worker(self.limit, self.limits, response_byte_limit=self.response_limit)
+                if self.destination is not None:
+                    self.destination.write(output.getvalue())
+                    self.destination.flush()
+                    return None, None
                 return output.getvalue(), b""
 
             def poll(self):
                 return self.returncode
 
-        def upstream(request, credential, timeout, *, counting=False):
+            def wait(self):
+                return self.returncode
+
+        def upstream(request, credential, timeout, *, counting=False, response_byte_limit=None):
             calls.append((counting, copy.deepcopy(request)))
             return gateway.review.canonical(
                 {"object": "response.input_tokens", "input_tokens": 10} if counting else self.response()

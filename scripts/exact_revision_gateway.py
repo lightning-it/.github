@@ -228,11 +228,17 @@ class Reviewer:
             review.require(type(request) is dict and contains_prompt(request, self.prompt), "single-full-input")
             current = resources.memory_contract() if admission is None else admission
             wire_limit, node_limit = admission_limits(self.state, current)
+            response_wire_limit = min(wire_limit, transport.MAX_RESPONSE_BYTES)
             json_limits = (node_limit, resources.MAX_JSON_DEPTH)
             # Programmatic callers receive the same pre-allocation guard as HTTP.
             resources.preflight_json(review.canonical(request), *json_limits)
             if self.budget is None:
-                self.admission = {"observed_contract": current, "wire_limit": wire_limit, "node_limit": node_limit}
+                self.admission = {
+                    "observed_contract": current,
+                    "wire_limit": wire_limit,
+                    "node_limit": node_limit,
+                    "response_wire_limit": response_wire_limit,
+                }
                 self.started = transport.monotonic_ms()
                 self.budget = ResponseBudget(
                     config.profile(),
@@ -247,6 +253,7 @@ class Reviewer:
                 request,
                 credential,
                 json_limits=json_limits,
+                response_byte_limit=response_wire_limit,
                 worker_input_limit=wire_limit
                 + len(
                     review.canonical(
@@ -255,7 +262,12 @@ class Reviewer:
                 ),
             )
             packet = final_packet(
-                transport.completed_response(wire, streaming=request.get("stream", False), json_limits=json_limits),
+                transport.completed_response(
+                    wire,
+                    streaming=request.get("stream", False),
+                    json_limits=json_limits,
+                    response_byte_limit=response_wire_limit,
+                ),
                 json_limits=json_limits,
             )
             if packet is not None:
