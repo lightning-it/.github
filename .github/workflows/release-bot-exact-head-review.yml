@@ -28,6 +28,12 @@ on:
         required: true
         type: string
 
+      bounded_mode:
+        description: Budgeted single review; legacy permits historical reuse only
+        type: choice
+        default: single
+        options: [single, legacy]
+
 permissions:
   contents: read
 
@@ -76,6 +82,7 @@ jobs:
     timeout-minutes: 25
 
     env:
+      BOUNDED_MODE: ${{ inputs.bounded_mode || 'single' }}
       BASE_REF: ${{ inputs.base_ref }}
       DISPATCH_REF: ${{ github.ref }}
       DISPATCH_BASE_SHA: ${{ github.sha }}
@@ -101,6 +108,7 @@ jobs:
           test "${DISPATCH_BASE_SHA}" = "${EXPECTED_BASE}"
           test "${TRUSTED_WORKFLOW_SHA}" = "${EXPECTED_BASE}"
           test "${TRUSTED_WORKFLOW_SHA}" = "${DISPATCH_BASE_SHA}"
+          case "${BOUNDED_MODE}" in single|legacy) ;; *) exit 1 ;; esac
           install -d -m 0700 trusted-controller
           load_protected_asset() {
             local destination path payload
@@ -126,6 +134,13 @@ jobs:
             scripts/materialize-exact-revision-review.py \
             trusted-controller/materialize.py
           chmod 0500 trusted-controller/materialize.py
+          if [ "${BOUNDED_MODE}" = single ]; then
+            for asset in exact_revision_gateway.py bounded_review.py bounded_review_config.py \
+              bounded_review_provider.py bounded_review_transport.py; do
+              load_protected_asset "scripts/${asset}" "trusted-controller/${asset}"
+              chmod 0400 "trusted-controller/${asset}"
+            done
+          fi
           python3 trusted-controller/materialize.py materialize \
             --repository "${REPOSITORY}" \
             --pull-request "${PR_NUMBER}" \
@@ -655,30 +670,65 @@ jobs:
               and .output.summary == $summary
             ' <<<"${created}" >/dev/null
 
+      - name: Install the protected bounded subject gateway
+        if: inputs.bounded_mode != 'legacy' && steps.dedupe.outputs.reuse != 'true'
+        id: bounded-subject
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${BOUNDED_MODE}" = single
+          sudo -n python3 -E -s trusted-controller/exact_revision_gateway.py install --run-id "${GITHUB_RUN_ID}"
+          root="/run/exact-review-${GITHUB_RUN_ID}"
+          port="$(jq -er .port "${root}/public/port.json")"
+          [[ "${port}" =~ ^[1-9][0-9]*$ ]]
+          {
+            echo "endpoint=http://127.0.0.1:${port}/responses"
+            echo "prompt=${root}/public/prompt.md"
+            echo "schema=${root}/public/schema.json"
+            echo "directory=${root}/public"
+            echo "installed=true"
+          } >>"${GITHUB_OUTPUT}"
+
       - name: Require complete-request token budget before a new model call
         if: steps.dedupe.outputs.reuse != 'true'
+        env:
+          BUDGETED_GATEWAY_INSTALLED: ${{ steps.bounded-subject.outputs.installed }}
         shell: bash
         run: |
-          # Metadata v5 and receipt v4 bind bytes, not the complete model input.
-          # Source/Governance must install the versioned budgeted executor
-          # before this direct codex-action path can issue another model call.
-          echo 'New Own-MLX review blocked: complete-request token budget is not bound.' >&2
-          exit 1
+          # Historical metadata/receipt byte bounds do not prove token fit.
+          # Only the protected subject gateway counts every complete request.
+          if [ "${BUDGETED_GATEWAY_INSTALLED}" != 'true' ]; then
+            echo 'New Own-MLX review blocked: complete-request token budget is not bound.' >&2
+            exit 1
+          fi
 
       - name: Run protected history-free Exact-Revision Codex review
         if: steps.dedupe.outputs.reuse != 'true'
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: exact-revision-review/review-prompt.md
+          responses-api-endpoint: ${{ steps.bounded-subject.outputs.endpoint }}
+          codex-version: ${{ steps.bounded-subject.outputs.installed == 'true' && '0.160.0' || '' }}
+          model: ${{ steps.bounded-subject.outputs.installed == 'true' && 'gpt-5.4-mini-2026-03-17' || '' }}
+          effort: ${{ steps.bounded-subject.outputs.installed == 'true' && 'high' || '' }}
+          prompt-file: ${{ steps.bounded-subject.outputs.prompt || 'exact-revision-review/review-prompt.md' }}
           output-file: exact-revision-review/result.json
-          output-schema-file: exact-revision-review/review-schema.json
-          working-directory: exact-revision-review
+          output-schema-file: ${{ steps.bounded-subject.outputs.schema || 'exact-revision-review/review-schema.json' }}
+          working-directory: ${{ steps.bounded-subject.outputs.directory || 'exact-revision-review' }}
           permission-profile: :read-only
           safety-strategy: drop-sudo
-          codex-args: '["--ephemeral"]'
+          codex-args: >-
+            ${{ steps.bounded-subject.outputs.installed == 'true' && '["--ephemeral","-c","web_search=\"disabled\""]' || '["--ephemeral"]' }}
           allow-bots: "true"
           allow-bot-users: lightning-it-release-automation
+
+      - name: Collect the protected bounded subject receipt
+        if: always() && steps.bounded-subject.outputs.installed == 'true'
+        id: bounded-collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 "/run/exact-review-${GITHUB_RUN_ID}/code/exact_revision_gateway.py" collect --run-id "${GITHUB_RUN_ID}"
 
       - name: Re-prove exact revision and enforce the Codex verdict
         env:

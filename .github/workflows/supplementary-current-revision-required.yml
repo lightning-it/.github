@@ -4925,7 +4925,7 @@ jobs:
                       and ((.[0].body | ascii_downcase
                         | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
                         | ["unabletoreviewthispullrequest","nofilestoreview",
-                           "wasnotabletoreviewanyfiles","abletoreviewanyfiles",
+                           "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
                            "encounteredanerror"]
@@ -5636,7 +5636,6 @@ jobs:
               "wasnotabletoreviewthispullrequest",
               "nofilestoreview",
               "unabletoreviewanyfiles",
-              "abletoreviewanyfiles",
               "notabletoreviewanyfiles",
               "wasnotabletoreviewanyfiles",
               "quotaexhausted",
@@ -6013,6 +6012,21 @@ jobs:
           }
           INITIALIZATION
           cat >"${RUNNER_TEMP}/event-recovery.sh" <<'EVENT_RECOVERY'
+          run_request_proof() {
+            # Protected inline source only. No target checkout, Docker socket,
+            # credentials on disk or writable host directory enters the image.
+            docker run --rm -i --read-only --cap-drop=ALL \
+              --security-opt=no-new-privileges --pids-limit=64 \
+              --user "$(id -u):$(id -g)" --network=bridge \
+              --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+              --env GH_TOKEN --env GH_HOST=github.com --env HOME=/tmp \
+              --env PYTHONDONTWRITEBYTECODE=1 \
+              --mount "type=bind,src=${RUNNER_TEMP}/request-origin.py,dst=/proof/request-origin.py,readonly" \
+              --mount "type=bind,src=${RUNNER_TEMP}/review_request_continuation.py,dst=/proof/review_request_continuation.py,readonly" \
+              --workdir /proof \
+              quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08 \
+              python3 "$@"
+          }
           validate_recorded_ref() {
             if [ "${LI219_EVENT_MODE:-disabled}" = enabled ] \
               && [ "${author}" = litroc ] \
@@ -6020,7 +6034,7 @@ jobs:
               jq -cn --arg repo "${REPOSITORY}" --arg base "${EVENT_BASE}" \
                 --arg head "${EVENT_HEAD}" --arg base_ref "${base_ref}" \
                 --argjson owner "${owner_pr_number}" --argjson run "$1" '$ARGS.named' | \
-                python3 -c 'import json,sys; sys.path.insert(0, sys.argv[1]); import review_request_continuation as proof; value=json.load(sys.stdin); proof.empty_owner(**value)' "${RUNNER_TEMP}"
+                run_request_proof -c 'import json; import review_request_continuation as proof; import sys; proof.empty_owner(**json.load(sys.stdin))'
               return $?
             fi
             jq -e --argjson owner "${owner_pr_number}" \
@@ -6045,7 +6059,7 @@ jobs:
               --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
               --argjson first "${attempt_one}" --argjson producer "${producer}" \
               --argjson jobs "${attempt_one_jobs}" --argjson timeline "${tl}" \
-              '$ARGS.named' | python3 "${RUNNER_TEMP}/request-origin.py"
+              '$ARGS.named' | run_request_proof /proof/request-origin.py
           }
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
@@ -7511,7 +7525,7 @@ jobs:
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
                   [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("wasn[\u0027\u2019]t";"was not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","abletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("wasn[\u0027\u2019]t";"was not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7890,7 +7904,7 @@ jobs:
                   and ((.[0].body | ascii_downcase
                     | gsub("wasn[\u0027\u2019]t"; "was not") | gsub("\\s"; "")) as $body
                     | ["unabletoreviewthispullrequest","nofilestoreview",
-                       "wasnotabletoreviewanyfiles","abletoreviewanyfiles",
+                       "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",
                        "encounteredanerror"]

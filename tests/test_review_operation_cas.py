@@ -100,15 +100,18 @@ elif route.endswith('/requested_reviewers'):
             s['pending_head'] = 'a' * 40
         rc = 0 if mode == 'confirmed' else 42
     else:
-        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode in ('accepted-unknown', 'accepted-unknown-cleared', 'rejected-old-pending') and (mode != 'accepted-unknown-cleared' or worker == '500') and any(c.get('request') for c in s['calls'])) else []}
+        result = {'users': [{'login': 'copilot-pull-request-reviewer[bot]'}] if mode == 'pending-review' or (mode in ('accepted-unknown', 'accepted-unknown-cleared', 'legacy-terminal-cleared', 'rejected-old-pending') and (mode not in ('accepted-unknown-cleared', 'legacy-terminal-cleared') or worker == '500') and any(c.get('request') for c in s['calls'])) else []}
 elif '/comments' in route:
     if post:
         s.setdefault('comments', []).append({'user': {'login': 'github-actions[bot]'}, 'body': fields['body']})
         rc = 42
     else:
-        result = [[] if worker == '501' and mode not in ('confirmed', 'accepted-unknown', 'uncertain') else s.get('comments', [])]
+        result = [[] if worker == '501' and mode not in ('confirmed', 'accepted-unknown', 'uncertain', 'legacy-terminal-cleared') else s.get('comments', [])]
 elif '/reviews?' in route:
-    result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'body': 'Review complete.',
+    if mode == 'legacy-terminal-cleared' and worker != '500':
+        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Copilot was not able to review any files.', 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}]]
+    else:
+        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'body': 'Review complete.',
                 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}] if mode == 'existing-review' else []]
 elif route.endswith('/pulls/23'):
     result = {'number': 23, 'state': 'open', 'draft': False, 'user': {'login': 'litroc'},
@@ -291,6 +294,16 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
 
 
 class ReviewRequestCASTests(unittest.TestCase):
+    def test_request_reservations_serialize_across_event_actions(self):
+        import yaml
+        paths = [ROOT / '.github/workflows/copilot-review.yml']
+        mirror = ROOT / 'default/.github/workflows/copilot-review.yml'
+        if mirror.exists(): paths.append(mirror)
+        for path in paths:
+            request = yaml.safe_load(path.read_text())['jobs']['request-current-revision-review']
+            self.assertEqual({'group': 'copilot-review-request-${{ github.event.pull_request.number }}',
+                              'cancel-in-progress': False}, request['concurrency'])
+
     def probe(self, mode, new_head=False, event_mode="enabled", interrupt="", repository="lightning-it/.github"):
         import textwrap
         source = (ROOT / '.github/workflows/copilot-review.yml').read_text()
@@ -359,7 +372,7 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                     self.assertFalse(any(c.get('cas') for c in state['calls']))
 
 
-    def test_legacy_confirmed_request_precedes_marker_without_cas(self):
+    def test_legacy_confirmed_request_has_uncertain_then_acceptance_without_cas(self):
         for repository in ('lightning-it/.github', 'lightning-it/nonpilot'):
             for mode in ('confirmed',):
                 with self.subTest(repository=repository, mode=mode):
@@ -367,25 +380,29 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                     calls = state['calls']
                     self.assertFalse(any(c.get('cas') for c in calls))
                     effects = [c for c in calls if c.get('post')]
-                    self.assertEqual(2, len(effects))
-                    self.assertTrue(effects[0].get('request'))
-                    self.assertTrue(effects[1]['route'].endswith('/comments'))
-                    self.assertEqual(1, len(state['comments']))
+                    self.assertEqual(3, len(effects))
+                    self.assertTrue(effects[0]['route'].endswith('/comments'))
+                    self.assertTrue(effects[1].get('request'))
+                    self.assertTrue(effects[2]['route'].endswith('/comments'))
+                    self.assertEqual(2, len(state['comments']))
+                    self.assertIn('UNCERTAIN:', state['comments'][0]['body'])
+                    self.assertNotIn('UNCERTAIN:', state['comments'][1]['body'])
 
-    def test_interrupted_legacy_pre_request_does_not_consume_marker_but_pilot_cas_does(self):
-        for event_mode, expected_workers in (('disabled', ['501']), ('enabled', [])):
+    def test_interrupted_legacy_pre_request_consumes_uncertain_and_pilot_cas(self):
+        for event_mode, expected_workers in (('disabled', []), ('enabled', [])):
             with self.subTest(event_mode=event_mode):
                 state = self.probe('confirmed', event_mode=event_mode, interrupt='before_request')
                 self.assertEqual(expected_workers, [c['worker'] for c in state['calls'] if c.get('request')])
                 self.assertEqual(event_mode == 'enabled', any(c.get('cas') for c in state['calls']))
                 first_posts = [c for c in state['calls'] if c['worker'] == '500' and c.get('post')]
-                self.assertEqual(0 if event_mode == 'disabled' else 1, len(first_posts))
+                self.assertEqual(1, len(first_posts))
 
-    def test_interruption_before_marker_preserves_legacy_request_and_pilot_consumption(self):
-        for event_mode, expected_workers in (('disabled', ['500']), ('enabled', [])):
+    def test_interruption_before_reservation_never_permits_unreserved_paid_effect(self):
+        for event_mode, expected_workers in (('disabled', ['501']), ('enabled', [])):
             state = self.probe('accepted-unknown', event_mode=event_mode, interrupt='before_marker')
             self.assertEqual(expected_workers, [c['worker'] for c in state['calls'] if c.get('request')])
-            self.assertEqual([], state.get('comments', []))
+            self.assertFalse(any(c['worker'] == '500' and c.get('request') for c in state['calls']))
+            self.assertTrue(all('UNCERTAIN:' in item['body'] for item in state.get('comments', [])))
 
     def test_unknown_unconfirmed_response_has_no_same_invocation_retry_in_either_mode(self):
         for event_mode in ('disabled', 'enabled'):
@@ -395,7 +412,8 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
             if event_mode == 'enabled':
                 self.assertEqual(1, len(requests))
             else:
-                self.assertEqual([], state.get('comments', []))
+                self.assertTrue(all('UNCERTAIN:' in item['body'] for item in state.get('comments', [])))
+                self.assertEqual(1, len(requests))
                 self.assertFalse(any(c.get('cas') for c in state['calls']))
 
 
@@ -408,9 +426,9 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                     self.assertEqual(1, sum(bool(c.get("request")) for c in state["calls"]))
                     self.assertEqual(int(flag == "enabled"), sum(bool(c.get("cas")) for c in state["calls"]))
                     comments = state.get("comments", [])
-                    self.assertEqual(int(flag == "enabled"), len(comments))
+                    self.assertEqual(1, len(comments))
                     # Pilot reservation predates POST and proves consumption only.
-                    self.assertTrue(all("request reserved" in item["body"] for item in comments))
+                    self.assertTrue(all(("request reserved" if flag == "enabled" else "UNCERTAIN:") in item["body"] for item in comments))
                     for index, call in enumerate(state["calls"]):
                         if call.get("request"):
                             self.assertFalse(any(later.get("post") and later["route"].endswith('/comments')
@@ -426,6 +444,19 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                 self.assertTrue(all("request reserved" in item["body"] for item in state.get("comments", [])))
 
 
+    def test_legacy_lost_response_terminal_review_and_cleared_pending_never_repeat(self):
+        for flag in ('', 'disabled'):
+            with self.subTest(flag=flag):
+                state = self.probe('legacy-terminal-cleared', event_mode=flag)
+                self.assertEqual(['500'], [c['worker'] for c in state['calls'] if c.get('request')])
+                self.assertFalse(any(c.get('cas') for c in state['calls']))
+                self.assertEqual(1, len(state['comments']))
+                self.assertIn('UNCERTAIN:', state['comments'][0]['body'])
+                self.assertNotIn('request accepted', state['comments'][0]['body'])
+                posts = [c for c in state['calls'] if c.get('post')]
+                self.assertTrue(posts[0]['route'].endswith('/comments'))
+                self.assertTrue(posts[1].get('request'))
+
     def test_rejected_original_post_then_old_pending_never_accepts_new_head(self):
         for flag in ("", "disabled", "enabled"):
             for new_head in (False, True):
@@ -438,8 +469,8 @@ marker="<!-- mlx90-copilot-request head=${EXPECTED_HEAD} -->"
                     self.assertEqual(1, state["outcomes"][0])
                     self.assertEqual(int(flag == "enabled"), sum(bool(c.get("cas")) for c in state["calls"]))
                     comments = state.get("comments", [])
-                    self.assertEqual(int(flag == "enabled"), len(comments))
-                    self.assertTrue(all("request reserved" in item["body"] for item in comments))
+                    self.assertEqual(1, len(comments))
+                    self.assertTrue(all(("request reserved" if flag == "enabled" else "UNCERTAIN:") in item["body"] for item in comments))
 
 
 class PilotActivationTests(unittest.TestCase):

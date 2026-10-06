@@ -50,6 +50,22 @@ class ReviewEventTests(unittest.TestCase):
                 "user": {"login": "copilot-pull-request-reviewer[bot]"},
                 "state": "COMMENTED", **changes}
 
+    def test_any_files_marker_requires_explicit_negation_in_body_or_inline(self):
+        positives = ('The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, expected in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    with self.subTest(text=text, inline=inline):
+                        review = self.review() if inline else self.review(body=text)
+                        comments = [{'body': text}] if inline else []
+                        self.assertEqual(expected, EVENT.clean_review(review, comments, self.head))
+
     def test_review_content_rejects_stale_empty_quota_and_foreign(self):
         self.assertTrue(EVENT.clean_review(self.review(), [], self.head))
         for review in (self.review(commit_id=self.base), self.review(body=" "),
@@ -154,6 +170,8 @@ class ReviewEventTests(unittest.TestCase):
         repo = "lightning-it/.github"
         api_url = f"https://api.github.com/repos/{repo}"
         return {"id": 88, "workflow_id": 999, "event": "pull_request_target",
+                "created_at": "2026-10-05T17:00:00Z", "run_attempt": 1,
+                "actor": {"login": "litroc"}, "triggering_actor": {"login": "litroc"},
                 "path": ".github/workflows/dot-github-current-revision-required.yml",
                 "workflow_url": f"{api_url}/actions/required_workflows/999",
                 "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
@@ -197,7 +215,20 @@ class ReviewEventTests(unittest.TestCase):
         run = self.required_run()
         run["pull_requests"][0]["number"] = 24
         self.assertEqual([], self.reconcile(neutral=True, required=[run]))
-        self.assertEqual([], self.reconcile(neutral=True, required=[self.required_run(), {**self.required_run(), "id": 89}]))
+        self.assertEqual([], self.reconcile(neutral=True, required=[self.required_run(), self.required_run()]))
+
+    def test_ordered_required_terminal_supersession_preserves_all_guards(self):
+        old = self.required_run()
+        new = {**old, "id": 89, "created_at": "2026-10-05T17:01:00Z"}
+        self.assertEqual(1, len(self.reconcile(neutral=True, required=[new, old])))
+        self.assertEqual([], self.reconcile(neutral=True, required=[old, {**new, "conclusion": "success"}]))
+        for changes in ({"status": "in_progress", "conclusion": None}, {"run_attempt": 3},
+                        {"actor": {"login": "foreign"}}, {"triggering_actor": {"login": "foreign"}},
+                        {"created_at": "invalid"}, {"created_at": "2026-02-30T17:00:00Z"}):
+            with self.subTest(changes=changes):
+                self.assertEqual([], self.reconcile(neutral=True, required=[{**old, **changes}, new]))
+        self.assertEqual(1, len(self.reconcile(neutral=True, required=[old, {
+            **new, "run_attempt": 2, "triggering_actor": {"login": "github-actions[bot]"}}])))
 
     def test_other_pilots_bind_the_central_organization_required_path(self):
         for repo in ("lightning-it/shared-assets-lit", "lightning-it/ansible-collection-supplementary"):
@@ -467,7 +498,7 @@ gh() {
         self.assertNotIn("seq 1 40", verifier)
         self.assertNotIn("seq 1 20", verifier)
 
-    def test_legacy_confirmed_request_records_marker_once_per_head(self):
+    def test_legacy_confirmed_request_records_uncertain_then_accepted_once_per_head(self):
         workflow = (ROOT / ".github/workflows/copilot-review.yml").read_text()
         fragment = workflow.split('          reviewer_is_requested() {\n', 1)[1].split('\n  verify-current-revision-policy:', 1)[0]
         fragment = textwrap.dedent('          reviewer_is_requested() {\n' + fragment)
@@ -514,7 +545,11 @@ done
                                          "requested_reviewers_url": "repos/lightning-it/.github/pulls/23/requested_reviewers"})
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual([self.head, "c" * 40], requests.read_text().splitlines())
-            self.assertEqual(2, len(json.loads(comments.read_text())[0]))
+            recorded = json.loads(comments.read_text())[0]
+            self.assertEqual(4, len(recorded))
+            for head in (self.head, 'c' * 40):
+                self.assertEqual(1, sum(f'<!-- mlx90-copilot-request-uncertain head={head} -->' in item['body'] for item in recorded))
+                self.assertEqual(1, sum(f'<!-- mlx90-copilot-request head={head} -->' in item['body'] for item in recorded))
 
     def test_missing_human_review_reaches_blocking_reservation_without_wait(self):
         workflow = (ROOT / ".github/workflows/supplementary-current-revision-required.yml").read_text()

@@ -93,6 +93,8 @@ else:
     parsed = urlsplit(route)
     result = s['routes'].get(route, s['routes'].get(parsed.path))
     assert result is not None, route
+    if '/actions/runs/77/attempts/1/jobs' in parsed.path and s.get('visibility_sequence'):
+        result = s['visibility_sequence'].pop(0)
     if isinstance(result, list) and parse_qs(parsed.query).get('page', ['1'])[0] != '1': result = []
 file.write_text(json.dumps(s))
 if result is not None: print(json.dumps(result))
@@ -306,7 +308,7 @@ class ContinuationTests(unittest.TestCase):
                    'Copilot wasn’t able to review this pull request.',
                    'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
                    "Copilot wasn't able to review any files.", 'Copilot wasn’t able to review any files.',
-                   'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES', 'able to review any files')
+                   'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES')
         for marker in markers:
             for inline in (False, True):
                 with self.subTest(marker=marker, inline=inline):
@@ -330,6 +332,21 @@ class ContinuationTests(unittest.TestCase):
         result = self.consumer()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, len(self.state['requests']))
+
+    def test_positive_any_files_body_and_inline_remain_usable(self):
+        self.assertEqual(0, self.defer().returncode)
+        baseline = copy.deepcopy(self.state)
+        for text in ('The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES'):
+            for inline in (False, True):
+                self.state = copy.deepcopy(baseline)
+                if inline:
+                    self.route('/pulls/23/reviews/17/comments').append({'id': 18, 'body': text})
+                else:
+                    self.route('/pulls/23/reviews/17')['body'] = text
+                result = self.consumer()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(1, len(self.state['requests']))
 
     def test_writer_and_readonly_content_contract_match_canonical_policy(self):
         import ast
@@ -406,6 +423,20 @@ class ContinuationTests(unittest.TestCase):
                 self.assertNotEqual(0, self.consumer(**changes).returncode)
                 self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
         self.assertEqual([], self.state['requests'])
+
+    def test_legacy_uncertain_or_accepted_consumption_blocks_enabled_continuation(self):
+        for label in ('mlx90-copilot-request', 'mlx90-copilot-request-uncertain'):
+            with self.subTest(marker=label):
+                self.setUp()
+                self.assertEqual(0, self.defer().returncode)
+                self.route('/issues/23/comments').append({'id': 2001, 'user': {'login': 'github-actions[bot]'},
+                    'body': f'<!-- {label} head={HEAD} -->Consumption only; not new review evidence.'})
+                self.assertNotEqual(0, self.locator().returncode)
+                result = self.consumer()
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn('existing request consumption marker', result.stderr)
+                self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
+                self.assertEqual([], self.state['requests'])
 
     def test_authority_and_native_drift_block_before_request_cas(self):
         mutations = {
@@ -507,6 +538,70 @@ class ContinuationTests(unittest.TestCase):
         result = self.consumer()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, len(self.state['requests']))
+
+    def test_defer_waits_for_native_policy_visibility_before_recording_intent(self):
+        for mode in ('absent', 'queued', 'binding queued', 'binding absent'):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.empty_association()
+                self.route('/actions/runs/77/attempts/1').update(status='in_progress', conclusion=None)
+                visible = copy.deepcopy(self.route('/actions/runs/77/attempts/1/jobs'))
+                pending = copy.deepcopy(visible)
+                policy = pending['jobs'][-1]
+                if mode == 'absent':
+                    pending['jobs'].pop()
+                    pending['total_count'] -= 1
+                else:
+                    policy.update(status='queued' if mode == 'queued' else 'in_progress', conclusion=None)
+                    if mode == 'queued': policy['runner_id'] = 0
+                    if mode == 'binding absent': policy['steps'] = []
+                    else: policy['steps'][0].update(status='queued', conclusion=None)
+                self.state['visibility_sequence'] = [pending, visible]
+                result = self.defer()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn(INTENT, self.state['versions'][self.state['oid']])
+                self.assertEqual([], self.state['requests'])
+                reads = [i for i, call in enumerate(self.state['calls']) if '/attempts/1/jobs' in call['route']]
+                writes = [i for i, call in enumerate(self.state['calls']) if call['payload']]
+                self.assertEqual(2, len(reads))
+                self.assertLess(reads[-1], writes[0])
+
+    def test_defer_visibility_exhaustion_never_records_intent_or_request(self):
+        self.empty_association()
+        self.route('/actions/runs/77/attempts/1').update(status='in_progress', conclusion=None)
+        pending = self.route('/actions/runs/77/attempts/1/jobs')
+        pending['jobs'][-1].update(status='queued', conclusion=None, runner_id=0)
+        result = self.defer()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('native binding visibility exhausted', result.stderr)
+        self.assertEqual(4, sum('/attempts/1/jobs' in call['route'] for call in self.state['calls']))
+        self.assertFalse(any(call['payload'] for call in self.state['calls']))
+        self.assertNotIn(INTENT, self.state['versions'][self.state['oid']])
+
+    def test_visibility_budget_is_shared_by_reads_and_caps_each_transport_deadline(self):
+        import importlib.util
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('visibility_writer', ROOT / 'scripts/review_request_continuation.py')
+        writer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(writer)
+        reply = subprocess.CompletedProcess([], 0, stdout='{}', stderr='')
+        with patch.object(writer.time, 'monotonic', return_value=10), patch.object(
+            writer.subprocess, 'run', return_value=reply
+        ) as transport:
+            writer._visibility_budget = [2, 15]
+            writer.api('repos/probe/jobs?page=1')
+            writer.api('repos/probe/jobs?page=2')
+            with self.assertRaisesRegex(ValueError, 'visibility read/time budget exhausted'):
+                writer.api('repos/probe/jobs?page=3')
+            self.assertEqual(2, transport.call_count)
+            self.assertEqual([5, 5], [call.kwargs['timeout'] for call in transport.call_args_list])
+            writer._visibility_budget = [24, 10]
+            with self.assertRaisesRegex(ValueError, 'visibility read/time budget exhausted'):
+                writer.api('repos/probe/jobs')
+            writer._visibility_budget = [24, 15]
+            with self.assertRaisesRegex(ValueError, 'visibility is GET-only'):
+                writer.api('repos/probe/effect', payload={})
+            self.assertEqual(2, transport.call_count)
 
     def test_empty_association_never_grants_authority_alone(self):
         for mode in ('ambiguous', 'wrong binding', 'wrong run', 'skipped', 'foreign head', 'other sender', 'wrong step'):

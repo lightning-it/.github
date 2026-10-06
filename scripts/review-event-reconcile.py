@@ -26,7 +26,7 @@ DISPATCH_INVENTORY_REQUESTS = 256
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
     "unable to review this pull request", "no files to review",
-    "was not able to review any files", "able to review any files",
+    "was not able to review any files", "not able to review any files", "unable to review any files",
     "premium request quota", "premium requests quota",
     "quota exhausted", "quota exceeded", "suppressed comments",
     "encountered an error",
@@ -217,6 +217,35 @@ def required_locator(run, repository, pr):
     )
 
 
+def latest_required(runs, repository, pr):
+    """Ordered native terminal supersession, matching the protected rerun helper.
+
+    This is a locator only; the helper independently authenticates current
+    source, actor, pair and the one existing verifier reservation before effects.
+    An active or malformed predecessor never disappears behind a newer run.
+    """
+    selected = [run for run in runs if required_locator(run, repository, pr)]
+    if not selected or len({run["id"] for run in selected}) != len(selected):
+        return None
+    for run in selected:
+        created = run.get("created_at")
+        if not isinstance(created, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", created):
+            return None
+        try:
+            if dt.datetime.fromisoformat(created.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H:%M:%SZ") != created:
+                return None
+        except ValueError:
+            return None
+        attempt = run.get("run_attempt")
+        if (type(attempt) is not int or attempt not in (1, 2)
+                or run.get("actor", {}).get("login") != pr["user"]["login"]
+                or run.get("triggering_actor", {}).get("login") != (pr["user"]["login"] if attempt == 1 else "github-actions[bot]")
+                or run.get("status") != "completed"
+                or run.get("conclusion") not in {"success", "failure", "cancelled"}):
+            return None
+    return max(selected, key=lambda run: (run["created_at"], run["id"]))
+
+
 def reconcile(repository, now):
     if repository not in PILOTS or os.environ.get("LI219_EVENT_MODE") != "enabled":
         return
@@ -298,10 +327,8 @@ def reconcile(repository, now):
             required_runs = pages(
                 f"{prefix}/actions/runs?head_sha={head}", "workflow_runs"
             )
-            targets = [run for run in required_runs if required_locator(run, repository, pr)]
-            if len(targets) != 1 or targets[0]["status"] != "completed":
-                continue
-            if all(run.get("conclusion") == "success" for run in targets):
+            target = latest_required(required_runs, repository, pr)
+            if target is None or target["conclusion"] == "success":
                 continue
         else:
             reviews = pages(f"{prefix}/pulls/{number}/reviews")

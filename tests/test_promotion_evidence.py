@@ -1230,6 +1230,32 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # Exercise the actual promotion evidence reader, including inline text.
+        positives = ('The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, usable in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    review = valid_review if inline else valid_review | {'body': valid_review['body'] + '\n' + text}
+                    extra = {'review_comment': {'id': 18001, 'body': text}} if inline else {}
+                    with self.subTest(text=text, inline=inline), mock.patch.object(
+                        MODULE, 'gh_json', side_effect=evidence_api(run, review=review, **extra)
+                    ):
+                        def verify():
+                            return MODULE.bound_review_check(
+                                [{'check_runs': [check]}], repository='lightning-it/example',
+                                pull=ingress_pull(), pull_number=17, base_sha=BASE, head_sha=HEAD)
+                        if usable:
+                            self.assertEqual(88, verify()['producer_run_id'])
+                        else:
+                            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                                verify()
+
         for marker in (
             "Unable to review this pull request",
             "No files to review",

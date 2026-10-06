@@ -459,6 +459,7 @@ jobs:
           [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           gh workflow run release-bot-exact-head-review.yml \
+            -f bounded_mode=single \
             --repo "${REPOSITORY}" \
             --ref "${BASE_REF}" \
             -f "pr_number=${PR_NUMBER}" \

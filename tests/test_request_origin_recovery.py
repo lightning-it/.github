@@ -88,6 +88,31 @@ class RequestOriginRecoveryTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # The outer test suite already runs in the pinned image. This transport
+        # fixture checks the actual Docker argument contract then executes the
+        # unmodified protected proof there, without a nested Docker daemon.
+        docker = self.root / 'docker'
+        docker.write_text("""#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+image = 'quay.io/l-it/ee-wunder-devtools-ubi9:v1.16.1@sha256:c5e8707e825fcddb3e7bbc7592ebdc99a02e6ba9fa2cad71b88bcd5c71bd4d08'
+assert args[:3] == ['run', '--rm', '-i']
+for flag in ('--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--pids-limit=64', '--network=bridge'):
+    assert flag in args
+assert args.count('--mount') == 2
+for i, value in enumerate(args):
+    if value == '--mount':
+        assert args[i+1].endswith(',readonly') and 'docker.sock' not in args[i+1]
+assert 'GH_TOKEN' in args and not any(value.startswith('GH_TOKEN=') for value in args)
+index = args.index(image)
+command = args[index+1:]
+assert command[0] == 'python3'
+command = [value.replace('/proof/', os.environ['RUNNER_TEMP'] + '/') for value in command]
+os.chdir(os.environ['RUNNER_TEMP'])
+os.execvp(command[0], command)
+""")
+        docker.chmod(0o755)
         workflow = WORKFLOW.read_text()
         def heredoc(label):
             return textwrap.dedent(workflow.split("<<'" + label + "'\n", 1)[1].split('\n          ' + label, 1)[0])
@@ -425,7 +450,7 @@ class RequestOriginRecoveryTests(unittest.TestCase):
                        'Copilot wasn’t able to review this pull request.',
                        'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST',
                        "Copilot wasn't able to review any files.", 'Copilot wasn’t able to review any files.',
-                       'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES', 'able to review any files'):
+                       'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES'):
             for inline in (False, True):
                 with self.subTest(marker=marker, inline=inline):
                     data = copy.deepcopy(baseline)
@@ -442,6 +467,19 @@ class RequestOriginRecoveryTests(unittest.TestCase):
                 self.assertNotEqual(0, self.run_caller(data).returncode)
         result = self.run_caller(baseline)
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_actual_required_positive_any_files_body_and_inline(self):
+        for text in ('The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES'):
+            for inline in (False, True):
+                data = self.resume_fixture()
+                path = f'repos/{REPO}/pulls/{PR}/reviews/16'
+                if inline:
+                    data['EXTRA_ROUTES'][path + '/comments'] = [{'id': 18, 'body': text}]
+                else:
+                    data['EXTRA_ROUTES'][path]['body'] = text
+                result = self.run_caller(data)
+                self.assertEqual(0, result.returncode, result.stderr)
 
     def test_actual_required_historical_review_supersession_uses_request_time(self):
         for timestamp, accepted in (('2026-10-05T17:59:41Z', True), ('2026-10-05T17:59:40Z', False),
