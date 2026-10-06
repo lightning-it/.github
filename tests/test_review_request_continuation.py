@@ -42,8 +42,16 @@ if route == 'graphql' and payload:
     assert value['branch'] == {'repositoryNameWithOwner': s['repo'], 'branchName': 'lit-review-operations'}
     assert set(value['fileChanges']) == {'additions'} and len(value['fileChanges']['additions']) == 1
     old = value['expectedHeadOid']
-    if old != s['oid'] or s.get('lose_cas'):
-        result, code = {'errors': [{'message': 'CAS lost'}]}, 1
+    if s.get('intent_conflicts', 0) and value['fileChanges']['additions'][0]['path'].startswith('deferred/'):
+        s['intent_conflicts'] -= 1
+        oid = format(int(s['oid'], 16) + 1, '040x')
+        s['versions'][oid] = dict(s['versions'][s['oid']])
+        s['oid'] = oid
+    if s.get('unknown_intent'):
+        result, code = None, 42
+    elif old != s['oid'] or s.get('lose_cas'):
+        result, code = {'data': {'createCommitOnBranch': None}, 'errors': [{'type': 'STALE_DATA',
+            'path': ['createCommitOnBranch'], 'message': f'Expected branch to point to "{old}" but it did not. Pull and try again.'}]}, 1
     else:
         item = value['fileChanges']['additions'][0]
         assert item['path'] not in s['versions'][old]
@@ -54,6 +62,7 @@ if route == 'graphql' and payload:
             s['routes']['repos/' + s['repo'] + '/pulls/23']['head']['ref'] = 'fix/changed'
         result = {'data': {'createCommitOnBranch': {'commit': {'oid': oid, 'parents': {'nodes': [{'oid': old}]}}}}}
         if s.get('lost_cas_response'): result, code = None, 42
+        if s.get('failed_transport_with_commit'): code = 42
 elif route == 'graphql':
     oid = fields['oid']
     assert fields['manifest'] == oid + ':manifest.json'
@@ -424,3 +433,81 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual('read', self.workflow['jobs']['locate']['permissions']['contents'])
         self.assertEqual('read', self.workflow['jobs']['locate']['permissions']['pull-requests'])
         self.assertNotIn('concurrency', self.workflow)  # CAS is global across all request writers.
+
+    def test_actual_defer_recovers_only_confirmed_intent_conflicts(self):
+        for count, succeeds in ((1, True), (2, True), (3, False)):
+            with self.subTest(count=count):
+                self.setUp()
+                self.state['intent_conflicts'] = count
+                result = self.defer()
+                self.assertEqual(succeeds, result.returncode == 0, result.stderr)
+                writes = [call for call in self.state['calls'] if call['route'] == 'graphql' and call['payload']]
+                self.assertEqual(min(count + 1, 3), len(writes))
+                self.assertEqual([], self.state['requests'])
+                self.assertNotIn(REQUEST, self.state['versions'][self.state['oid']])
+                if succeeds:
+                    self.assertIn(INTENT, self.state['versions'][self.state['oid']])
+                    self.state['intent_conflicts'] = 0
+                    self.assertEqual(0, self.locator(companion=True).returncode)
+                    self.assertEqual(0, self.consumer().returncode)
+                    self.assertEqual(1, len(self.state['requests']))
+
+    def test_unknown_intent_delivery_is_readback_only(self):
+        for mode, succeeds in (('lost_cas_response', True), ('failed_transport_with_commit', True), ('unknown_intent', False)):
+            with self.subTest(mode=mode):
+                self.setUp()
+                self.state[mode] = True
+                result = self.defer()
+                self.assertEqual(succeeds, result.returncode == 0, result.stderr)
+                writes = [i for i, call in enumerate(self.state['calls']) if call['payload']]
+                self.assertEqual(1, len(writes))
+                self.assertTrue(self.state['calls'][writes[0] + 1:])
+                self.assertTrue(all(call['payload'] is None for call in self.state['calls'][writes[0] + 1:]))
+                self.assertEqual([], self.state['requests'])
+
+    def empty_association(self):
+        self.route('/actions/runs/77')['pull_requests'] = []
+        self.route('/actions/runs/77/attempts/1')['pull_requests'] = []
+        jobs = self.route('/actions/runs/77/attempts/1/jobs')
+        policy = copy.deepcopy(jobs['jobs'][0])
+        policy.update(id=79, name='Verify current revision policy', conclusion='failure')
+        sender = next(step['name'] for step in self.original['jobs']['verify-current-revision-policy']['steps']
+                      if step['name'].startswith(('Event binding #', 'Current revision tuple #')))
+        for expression, value in {'github.event.pull_request.number': '23', 'github.event.pull_request.base.ref': 'develop',
+                'github.event.pull_request.base.sha': BASE, 'github.event.pull_request.head.repo.full_name': REPO,
+                'github.event.pull_request.head.ref': 'fix/new', 'github.event.pull_request.head.sha': HEAD,
+                'github.run_id': '77'}.items():
+            sender = sender.replace('${{ ' + expression + ' }}', value)
+        self.assertNotIn('${{', sender)
+        policy['steps'] = [{'name': sender, 'number': 2, 'status': 'completed', 'conclusion': 'success'}]
+        jobs['jobs'].append(policy)
+        jobs['total_count'] += 1
+        return policy
+
+    def test_empty_association_requires_branch_and_native_event_binding_end_to_end(self):
+        self.empty_association()
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        for companion in (False, True):
+            result = self.locator(companion)
+            self.assertEqual(0, result.returncode, result.stderr)
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.state['requests']))
+
+    def test_empty_association_never_grants_authority_alone(self):
+        for mode in ('ambiguous', 'wrong binding', 'wrong run', 'skipped', 'foreign head', 'other sender', 'wrong step'):
+            with self.subTest(mode=mode):
+                self.setUp()
+                policy = self.empty_association()
+                if mode == 'ambiguous': self.route('/pulls').append({**self.route('/pulls/23'), 'id': 24, 'number': 24})
+                if mode == 'wrong binding': policy['steps'][0]['name'] = f'Event binding #23:{HEAD}:{HEAD}:77'
+                if mode == 'wrong run': policy['run_id'] = 78
+                if mode == 'skipped': policy['conclusion'] = 'skipped'
+                if mode == 'other sender': policy['steps'][0]['name'] = (f'Event binding #23:{BASE}:{HEAD}:77' if REPO != 'lightning-it/.github' else f'Current revision tuple #23 develop@{BASE} -> {REPO}:fix/new@{HEAD} run 77')
+                if mode == 'wrong step': policy['steps'][0]['number'] = 3
+                if mode == 'foreign head': self.route('/pulls/23')['head']['repo']['full_name'] = 'foreign/repo'
+                result = self.defer()
+                self.assertNotEqual(0, result.returncode)
+                self.assertNotIn(INTENT, self.state['versions'][self.state['oid']])
+                self.assertEqual([], self.state['requests'])

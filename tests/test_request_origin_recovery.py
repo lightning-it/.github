@@ -440,3 +440,59 @@ class RequestOriginRecoveryTests(unittest.TestCase):
                 self.assertNotEqual(0, self.run_caller(data).returncode)
         result = self.run_caller(baseline)
         self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_actual_required_historical_review_supersession_uses_request_time(self):
+        for timestamp, accepted in (('2026-10-05T17:59:35Z', True), ('2026-10-05T17:59:33Z', False)):
+            data = self.resume_fixture()
+            old = data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']
+            data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews'].append(
+                {**old, 'id': 18, 'submitted_at': timestamp})
+            result = self.run_caller(data)
+            self.assertEqual(accepted, result.returncode == 0, result.stderr)
+            self.assertFalse(any('--method' in call for call in self.calls))
+
+    def test_actual_required_empty_association_preserves_protected_fallback(self):
+        for invalid in (None, 'ambiguous', 'binding', 'disabled', 'second attempt', 'source', 'source wrong sender'):
+            with self.subTest(invalid=invalid):
+                data = self.resume_fixture()
+                pr = copy.deepcopy(data['FIRST']['pull_requests'][0])
+                pr.update(id=23, state='open', draft=False, user={'login': 'litroc', 'type': 'User'})
+                for side in ('head', 'base'): pr[side]['repo']['full_name'] = REPO
+                data['FIRST']['pull_requests'] = []
+                data['EXTRA_ROUTES'][f'repos/{REPO}/pulls'] = [pr]
+                data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/23'] = pr
+                policy = next(job for job in data['FIRST_JOBS'][0]['jobs'] if job['name'] == 'Verify current revision policy')
+                policy['steps'] = [{'name': f'Event binding #23:{BASE}:{HEAD}:77', 'number': 2, 'status': 'completed', 'conclusion': 'success'}]
+                if invalid == 'ambiguous': data['EXTRA_ROUTES'][f'repos/{REPO}/pulls'].append({**pr, 'id': 24, 'number': 24})
+                if invalid == 'binding': policy['steps'][0]['name'] = f'Event binding #23:{HEAD}:{HEAD}:77'
+                producer = copy.deepcopy(self.producer)
+                producer['pull_requests'] = []
+                second = copy.deepcopy(data['FIRST_JOBS'][0])
+                for job in second['jobs']:
+                    job['run_attempt'] = 2
+                    if job['name'] == 'Verify current revision policy': job['conclusion'] = 'success'
+                if invalid == 'second attempt':
+                    next(job for job in second['jobs'] if job['name'] == 'Verify current revision policy')['steps'][0]['name'] = 'Event binding #wrong'
+                data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/77/attempts/2/jobs'] = second
+                env = {'producer': json.dumps(producer), 'LI219_EVENT_MODE': 'disabled' if invalid == 'disabled' else 'enabled'}
+                if invalid in ('source', 'source wrong sender'):
+                    repo, rid = 'lightning-it/shared-assets-lit', '1120841013'
+                    if invalid == 'source':
+                        for native_jobs in (data['FIRST_JOBS'][0]['jobs'], second['jobs']):
+                            binding = next(job for job in native_jobs if job['name'] == 'Verify current revision policy')['steps'][0]
+                            binding['name'] = f'Current revision tuple #23 develop@{BASE} -> {repo}:fix/final@{HEAD} run 77'
+                    path = 'operations/' + hashlib.sha256(f'li219-review-request:v1:{rid}:23:{HEAD}'.encode()).hexdigest() + '.json'
+                    def convert(text):
+                        return text.replace(REPO, repo).replace('1112629689', rid).replace(REQUEST_PATH.split('/')[1], path.split('/')[1])
+                    data = json.loads(convert(json.dumps(data)))
+                    def sizes(value):
+                        if isinstance(value, dict):
+                            if value.get('__typename') == 'Blob': value['byteSize'] = len(value['text'].encode())
+                            for child in value.values(): sizes(child)
+                        elif isinstance(value, list):
+                            for child in value: sizes(child)
+                    sizes(data)
+                    env.update(REPOSITORY=repo, GITHUB_REPOSITORY_ID=rid, producer=convert(json.dumps(producer)))
+                result = self.run_caller(data, **env)
+                self.assertEqual(invalid in (None, 'source'), result.returncode == 0, result.stderr)
+                self.assertFalse(any('--method' in call for call in self.calls))
