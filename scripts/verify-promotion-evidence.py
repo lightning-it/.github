@@ -61,9 +61,11 @@ COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
 COPILOT_REVIEWER_ID = 175728472
 COPILOT_REVIEW_FAILURE_MARKERS = (
     "unabletoreviewthispullrequest",
-    "nofilestoreview",
+    "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
+    "nofilestoreview", "nofileswerereviewed",
     "wasnotabletoreviewanyfiles",
-    "abletoreviewanyfiles",
+    "notabletoreviewanyfiles",
+    "unabletoreviewanyfiles",
     "premiumrequestquota",
     "premiumrequestsquota",
     "quotaexhausted",
@@ -84,6 +86,32 @@ MAX_PROXY_HEADER_BYTES = 8192
 
 class EvidenceError(ValueError):
     """A promotion evidence invariant failed closed."""
+
+
+def inactive_producer_helper(job: JSON, repository: str, run_id: int,
+                             attempt: int, head: str) -> bool:
+    """Recognize only the protected helper's native runnerless skipped role."""
+    names = (
+        'Request protected verifier re-evaluation / Inactive event writer',
+        'Request protected verifier re-evaluation / Inactive legacy writer',
+        'Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Re-run the one protected verifier attempt\' || \'Inactive event writer\'',
+        'Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Re-run the one protected verifier attempt\'',
+        'Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && github.event_name == \'workflow_dispatch\' && inputs.producer_run_attempt > 0 && \'Re-run the one protected verifier attempt\' || \'Inactive event writer\'',
+        'Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && github.event_name == \'workflow_dispatch\' && inputs.producer_run_attempt > 0 && \'Inactive legacy writer\' || \'Re-run the one protected verifier attempt\'',
+    )
+    return (
+        isinstance(job, dict)
+        and job.get("name") in names
+        and job.get("status") == "completed"
+        and job.get("conclusion") == "skipped"
+        and "runner_id" in job and job["runner_id"] is None
+        and job.get("steps") == []
+        and type(job.get("run_id")) is int and job["run_id"] == run_id
+        and type(job.get("run_attempt")) is int and job["run_attempt"] == attempt
+        and job.get("head_sha") == head
+        and job.get("workflow_name") == "Current revision review gate"
+        and job.get("run_url") == f"https://api.github.com/repos/{repository}/actions/runs/{run_id}"
+    )
 
 
 def validate_github_api_connect_request(payload: bytes) -> None:
@@ -224,7 +252,7 @@ def normalized_review_text(value: str) -> str:
     return re.sub(
         r"\s+",
         "",
-        value.lower().replace("wasn't", "was not").replace("wasn’t", "was not"),
+        value.lower().replace("n't", " not").replace("n’t", " not"),
     )
 
 
@@ -1452,9 +1480,20 @@ def validate_producer_run(
             jobs = exact_array(job_inventory.get("jobs"), "producer-run-jobs")
             total_count = job_inventory.get("total_count")
             require(
-                type(total_count) is int and total_count == len(jobs) == 5,
+                type(total_count) is int and total_count == len(jobs)
+                and len(jobs) in {5, 6},
                 "producer-run-job-count",
             )
+            # Keep raw native rows intact and exclude only one proven inert sibling.
+            inactive_jobs = [job for job in jobs if inactive_producer_helper(
+                job, repository, producer_run_id, attempt, head_sha)]
+            require(len(inactive_jobs) <= 1, "producer-inactive-helper-count")
+            if inactive_jobs:
+                inactive_id = integer(inactive_jobs[0].get("id"), "producer-inactive-helper-id")
+                require(sum(isinstance(job, dict) and job.get("id") == inactive_id
+                            for job in jobs) == 1, "producer-inactive-helper-duplicate")
+            jobs = [job for job in jobs if job not in inactive_jobs]
+            require(len(jobs) == 5, "producer-run-job-count")
             # A managed sync publishes deterministic native evidence instead of
             # requesting Copilot. Its separate finalizer handoff must succeed;
             # only the later verifier helper may account for a failed producer.

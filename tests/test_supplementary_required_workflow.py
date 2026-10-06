@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import runpy
 import re
 import shutil
 import subprocess
@@ -14,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVTOOLS_IMAGE = runpy.run_path(str(ROOT / 'scripts/lit-push-ready.py'))['COPILOT_DEVTOOL_IMAGE']
 AGENTS = ROOT / "AGENTS.md"
 WORKFLOW = (
     ROOT / ".github" / "workflows" / "supplementary-current-revision-required.yml"
@@ -3169,22 +3172,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Request Copilot review for current revision"',
             late,
         )
-        self.assertIn(
-            '.requested_reviewer.login=="Copilot"',
-            late,
-        )
-        self.assertIn(
-            '--arg start "$(jq -er \'.created_at | strings\'',
-            late,
-        )
-        self.assertIn(
-            '.created_at>=$start',
-            late,
-        )
-        self.assertIn(
-            '.created_at<=$end',
-            late,
-        )
+        self.assertIn('verify_request_origin "${tl}"', late)
+        origin = workflow.split('          verify_request_origin() {\n', 1)[1].split(
+            '          verify_event_recovery() {', 1
+        )[0]
+        self.assertIn('.requested_reviewer.login=="Copilot"', origin)
+        self.assertIn('.actor.login == $actor', origin)
+        self.assertIn('.created_at>=$start', origin)
+        self.assertIn('.created_at<=$submitted', origin)
+        self.assertIn('| length == 1', origin)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1', origin)
+        self.assertIn('[ "${recovery_status}" -eq 0 ] || return 1', origin)
+        self.assertIn('run_request_proof /proof/request-origin.py', origin)
+        launcher = workflow.split('          run_request_proof() {\n', 1)[1].split('          validate_recorded_ref() {', 1)[0]
+        self.assertIn('docker run --rm -i --read-only --cap-drop=ALL', launcher)
+        self.assertEqual(2, launcher.count(',readonly'))
+        self.assertNotIn('/var/run/docker.sock', launcher)
+        self.assertIn(DEVTOOLS_IMAGE, launcher)
         self.assertIn('| length == 1', late)
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
@@ -5701,7 +5705,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "{disallowed:[$terminal[]|select(allowed|not)]", classifier
         )
-        self.assertIn("allowed:[$terminal[]|select(allowed)]}", classifier)
+        self.assertIn("allowed:[$terminal[]|select(allowed)],", classifier)
         self.assertIn(
             'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
         )
@@ -5709,14 +5713,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
         )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=5", permanent)
+        self.assertIn("length<=(5+$inactive)", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
             permanent,
         )
         helper_guard_match = re.search(
-            r'''jq -e --arg d "\$\{d\}" '([^']+)' '''
+            r'''jq -e --argjson inactive .*? --arg d "\$\{d\}" '([^']+)' '''
             r'''<<<"\$\{allowed_skipped_terminal_jobs\}" >/dev/null''',
             permanent,
         )
@@ -5729,7 +5733,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         def evaluate_helper_guard(names: list[str]) -> int:
             result = subprocess.run(
-                [jq, "-e", "--arg", "d", helper_pattern, helper_guard],
+                [jq, "-e", "--argjson", "inactive", "0", "--arg", "d", helper_pattern, helper_guard],
                 input=json.dumps([{"name": name} for name in names]),
                 text=True,
                 capture_output=True,
@@ -7371,6 +7375,43 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     json.dumps(failing, separators=(",", ":")),
                     failure.stderr,
                 )
+
+    def test_inactive_pilot_handoffs_use_the_actual_bound_classifier_call(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        command = workflow.split('                terminal_job_inventory="$(jq -c \\\n', 1)[1].split(
+            '                disallowed_terminal_jobs=', 1
+        )[0]
+        shell = ('set -euo pipefail\nterminal_job_inventory="$(jq -c \\\n' + textwrap.dedent(command)
+                 + "\njq -e '.disallowed | length == 0' <<<\"${terminal_job_inventory}\"\n")
+        cases = {
+            "lightning-it/shared-assets-lit": ["Inactive legacy handoff"],
+            "lightning-it/ansible-collection-supplementary": [
+                "Inactive legacy develop handoff", "Inactive legacy main pin", "Inactive legacy main handoff"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "terminal-producer-inventory.jq").write_text(self._terminal_job_inventory_filter())
+            for repository, names in cases.items():
+                jobs = [{"id": i + 1, "name": name, "run_id": 77, "run_attempt": 1,
+                         "head_sha": "b" * 40, "status": "completed", "conclusion": "skipped",
+                         "runner_id": None, "steps": []} for i, name in enumerate(names)]
+                def evaluate(rows, **changes):
+                    env = {**os.environ, "RUNNER_TEMP": tmp, "REPOSITORY": repository,
+                           "LI219_EVENT_MODE": "enabled", "pr": '{"user":{"type":"User"}}',
+                           "d": "^Request protected verifier re-evaluation$", "EVENT_HEAD": "b" * 40,
+                           "producer_run_attempt": "1", "producer_run_id": "77",
+                           "producer_jobs_pages": json.dumps([{"total_count": len(rows), "jobs": rows}]), **changes}
+                    return subprocess.run(["bash", "-c", shell], env=env, capture_output=True, text=True, check=False)
+                result = evaluate(jobs)
+                self.assertEqual(0, result.returncode, result.stderr)
+                for changes in ({"LI219_EVENT_MODE": "disabled"}, {"REPOSITORY": "lightning-it/.github"},
+                                {"REPOSITORY": "lightning-it/foreign"}, {"pr": '{"user":{"type":"Bot"}}'}):
+                    self.assertNotEqual(0, evaluate(jobs, **changes).returncode)
+                for field, value in (("run_id", 78), ("run_attempt", 2), ("head_sha", "a" * 40),
+                                     ("runner_id", 42), ("steps", [{"name": "effect"}]),
+                                     ("name", "Inactive legacy unknown"), ("conclusion", "failure")):
+                    changed = copy.deepcopy(jobs)
+                    changed[0][field] = value
+                    self.assertNotEqual(0, evaluate(changed).returncode)
 
     def test_permanent_verifier_accepts_only_exact_bound_dispatch_failure(
         self,

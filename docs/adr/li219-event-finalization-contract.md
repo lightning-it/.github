@@ -78,12 +78,15 @@ The separate AI-request key binds native repository ID, PR and head; base drift
 and a fresh producer run never create a new request entitlement for that head.
 Existing current-head review and PR-scoped pending request remain read-only
 no-ops. In enabled pilots, check-run and comment markers are projections, never
-exclusivity locks. Disabled/default mode and non-pilots use no CAS: send the
-legacy request first, then publish its marker only after a successful response
-or confirmed pending reviewer readback. An interrupted pre-request execution
-leaves no marker. An uncertain response without confirmation sends no retry
-and creates no legacy marker; it does not gain the pilot's atomic consumption
-guarantee. A lost marker response uses bounded readback without another POST.
+exclusivity locks. Under the owner-authorized 2026-10-06 amendment,
+disabled/default mode and non-pilots use no CAS but persist and confirm a durable
+exact-head UNCERTAIN comment reservation before the sole request POST. An
+interruption after reservation consumes the slot even if delivery never occurs.
+Reservation is never acceptance evidence. Unknown POST outcomes permit only GET
+observation of delivery and never another same-head AI request. Every completed
+same-head review by the trusted Copilot bot consumes funding regardless of failed
+body or inline content; separate policy/evidence verification still rejects
+unusable content and unresolved findings.
 
 A writer may make **one** `createCommitOnBranch(expectedHeadOid)` attempt against
 the exact snapshot. Only an unambiguous successful response with the expected
