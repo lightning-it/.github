@@ -193,7 +193,7 @@ class RequestOriginRecoveryTests(unittest.TestCase):
 
     def test_same_caller_proof_supports_each_other_enabled_pilot(self):
         for repo, repo_id in (("lightning-it/shared-assets-lit", "1120841013"),
-                              ("lightning-it/ansible-collection-supplementary", "123456")):
+                              ("lightning-it/ansible-collection-supplementary", "1103407173")):
             with self.subTest(repo=repo):
                 data = json.loads(json.dumps(self.data).replace(REPO, repo).replace("1112629689", repo_id))
                 record = {**self.record, "repository": repo, "repository_id": repo_id,
@@ -423,7 +423,9 @@ class RequestOriginRecoveryTests(unittest.TestCase):
         for marker in ('Copilot was not able to review this pull request.',
                        "Copilot wasn't able to review this pull request.",
                        'Copilot wasn’t able to review this pull request.',
-                       'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST'):
+                       'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST',
+                       "Copilot wasn't able to review any files.", 'Copilot wasn’t able to review any files.',
+                       'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES', 'able to review any files'):
             for inline in (False, True):
                 with self.subTest(marker=marker, inline=inline):
                     data = copy.deepcopy(baseline)
@@ -442,11 +444,12 @@ class RequestOriginRecoveryTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_actual_required_historical_review_supersession_uses_request_time(self):
-        for timestamp, accepted in (('2026-10-05T17:59:35Z', True), ('2026-10-05T17:59:33Z', False)):
+        for timestamp, accepted in (('2026-10-05T17:59:41Z', True), ('2026-10-05T17:59:40Z', False),
+                                    ('2026-10-05T17:59:35Z', False), ('2026-10-05T17:59:33Z', False)):
             data = self.resume_fixture()
             old = data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']
             data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews'].append(
-                {**old, 'id': 18, 'submitted_at': timestamp})
+                {**old, 'id': 18, 'body': 'Copilot was not able to review any files.', 'submitted_at': timestamp})
             result = self.run_caller(data)
             self.assertEqual(accepted, result.returncode == 0, result.stderr)
             self.assertFalse(any('--method' in call for call in self.calls))
@@ -496,3 +499,82 @@ class RequestOriginRecoveryTests(unittest.TestCase):
                 result = self.run_caller(data, **env)
                 self.assertEqual(invalid in (None, 'source'), result.returncode == 0, result.stderr)
                 self.assertFalse(any('--method' in call for call in self.calls))
+
+
+    def supplementary_fixture(self, resumed=True):
+        data = self.resume_fixture() if resumed else copy.deepcopy(self.data)
+        # Native names from the independently prepared six-job Supplementary producer.
+        jobs = data['FIRST_JOBS'][0]['jobs']
+        jobs[:] = jobs[:2]
+        jobs[1]['steps'] = [{'name': 'Invalidate prior result after pull-request metadata change',
+                             'number': 2, 'status': 'completed', 'conclusion': 'success'}]
+        for index, name in enumerate(('Inactive legacy develop handoff', 'Inactive legacy main pin',
+                                      'Inactive legacy main handoff', 'Request protected verifier re-evaluation')):
+            jobs.append({**copy.deepcopy(jobs[0]), 'id': 100 + index, 'name': name,
+                         'conclusion': 'skipped', 'runner_id': None, 'steps': []})
+        data['FIRST_JOBS'][0]['total_count'] = 6
+        repo, rid = 'lightning-it/ansible-collection-supplementary', '1103407173'
+        path = 'operations/' + hashlib.sha256(f'li219-review-request:v1:{rid}:23:{HEAD}'.encode()).hexdigest() + '.json'
+        def convert(text):
+            return text.replace(REPO, repo).replace('1112629689', rid).replace(REQUEST_PATH.split('/')[1], path.split('/')[1])
+        data = json.loads(convert(json.dumps(data)))
+        def sizes(value):
+            if isinstance(value, dict):
+                if value.get('__typename') == 'Blob': value['byteSize'] = len(value['text'].encode())
+                for child in value.values(): sizes(child)
+            elif isinstance(value, list):
+                for child in value: sizes(child)
+        sizes(data)
+        return data, dict(REPOSITORY=repo, GITHUB_REPOSITORY_ID=rid, producer=convert(json.dumps(self.producer)))
+
+    def test_actual_required_supplementary_six_job_original_and_continuation(self):
+        for resumed in (False, True):
+            data, env = self.supplementary_fixture(resumed)
+            result = self.run_caller(data, **env)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse(any('--method' in call for call in self.calls))
+
+    def test_actual_required_supplementary_empty_associations_fail_in_outer_caller(self):
+        for resumed in (False, True):
+            data, env = self.supplementary_fixture(resumed)
+            repo = env['REPOSITORY']
+            pr = copy.deepcopy(data['FIRST']['pull_requests'][0])
+            pr.update(id=23, state='open', draft=False, user={'login': 'litroc', 'type': 'User'})
+            for side in ('head', 'base'): pr[side]['repo']['full_name'] = repo
+            data['FIRST']['pull_requests'] = []
+            data.setdefault('EXTRA_ROUTES', {}).update({f'repos/{repo}/pulls': [pr], f'repos/{repo}/pulls/23': pr})
+            producer = json.loads(env['producer'])
+            producer['pull_requests'] = []
+            env['producer'] = json.dumps(producer)
+            result = self.run_caller(data, **env)
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(any('--method' in call for call in self.calls))
+
+    def test_authenticated_timeline_precedes_old_review_lookup_for_both_helpers(self):
+        for helper in ('review_request_continuation.py', 'review_request_provenance.py'):
+            (self.root / 'review_request_continuation.py').write_bytes((ROOT / 'scripts' / helper).read_bytes())
+            for fault in ('missing', 'duplicate', 'foreign', 'human', 'zero', 'boolean', 'before', 'after', 'reviewer'):
+                with self.subTest(helper=helper, fault=fault):
+                    data = self.resume_fixture()
+                    event = data['TIMELINE'][0][0]
+                    if fault == 'missing': data['TIMELINE'] = [[]]
+                    elif fault == 'duplicate': data['TIMELINE'][0].append(copy.deepcopy(event))
+                    elif fault == 'foreign': event['actor']['login'] = 'mallory'
+                    elif fault == 'human': event['actor']['type'] = 'User'
+                    elif fault == 'boolean': event['id'] = True
+                    elif fault == 'zero': event['id'] = 0
+                    elif fault == 'before': event['created_at'] = '2026-10-05T17:59:33Z'
+                    elif fault == 'after': event['created_at'] = '2026-10-05T17:59:59Z'
+                    elif fault == 'reviewer': event['requested_reviewer']['login'] = 'mallory'
+                    result = self.run_caller(data)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(any('/reviews/16' in ' '.join(call) for call in self.calls))
+
+    def test_selected_clean_review_between_step_start_and_request_is_historically_valid(self):
+        for helper in ('review_request_continuation.py', 'review_request_provenance.py'):
+            (self.root / 'review_request_continuation.py').write_bytes((ROOT / 'scripts' / helper).read_bytes())
+            for seconds, accepted in (('35', True), ('41', False)):
+                data = self.resume_fixture()
+                data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']['submitted_at'] = '2026-10-05T17:59:' + seconds + 'Z'
+                result = self.run_caller(data)
+                self.assertEqual(accepted, result.returncode == 0, result.stderr)

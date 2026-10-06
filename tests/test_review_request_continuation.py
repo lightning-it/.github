@@ -110,6 +110,16 @@ class ContinuationTests(unittest.TestCase):
         (self.root / 'gh').write_text(MOCK)
         (self.root / 'gh').chmod(0o755)
         self.now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        # Keep transport time deterministic: container scheduling must not move
+        # a deferred intent beyond the fixture's one-second native effect end.
+        (self.root / 'sitecustomize.py').write_text(
+            "import datetime, os\n"
+            "_native = datetime.datetime\n"
+            "class Clock(_native):\n"
+            "    @classmethod\n"
+            "    def now(cls, tz=None):\n"
+            "        return _native.fromtimestamp(float(os.environ['FIXTURE_NOW']), tz)\n"
+            "datetime.datetime = Clock\n")
         def at(seconds):
             return (self.now + dt.timedelta(seconds=seconds)).strftime('%Y-%m-%dT%H:%M:%SZ')
         self.at = at
@@ -152,6 +162,7 @@ class ContinuationTests(unittest.TestCase):
         self.state['routes'][prefix + '/actions/runs/88/attempts/1'] = resume
         self.state['routes'][prefix + '/actions/runs/89/attempts/1'] = {**resume, 'id': 89}
         self.env = {**os.environ, 'PATH': str(self.root) + ':' + os.environ['PATH'], 'STATE': str(self.file),
+                    'FIXTURE_NOW': str(self.now.timestamp()), 'PYTHONPATH': str(self.root),
                     'RUNNER_TEMP': str(self.root), 'GITHUB_EVENT_PATH': str(self.event), 'GITHUB_REPOSITORY': REPO,
                     'GITHUB_REPOSITORY_ID': RID, 'WORKFLOW_SHA': SOURCE, 'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
                     'GITHUB_RUN_ID': '77', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
@@ -293,7 +304,9 @@ class ContinuationTests(unittest.TestCase):
         markers = ('Copilot was not able to review this pull request.',
                    "Copilot wasn't able to review this pull request.",
                    'Copilot wasn’t able to review this pull request.',
-                   'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
+                   'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                   "Copilot wasn't able to review any files.", 'Copilot wasn’t able to review any files.',
+                   'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES', 'able to review any files')
         for marker in markers:
             for inline in (False, True):
                 with self.subTest(marker=marker, inline=inline):
