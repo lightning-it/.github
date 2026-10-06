@@ -72,6 +72,19 @@ class RecoveryJobInventoryTests(unittest.TestCase):
         pages = [{'total_count': 3, 'jobs': jobs[:1]}, {'total_count': 3, 'jobs': jobs[1:]}]
         self.assertTrue(self.accepted(jobs, pages=pages, caller=True))
 
+    def test_raw_inactive_expression_names_remain_bound_runnerless_skips(self):
+        import yaml
+        source = yaml.safe_load((ROOT / '.github/workflows/copilot-review-refresh.yml').read_text())
+        for event, role in ((False, 'refresh-canonical-gate'), (True, 'legacy-refresh')):
+            jobs = self.jobs(event)
+            jobs[2]['name'] = source['jobs'][role]['name'][4:-3]
+            self.assertTrue(self.accepted(jobs, event, caller=not event))
+            for field, value in (('runner_id', 7), ('steps', [self.effect]), ('conclusion', 'success'),
+                                 ('name', jobs[2]['name'] + ' unexpected'), ('run_attempt', 2)):
+                mutated = copy.deepcopy(jobs)
+                mutated[2][field] = value
+                self.assertFalse(self.accepted(mutated, event))
+
     def test_inventory_must_be_complete_consistent_and_unique(self):
         for event in (True, False):
             jobs = self.jobs(event)

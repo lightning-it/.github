@@ -308,7 +308,8 @@ class ContinuationTests(unittest.TestCase):
     def test_real_consumer_preserves_contractions_singular_marker_and_content_shapes(self):
         self.assertEqual(0, self.defer().returncode)
         baseline = copy.deepcopy(self.state)
-        markers = ('Copilot was not able to review this pull request.',
+        markers = ('No files were reviewed', 'NO FILES\u00a0WERE\nREVIEWED',
+                   'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
                      "Copilot isn't able to review this pull request.",
                      'Copilot isn’t able to review this pull request.',

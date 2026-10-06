@@ -5705,7 +5705,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "{disallowed:[$terminal[]|select(allowed|not)]", classifier
         )
-        self.assertIn("allowed:[$terminal[]|select(allowed)]}", classifier)
+        self.assertIn("allowed:[$terminal[]|select(allowed)],", classifier)
         self.assertIn(
             'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
         )
@@ -5713,14 +5713,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
         )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=5", permanent)
+        self.assertIn("length<=(5+$inactive)", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
             permanent,
         )
         helper_guard_match = re.search(
-            r'''jq -e --arg d "\$\{d\}" '([^']+)' '''
+            r'''jq -e --argjson inactive .*? --arg d "\$\{d\}" '([^']+)' '''
             r'''<<<"\$\{allowed_skipped_terminal_jobs\}" >/dev/null''',
             permanent,
         )
@@ -5733,7 +5733,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         def evaluate_helper_guard(names: list[str]) -> int:
             result = subprocess.run(
-                [jq, "-e", "--arg", "d", helper_pattern, helper_guard],
+                [jq, "-e", "--argjson", "inactive", "0", "--arg", "d", helper_pattern, helper_guard],
                 input=json.dumps([{"name": name} for name in names]),
                 text=True,
                 capture_output=True,

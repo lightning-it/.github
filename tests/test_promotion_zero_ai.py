@@ -20,8 +20,10 @@ class PromotionZeroAiTests(unittest.TestCase):
             runtime = Path(directory).resolve()
             target = runtime / "repository"
             target.mkdir()
+            # Temporary fixture repositories must not inherit linked-worktree Git paths.
             environment = {
-                **os.environ,
+                **{key: value for key, value in os.environ.items()
+                   if key not in {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"}},
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_AUTHOR_NAME": "Fixture",

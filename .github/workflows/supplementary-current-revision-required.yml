@@ -2761,6 +2761,29 @@ jobs:
                   exit 1
                   ;;
               esac
+              # Preserve the native ledger; project only a proven inert sibling
+              # out of the existing five-role bootstrap contract.
+              raw_producer_jobs="${producer_jobs}"
+              producer_jobs="$(jq -ce \
+                --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                --argjson attempt 1 --argjson run_id "${producer_id}" '
+                def inactive_helper:
+                  .status=="completed" and .conclusion=="skipped"
+                  and has("runner_id") and .runner_id==null and .steps==[]
+                  and .run_id==$run_id and .run_attempt==$attempt and .head_sha==$head
+                  and .workflow_name=="Current revision review gate"
+                  and .run_url==("https://api.github.com/repos/"+$ARGS.named.repository+"/actions/runs/"+($run_id|tostring))
+                  and (.name|IN(
+                    "Request protected verifier re-evaluation / Inactive event writer",
+                    "Request protected verifier re-evaluation / Inactive legacy writer",
+                    "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && \u0027Re-run the one protected verifier attempt\u0027 || \u0027Inactive event writer\u0027",
+                    "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && \u0027Inactive legacy writer\u0027 || \u0027Re-run the one protected verifier attempt\u0027",
+                    "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && github.event_name == \u0027workflow_dispatch\u0027 && inputs.producer_run_attempt > 0 && \u0027Re-run the one protected verifier attempt\u0027 || \u0027Inactive event writer\u0027",
+                    "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && github.event_name == \u0027workflow_dispatch\u0027 && inputs.producer_run_attempt > 0 && \u0027Inactive legacy writer\u0027 || \u0027Re-run the one protected verifier attempt\u0027"));
+                [.[]|select(inactive_helper)] as $inactive |
+                if ($inactive|length)<=1 then map(select(inactive_helper|not))
+                else error("duplicate inactive producer helper") end
+                ' <<<"${raw_producer_jobs}")"
               producer_job_count="$(jq 'length' <<<"${producer_jobs}")"
               if [ "${producer_job_count}" -gt 5 ]; then
                 echo 'The local Copilot producer job ledger contains unexpected jobs.' >&2
@@ -4923,7 +4946,7 @@ jobs:
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
                         | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                        | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview",
+                        | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -5269,6 +5292,19 @@ jobs:
           classifier="${RUNNER_TEMP}/terminal-producer-inventory.jq"
           install -m 0600 /dev/null "${classifier}"
           cat >"${classifier}" <<'JQ'
+          def inactive_helper:
+            .status=="completed" and .conclusion=="skipped"
+            and has("runner_id") and .runner_id==null and .steps==[]
+            and .run_id==$run_id and .run_attempt==$attempt and .head_sha==$head
+            and .workflow_name=="Current revision review gate"
+            and .run_url==("https://api.github.com/repos/"+$ARGS.named.repository+"/actions/runs/"+($run_id|tostring))
+            and (.name|IN(
+              "Request protected verifier re-evaluation / Inactive event writer",
+              "Request protected verifier re-evaluation / Inactive legacy writer",
+              "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && \u0027Re-run the one protected verifier attempt\u0027 || \u0027Inactive event writer\u0027",
+              "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && \u0027Inactive legacy writer\u0027 || \u0027Re-run the one protected verifier attempt\u0027",
+              "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && github.event_name == \u0027workflow_dispatch\u0027 && inputs.producer_run_attempt > 0 && \u0027Re-run the one protected verifier attempt\u0027 || \u0027Inactive event writer\u0027",
+              "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository)) && github.event_name == \u0027workflow_dispatch\u0027 && inputs.producer_run_attempt > 0 && \u0027Inactive legacy writer\u0027 || \u0027Re-run the one protected verifier attempt\u0027"));
           def runnerless:
             has("runner_id") and .runner_id==null and .steps==[];
           def inactive_pilot_handoff:
@@ -5282,7 +5318,7 @@ jobs:
             else false end);
           def allowed_skip:
             .conclusion=="skipped" and
-            (inactive_pilot_handoff or .name=="Request Copilot review for current revision"
+            (inactive_helper or inactive_pilot_handoff or .name=="Request Copilot review for current revision"
             or (.name=="Validate protected main helper pin" and runnerless)
             or (.name=="Dispatch protected managed-sync finalizer re-evaluation" and runnerless)
             or ((.name|test("^Classify protected (Release-App ancestry backmerge|main trust-root handoff)$")) and runnerless)
@@ -5297,7 +5333,8 @@ jobs:
             allowed_skip or allowed_dispatch_failure;
           [.[].jobs[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
           {disallowed:[$terminal[]|select(allowed|not)],
-           allowed:[$terminal[]|select(allowed)]} |
+           allowed:[$terminal[]|select(allowed)],
+           inactive_helpers:([$terminal[]|select(inactive_helper)]|length)} |
           . + {dispatch_failed:any(.allowed[];
             .name=="Request protected verifier re-evaluation"
             and .conclusion=="failure")}
@@ -5331,6 +5368,10 @@ jobs:
           select((map(.id) | unique | length) == length
             and (map(.name) | unique | length) == length) |
           (if $event_claim then "Inactive legacy writer" else "Inactive event writer" end) as $inactive |
+          def inactive_refresh_name:
+            .name == $inactive or .name == ("(vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository))" +
+              (if $event_claim then " && \u0027Inactive legacy writer\u0027 || \u0027Refresh canonical Copilot review gate\u0027"
+               else " && \u0027Refresh canonical Copilot review gate\u0027 || \u0027Inactive event writer\u0027" end));
           select(if $count == 1 then
               # Historical single-job native refreshes remain valid only on
               # the legacy route; current CAS dispatch always has three jobs.
@@ -5338,8 +5379,9 @@ jobs:
             else
               (if $event_claim then $refresh.event == "workflow_dispatch"
                else ($refresh.event | IN("pull_request_review", "pull_request_review_comment")) end)
-              and (map(.name) | sort) == ([$inactive, "Locate protected review refresh",
-                "Refresh canonical Copilot review gate"] | sort)
+              and ([.[]|select(inactive_refresh_name)]|length)==1
+              and ([.[]|select(.name=="Locate protected review refresh")]|length)==1
+              and ([.[]|select(.name=="Refresh canonical Copilot review gate")]|length)==1
               and all(.[] | select(.name != "Refresh canonical Copilot review gate");
                 .status == "completed" and .conclusion == "skipped"
                 and has("runner_id") and .runner_id == null and .steps == [])
@@ -5634,7 +5676,7 @@ jobs:
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
-              "nofilestoreview",
+              "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
               "wasnotabletoreviewanyfiles",
@@ -7432,7 +7474,7 @@ jobs:
                   '.dispatch_failed | select(type == "boolean")' \
                   <<<"${terminal_job_inventory}")"
                 jq -e 'length == 0 or error(tojson)' <<<"${disallowed_terminal_jobs}" >/dev/null
-                jq -e --arg d "${d}" '((length<=5 and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
+                jq -e --argjson inactive "$(jq .inactive_helpers <<<"${terminal_job_inventory}")" --arg d "${d}" '(($inactive<=1 and length<=(5+$inactive) and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
                   critical_steps="$(jq -c \
                     --arg policy_step "${INLINE_POLICY_STEP}" '
@@ -7525,7 +7567,7 @@ jobs:
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
                   [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7903,7 +7945,7 @@ jobs:
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
                     | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview",
+                    | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",

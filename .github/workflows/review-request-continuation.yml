@@ -89,7 +89,7 @@ jobs:
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
-              "nofilestoreview",
+              "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
               "wasnotabletoreviewanyfiles",
@@ -748,7 +748,7 @@ jobs:
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
-              "nofilestoreview",
+              "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
               "wasnotabletoreviewanyfiles",

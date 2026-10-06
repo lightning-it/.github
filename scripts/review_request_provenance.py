@@ -26,7 +26,7 @@ REVIEWERS = frozenset({BOT, "copilot-pull-request-reviewer"})
 FAILURE_MARKERS = (
     "unabletoreviewthispullrequest",
     "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
-    "nofilestoreview",
+    "nofilestoreview", "nofileswerereviewed",
     "unabletoreviewanyfiles",
     "notabletoreviewanyfiles",
     "wasnotabletoreviewanyfiles",

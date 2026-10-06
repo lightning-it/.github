@@ -1,0 +1,27 @@
+{
+  "id": 112249387421,
+  "run_id": 37457283768,
+  "workflow_name": "Current revision review gate",
+  "head_branch": "codex/li219-single-collector-boundary",
+  "run_url": "https://api.github.com/repos/lightning-it/shared-assets-lit/actions/runs/37457283768",
+  "run_attempt": 1,
+  "node_id": "CR_kwDOQs6tNc8AAAAaIpW5nQ",
+  "head_sha": "b7bdcf680e9616dc836600479a19dcdeb2e606da",
+  "url": "https://api.github.com/repos/lightning-it/shared-assets-lit/actions/jobs/112249387421",
+  "html_url": "https://github.com/lightning-it/shared-assets-lit/actions/runs/37457283768/job/112249387421",
+  "status": "completed",
+  "conclusion": "skipped",
+  "created_at": "2026-10-06T11:38:26Z",
+  "started_at": "2026-10-06T11:38:26Z",
+  "completed_at": "2026-10-06T11:38:25Z",
+  "name": "Request protected verifier re-evaluation / (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]'), github.repository)) && github.event_name == 'workflow_dispatch' && inputs.producer_run_attempt > 0 && 'Re-run the one protected verifier attempt' || 'Inactive event writer'",
+  "steps": [],
+  "check_run_url": "https://api.github.com/repos/lightning-it/shared-assets-lit/check-runs/112249387421",
+  "labels": [
+    "ubuntu-latest"
+  ],
+  "runner_id": null,
+  "runner_name": null,
+  "runner_group_id": null,
+  "runner_group_name": null
+}

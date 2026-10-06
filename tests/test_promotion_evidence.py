@@ -2183,6 +2183,29 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # Real native helper name, projected onto this fixture's bound run.
+        native = json.loads((ROOT / "tests/fixtures/native-inactive-producer-job.json").read_text())
+        native.update(id=6, run_id=88, head_sha=HEAD,
+                      run_url="https://api.github.com/repos/lightning-it/example/actions/runs/88")
+        for changes, accepted in (({}, True), ({"runner_id": 7}, False),
+                                  ({"steps": [{"name": "effect"}]}, False),
+                                  ({"run_attempt": 2}, False), ({"head_sha": BASE}, False),
+                                  ({"workflow_name": "unknown"}, False),
+                                  ({"name": native["name"] + " unexpected"}, False)):
+            with self.subTest(native_helper=changes), mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run, jobs=[*exact_jobs, {**native, **changes}])
+            ):
+                def verify():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example", pull=ingress_pull(),
+                        pull_number=17, base_sha=BASE, head_sha=HEAD)
+                if accepted:
+                    self.assertEqual(88, verify()["producer_run_id"])
+                else:
+                    with self.assertRaises(MODULE.EvidenceError):
+                        verify()
+
         # The successful policy job can publish its bound check before the
         # job itself reaches its terminal success, and the protected handoff
         # can then publish the same semantic evidence again. Both native

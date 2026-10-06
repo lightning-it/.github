@@ -1485,7 +1485,7 @@ jobs:
                   (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
                    or contains("notabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
-                   or contains("suppressedcomments") or contains("nofilestoreview")
+                   or contains("suppressedcomments") or contains("nofilestoreview") or contains("nofileswerereviewed")
                    or contains("notabletoreviewanyfiles") or contains("unabletoreviewanyfiles") or contains("premiumrequestquota")
                    or contains("premiumrequestsquota") or contains("encounteredanerror")) | not)
                 ' <<<"${texts}" >/dev/null; then return 0; fi

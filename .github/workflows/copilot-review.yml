@@ -400,7 +400,7 @@ jobs:
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
-              "nofilestoreview",
+              "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
               "wasnotabletoreviewanyfiles",
@@ -1971,7 +1971,7 @@ jobs:
                               or contains($quota_exceeded)
                               or contains($suppressed)
                               or contains("notabletoreviewthispullrequest")
-                              or contains("nofilestoreview")
+                              or contains("nofilestoreview") or contains("nofileswerereviewed")
                               or contains("notabletoreviewanyfiles")
                               or contains("unabletoreviewanyfiles")
                               or contains("premiumrequestquota")
