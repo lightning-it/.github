@@ -657,6 +657,7 @@ def git_output(
     environment: dict[str, str],
     binary: bool = False,
     max_bytes: int | None = None,
+    stdout_filter=None,
 ) -> bytes | str:
     command = [git, f"--git-dir={git_dir}", *arguments]
     command_display = " ".join(command)
@@ -698,7 +699,7 @@ def git_output(
                     message = f"{timeout_prefix}: {command_display}"
                     fail(message)
                 for key, _events in selector.select(remaining):
-                    if key.data == "stdout":
+                    if key.data == "stdout" and stdout_filter is None:
                         # MLX-90 rejects inputs greater than or equal to the
                         # protected boundary, so max_bytes is deliberately an
                         # exclusive limit. Read one sentinel byte beyond the
@@ -715,6 +716,8 @@ def git_output(
                         selector.unregister(key.fileobj)
                         continue
                     if key.data == "stdout":
+                        if stdout_filter is not None:
+                            chunk = stdout_filter(chunk)
                         remaining_allowed = max_bytes - 1 - len(stdout)
                         if remaining_allowed > 0:
                             stdout.extend(chunk[:remaining_allowed])
@@ -804,6 +807,54 @@ def write_materialized_workspace(
         raise
 
 
+class InstructionInventoryFilter:
+    """Select NUL-delimited ls-tree records before inventory and UTF-8 limits.
+
+    Keep at most one inventory-budget-sized prefix plus a short suffix per
+    record. Even an oversized unrelated Git path is discarded without buffering
+    it in full; a selected oversized record still exceeds the inventory budget.
+    """
+
+    def __init__(self):
+        self.prefix = bytearray()
+        self.suffix = b""
+        self.size = 0
+
+    def __call__(self, chunk):
+        selected = bytearray()
+        pieces = chunk.split(b"\0")
+        for index, piece in enumerate(pieces):
+            self.size += len(piece)
+            remaining = MAX_PROTECTED_ASSET_BYTES + 1 - len(self.prefix)
+            self.prefix.extend(piece[:remaining])
+            self.suffix = (self.suffix + piece)[-32:]
+            if index == len(pieces) - 1:
+                continue
+            _identity, separator, path = self.prefix.partition(b"\t")
+            if not separator:
+                fail("Protected instruction inventory is malformed.")
+            complete = self.size == len(self.prefix)
+            wanted = (
+                complete and path in (b"AGENTS.md", b".github/copilot-instructions.md")
+                or self.suffix.endswith(b"/AGENTS.md")
+                or path.startswith(b".github/instructions/")
+                and self.suffix.endswith(b".instructions.md")
+            )
+            if wanted:
+                if self.size + 1 > MAX_PROTECTED_ASSET_BYTES:
+                    fail("Protected instruction inventory exceeds its resource limit.")
+                selected.extend(self.prefix)
+                selected.append(0)
+            self.prefix.clear()
+            self.suffix = b""
+            self.size = 0
+        return selected
+
+    def finish(self):
+        if self.size:
+            fail("Protected instruction inventory is truncated.")
+
+
 def protected_review_instructions(git, git_dir, revision, environment):
     """Read only immutable protected-base instruction blobs, never head files.
 
@@ -811,6 +862,7 @@ def protected_review_instructions(git, git_dir, revision, environment):
     the model applies their original directory/frontmatter scopes. Inventory
     and instruction metadata retain the existing protected-asset resource bound.
     """
+    inventory_filter = InstructionInventoryFilter()
     listing = git_output(
         git,
         git_dir,
@@ -818,7 +870,9 @@ def protected_review_instructions(git, git_dir, revision, environment):
         environment=environment,
         binary=True,
         max_bytes=MAX_PROTECTED_ASSET_BYTES + 1,
+        stdout_filter=inventory_filter,
     )
+    inventory_filter.finish()
     files = []
     total = 0
     for entry in listing.split(b"\0"):
@@ -828,14 +882,6 @@ def protected_review_instructions(git, git_dir, revision, environment):
         if not separator:
             fail("Protected instruction inventory is malformed.")
         path = raw_path.decode("utf-8", errors="strict")
-        selected = (
-            Path(path).name == "AGENTS.md"
-            or path == ".github/copilot-instructions.md"
-            or path.startswith(".github/instructions/")
-            and path.endswith(".instructions.md")
-        )
-        if not selected:
-            continue
         parts = identity.decode("ascii").split()
         if (
             len(parts) != 3
