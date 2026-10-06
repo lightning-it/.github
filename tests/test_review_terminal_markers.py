@@ -69,7 +69,7 @@ class TerminalMarkerParityTests(unittest.TestCase):
                     with self.subTest(marker=marker, inline=inline, consumer=name):
                         result = subprocess.run(['bash', '-eu', '-c', script], env=case_env,
                                                 capture_output=True, text=True, check=False)
-                        self.assertEqual(0 if accepted else 1, result.returncode, result.stderr)
+                        self.assertEqual(0 if accepted or name == "request" else 1, result.returncode, result.stderr)
 
 
 if __name__ == '__main__':

@@ -75,6 +75,7 @@ COPILOT_LOGINS = {
 }
 REJECTED_REVIEW_MARKERS = {
     "unabletoreviewthispullrequest",
+    "notabletoreviewthispullrequest",
     "nofileswerereviewed",
     "premiumrequestquota",
     "premiumrequestsquota",
@@ -147,7 +148,7 @@ def parse_timestamp(value: Any, name: str) -> dt.datetime:
 
 
 def normalized_review_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
+    return re.sub(r"[^a-z0-9]+", "", value.lower().replace("n't", " not").replace("n’t", " not"))
 
 
 @dataclass(frozen=True)

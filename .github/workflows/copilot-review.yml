@@ -398,7 +398,7 @@ jobs:
           BOT = "copilot-pull-request-reviewer[bot]"
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
-              "wasnotabletoreviewthispullrequest",
+              "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
               "nofilestoreview",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
@@ -1080,14 +1080,8 @@ jobs:
               'any(add[];
                   .user.login == $reviewer
                   and .commit_id == $head
-                  and (((.body // "") | ascii_downcase
-                    | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest", "nofilestoreview",
-                       "wasnotabletoreviewanyfiles", "notabletoreviewanyfiles","unabletoreviewanyfiles",
-                       "premiumrequestquota", "premiumrequestsquota",
-                       "quotaexhausted", "quotaexceeded", "suppressedcomments",
-                       "encounteredanerror"]
-                    | all(.[]; . as $marker | $body | contains($marker) | not))
+                  and (.state == "COMMENTED" or .state == "APPROVED"
+                    or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")
                 )
               ' <<<"${reviews}" >/dev/null
           }
@@ -1975,7 +1969,7 @@ jobs:
                               or contains($quota_exhausted)
                               or contains($quota_exceeded)
                               or contains($suppressed)
-                              or contains("wasnotabletoreviewthispullrequest")
+                              or contains("notabletoreviewthispullrequest")
                               or contains("nofilestoreview")
                               or contains("notabletoreviewanyfiles")
                               or contains("unabletoreviewanyfiles")

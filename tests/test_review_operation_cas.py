@@ -108,10 +108,14 @@ elif '/comments' in route:
     else:
         result = [[] if worker == '501' and mode not in ('confirmed', 'accepted-unknown', 'uncertain', 'legacy-terminal-cleared') else s.get('comments', [])]
 elif '/reviews?' in route:
-    if mode == 'legacy-terminal-cleared' and worker != '500':
+    if mode.startswith('unsuccessful-review-'):
+        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': mode.removeprefix('unsuccessful-review-'),
+                   'body': "Copilot isn’t able to review this pull request.",
+                   'user': {'login': 'copilot-pull-request-reviewer[bot]'}}]]
+    elif mode == 'legacy-terminal-cleared' and worker != '500':
         result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Copilot was not able to review any files.', 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}]]
     else:
-        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'body': 'Review complete.',
+        result = [[{'commit_id': os.environ['EXPECTED_HEAD'], 'state': 'COMMENTED', 'body': 'Review complete.',
                 'user': {'login': 'copilot-pull-request-reviewer[bot]'}}] if mode == 'existing-review' else []]
 elif route.endswith('/pulls/23'):
     result = {'number': 23, 'state': 'open', 'draft': False, 'user': {'login': 'litroc'},
@@ -294,6 +298,17 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
 
 
 class ReviewRequestCASTests(unittest.TestCase):
+    def test_completed_unsuccessful_review_without_marker_or_pending_consumes_slot(self):
+        for flag in ('disabled', 'enabled'):
+            for state_name in ('COMMENTED', 'APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
+                for prefix in ("",):
+                    with self.subTest(flag=flag, state=state_name, source=prefix):
+                        state = self.probe('unsuccessful-review-' + state_name, event_mode=flag)
+                        self.assertEqual([0, 0], state['outcomes'])
+                        self.assertFalse(any(c.get('post') or c.get('cas') for c in state['calls']))
+                        self.assertEqual([], state.get('comments', []))
+                        self.assertFalse(any(c['route'].endswith('/requested_reviewers') for c in state['calls']))
+
     def test_request_reservations_serialize_across_event_actions(self):
         import yaml
         paths = [ROOT / '.github/workflows/copilot-review.yml']
@@ -578,10 +593,11 @@ class RequestSourceAndPolicyTests(unittest.TestCase):
         self.assertIn('AGENTS_SHA256: ' + hashlib.sha256(agents).hexdigest(), instructions)
         for text in ('2878440201', '2887909377', '2026-10-05', 'LI219_EVENT_MODE=enabled',
                      'lightning-it/.github', 'lightning-it/shared-assets-lit', 'lightning-it/ansible-collection-supplementary',
-                     'Attempt 2 must never request AI review', 'Non-pilots and disabled/default mode retain the legacy'):
+                     'Attempt 2 must never request AI review', 'Non-pilots and disabled/default mode retain their wait'):
             self.assertIn(text, policy)
         self.assertIn('version 12', policy)
         self.assertIn('version 13', policy)
         self.assertIn('intermediate `synchronize` pushes must not trigger AI review', policy)
         self.assertNotIn('explicitly supersedes the older blanket prohibition', adr)
-        self.assertIn('only after a successful response', adr)
+        self.assertIn('UNCERTAIN comment reservation before the sole request POST', adr)
+        self.assertIn('Unknown POST outcomes permit only GET', adr)

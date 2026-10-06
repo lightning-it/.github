@@ -448,6 +448,10 @@ os.execvp(command[0], command)
         baseline = self.resume_fixture()
         review_path = f'repos/{REPO}/pulls/{PR}/reviews/16'
         for marker in ('Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
                        "Copilot wasn't able to review this pull request.",
                        'Copilot wasn’t able to review this pull request.',
                        'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE TO REVIEW THIS PULL REQUEST',
@@ -476,7 +480,11 @@ os.execvp(command[0], command)
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_actual_required_selected_review_has_precise_negation_policy(self):
-        for text, usable in (("Copilot isn't able to review any files.", False),
+        for text, usable in (("Copilot is not able to review this pull request.", False),
+                             ("Copilot isn't able to review this pull request.", False),
+                             ('Copilot isn’t able to review this pull request.', False),
+                             ('Copilot is able to review this pull request.', True),
+                             ("Copilot isn't able to review any files.", False),
                              ('Copilot isn’t able to review any files.', False),
                              ('COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.', False),
                              ('The bot was able to review any files.', True),
@@ -507,6 +515,10 @@ os.execvp(command[0], command)
         negatives = ("Copilot wasn't able to review this pull request.",
                      'Copilot wasn’t able to review this pull request.',
                      'Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
                      'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
         for classifier in classifiers:
             before = workflow[classifier.start() - 220:classifier.start()]

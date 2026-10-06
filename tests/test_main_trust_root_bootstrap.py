@@ -1266,7 +1266,7 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                 MODULE.verify(self.args(api), api)
 
     def test_ai_identity_count_and_findings_fail_closed(self) -> None:
-        mutations = ("codex", "duplicate_review", "suppressed", "unresolved")
+        mutations = ("codex", "duplicate_review", "suppressed", "unresolved", "is not", "isn't", "isn’t")
         for mutation in mutations:
             api = FakeAPI()
             if mutation == "codex":
@@ -1289,6 +1289,8 @@ class MainTrustRootBootstrapTests(unittest.TestCase):
                     return original(endpoint)
 
                 api.target_pages = target_pages  # type: ignore[method-assign]
+            elif mutation in ("is not", "isn't", "isn’t"):
+                api.review["body"] = f"Copilot {mutation} able to review this pull request."
             elif mutation == "suppressed":
                 api.review["body"] = "Suppressed comments (1)"
             else:

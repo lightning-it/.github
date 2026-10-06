@@ -24,7 +24,7 @@ BOT = "copilot-pull-request-reviewer[bot]"
 
 FAILURE_MARKERS = (
     "unabletoreviewthispullrequest",
-    "wasnotabletoreviewthispullrequest",
+    "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
     "nofilestoreview",
     "unabletoreviewanyfiles",
     "notabletoreviewanyfiles",

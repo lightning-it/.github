@@ -4923,7 +4923,7 @@ jobs:
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
                         | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                        | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview",
+                        | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -5632,7 +5632,7 @@ jobs:
 
           FAILURE_MARKERS = (
               "unabletoreviewthispullrequest",
-              "wasnotabletoreviewthispullrequest",
+              "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
               "nofilestoreview",
               "unabletoreviewanyfiles",
               "notabletoreviewanyfiles",
@@ -7524,7 +7524,7 @@ jobs:
                   <<<"${attempt_one}")" \
                 --arg head "${EVENT_HEAD}" '
                   [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
+                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
                 ' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
@@ -7902,7 +7902,7 @@ jobs:
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
                     | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview",
+                    | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",

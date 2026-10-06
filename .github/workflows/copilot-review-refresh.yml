@@ -1483,7 +1483,7 @@ jobs:
               if jq -e '
                 any(.[]; length > 0) and all(.[];
                   (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
-                   or contains("wasnotabletoreviewthispullrequest")
+                   or contains("notabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
                    or contains("suppressedcomments") or contains("nofilestoreview")
                    or contains("notabletoreviewanyfiles") or contains("unabletoreviewanyfiles") or contains("premiumrequestquota")

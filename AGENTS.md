@@ -41,8 +41,10 @@
   ID / PR / head through Git CAS before its effect; base drift or a new producer
   run does not grant another request. Attempt 2 must never request AI review.
   Keep native Required-Workflow authority and one fully bound event-authorized
-  verifier reevaluation. Non-pilots and disabled/default mode retain the legacy
-  request-then-confirmed-marker ordering and wait paths, without CAS mutation.
+  verifier reevaluation. Non-pilots and disabled/default mode retain their wait
+  paths without CAS mutation, but must persist and confirm the exact-head
+  UNCERTAIN reservation before the request POST. An interruption after that
+  reservation consumes the slot even if delivery never occurred.
 - This exception implements REP-40 page 2878440201 version 12 and REP-60 page
   2887909377 version 13, amendment added 2026-10-05. Scoped owner-authorized
   project-rule overrides are permitted for this bounded completion; they do
@@ -179,3 +181,23 @@ model/reasoning choice, rationale, and a concrete escalation condition.
   Source/Governance coordinates a new producer/consumer version before cutover.
 
 <!-- LIT review sizing governance: end -->
+
+<!-- LIT at-most-once review funding: start -->
+
+## At-most-once review funding
+
+The owner-authorized 2026-10-06 amendment requires a durable, exact-head
+reservation before the one review-request POST. Enabled pilot requests confirm
+the protected Git CAS claim before the effect; disabled/default and non-pilot
+requests confirm the durable UNCERTAIN comment reservation without CAS.
+Reservation proves consumption only, never delivery, review quality, or acceptance.
+After an unknown POST outcome, observe review delivery only through GET reads;
+do not repeat the same-head AI request. Base drift, a new run, or missing pending
+state never restores that consumed opportunity. Every completed same-head review
+from the trusted Copilot bot consumes the funding opportunity, including failed,
+quota-blocked, changes-requested, and dismissed reviews, regardless of body or
+inline content. The separate policy/evidence gate must still reject unusable
+content and unresolved findings. This amendment grants no bypass or weaker
+platform, protected-source, actor, Required-Workflow, or merge authority.
+
+<!-- LIT at-most-once review funding: end -->

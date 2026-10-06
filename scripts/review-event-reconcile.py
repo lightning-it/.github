@@ -25,7 +25,7 @@ TTL = dt.timedelta(days=7)
 DISPATCH_INVENTORY_REQUESTS = 256
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
-    "unable to review this pull request", "was not able to review this pull request", "no files to review",
+    "unable to review this pull request", "not able to review this pull request", "was not able to review this pull request", "no files to review",
     "was not able to review any files", "not able to review any files", "unable to review any files",
     "premium request quota", "premium requests quota",
     "quota exhausted", "quota exceeded", "suppressed comments",

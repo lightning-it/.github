@@ -304,6 +304,10 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual(0, self.defer().returncode)
         baseline = copy.deepcopy(self.state)
         markers = ('Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
                    "Copilot wasn't able to review this pull request.",
                    'Copilot wasn’t able to review this pull request.',
                    'suppressed comment', 'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
