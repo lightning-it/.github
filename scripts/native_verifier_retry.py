@@ -608,11 +608,13 @@ def main():
         receiver(repo, repo_id, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]), now)
     elif mode == "reconcile":
         # Bounded native inventories; never infer authority from scheduler payload.
+        visited = set()
         for pr in proof.pages(f"repos/{repo}/pulls?state=open"):
             if pr["draft"] or pr["user"]["login"] != "litroc":
                 continue
             for run in proof.pages(f"repos/{repo}/actions/runs?head_sha={pr['head']['sha']}", "workflow_runs"):
-                if run["path"] == RECEIVER and run["run_attempt"] >= 2:
+                if run["path"] == RECEIVER and run["run_attempt"] >= 2 and run["id"] not in visited:
+                    visited.add(run["id"])
                     print(f"LI-259 run {run['id']}: {recover(repo, repo_id, run['id'], os.environ['GITHUB_WORKFLOW_SHA'], now)}")
     else:
         raise ValueError("unknown mode")

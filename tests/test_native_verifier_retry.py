@@ -419,6 +419,21 @@ class NativeRetryTests(unittest.TestCase):
         self.assertEqual(attempts, self.cas_attempts)
         self.assertEqual([], self.effects)
 
+    def test_same_run_discovered_for_two_prs_never_repeats_unseen_cas_in_one_sweep(self):
+        self.prime()
+        self.cas_before_visible = True
+        attempts = self.cas_attempts
+        original = self.api
+        def shared_head(route, payload=None, fields=()):
+            result = original(route, payload, fields)
+            if "/pulls?state=open" in route:
+                return [result[0], {**result[0], "id": 24, "number": 24}]
+            return result
+        with patch.object(RETRY.proof, "api", side_effect=shared_head):
+            self.reconcile()
+        self.assertEqual(attempts + 1, self.cas_attempts)
+        self.assertEqual([], self.effects)
+
     def test_unseen_first_native_owner_cannot_be_skipped_by_later_scheduler(self):
         self.prime()
         self.next_scheduler(67, 2702)
