@@ -26,6 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  LI259_INFRA_RETRY: ${{ vars.LI259_INFRA_RETRY }}
   LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
 
 jobs:
@@ -2440,6 +2441,21 @@ jobs:
       WORKFLOW_SHA: ${{ github.workflow_sha }}
 
     steps:
+      - name: Authenticate the consumed LI-259 technical attempt
+        if: github.run_attempt > 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${LI259_INFRA_RETRY:-disabled}" = enabled
+          retry_source_repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          test "${retry_source_repository}" = lightning-it/.github
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/${retry_source_repository}/contents/scripts/run-native-verifier-retry.sh?ref=${WORKFLOW_SHA}" \
+            --jq '.content' | base64 --decode >"${RUNNER_TEMP}/li259-launcher.sh"
+          bash "${RUNNER_TEMP}/li259-launcher.sh" receiver
+          touch "${RUNNER_TEMP}/li259-entry-authorized"
+
       - name: Mint source-read Release Automation App token
         id: source-app
         if: >-
@@ -5276,7 +5292,14 @@ jobs:
           esac
 
           failure_stage='event-metadata-binding'
-          test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            # No numeric relaxation: the receiver authenticates a separate
+            # consumed technical slot and its unchanged prospective contract.
+            test "${LI259_INFRA_RETRY:-disabled}" = enabled
+            test -f "${RUNNER_TEMP}/li259-entry-authorized"
+          else
+            test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
+          fi
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           {
             echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}"
@@ -5284,6 +5307,15 @@ jobs:
             echo "issue_564_pr568=${issue_564_pr568_authorized:-false}"
             echo "issue_564_pr568_recovery=${issue_564_pr568_recovery_authorized:-false}"
           } >>"${GITHUB_OUTPUT}"
+
+      - name: LI-259 receiver source ${{ github.workflow_ref }} ${{ github.workflow_sha }} PR ${{ github.event.pull_request.number }} base ${{ github.event.pull_request.base.sha }} head ${{ github.event.pull_request.head.sha }}
+        if: vars.LI259_INFRA_RETRY == 'enabled'
+        run: |
+          set -euo pipefail
+          # This native successful step binds the actual immutable receiver,
+          # before any later attempt can acquire a technical-retry budget.
+          test "${LI219_EVENT_MODE}" = enabled
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Materialize the terminal producer inventory classifier
         run: |
@@ -8238,6 +8270,10 @@ jobs:
           fi
 
           failure_stage='permanent-finalization'
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            # Repeat the contract/deadline guard immediately before acceptance.
+            bash "${RUNNER_TEMP}/li259-launcher.sh" receiver
+          fi
           finalized="$(gh api --method PATCH \
             "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
             -f status=completed \

@@ -51,6 +51,7 @@ concurrency:
   queue: max
 
 env:
+  LI259_INFRA_RETRY: ${{ vars.LI259_INFRA_RETRY }}
   LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
 
 jobs:
@@ -1675,8 +1676,19 @@ jobs:
           rerun_protected_verifier_once() {
             authorize_protected_rerun_transaction || return 10
             require_deadline || return 10
+            if [ "${LI259_INFRA_RETRY:-disabled}" = enabled ]; then
+              # Prospective binding only. This does not consume another event or
+              # authorize any effect; the existing LI-219 CAS still owns attempt 2.
+              local launcher="${RUNNER_TEMP}/li259-launcher.sh"
+              bounded_gh_api "repos/${REPOSITORY}/contents/scripts/run-native-verifier-retry.sh?ref=${WORKFLOW_SHA}" \
+                --jq '.content' | base64 --decode >"${launcher}" || return 10
+              bash "${launcher}" seal "${PR_NUMBER}" "${run_id}" || return 10
+            fi
             claim_review_operation "${run_id}" "${EXPECTED_HEAD}" "${EXPECTED_BASE}" "${PR_NUMBER}" || return 20
             authorize_protected_rerun_transaction || return 10
+            if [ "${LI259_INFRA_RETRY:-disabled}" = enabled ]; then
+              bash "${RUNNER_TEMP}/li259-launcher.sh" seal "${PR_NUMBER}" "${run_id}" || return 10
+            fi
             bounded_gh_api --method POST \
               "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null \
               && return 0

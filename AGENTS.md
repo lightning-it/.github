@@ -45,6 +45,19 @@
   paths without CAS mutation, but must persist and confirm the exact-head
   UNCERTAIN reservation before the request POST. An interruption after that
   reservation consumes the slot even if delivery never occurred.
+- The owner-authorized LI-259 follow-up separates that single event entitlement
+  from technical recovery. Only the wired supplementary verifier, with both
+  `LI219_EVENT_MODE` and `LI259_INFRA_RETRY` enabled, may consume native attempts
+  3 and 4 after the exact GitHub-hosted runner-acquisition failure is proven.
+  Seal its unchanged review, repository, PR, base, head, controller, policy and
+  input contract before attempt 2. Use separate durable CAS slots, 20/40-minute
+  cooldowns and a 180-minute total budget; retain 60 minutes before every start.
+  Both receiver entry and final acceptance authenticate the consumed slot and
+  unchanged contract. Uncertain effects are GET-only, deterministic failures and
+  drift are terminal, and older unsealed runs gain no authority. Retry only the
+  verifier job and its deterministic dependent gate. Producer, review-request,
+  AI and unadapted cross-controller paths keep their existing limits. See
+  `docs/adr/li259-native-verifier-retry.md`; historical evidence is unchanged.
 - This exception implements REP-40 page 2878440201 version 12 and REP-60 page
   2887909377 version 13, amendment added 2026-10-05. Scoped owner-authorized
   project-rule overrides are permitted for this bounded completion; they do

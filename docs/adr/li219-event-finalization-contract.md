@@ -98,6 +98,11 @@ current ref. An existing record cannot authorize another effect; crashes after
 claim remain consumed and blocked for diagnosis. An uncertain rerun or AI request
 response is never retried. This provides at-most-one send, not guaranteed delivery.
 
+The prospective [LI-259 technical recovery contract](li259-native-verifier-retry.md)
+adds separate bounded infrastructure slots only for the wired supplementary
+verifier. It does not replenish this event claim or the AI-request budget.
+Historical runs without its pre-attempt-two seal remain ineligible.
+
 The Required verifier checks that the check projection matches the Git record,
 that its commit belongs to the retained data-ref history, and that the record's
 workflow source and claimant match the fully validated protected native run.
