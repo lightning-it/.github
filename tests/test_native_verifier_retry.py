@@ -156,7 +156,8 @@ class NativeRetryTests(unittest.TestCase):
             return {"data": {"repository": {"nameWithOwner": self.repo, "source": {"__typename": "Commit", "oid": oid},
                     "manifest": self.blob({"schema": 1, "repository": self.repo, "repository_id": self.repo_id,
                                            "ref": "refs/heads/lit-review-operations"}),
-                    "record": self.blob(self.snapshots[oid].get(path))}}}
+                    "record": self.blob({"schema": 1, "repository": self.repo, "repository_id": self.repo_id,
+                        "ref": "refs/heads/lit-review-operations"} if path == "manifest.json" else self.snapshots[oid].get(path))}}}
         prefix = f"repos/{self.repo}"
         if route == prefix:
             return {"full_name": self.repo, "id": 123, "default_branch": "develop"}
@@ -167,6 +168,14 @@ class NativeRetryTests(unittest.TestCase):
             return {"status": "identical"}
         if route == prefix + "/git/ref/heads/lit-review-operations":
             return {"ref": "refs/heads/lit-review-operations", "object": {"type": "commit", "sha": self.oid}}
+        if route.startswith(prefix + "/git/commits/"):
+            oid = route.rsplit("/", 1)[1]
+            return {"sha": oid, "tree": {"sha": oid}}
+        if route.startswith(prefix + "/git/trees/"):
+            oid = route.rsplit("/", 1)[1].split("?")[0]
+            return {"sha": oid, "truncated": False, "tree": [
+                {"path": path, "type": "blob", "mode": "100644", "sha": "a" * 40}
+                for path in self.snapshots[oid]]}
         if route == prefix + "/pulls/23":
             return copy.deepcopy(self.pr)
         if route == prefix + "/actions/runs/99":
@@ -186,11 +195,16 @@ class NativeRetryTests(unittest.TestCase):
         parsed, query = urlsplit(route), parse_qs(urlsplit(route).query)
         bare = parsed.path[len(prefix):]
         if bare == "/pulls":
-            return [copy.deepcopy(self.pr)]
+            return [copy.deepcopy(self.pr)] if self.pr["state"] == "open" else []
         if bare == "/actions/runs":
             rows, key = [self.run] + ([] if self.extra_run is None else [self.extra_run]), "workflow_runs"
+            rows = [run for run in rows if not query.get("head_sha") or run["head_sha"] == query["head_sha"][0]]
         elif bare == "/actions/workflows/6/runs":
             rows, key = self.scheduler_runs, "workflow_runs"
+            if "created" in query:
+                start, end = query["created"][0].split("..")
+                rows = [run for run in rows if RETRY.proof.epoch(start) <= RETRY.proof.epoch(run["created_at"])
+                        <= RETRY.proof.epoch(end)]
         elif bare.startswith("/actions/runs/199/attempts/") and bare.endswith("/jobs"):
             rows, key = self.extra_jobs[int(bare.split("/")[-2])], "jobs"
         elif bare.startswith("/actions/runs/99/attempts/") and bare.endswith("/jobs"):
@@ -263,6 +277,139 @@ class NativeRetryTests(unittest.TestCase):
         self.pr.update(title="Edited title", body="Edited body")
         self.last_edited_at = self.at(100)
         self.pr.update(original)
+
+    def test_reconcile_observed_pr_drift_never_revives_after_restore(self):
+        for drift in ("head", "draft", "closed"):
+            with self.subTest(drift=drift):
+                self.setUp()
+                self.prime()
+                original = copy.deepcopy(self.pr)
+                if drift == "head":
+                    self.pr["head"]["sha"] = "e" * 40
+                elif drift == "draft":
+                    self.pr["draft"] = True
+                else:
+                    self.pr["state"] = "closed"
+                self.reconcile()
+                self.assertEqual("contract-drift", self.snapshots[self.oid]["li259/99/terminal.json"]["state"])
+                writes = len(self.writes)
+                self.pr = original
+                self.reconcile()
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
+
+    def test_seed_inventory_rejects_incomplete_duplicate_or_unbound_trees_before_effects(self):
+        for corruption in ("truncated", "duplicate", "sha", "mode"):
+            with self.subTest(corruption=corruption):
+                self.setUp()
+                self.prime()
+                original = self.api
+                def malformed(route, payload=None, fields=()):
+                    result = original(route, payload, fields)
+                    if "/git/trees/" in route:
+                        if corruption == "truncated": result["truncated"] = True
+                        elif corruption == "duplicate": result["tree"] *= 2
+                        elif corruption == "sha": result["sha"] = "f" * 40
+                        else: result["tree"][0]["mode"] = "120000"
+                    return result
+                writes = len(self.writes)
+                with patch.object(RETRY.proof, "api", side_effect=malformed):
+                    with self.assertRaises(RETRY.GlobalReadFailure):
+                        self.reconcile()
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
+
+    def test_original_handoff_gaps_are_pending_without_writes_and_can_converge(self):
+        for phase in ("before-claim", "before-post", "attempt-two-not-visible", "claim-not-visible"):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.prime()
+                record_path = RETRY.proof.record_path(f"li219-verifier-operation:v1:23:{self.source}:{self.head}:99")
+                record = self.snapshots[self.oid][record_path]
+                if phase in ("before-claim", "claim-not-visible"):
+                    del self.snapshots[self.oid][record_path]
+                actual = copy.deepcopy(self.run)
+                if phase != "claim-not-visible":
+                    self.run = copy.deepcopy(self.history[1])
+                writes = len(self.writes)
+                self.assertEqual("handoff-pending-readback-only", self.recover())
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
+                self.snapshots[self.oid][record_path] = record
+                self.run = actual
+                self.assertEqual("dispatched", self.recover())
+                self.assertEqual([(f"repos/{self.repo}/actions/jobs/102/rerun", {})], self.effects)
+
+    def test_unconfirmed_original_handoff_expires_read_only_and_real_drift_is_terminal(self):
+        self.prime()
+        self.run = copy.deepcopy(self.history[1])
+        writes = len(self.writes)
+        self.now = self.start + dt.timedelta(seconds=RETRY.POLICY["total_seconds"] + 1)
+        self.assertEqual("handoff-expired-readback-only", self.recover())
+        self.assertEqual(writes, len(self.writes))
+        self.assertEqual([], self.effects)
+        self.pr["draft"] = True
+        self.assertEqual("terminal", self.recover())
+        self.assertEqual([], self.effects)
+
+    def test_missing_original_claim_with_impossible_budget_stays_read_only_and_sweep_continues(self):
+        for seconds, result in ((10001, "handoff-pending-readback-only"), (12601, "handoff-expired-readback-only")):
+            with self.subTest(seconds=seconds):
+                self.setUp()
+                self.prime()
+                self.scheduler_runs.clear()
+                self.fail_attempt(2, 1, 10000)
+                self.next_scheduler(66, seconds)
+                self.second_candidate()
+                seed = self.snapshots[self.oid]["li259/199/seed.json"]
+                seed["created_at"] = self.at(seconds - 2102)
+                self.extra_jobs[2][0].update(created_at=self.at(seconds - 2101),
+                                             started_at=self.at(seconds - 2101), completed_at=self.at(seconds - 1200))
+                record_path = RETRY.proof.record_path(f"li219-verifier-operation:v1:23:{self.source}:{self.head}:99")
+                del self.snapshots[self.oid][record_path]
+                writes = len(self.writes)
+                self.assertEqual(result, self.recover())
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
+                self.reconcile()
+                self.assertNotIn("li259/99/terminal.json", self.snapshots[self.oid])
+                self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+
+    def test_impossible_late_cooldown_closes_seed_before_election_and_sweep_continues(self):
+        self.prime()
+        self.scheduler_runs.clear()
+        self.fail_attempt(2, 1, 10000)
+        self.next_scheduler(66, 12601)
+        self.second_candidate()
+        seed = self.snapshots[self.oid]["li259/199/seed.json"]
+        seed["created_at"] = self.at(10500)
+        self.extra_jobs[2][0].update(created_at=self.at(10501), started_at=self.at(10501),
+                                     completed_at=self.at(11401))
+        self.reconcile()
+        self.assertEqual("budget-exhausted", self.snapshots[self.oid]["li259/99/terminal.json"]["state"])
+        self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+
+    def test_expired_unseen_claim_has_frozen_history_and_does_not_block_fresh_seed(self):
+        self.prime()
+        self.cas_before_visible = True
+        self.assertEqual("unconfirmed-claim-readback-only", self.recover())
+        self.cas_before_visible = False
+        # More than the native inventory cap accumulates after the old deadline.
+        for offset in range(1, 1101):
+            self.next_scheduler(1000 + offset, 10801 + offset * 600)
+        self.second_candidate()
+        seed = self.snapshots[self.oid]["li259/199/seed.json"]
+        seed["created_at"] = self.at(10801 + 1096 * 600)
+        seed["scheduler_frontier"]["run_number"] = 1097
+        self.extra_jobs[2][0].update(created_at=self.at(10801 + 1096 * 600 + 1),
+                                     started_at=self.at(10801 + 1096 * 600 + 1),
+                                     completed_at=self.at(10801 + 1098 * 600))
+        writes = len(self.writes)
+        self.assertEqual("native-owner-readback-only", self.recover())
+        self.assertEqual(writes, len(self.writes))
+        self.reconcile()
+        self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+        self.assertNotIn("li259/99/attempt-3.json", self.snapshots[self.oid])
 
     def test_edit_revert_before_seal_rejects_old_neutral_without_write(self):
         self.edit_and_revert()
