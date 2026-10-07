@@ -291,22 +291,26 @@ class ProducerMetadataTests(unittest.TestCase):
                                 .replace('fix/exact-ingress', 'fix/test').replace('2026-09-27', '2026-10-07')
                                 .replace('example', '.github'))
                     return value
-                delegate = promotion.evidence_api(promotion.producer_run())
-                def api(args):
-                    translated = [v.replace(self.repo, 'lightning-it/example')
-                                  .replace('/runs/77', '/runs/88').replace('/pulls/23', '/pulls/17')
-                                  .replace('/compare/'+self.base, '/compare/'+'5'*40) for v in args]
-                    result = bound(delegate(translated))
-                    if args[:2] == ['api','graphql']:
-                        result['data']['repository']['pullRequest']['lastEditedAt'] = edited
-                    return result
-                with mock.patch.object(promotion.MODULE, 'gh_json', side_effect=api):
-                    accepted = promotion.MODULE.bound_review_check(
-                        [{'check_runs':[self.data['check']]}], repository=self.repo,
-                        pull=bound(promotion.ingress_pull()), pull_number=23,
-                        base_sha=self.base, head_sha=self.head)
-                self.assertEqual(promotion.MODULE.digest(json.loads(raw)), accepted["summary_sha256"])
-                self.assertEqual(0, accepted["historical_findings_count"])
+                for associated in (True, False):
+                    native_run = promotion.producer_run()
+                    if not associated:
+                        native_run['pull_requests'] = []
+                    delegate = promotion.evidence_api(native_run)
+                    def api(args):
+                        translated = [v.replace(self.repo, 'lightning-it/example')
+                                      .replace('/runs/77', '/runs/88').replace('/pulls/23', '/pulls/17')
+                                      .replace('/compare/'+self.base, '/compare/'+'5'*40) for v in args]
+                        result = bound(delegate(translated))
+                        if args[:2] == ['api','graphql']:
+                            result['data']['repository']['pullRequest']['lastEditedAt'] = edited
+                        return result
+                    with mock.patch.object(promotion.MODULE, 'gh_json', side_effect=api):
+                        accepted = promotion.MODULE.bound_review_check(
+                            [{'check_runs':[self.data['check']]}], repository=self.repo,
+                            pull=bound(promotion.ingress_pull()), pull_number=23,
+                            base_sha=self.base, head_sha=self.head)
+                    self.assertEqual(promotion.MODULE.digest(json.loads(raw)), accepted["summary_sha256"])
+                    self.assertEqual(0, accepted["historical_findings_count"])
 
     def test_capture_rejects_missing_revision_and_event_input_drift(self):
         for field, value in (('lastEditedAt','missing'),('lastEditedAt','2026-10-07T00:01:00Z'),

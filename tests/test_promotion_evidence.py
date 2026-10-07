@@ -2106,33 +2106,40 @@ class PromotionEvidenceTests(unittest.TestCase):
 
     def test_metadata_v6_rebinds_revision_and_strict_review_chronology(self) -> None:
         external = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
-        native_run = producer_run()
-        native_run["pull_requests"] = []
-        original = evidence_api(native_run)
-        for bound, live, accepted in (
-            (None, None, True), (None, "2026-09-27T00:03:00Z", False),
-            ("2026-09-27T00:03:00Z", "2026-09-27T00:03:00Z", True),
-            ("2026-09-27T00:04:00Z", "2026-09-27T00:04:00Z", False),
-            ("2026-09-27T00:05:00Z", "2026-09-27T00:05:00Z", False),
-            (False, False, False), ("2026-00-01T00:00:00Z", "2026-00-01T00:00:00Z", False),
-        ):
-            def api(args):
-                value = original(args)
-                if args[:2] == ["api", "graphql"]:
-                    value["data"]["repository"]["pullRequest"]["lastEditedAt"] = live
-                return value
-            summary = {**json.loads(v6_summary()), "pull_request_last_edited_at": bound}
-            with self.subTest(bound=bound, live=live), mock.patch.object(MODULE, "gh_json", side_effect=api):
-                def validate():
-                    return MODULE.bound_review_check(
-                        [{"check_runs": [check_run(external, json.dumps(summary))]}],
-                        repository="lightning-it/example", pull=ingress_pull(),
-                        pull_number=17, base_sha=BASE, head_sha=HEAD)
-                if accepted:
-                    self.assertEqual(MODULE.digest(summary), validate()["summary_sha256"])
-                else:
-                    with self.assertRaises(MODULE.EvidenceError):
-                        validate()
+        for associated in (True, False):
+            native_run = producer_run()
+            if not associated:
+                native_run["pull_requests"] = []
+            original = evidence_api(native_run)
+            cases = [
+                (None, None, True), (None, "2026-09-27T00:03:00Z", False),
+                ("2026-09-27T00:03:00Z", "2026-09-27T00:03:00Z", True),
+                ("2026-09-27T00:04:00Z", "2026-09-27T00:04:00Z", False),
+                ("2026-09-27T00:05:00Z", "2026-09-27T00:05:00Z", False),
+            ]
+            cases.extend((value, value, False) for value in (
+                False, 0, [], {}, "invalid", "2026-00-01T00:00:00Z",
+                "2026-04-31T00:00:00Z", "2025-02-29T00:00:00Z",
+                "2026-09-27T24:00:00Z", "2026-09-27T00:60:00Z"))
+            for bound, live, accepted in cases:
+                def api(args):
+                    value = original(args)
+                    if args[:2] == ["api", "graphql"]:
+                        value["data"]["repository"]["pullRequest"]["lastEditedAt"] = live
+                    return value
+                summary = {**json.loads(v6_summary()), "pull_request_last_edited_at": bound}
+                with (self.subTest(associated=associated, bound=bound, live=live),
+                      mock.patch.object(MODULE, "gh_json", side_effect=api)):
+                    def validate():
+                        return MODULE.bound_review_check(
+                            [{"check_runs": [check_run(external, json.dumps(summary))]}],
+                            repository="lightning-it/example", pull=ingress_pull(),
+                            pull_number=17, base_sha=BASE, head_sha=HEAD)
+                    if accepted:
+                        self.assertEqual(MODULE.digest(summary), validate()["summary_sha256"])
+                    else:
+                        with self.assertRaises(MODULE.EvidenceError):
+                            validate()
 
     def test_v6_rejects_schema_drift_and_failed_producer_run(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"

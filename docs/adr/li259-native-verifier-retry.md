@@ -214,3 +214,12 @@ Source root/default and generated rerun helpers already recognize an exact
 nine-key historical supplementary cutover; their repository, manifest and
 producer-blob limits stay intact. General Source producers still emit thirteen
 keys. The Source port manifest records the updated Core consumer commit.
+
+Metadata-bound Copilot review identity and strict review-after-edit ordering are
+validated before the native run/PR association branches diverge. A populated
+native `pull_requests` association cannot substitute for review chronology.
+Both associated and unassociated paths require a later review when the bound
+metadata revision is non-null; null retains its existing semantics. The
+unassociated sparse path still checks review comments, and expanded evidence
+still binds its explicit review ID. The shadow already applies chronology
+unconditionally after reading the bound native review and GraphQL revision.
