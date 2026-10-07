@@ -1908,6 +1908,15 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          cat >"${RUNNER_TEMP}/copilot-timestamp.jq" <<'COPILOT_TIMESTAMP_POLICY'
+          def timestamp:
+            type == "string"
+            and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+            and .[0:4] != "0000"
+            and (try (. as $original
+              | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime | gmtime
+              | strftime("%Y-%m-%dT%H:%M:%SZ") == $original) catch false);
+          COPILOT_TIMESTAMP_POLICY
           cat >"${RUNNER_TEMP}/copilot-input-metadata.sh" <<'COPILOT_INPUT_METADATA'
           read_copilot_metadata_revision() {
             local response query
@@ -1915,10 +1924,10 @@ jobs:
             response="$(gh api graphql -f query="${query}" \
               -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" \
               -F number="${PR_NUMBER}")" || return 1
-            jq -e --slurpfile event "${GITHUB_EVENT_PATH}" \
+            TZ=UTC LC_ALL=C jq -e -L "${RUNNER_TEMP}" --slurpfile event "${GITHUB_EVENT_PATH}" \
               --arg repo "${REPOSITORY}" --arg base "${EVENT_BASE}" \
               --arg head "${EVENT_HEAD}" --argjson number "${PR_NUMBER}" '
-              def timestamp: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+              include "copilot-timestamp";
               (if has("errors") then (.errors | type == "array" and length == 0) else true end)
               and ($event | length == 1)
               and $event[0].repository.full_name == $repo
@@ -2196,18 +2205,19 @@ jobs:
               head_sha="${page_head_sha}"
 
               candidate_review_ids="$(
-                jq -r \
+                TZ=UTC LC_ALL=C jq -r -L "${RUNNER_TEMP}" \
                   --arg head "${head_sha}" \
                   --arg reviewer "${COPILOT_REVIEWER_LOGIN}" \
                   --argjson edited "$(cat "${RUNNER_TEMP}/copilot-input-metadata.json")" \
-                  '(.data.repository.pullRequest.reviews.nodes // [])[]
+                  'include "copilot-timestamp";
+                    (.data.repository.pullRequest.reviews.nodes // [])[]
                     | select(
                         (.author.login // "") as $login
                         | ($login == $reviewer or $login == ($reviewer + "[bot]"))
                       )
                     | select(.state == "COMMENTED" or .state == "APPROVED")
                     | select(.commit.oid == $head)
-                    | select(.submittedAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                    | select(.submittedAt | timestamp)
                     | select($edited == null or .submittedAt > $edited)
                     | (.id // empty)' <<<"${response}"
               )"

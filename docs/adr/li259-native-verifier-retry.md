@@ -62,6 +62,12 @@ before selecting review evidence. Its authenticated GraphQL input must match
 the immutable event repository/PR/base/head/title/body, and the edit revision
 must not be newer than the event. Selected reviews must strictly postdate that
 edit; equal second-resolution timestamps cannot establish the order.
+Event update, live edit and review-submission timestamps share one strict
+calendar parser: parse and format back to the identical UTC string under
+explicit `TZ=UTC` and `LC_ALL=C`. Invalid calendar dates, leap seconds,
+offsets and fractional seconds fail closed; only an unedited live PR may use
+null. This keeps the producer aligned with the native `proof.epoch` contract
+without depending on the runner's local timezone.
 The ordinary schema-4 summary includes the bound revision. Every neutral
 POST/PATCH and final publication acceptance revalidates it, including the
 existing invalidation/reuse paths; no retry may recapture a newer baseline.

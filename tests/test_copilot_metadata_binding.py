@@ -145,7 +145,9 @@ class ProducerMetadataTests(unittest.TestCase):
 
     def producer_to_receiver(self):
         outcome = {'summary': None, 'sealed': False, 'reruns': 0, 'received': False}
-        self.capture()
+        captured = self.execute('Bind Copilot input metadata revision', succeeds=None)
+        if captured.returncode != 0:
+            return outcome
         # Match Actions step ordering: a failed verifier cannot publish.
         verified = self.execute('Verify current Copilot review and resolved findings', succeeds=None)
         if verified.returncode != 0:
@@ -176,6 +178,58 @@ class ProducerMetadataTests(unittest.TestCase):
         self.assertEqual({'summary': None, 'sealed': False, 'reruns': 0, 'received': False},
                          self.producer_to_receiver())
         self.assertEqual([], self.data['writes'])
+
+    def set_timestamp_input(self, field, value):
+        if field == 'event':
+            event_path = Path(self.env['GITHUB_EVENT_PATH'])
+            event = json.loads(event_path.read_text())
+            event['pull_request']['updated_at'] = value
+            event_path.write_text(json.dumps(event))
+        elif field == 'metadata':
+            self.data['metadata']['lastEditedAt'] = value
+        else:
+            self.data['submitted'] = value
+        self.save()
+
+    def test_impossible_calendar_event_cannot_enter_retry_pipeline(self):
+        self.set_timestamp_input('event', '2026-00-01T00:00:00Z')
+        self.assertEqual({'summary': None, 'sealed': False, 'reruns': 0, 'received': False},
+                         self.producer_to_receiver())
+        self.assertEqual([], self.data['writes'])
+
+    def test_all_three_timestamps_reject_invalid_calendar_and_format_in_any_timezone(self):
+        invalid = ('2026-00-01T00:00:00Z', '2026-13-01T00:00:00Z', '2026-01-00T00:00:00Z',
+                   '2026-04-31T00:00:00Z', '2025-02-29T00:00:00Z', '2026-01-01T24:00:00Z',
+                   '2026-01-01T00:60:00Z', '2026-01-01T00:00:60Z', '0000-01-01T00:00:00Z',
+                   '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00.000Z')
+        for timezone in ('UTC', 'America/Toronto'):
+            for field in ('event', 'metadata', 'review'):
+                for value in invalid:
+                    with self.subTest(timezone=timezone, field=field, value=value):
+                        self.setUp()
+                        self.env['TZ'] = timezone
+                        self.set_timestamp_input(field, value)
+                        with self.assertRaises(ValueError):
+                            native.RETRY.proof.epoch(value)
+                        self.assertEqual({'summary': None, 'sealed': False, 'reruns': 0, 'received': False},
+                                         self.producer_to_receiver())
+                        self.assertEqual([], self.data['writes'])
+
+    def test_valid_leap_day_and_summer_utc_survive_non_utc_host_timezone(self):
+        for timezone in ('UTC', 'America/Toronto'):
+            for day in ('2024-02-29', '2026-07-01'):
+                with self.subTest(timezone=timezone, day=day):
+                    self.setUp()
+                    self.env['TZ'] = timezone
+                    self.set_timestamp_input('event', day + 'T12:00:00Z')
+                    self.set_timestamp_input('metadata', day + 'T11:59:59Z')
+                    self.set_timestamp_input('review', day + 'T12:00:00Z')
+                    outcome = self.producer_to_receiver()
+                    self.assertEqual(day + 'T11:59:59Z',
+                                     json.loads(outcome['summary'])['pull_request_last_edited_at'])
+                    self.assertTrue(outcome['sealed'])
+                    self.assertEqual(1, outcome['reruns'])
+                    self.assertTrue(outcome['received'])
 
     def test_real_producer_summary_is_accepted_by_native_seal_and_receiver(self):
         for edited in (None, '2026-10-06T23:59:00Z', '2026-10-06T23:59:59Z'):

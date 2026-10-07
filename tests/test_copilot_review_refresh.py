@@ -1119,6 +1119,11 @@ oa() {
                 (Path(tmp) / "copilot-input-metadata.sh").write_text(
                     "assert_copilot_metadata_revision() { :; }\n", encoding="utf-8")
                 (Path(tmp) / "copilot-input-metadata.json").write_text("null\n", encoding="utf-8")
+                timestamp_policy = COPILOT_WORKFLOW.read_text().split(
+                    "<<'COPILOT_TIMESTAMP_POLICY'\n", 1)[1].split(
+                    "          COPILOT_TIMESTAMP_POLICY", 1)[0]
+                (Path(tmp) / "copilot-timestamp.jq").write_text(
+                    textwrap.dedent(timestamp_policy), encoding="utf-8")
                 script = r'''set -euo pipefail
 sleep() { :; }
 gh() {
