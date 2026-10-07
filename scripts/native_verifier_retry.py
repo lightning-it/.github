@@ -312,6 +312,49 @@ def validate_seed(seed, repo, repo_id, run_id):
             and re.fullmatch(r"[0-9a-f]{64}", seed["contract"]["policy_sha256"])
             and proof.positive(seed["claim_run"]), "seed contract")
     proof.epoch(seed["created_at"])
+    frontier = seed["scheduler_frontier"]
+    require(proof.positive(frontier["workflow_id"]) and type(frontier["run_number"]) is int
+            and frontier["run_number"] >= 0, "scheduler frontier")
+
+
+def scheduler_frontier(repo):
+    """Freeze an observed native workflow sequence before granting attempt two."""
+    workflow = api(f"repos/{repo}/actions/workflows/{WORKFLOW.rsplit('/', 1)[1]}")
+    proof.require(proof.positive(workflow["id"]) and workflow["path"] == WORKFLOW, "scheduler workflow")
+    result = api(f"repos/{repo}/actions/workflows/{workflow['id']}/runs?per_page=1")
+    rows = result["workflow_runs"]
+    proof.require(type(result["total_count"]) is int and result["total_count"] >= 0
+                  and isinstance(rows, list) and len(rows) == min(1, result["total_count"]), "scheduler frontier inventory")
+    number = 0
+    if rows:
+        proof.require(proof.positive(rows[0]["id"]) and rows[0]["workflow_id"] == workflow["id"]
+                      and proof.positive(rows[0]["run_number"]), "scheduler frontier binding")
+        number = rows[0]["run_number"]
+    return {"workflow_id": workflow["id"], "run_number": number}
+
+
+def elected_claimant(repo, seed, cause, attempt):
+    """One immutable native run owns each slot, even if its Git CAS stays unseen.
+
+    Never skip a missing run number: delayed visibility/deletion cannot elect a
+    successor. Cancelled or rerun owners do not restore the slot either.
+    """
+    frontier = seed["scheduler_frontier"]
+    runs = pages(f"repos/{repo}/actions/workflows/{frontier['workflow_id']}/runs?created=>={seed['created_at']}", "workflow_runs")
+    for run in runs:
+        proof.require(run["workflow_id"] == frontier["workflow_id"] and run["path"] == WORKFLOW
+                      and run["event"] == "schedule" and proof.positive(run["run_number"])
+                      and run["repository"]["full_name"] == repo
+                      and run["head_repository"]["full_name"] == repo, "scheduler inventory binding")
+    runs = [run for run in runs if run["run_number"] > frontier["run_number"]]
+    numbers = sorted(run["run_number"] for run in runs)
+    proof.require(numbers and all(number == frontier["run_number"] + index
+                                  for index, number in enumerate(numbers, 1)),
+                  "incomplete scheduler sequence")
+    eligible_at = proof.epoch(cause["completed_at"]) + POLICY["cooldown_seconds"][str(attempt)]
+    candidates = [run for run in runs if proof.epoch(run["created_at"]) >= eligible_at]
+    proof.require(candidates, "scheduler claimant not visible")
+    return min(candidates, key=lambda run: run["run_number"])["id"]
 
 
 def writer(repo, source, path, event):
@@ -344,6 +387,7 @@ def seal(repo, repo_id, pr, run_id, source, now):
     if not any(step.get("name", "").startswith(SOURCE_MARKER) for step in original["steps"]):
         # A pre-rollout run keeps its original LI-219 attempt-two route. It
         # receives no seed and consequently no additional technical authority.
+        require(proof.live_pr(repo, pr) == live, "legacy fallback live binding drift")
         return False
     contract = snapshot(repo, repo_id, pr, run_id, source)
     run = api(f"repos/{repo}/actions/runs/{run_id}")
@@ -356,6 +400,7 @@ def seal(repo, repo_id, pr, run_id, source, now):
         require(previous["contract"] == contract and previous["claim_run"] == claim_run, "seed already owned")
         return True
     record = {"schema": 1, "contract": contract, "contract_sha256": digest(contract),
+              "scheduler_frontier": scheduler_frontier(repo),
               "created_at": stamp(now), "claim_run": claim_run}
     try:
         journal.create(path, record)
@@ -434,6 +479,19 @@ def recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, s
         # The claimed effect has not appeared natively. Even after expiry or
         # drift this worker is permanently GET-only; a new event is no authority.
         return "consumed-readback-only"
+    # Native completed-at and run-number evidence survives an unobservable Git
+    # CAS. Check its fixed owner before any terminal write on drift or expiry.
+    if observed_attempt in (2, 3) and observed["status"] == "completed":
+        try:
+            observed_cause = infrastructure_cause(repo, observed, c["head"], now)
+        except CandidateClosed:
+            observed_cause = None
+        if (observed_cause is not None
+                and now.timestamp() >= proof.epoch(observed_cause["completed_at"])
+                + POLICY["cooldown_seconds"][str(observed_attempt + 1)]
+                and elected_claimant(repo, seed, observed_cause, observed_attempt + 1) != claimant):
+            readback_only(repo, repo_id, path + f"/attempt-{observed_attempt + 1}.json")
+            return "native-owner-readback-only"
     original_consumption(journal, seed)
     try:
         require(source == c["scheduler_source"]
@@ -466,6 +524,11 @@ def recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, s
     claim_path = path + f"/attempt-{next_attempt}.json"
     if journal.read(claim_path) is not None:
         return "consumed-readback-only"
+    if elected_claimant(repo, seed, cause, next_attempt) != claimant:
+        # The original native owner may have timed out before its CAS was
+        # observable. A later scheduler never retries that ambiguous write.
+        readback_only(repo, repo_id, claim_path)
+        return "native-owner-readback-only"
     record = {"schema": 1, "contract_sha256": seed["contract_sha256"], "attempt": next_attempt,
               "cause": cause, "created_at": stamp(now), "claim_run": claimant, "state": "consumed-before-post"}
     validate_claim(record, seed, next_attempt)
@@ -479,6 +542,7 @@ def recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, s
         require(snapshot(repo, repo_id, c["pr"], run_id, c["writer_source"]) == c, "post-claim contract drift")
         current = api(f"repos/{repo}/actions/runs/{run_id}")
         require(infrastructure_cause(repo, current, c["head"], now) == cause, "post-claim native drift")
+        require(elected_claimant(repo, seed, cause, next_attempt) == claimant, "post-claim native owner drift")
         fresh = proof.Journal(repo, repo_id)
         require(fresh.read(claim_path) == record and fresh.read(path + "/terminal.json") is None, "post-claim readback")
         require(utc_now().timestamp() + POLICY["runtime_reserve_seconds"] <= deadline, "post-claim deadline")
@@ -515,6 +579,7 @@ def receiver(repo, repo_id, run_id, attempt, now):
         validate_claim(claim, seed, number)
         previous = api(f"repos/{repo}/actions/runs/{run_id}/attempts/{number - 1}")
         require(infrastructure_cause(repo, previous, c["head"], now) == claim["cause"], "receiver native cause")
+        require(elected_claimant(repo, seed, claim["cause"], number) == claim["claim_run"], "receiver native owner")
         writer_run = api(f"repos/{repo}/actions/runs/{claim['claim_run']}")
         require(writer_run["id"] == claim["claim_run"]
                 and writer_run["path"] == WORKFLOW and writer_run["event"] == "schedule"

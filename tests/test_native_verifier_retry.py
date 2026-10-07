@@ -66,7 +66,11 @@ class NativeRetryTests(unittest.TestCase):
         self.snapshots = {self.oid: {}}
         self.cas_hook = None
         self.cas_unknown = False
+        self.cas_before_visible = False
+        self.cas_attempts = 0
+        self.pending_cas = None
         self.effect_unknown = None
+        self.scheduler_runs = []
         self.extra_run, self.extra_jobs = None, {}
         self.branches = {"develop": self.source, "main": self.receiver_source}
         self.env = {"LI219_EVENT_MODE": "enabled", "LI259_INFRA_RETRY": "enabled", "GITHUB_REPOSITORY": self.repo,
@@ -85,8 +89,12 @@ class NativeRetryTests(unittest.TestCase):
         return RETRY.stamp(self.start + dt.timedelta(seconds=seconds))
 
     def native_writer(self, run_id):
+        known = next((run for run in self.scheduler_runs if run["id"] == run_id), None)
+        if known is not None:
+            return copy.deepcopy(known)
         return {"id": run_id, "run_attempt": 1, "path": RETRY.HELPER if run_id in (55, 155) else RETRY.WORKFLOW,
                 "event": "workflow_dispatch" if run_id in (55, 155) else "schedule", "head_sha": self.source,
+                "workflow_id": 6, "run_number": 1, "created_at": self.at(2102),
                 "repository": {"full_name": self.repo}, "head_repository": {"full_name": self.repo},
                 "actor": {"login": "github-actions[bot]"}, "triggering_actor": {"login": "github-actions[bot]"}}
 
@@ -100,11 +108,15 @@ class NativeRetryTests(unittest.TestCase):
     def api(self, route, payload=None, fields=()):
         if route == "graphql" and payload is not None:
             import base64
+            self.cas_attempts += 1
             request = payload["variables"]["input"]
             prior = request["expectedHeadOid"]
             if self.cas_hook is not None:
                 hook, self.cas_hook = self.cas_hook, None
                 hook()
+            if self.cas_before_visible:
+                self.pending_cas = copy.deepcopy(payload)
+                raise subprocess.TimeoutExpired("gh", 30)
             if prior != self.oid:
                 return {"data": {"createCommitOnBranch": None}, "errors": [{"type": "STALE_DATA",
                         "path": ["createCommitOnBranch"], "message": f'Expected branch to point to "{prior}" but it did not. Pull and try again.'}]}
@@ -156,8 +168,12 @@ class NativeRetryTests(unittest.TestCase):
             return copy.deepcopy(self.extra_run)
         if route == prefix + "/actions/runs/77":
             return copy.deepcopy(self.producer)
-        if route in (prefix + "/actions/runs/55", prefix + "/actions/runs/66", prefix + "/actions/runs/155"):
+        if route in [prefix + f"/actions/runs/{ident}" for ident in (55, 66, 155, *[run["id"] for run in self.scheduler_runs])]:
             return self.native_writer(int(route.rsplit("/", 1)[1]))
+        if route == prefix + "/actions/workflows/review-infrastructure-retry.yml":
+            return {"id": 6, "path": RETRY.WORKFLOW}
+        if route == prefix + "/actions/workflows/6/runs?per_page=1":
+            return {"total_count": len(self.scheduler_runs), "workflow_runs": copy.deepcopy(self.scheduler_runs[-1:])}
         if route.startswith(prefix + "/actions/runs/99/attempts/") and "jobs" not in route:
             return copy.deepcopy(self.history[int(route.rsplit("/", 1)[1])])
         parsed, query = urlsplit(route), parse_qs(urlsplit(route).query)
@@ -166,6 +182,8 @@ class NativeRetryTests(unittest.TestCase):
             return [copy.deepcopy(self.pr)]
         if bare == "/actions/runs":
             rows, key = [self.run] + ([] if self.extra_run is None else [self.extra_run]), "workflow_runs"
+        elif bare == "/actions/workflows/6/runs":
+            rows, key = self.scheduler_runs, "workflow_runs"
         elif bare.startswith("/actions/runs/199/attempts/") and bare.endswith("/jobs"):
             rows, key = self.extra_jobs[int(bare.split("/")[-2])], "jobs"
         elif bare.startswith("/actions/runs/99/attempts/") and bare.endswith("/jobs"):
@@ -209,6 +227,7 @@ class NativeRetryTests(unittest.TestCase):
             "claim_run": "55", "claim_attempt": "1", "source_sha": self.source})
         self.fail_attempt(2, 1, 902)
         self.now = self.start + dt.timedelta(seconds=2102)
+        self.scheduler_runs.append(self.native_writer(66))
         os.environ.update(GITHUB_RUN_ID="66", GITHUB_EVENT_NAME="schedule")
 
     def recover(self):
@@ -217,7 +236,8 @@ class NativeRetryTests(unittest.TestCase):
     def second_candidate(self):
         self.extra_run = {**self.history[1], "id": 199}
         self.extra_jobs[1] = [{**copy.deepcopy(self.original), "id": 200, "run_id": 199}]
-        with patch.dict(os.environ, GITHUB_RUN_ID="155", GITHUB_EVENT_NAME="workflow_dispatch"):
+        with patch.dict(os.environ, GITHUB_RUN_ID="155", GITHUB_EVENT_NAME="workflow_dispatch"), \
+                patch.object(self, "scheduler_runs", []):
             RETRY.seal(self.repo, self.repo_id, 23, 199, self.source, self.start)
         key = f"li219-verifier-operation:v1:23:{self.source}:{self.head}:199"
         RETRY.proof.Journal(self.repo, self.repo_id).create(RETRY.proof.record_path(key), {
@@ -360,6 +380,103 @@ class NativeRetryTests(unittest.TestCase):
         self.assertEqual("consumed-readback-only", self.recover())
         self.assertEqual([], self.effects)
 
+    def next_scheduler(self, run_id, seconds):
+        run = self.native_writer(run_id)
+        run.update(run_number=len(self.scheduler_runs) + 1, created_at=self.at(seconds))
+        self.scheduler_runs.append(run)
+        self.now = self.start + dt.timedelta(seconds=seconds)
+        os.environ.update(GITHUB_RUN_ID=str(run_id), GITHUB_RUN_ATTEMPT="1", GITHUB_EVENT_NAME="schedule")
+
+    def test_unknown_cas_before_observable_commit_never_retries_from_later_scheduler(self):
+        self.prime()
+        writes = len(self.writes)
+        attempts = self.cas_attempts
+        self.cas_before_visible = True
+        self.assertEqual("unconfirmed-claim-readback-only", self.recover())
+        self.cas_before_visible = False
+        self.assertEqual(attempts + 1, self.cas_attempts)
+        self.assertNotIn("li259/99/attempt-3.json", self.snapshots[self.oid])
+        self.next_scheduler(67, 2702)
+        self.assertEqual("native-owner-readback-only", self.recover())
+        self.next_scheduler(68, 3302)
+        self.assertEqual("native-owner-readback-only", self.recover())
+        self.assertEqual(writes, len(self.writes))
+        self.assertEqual(attempts + 1, self.cas_attempts)
+        self.assertEqual([], self.effects)
+        self.api("graphql", self.pending_cas)
+        self.assertEqual("consumed-readback-only", self.recover())
+        self.assertEqual([], self.effects)
+
+    def test_unknown_unseen_cas_remains_read_only_after_drift_and_budget_expiry(self):
+        self.prime()
+        self.cas_before_visible = True
+        self.assertEqual("unconfirmed-claim-readback-only", self.recover())
+        self.cas_before_visible = False
+        attempts = self.cas_attempts
+        self.review["body"] = "Drift"
+        self.next_scheduler(67, 10801)
+        self.assertEqual("native-owner-readback-only", self.recover())
+        self.assertEqual(attempts, self.cas_attempts)
+        self.assertEqual([], self.effects)
+
+    def test_unseen_first_native_owner_cannot_be_skipped_by_later_scheduler(self):
+        self.prime()
+        self.next_scheduler(67, 2702)
+        self.scheduler_runs.pop(0)
+        writes = len(self.writes)
+        with self.assertRaisesRegex(ValueError, "incomplete scheduler sequence"):
+            self.recover()
+        self.assertEqual(writes, len(self.writes))
+        self.assertEqual([], self.effects)
+
+    def test_distinct_scheduler_race_only_native_owner_can_attempt_cas(self):
+        self.prime()
+        outcomes = []
+        def later_scheduler():
+            with patch.dict(os.environ):
+                self.next_scheduler(67, 2702)
+                outcomes.append(self.recover())
+        attempts = self.cas_attempts
+        self.cas_hook = later_scheduler
+        self.assertEqual("dispatched", self.recover())
+        self.assertEqual(["native-owner-readback-only"], outcomes)
+        self.assertEqual(attempts + 1, self.cas_attempts)
+        self.assertEqual(1, len(self.effects))
+
+    def test_receiver_rejects_claim_bound_to_later_native_scheduler(self):
+        self.prime()
+        self.assertEqual("dispatched", self.recover())
+        self.next_scheduler(67, 2702)
+        self.snapshots[self.oid]["li259/99/attempt-3.json"]["claim_run"] = 67
+        with self.assertRaisesRegex(ValueError, "receiver native owner"):
+            self.receive()
+
+    def test_cancelled_or_rerun_native_owner_never_elects_successor(self):
+        for changes in ({"status": "completed", "conclusion": "cancelled"}, {"run_attempt": 2}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.prime()
+                self.scheduler_runs[0].update(changes)
+                self.next_scheduler(67, 2702)
+                writes = len(self.writes)
+                self.assertEqual("native-owner-readback-only", self.recover())
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
+
+    def test_source_marker_legacy_fallback_rechecks_live_head_after_jobs_get(self):
+        self.original["steps"] = []
+        original = self.api
+        def drift(route, payload=None, fields=()):
+            value = original(route, payload, fields)
+            if "/runs/99/attempts/1/jobs?" in route:
+                self.pr["head"]["sha"] = "e" * 40
+            return value
+        with patch.object(RETRY.proof, "api", side_effect=drift):
+            with self.assertRaisesRegex(ValueError, "legacy fallback live binding drift"):
+                RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
+        self.assertEqual([], self.effects)
+
     def test_lost_post_response_is_readback_only_whether_delivered_or_not(self):
         for outcome in ("delivered", "not-delivered"):
             with self.subTest(outcome=outcome):
@@ -398,6 +515,7 @@ class NativeRetryTests(unittest.TestCase):
         self.now = self.start + dt.timedelta(seconds=5403)
         self.assertEqual("cooldown", self.recover())
         self.now += dt.timedelta(seconds=1)
+        self.next_scheduler(67, 5404)
         self.assertEqual("dispatched", self.recover())
         self.receive()
         os.environ.update(GITHUB_RUN_ID="66", GITHUB_RUN_ATTEMPT="1")

@@ -73,6 +73,24 @@ drift, until native observation establishes that its attempt occurred. The
 pre-effect consumed record also covers crashes between claim and POST.
 No successor run or fresh event resets the clock or replenishes slots.
 
+Before attempt two, the seed also freezes the scheduler workflow ID and an
+observed native `run_number` frontier. Each technical slot belongs only to the
+first native scheduler run created after its immutable failure-completion plus
+cooldown boundary. The complete run-number sequence after that frontier must
+be contiguous; a hidden or deleted run cannot be skipped to elect another
+owner. Native reruns retain their run number and never restore authority.
+The owner is checked before CAS, again before the job POST, and by the receiver.
+This independent native identity remains observable even when a Git CAS times
+out before its commit or readback is visible: every later scheduler is GET-only,
+including after contract drift or budget expiry. A delayed Git commit does not
+authorize a replacement POST. The first native owner may consume availability
+without executing a CAS (for example cancellation or a failure earlier in the
+sweep); this is an intentional fail-closed tradeoff, not another retry budget.
+
+The marker-free legacy fallback also re-reads the complete live PR after the
+attempt-one jobs GET. It cannot return a successful fallback if head, base or
+other live bindings changed while determining that the old run is unsealed.
+
 Candidate-local contract drift, including a rerun of the original event helper,
 is durably terminal before a technical claim; the schedule then processes the
 next candidate. After a technical CAS, drift leaves the consumed slot permanently
