@@ -5,9 +5,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 import test_native_verifier_retry as native
+import test_promotion_evidence as promotion
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / '.github/workflows/copilot-review.yml'
@@ -256,6 +258,55 @@ class ProducerMetadataTests(unittest.TestCase):
                 self.assertEqual(1, outcome['reruns'])
                 self.assertTrue(outcome['received'])
                 self.assertEqual(['POST','PATCH','PATCH'], self.data['writes'])
+
+    def test_actual_producer_summary_passes_promotion_without_rewriting_evidence(self):
+        for edited in (None, '2026-10-07T00:03:59Z'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.data['metadata']['lastEditedAt'] = edited
+                self.data['submitted'] = '2026-10-07T00:04:00Z'
+                self.set_timestamp_input('event', '2026-10-07T00:04:00Z')
+                self.save()
+                binary = self.tmp/'bin'/'date'
+                binary.write_text("#!/bin/sh\nprintf '2026-10-07T00:04:30Z\n'\n")
+                binary.chmod(0o755)
+                self.capture()
+                self.verify()
+                self.publish()
+                raw = self.data['check']['output']['summary']
+                self.assertEqual(9, len(json.loads(raw)))
+                # Adapt only native fixtures to this real producer's tuple;
+                # its emitted summary and check are passed through unchanged.
+                def bound(value):
+                    if isinstance(value, dict):
+                        return {k: bound(v) for k, v in value.items()}
+                    if isinstance(value, list):
+                        return [bound(v) for v in value]
+                    if type(value) is int:
+                        return {17:23, 88:77}.get(value, value)
+                    if isinstance(value, str):
+                        return (value.replace(promotion.BASE, self.base).replace(promotion.HEAD, self.head)
+                                .replace('5'*40, self.base).replace('lightning-it/example', self.repo)
+                                .replace('/runs/88', '/runs/77').replace('/pulls/17', '/pulls/23')
+                                .replace('fix/exact-ingress', 'fix/test').replace('2026-09-27', '2026-10-07')
+                                .replace('example', '.github'))
+                    return value
+                delegate = promotion.evidence_api(promotion.producer_run())
+                def api(args):
+                    translated = [v.replace(self.repo, 'lightning-it/example')
+                                  .replace('/runs/77', '/runs/88').replace('/pulls/23', '/pulls/17')
+                                  .replace('/compare/'+self.base, '/compare/'+'5'*40) for v in args]
+                    result = bound(delegate(translated))
+                    if args[:2] == ['api','graphql']:
+                        result['data']['repository']['pullRequest']['lastEditedAt'] = edited
+                    return result
+                with mock.patch.object(promotion.MODULE, 'gh_json', side_effect=api):
+                    accepted = promotion.MODULE.bound_review_check(
+                        [{'check_runs':[self.data['check']]}], repository=self.repo,
+                        pull=bound(promotion.ingress_pull()), pull_number=23,
+                        base_sha=self.base, head_sha=self.head)
+                self.assertEqual(promotion.MODULE.digest(json.loads(raw)), accepted["summary_sha256"])
+                self.assertEqual(0, accepted["historical_findings_count"])
 
     def test_capture_rejects_missing_revision_and_event_input_drift(self):
         for field, value in (('lastEditedAt','missing'),('lastEditedAt','2026-10-07T00:01:00Z'),

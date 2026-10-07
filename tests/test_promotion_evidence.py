@@ -2080,6 +2080,60 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
+    def test_metadata_v6_accepts_exact_shape_and_rejects_every_partial_expansion(self) -> None:
+        import itertools
+        summary = json.loads(v6_summary())
+        summary["pull_request_last_edited_at"] = None
+        external = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        def validate(value):
+            return MODULE.bound_review_check(
+                [{"check_runs": [check_run(external, json.dumps(value))]}],
+                repository="lightning-it/example", pull=ingress_pull(),
+                pull_number=17, base_sha=BASE, head_sha=HEAD)
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(producer_run())):
+            actual = validate(summary)
+            self.assertEqual(MODULE.digest(summary), actual["summary_sha256"])
+            self.assertEqual(0, actual["historical_findings_count"])
+            extra = json.loads(expanded_v6_summary())
+            additions = sorted(set(extra) - set(summary))
+            for count in (1, 2, 3):
+                for keys in itertools.combinations(additions, count):
+                    with self.subTest(hybrid=keys), self.assertRaisesRegex(MODULE.EvidenceError, "review-summary-schema"):
+                        validate({**summary, **{key: extra[key] for key in keys}})
+            for key in set(summary) - {"pull_request_last_edited_at"}:
+                with self.subTest(missing=key), self.assertRaises(MODULE.EvidenceError):
+                    validate({k: v for k, v in summary.items() if k != key})
+
+    def test_metadata_v6_rebinds_revision_and_strict_review_chronology(self) -> None:
+        external = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        native_run = producer_run()
+        native_run["pull_requests"] = []
+        original = evidence_api(native_run)
+        for bound, live, accepted in (
+            (None, None, True), (None, "2026-09-27T00:03:00Z", False),
+            ("2026-09-27T00:03:00Z", "2026-09-27T00:03:00Z", True),
+            ("2026-09-27T00:04:00Z", "2026-09-27T00:04:00Z", False),
+            ("2026-09-27T00:05:00Z", "2026-09-27T00:05:00Z", False),
+            (False, False, False), ("2026-00-01T00:00:00Z", "2026-00-01T00:00:00Z", False),
+        ):
+            def api(args):
+                value = original(args)
+                if args[:2] == ["api", "graphql"]:
+                    value["data"]["repository"]["pullRequest"]["lastEditedAt"] = live
+                return value
+            summary = {**json.loads(v6_summary()), "pull_request_last_edited_at": bound}
+            with self.subTest(bound=bound, live=live), mock.patch.object(MODULE, "gh_json", side_effect=api):
+                def validate():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external, json.dumps(summary))]}],
+                        repository="lightning-it/example", pull=ingress_pull(),
+                        pull_number=17, base_sha=BASE, head_sha=HEAD)
+                if accepted:
+                    self.assertEqual(MODULE.digest(summary), validate()["summary_sha256"])
+                else:
+                    with self.assertRaises(MODULE.EvidenceError):
+                        validate()
+
     def test_v6_rejects_schema_drift_and_failed_producer_run(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         schema_drift = json.loads(v6_summary())
@@ -2787,11 +2841,8 @@ class PromotionEvidenceTests(unittest.TestCase):
 
             return dispatch
 
-        cases = (
-            (
-                {"errors": [{"message": "partial"}], "data": {}},
-                "review-summary-edit-response-errors",
-            ),
+        cases = tuple(({"errors": errors, "data": {}}, "review-summary-edit-response-errors")
+                      for errors in (None, {}, "", False, 0, [{"message": "partial"}])) + (
             (
                 {
                     "data": {

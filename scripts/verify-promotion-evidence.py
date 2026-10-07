@@ -1047,6 +1047,52 @@ query($owner:String!,$name:String!,$number:Int!){
 """
 
 
+def validate_review_edit_revision(
+    summary: JSON, *, repository: str, pull_number: int
+) -> None:
+    """Rebind the exact metadata revision in sparse and expanded v6 evidence."""
+    owner, name = repository.split("/", 1)
+    payload = exact_object(
+        gh_json(
+            [
+                "api",
+                "graphql",
+                "-f",
+                f"query={PULL_EDIT_QUERY}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+                "-F",
+                f"number={pull_number}",
+            ]
+        ),
+        "review-summary-edit-response",
+    )
+    require("errors" not in payload or type(payload["errors"]) is list
+            and not payload["errors"], "review-summary-edit-response-errors")
+    data = exact_object(payload.get("data"), "review-summary-edit-data")
+    live_repository = exact_object(
+        data.get("repository"), "review-summary-edit-repository"
+    )
+    live_pull = exact_object(
+        live_repository.get("pullRequest"), "review-summary-edit-pull"
+    )
+    require(
+        integer(live_pull.get("number"), "review-summary-edit-pull-number")
+        == pull_number,
+        "review-summary-edit-pull-number",
+    )
+    require("lastEditedAt" in live_pull, "review-summary-live-last-edited-at")
+    last_edited_at = live_pull.get("lastEditedAt")
+    if last_edited_at is not None:
+        timestamp(last_edited_at, "review-summary-live-last-edited-at")
+    require(
+        last_edited_at == summary.get("pull_request_last_edited_at"),
+        "review-summary-last-edited-at-mutated",
+    )
+
+
 def validate_expanded_review_metadata(
     pull: JSON,
     summary: JSON,
@@ -1083,46 +1129,7 @@ def validate_expanded_review_metadata(
         and hashlib.sha256(labels_json).hexdigest() == labels_sha256,
         "review-summary-labels-mutated",
     )
-    owner, name = repository.split("/", 1)
-    payload = exact_object(
-        gh_json(
-            [
-                "api",
-                "graphql",
-                "-f",
-                f"query={PULL_EDIT_QUERY}",
-                "-F",
-                f"owner={owner}",
-                "-F",
-                f"name={name}",
-                "-F",
-                f"number={pull_number}",
-            ]
-        ),
-        "review-summary-edit-response",
-    )
-    errors = payload.get("errors")
-    require(errors is None or errors == [], "review-summary-edit-response-errors")
-    data = exact_object(payload.get("data"), "review-summary-edit-data")
-    live_repository = exact_object(
-        data.get("repository"), "review-summary-edit-repository"
-    )
-    live_pull = exact_object(
-        live_repository.get("pullRequest"), "review-summary-edit-pull"
-    )
-    require(
-        integer(live_pull.get("number"), "review-summary-edit-pull-number")
-        == pull_number,
-        "review-summary-edit-pull-number",
-    )
-    require("lastEditedAt" in live_pull, "review-summary-live-last-edited-at")
-    last_edited_at = live_pull.get("lastEditedAt")
-    if last_edited_at is not None:
-        timestamp(last_edited_at, "review-summary-live-last-edited-at")
-    require(
-        last_edited_at == summary.get("pull_request_last_edited_at"),
-        "review-summary-last-edited-at-mutated",
-    )
+    validate_review_edit_revision(summary, repository=repository, pull_number=pull_number)
     if evidence_kind == "copilot":
         review_id = text(summary.get("review_id"), "review-summary-review-id")
         require(
@@ -1311,6 +1318,7 @@ def validate_producer_run(
                 "run_url",
                 "schema",
             }
+            metadata_v6_keys = legacy_v6_keys | {"pull_request_last_edited_at"}
             expanded_v6_keys = legacy_v6_keys | {
                 "controller_ref",
                 "head_repository",
@@ -1319,9 +1327,14 @@ def validate_producer_run(
                 "review_id",
             }
             require(
-                set(summary) in (legacy_v6_keys, expanded_v6_keys),
+                set(summary) in (legacy_v6_keys, metadata_v6_keys, expanded_v6_keys),
                 "review-summary-schema",
             )
+            if set(summary) == metadata_v6_keys:
+                require(evidence_kind == "copilot", "review-summary-metadata-kind")
+                validate_review_edit_revision(
+                    summary, repository=repository, pull_number=pull_number
+                )
             if set(summary) == expanded_v6_keys:
                 require(
                     evidence_kind in {"copilot", "managed-sync"},
@@ -1812,6 +1825,9 @@ def validate_producer_run(
                         (
                             review.get("state") in {"COMMENTED", "APPROVED"}
                             and submitted <= check_completed
+                            and (summary.get("pull_request_last_edited_at") is None
+                                 or submitted > timestamp(summary["pull_request_last_edited_at"],
+                                                          "review-summary-last-edited-at"))
                             and run_created
                             <= check_completed
                             <= merged_at

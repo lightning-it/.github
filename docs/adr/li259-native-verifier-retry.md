@@ -196,3 +196,21 @@ without shifting the sealed deadline. Optional sealing leaves non-LI-259
 authors/repositories and the recognized marker-free historical single Required
 verifier on their original attempt-two path, without a seed. Snapshots and
 receivers retain strict LI-259 author, source, job and contract validation.
+
+The Core ordinary Copilot producer now emits the exact metadata-bound nine-key
+schema-4/v6 summary. Promotion recognizes that form in addition to its unchanged
+legacy eight-key and expanded thirteen-key contracts. The new form is Copilot
+only and rebinds `pull_request_last_edited_at` through GraphQL; arbitrary partial
+expanded forms remain invalid. The Core read-only shadow accepts its existing
+eight-key form and this exact nine-key form, with live metadata equality and
+strict review-after-edit ordering. Its formerly unsupported expanded form stays
+unsupported. No evidence is rewritten and no review is requested.
+
+The Required Workflow's thirteen-key Renovate and historical bootstrap validators
+retain their separate contracts. Its eight-key PR-568 recovery records bind fixed
+historical native IDs and also remain unchanged. Source has no local copy of the
+Core promotion or shadow validator: the protected Core controller owns them.
+Source root/default and generated rerun helpers already recognize an exact
+nine-key historical supplementary cutover; their repository, manifest and
+producer-blob limits stay intact. General Source producers still emit thirteen
+keys. The Source port manifest records the updated Core consumer commit.
