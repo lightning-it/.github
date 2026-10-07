@@ -57,6 +57,15 @@ marker or seal can be added retroactively to old runs.
 Pre-rollout runs without the marker retain the original LI-219 attempt-two
 route, without a new seed or any additional technical entitlement.
 
+The repository-owned Core Copilot producer captures this same metadata revision
+before selecting review evidence. Its authenticated GraphQL input must match
+the immutable event repository/PR/base/head/title/body, and the edit revision
+must not be newer than the event. Selected reviews must not predate that edit.
+The ordinary schema-4 summary includes the bound revision. Every neutral
+POST/PATCH and final publication acceptance revalidates it, including the
+existing invalidation/reuse paths; no retry may recapture a newer baseline.
+Source already carries its own producer binding and remains unchanged.
+
 Every snapshot reads live GraphQL `lastEditedAt` together with repository,
 PR number, base/head OIDs and title/body, and binds those inputs to the REST
 snapshot. The revision must be an explicit null or valid UTC timestamp and
