@@ -23,6 +23,41 @@ def producer_function(name):
 
 
 class TerminalMarkerParityTests(unittest.TestCase):
+    def test_python_and_required_jq_contractions_preserve_cannot_and_existing_negations(self):
+        phrases = ("I can't review this pull request.", "I can’t review this pull request.",
+                   "I can't review any files.", "I can’t review any files.",
+                   "Copilot wasn't able to review any files.", "Copilot isn’t able to review any files.")
+        for path, function, markers in (
+                ('scripts/review_request_continuation.py', 'normalize', 'FAILURE_MARKERS'),
+                ('scripts/review_request_provenance.py', 'normalize', 'FAILURE_MARKERS'),
+                ('scripts/verify-promotion-evidence.py', 'normalized_review_text', 'COPILOT_REVIEW_FAILURE_MARKERS'),
+                ('scripts/verify-main-trust-root-bootstrap.py', 'normalized_review_text', 'REJECTED_REVIEW_MARKERS')):
+            tree = ast.parse((ROOT / path).read_text())
+            selected = [node for node in tree.body if
+                        (isinstance(node, ast.FunctionDef) and node.name == function) or
+                        (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                         and node.targets[0].id == markers)]
+            namespace = {'re': re}
+            exec(compile(ast.Module(body=selected, type_ignores=[]), path, 'exec'), namespace)
+            for phrase in phrases:
+                with self.subTest(path=path, phrase=phrase):
+                    value = namespace[function](phrase)
+                    self.assertTrue(any(marker in value for marker in namespace[markers]))
+                    if phrase.startswith('I can'):
+                        self.assertIn('cannotreview', value)
+        required = (ROOT / '.github/workflows/supplementary-current-revision-required.yml').read_text()
+        pipelines = re.findall(r'ascii_downcase\s*\|\s*(gsub\("can.*?gsub\("\\\\s";\s*""\))', required)
+        self.assertEqual(3, len(pipelines))
+        for pipeline in pipelines:
+            for phrase in phrases:
+                result = subprocess.run(['jq', '-er', 'ascii_downcase | ' + pipeline],
+                                        input=json.dumps(phrase), capture_output=True, text=True, check=False)
+                self.assertEqual(0, result.returncode, result.stderr)
+                if phrase.startswith('I can'):
+                    self.assertIn('cannotreview', result.stdout)
+                else:
+                    self.assertIn('notabletoreviewanyfiles', result.stdout)
+
     def test_canonical_markers_are_rejected_by_all_actual_admission_predicates(self):
         source = ast.parse((ROOT / 'scripts/verify-promotion-evidence.py').read_text())
         canonical = next(ast.literal_eval(node.value) for node in source.body
@@ -51,7 +86,9 @@ class TerminalMarkerParityTests(unittest.TestCase):
   esac
 }
 ''' + contracts.CopilotReviewRefreshTests._rfn('usable_current_review') + '\nusable_current_review\n'
-        for marker in (*EVENT.MARKERS, 'Review complete.'):
+        for marker in (*EVENT.MARKERS, "I can't review this pull request.",
+                       "I can’t review this pull request.", "I can't review any files.",
+                       "I can’t review any files.", 'Review complete.'):
             for inline in (False, True):
                 value = marker.upper().replace(' ', '\n')
                 body = '' if inline else value

@@ -25,7 +25,7 @@ TTL = dt.timedelta(days=7)
 DISPATCH_INVENTORY_REQUESTS = 256
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
-    "unable to review this pull request", "not able to review this pull request", "was not able to review this pull request", "no files to review", "no files were reviewed",
+    "unable to review this pull request", "cannot review this pull request", "cannot review any files", "not able to review this pull request", "was not able to review this pull request", "no files to review", "no files were reviewed",
     "was not able to review any files", "not able to review any files", "unable to review any files",
     "premium request quota", "premium requests quota",
     "quota exhausted", "quota exceeded", "suppressed comments",
@@ -155,7 +155,7 @@ def clean_review(review, comments, head):
     if any(text is not None and not isinstance(text, str) for text in texts):
         raise ValueError("malformed review body")
     normalized = [re.sub(r"\s", "", (text or "").lower()
-                         .replace("n't", " not").replace("n’t", " not"))
+                         .replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not"))
                   for text in texts]
     return any(normalized) and not any(
         re.sub(r"\s", "", marker) in text for marker in MARKERS for text in normalized)
@@ -198,14 +198,14 @@ def required_locator(run, repository, pr):
         and run.get("path") == f".github/workflows/{path}"
         and run.get("workflow_url") == f"{api_url}/actions/required_workflows/{workflow_id}"
         and run.get("repository", {}).get("full_name") == repository
-        and run.get("head_repository", {}).get("full_name") == repository
+        and run.get("head_repository", {}).get("full_name") == pr["head"]["repo"]["full_name"]
         and run.get("head_sha") == pr["head"]["sha"]
         and run.get("head_branch") == pr["head"]["ref"]
         and recorded.get("number") == pr["number"]
         and recorded.get("url") == f"{api_url}/pulls/{pr['number']}"
         and recorded.get("head", {}).get("sha") == pr["head"]["sha"]
         and recorded.get("head", {}).get("ref") == pr["head"]["ref"]
-        and recorded.get("head", {}).get("repo", {}).get("url") == api_url
+        and recorded.get("head", {}).get("repo", {}).get("url") == f"https://api.github.com/repos/{pr['head']['repo']['full_name']}"
         and recorded.get("base", {}).get("sha") == pr["base"]["sha"]
         and recorded.get("base", {}).get("ref") == pr["base"]["ref"]
         and recorded.get("base", {}).get("repo", {}).get("url") == api_url
@@ -263,7 +263,13 @@ def reconcile(repository, now):
                 or not re.fullmatch(r"[0-9a-f]{40}", head)
                 or not re.fullmatch(r"[0-9a-f]{40}", base)):
             raise ValueError("malformed PR binding")
-        if (pr["draft"] or pr["head"]["repo"]["full_name"] != repository
+        head_repository = pr["head"]["repo"]["full_name"]
+        if (not isinstance(head_repository, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", head_repository)
+                or any(component in {".", ".."} for component in head_repository.split("/"))
+                or pr["base"]["repo"]["full_name"] != repository):
+            raise ValueError("malformed PR repository binding")
+        if (pr["draft"]
                 or pr["base"]["ref"] not in {"develop", "main"}
                 or pr["user"]["type"] != "User"):
             continue
@@ -271,7 +277,7 @@ def reconcile(repository, now):
                      "workflow_runs")
         producers = [run for run in runs if run.get("event") == "pull_request_target"
             and run.get("repository", {}).get("full_name") == repository
-            and run.get("head_repository", {}).get("full_name") == repository
+            and run.get("head_repository", {}).get("full_name") == head_repository
             and run.get("path") == PRODUCER
                      and run.get("head_sha") == head
                      and run.get("head_branch") == pr["head"]["ref"]
@@ -300,6 +306,14 @@ def reconcile(repository, now):
             if type(owner) is not int or owner <= 0:
                 raise ValueError("malformed producer locator")
             producer = api(f"{prefix}/actions/runs/{owner}")
+            if (producer.get("id") not in {run["id"] for run in producers}
+                    or producer.get("event") != "pull_request_target"
+                    or producer.get("path") != PRODUCER
+                    or producer.get("repository", {}).get("full_name") != repository
+                    or producer.get("head_repository", {}).get("full_name") != head_repository
+                    or producer.get("head_sha") != head
+                    or producer.get("head_branch") != pr["head"]["ref"]):
+                raise ValueError("neutral owner is not an authenticated producer")
             if producer["status"] != "completed":
                 continue
             attempt = producer["run_attempt"]
@@ -340,6 +354,8 @@ def reconcile(repository, now):
                     if clean_review(review, comments, head):
                         usable.append(review)
             if not usable:
+                if head_repository != repository or pr["user"]["login"] != "litroc":
+                    continue
                 # The existing periodic locator also covers delayed job/pending
                 # visibility. It never requests AI or grants a verifier attempt.
                 if not reviews or any(item.get("commit_id") == head and item.get("user", {}).get("login") in REVIEWERS for item in reviews):
@@ -356,11 +372,11 @@ def reconcile(repository, now):
                     continue
                 if inputs is None:
                     continue
-                path, ref = CONTINUATION, branch
+                path, ref = CONTINUATION, inputs.pop("resume_ref")
                 title = f"First review PR #{number} head {head} owner {inputs['owner_run']} old review {inputs['old_review']}"
             else:
                 review = max(usable, key=lambda item: item["id"])
-                path, ref = REFRESH, branch
+                path, ref = REFRESH, pr["base"]["ref"]
                 title = f"Reconcile review PR #{number} head {head}"
                 inputs = dict(pr_number=str(number), expected_head=head, expected_base=base,
                               review_id=str(review["id"]))
@@ -369,7 +385,12 @@ def reconcile(repository, now):
         # Re-read after inventory. No mutation on a changed/closed/draft PR.
         live = api(f"{prefix}/pulls/{number}")
         if (live["state"] != "open" or live["draft"]
-                or live["head"]["sha"] != head or live["base"]["sha"] != base):
+                or live["head"]["sha"] != head or live["base"]["sha"] != base
+                or live["base"]["ref"] != pr["base"]["ref"]
+                or live["base"]["repo"]["full_name"] != repository
+                or live["head"]["repo"]["full_name"] != head_repository
+                or live["head"]["ref"] != pr["head"]["ref"]
+                or live["user"] != pr["user"]):
             continue
         api(f"{prefix}/actions/workflows/{path}/dispatches", {"ref": ref, "inputs": inputs})
         print(f"PR {number}: dispatched protected locator {path}")

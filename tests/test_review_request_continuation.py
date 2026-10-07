@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = 'lightning-it/.github'
 RID = '1112629689'
 BASE, HEAD, SOURCE, OLD, INITIAL = (char * 40 for char in 'abcde')
+SOURCE = BASE
 KEY = f'li219-review-request:v1:{RID}:23:{HEAD}'
 REQUEST = 'operations/' + hashlib.sha256(KEY.encode()).hexdigest() + '.json'
 INTENT = REQUEST.replace('operations/', 'deferred/')
@@ -73,7 +74,7 @@ elif route == 'graphql':
 elif '/git/ref/' in route:
     result = {'ref': 'refs/heads/lit-review-operations', 'object': {'type': 'commit', 'sha': s.get('stale_ref', s['oid'])}}
 elif '/compare/' in route:
-    result = s.get('ancestry', {'status': 'identical'})
+    result = s.get('ancestry_by_route', {}).get(route, s.get('ancestry', {'status': 'identical'}))
 elif payload is not None:
     if route.endswith('/dispatches'):
         assert route.endswith('/review-request-continuation.yml/dispatches')
@@ -166,7 +167,8 @@ class ContinuationTests(unittest.TestCase):
         self.env = {**os.environ, 'PATH': str(self.root) + ':' + os.environ['PATH'], 'STATE': str(self.file),
                     'FIXTURE_NOW': str(self.now.timestamp()), 'PYTHONPATH': str(self.root),
                     'RUNNER_TEMP': str(self.root), 'GITHUB_EVENT_PATH': str(self.event), 'GITHUB_REPOSITORY': REPO,
-                    'GITHUB_REPOSITORY_ID': RID, 'WORKFLOW_SHA': SOURCE, 'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
+                    'GITHUB_REPOSITORY_ID': RID, 'WORKFLOW_SHA': SOURCE, 'GITHUB_SHA': SOURCE,
+                    'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/copilot-review.yml@refs/heads/develop', 'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
                     'GITHUB_RUN_ID': '77', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
                     'GITHUB_ACTOR': 'litroc', 'GITHUB_TRIGGERING_ACTOR': 'litroc', 'LI219_EVENT_MODE': 'enabled',
                     'PR_NUMBER': '23', 'EXPECTED_HEAD': HEAD, 'EXPECTED_BASE': BASE}
@@ -199,7 +201,8 @@ class ContinuationTests(unittest.TestCase):
         return self.execute('\n'.join(step['run'] for step in steps),
             {'inputs': {'pr_number': '23', 'expected_head': HEAD, 'owner_run': '77', 'old_review': '17'}},
             {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_ACTOR': 'github-actions[bot]',
-             'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]', 'GITHUB_RUN_ID': '88', **changes})
+             'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]', 'GITHUB_RUN_ID': '88',
+             'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/review-request-continuation.yml@' + changes.get('GITHUB_REF', self.env['GITHUB_REF']), **changes})
 
     def locator(self, companion=False):
         steps = self.workflow['jobs']['locate']['steps']
@@ -230,6 +233,55 @@ class ContinuationTests(unittest.TestCase):
             self.assertEqual((OLD, HEAD, SOURCE), (receipt['old_head'], receipt['intent']['head'], receipt['source_sha']))
             self.assertNotEqual(0, self.consumer(GITHUB_RUN_ID='89').returncode)
             self.assertEqual(1, len(self.state['requests']))
+
+    def test_authentic_unconsumed_legacy_develop_intent_retains_one_budget(self):
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        intent = self.state['versions'][self.state['oid']][INTENT]
+        intent['schema'] = 1
+        del intent['source_ref']
+        self.assertEqual('develop', intent['base_ref'])
+        self.assertEqual(intent['base'], intent['source_sha'])
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        receipt = self.state['versions'][self.state['oid']][REQUEST]
+        self.assertEqual(1, receipt['intent']['schema'])
+        self.assertNotIn('source_ref', receipt['intent'])
+        self.assertEqual(1, len(self.state['requests']))
+        self.assertNotEqual(0, self.consumer().returncode)
+        self.assertEqual(1, len(self.state['requests']))
+
+    def test_authentic_unconsumed_legacy_main_intent_resumes_from_exact_base(self):
+        main = 'f' * 40
+        live = self.route('/pulls/23')
+        live['base'].update(sha=main, ref='main')
+        recorded = self.route('/actions/runs/77/attempts/1')['pull_requests'][0]
+        recorded['base'].update(sha=main, ref='main')
+        self.state['routes'][f'repos/{REPO}/branches/main'] = {
+            'name': 'main', 'protected': True, 'commit': {'sha': main}}
+        self.env['EXPECTED_BASE'] = main
+        self.env.update(GITHUB_REF='refs/heads/main', GITHUB_SHA=main)
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        intent = self.state['versions'][self.state['oid']][INTENT]
+        intent['schema'] = 1
+        del intent['source_ref']
+        self.assertEqual(('main', main, SOURCE),
+                         (intent['base_ref'], intent['base'], intent['source_sha']))
+        result = self.execute('python3 ' + str(ROOT / 'scripts/review-event-reconcile.py'), {},
+                              {'GITHUB_REF': 'refs/heads/develop', 'GITHUB_SHA': SOURCE})
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('main', self.state['dispatches'][0]['ref'])
+        self.assertNotEqual(0, self.consumer().returncode)
+        self.assertEqual([], self.state['requests'])
+        self.route('/actions/runs/88/attempts/1').update(head_sha=main, head_branch='main')
+        result = self.consumer(GITHUB_REF='refs/heads/main', GITHUB_SHA=main, WORKFLOW_SHA=main)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.state['requests']))
+        receipt = self.state['versions'][self.state['oid']][REQUEST]
+        self.assertEqual((1, 'main', main, main),
+                         (receipt['intent']['schema'], receipt['intent']['base_ref'],
+                          receipt['intent']['base'], receipt['source_sha']))
 
     def test_old_completion_before_intent_is_recovered_by_owner_completion(self):
         self.assertEqual(0, self.locator().returncode)
@@ -308,7 +360,9 @@ class ContinuationTests(unittest.TestCase):
     def test_real_consumer_preserves_contractions_singular_marker_and_content_shapes(self):
         self.assertEqual(0, self.defer().returncode)
         baseline = copy.deepcopy(self.state)
-        markers = ('No files were reviewed', 'NO FILES\u00a0WERE\nREVIEWED',
+        markers = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     'No files were reviewed', 'NO FILES\u00a0WERE\nREVIEWED',
                    'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
                      "Copilot isn't able to review this pull request.",
@@ -494,7 +548,7 @@ class ContinuationTests(unittest.TestCase):
             for chunk in chunks:
                 self.assertEqual(helper, textwrap.dedent(chunk.split('\n          CONTINUATION', 1)[0]).strip())
         job = self.workflow['jobs']['resume']
-        for guard in ("github.ref_protected", "github.ref == 'refs/heads/develop'", "github.actor == 'github-actions[bot]'",
+        for guard in ("github.ref_protected", "contains(fromJSON('[\"refs/heads/develop\",\"refs/heads/main\"]'), github.ref)", "github.actor == 'github-actions[bot]'",
                       "github.triggering_actor == 'github-actions[bot]'", "github.run_attempt == 1", "vars.LI219_EVENT_MODE == 'enabled'"):
             self.assertIn(guard, job['if'])
         self.assertEqual('read', self.workflow['jobs']['locate']['permissions']['contents'])
@@ -642,3 +696,99 @@ class ContinuationTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertNotIn(INTENT, self.state['versions'][self.state['oid']])
                 self.assertEqual([], self.state['requests'])
+
+    def prepare_readonly_provenance(self):
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        result = self.consumer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        receipt = self.state["versions"][self.state["oid"]][REQUEST]
+        original = self.route("/actions/runs/77")
+        start = dt.datetime.strptime(original["updated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC)
+
+        def at(seconds):
+            return (start + dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        run = self.route("/actions/runs/88/attempts/1")
+        run.update(status="completed", conclusion="success", created_at=at(0), updated_at=at(8))
+        names = [
+            "Set up job",
+            "Materialize protected first-request continuation",
+            "Resume the deferred first request",
+            "Complete job",
+        ]
+        steps = [
+            {
+                "name": name,
+                "number": index + 1,
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": at(index + 1),
+                "completed_at": at(index + 2),
+            }
+            for index, name in enumerate(names)
+        ]
+        job = {
+            "id": 180,
+            "run_id": 88,
+            "run_attempt": 1,
+            "head_sha": receipt["source_sha"],
+            "name": "Resume deferred first review request",
+            "status": "completed",
+            "conclusion": "success",
+            "runner_id": 4,
+            "started_at": at(1),
+            "completed_at": at(6),
+            "steps": steps,
+        }
+        steps[2].update(started_at=at(34), completed_at=at(58))
+        steps[3].update(started_at=at(58), completed_at=at(59))
+        job["completed_at"] = at(59)
+        run["updated_at"] = at(60)
+        locator = {
+            "id": 181,
+            "run_id": 88,
+            "run_attempt": 1,
+            "head_sha": receipt["source_sha"],
+            "name": "Locate deferred first review request",
+            "status": "completed",
+            "conclusion": "skipped",
+            "runner_id": None,
+            "steps": [],
+        }
+        self.state["routes"]["repos/" + REPO + "/actions/runs/88/attempts/1/jobs"] = {
+            "total_count": 2,
+            "jobs": [job, locator],
+        }
+        context = {
+            "repository": REPO,
+            "repository_id": RID,
+            "owner": 23,
+            "head": HEAD,
+            "base": BASE,
+            "base_ref": receipt["intent"]["base_ref"],
+            "run_id": 77,
+            "controller": receipt["intent"]["source_sha"],
+            "review_submitted_at": at(61),
+            "timeline": [
+                [
+                    {
+                        "id": 700,
+                        "event": "review_requested",
+                        "requested_reviewer": {"login": "Copilot"},
+                        "actor": {"login": "github-actions[bot]", "type": "Bot"},
+                        "created_at": at(40),
+                    }
+                ]
+            ],
+        }
+        check = self.root / "verify_provenance.py"
+        check.write_text(
+            "import importlib.util, json, os\n"
+            + "spec = importlib.util.spec_from_file_location('provenance', "
+            + repr(str(ROOT / "scripts/review_request_provenance.py"))
+            + ")\n"
+            + "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)\n"
+            + "module.verify_receipt(json.loads(os.environ['CONTEXT']), json.loads(os.environ['RECEIPT']))\n"
+        )
+        return receipt, context, check

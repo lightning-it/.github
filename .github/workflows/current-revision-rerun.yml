@@ -88,6 +88,14 @@ jobs:
               "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
             test "${live_base}" = "${EXPECTED_BASE}"
           }
+          authenticated_head_repository() {
+            jq -er --arg repository "${REPOSITORY}" '
+              select(.head.repo.full_name == $repository or .user.type == "User")
+              | .head.repo.full_name | strings
+              | select(test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+              | select(split("/") | all(. != "." and . != ".."))
+              ' <<<"${1}"
+          }
           validate_producer_attempt_binding() {
             test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
           }
@@ -291,14 +299,14 @@ jobs:
             fi
             jq -e --arg author "${author}" --arg base "${EXPECTED_BASE}" \
               --arg base_ref "${base_ref}" --arg head "${EXPECTED_HEAD}" \
-              --arg head_ref "${head_ref}" --arg repository "${REPOSITORY}" \
+              --arg head_ref "${head_ref}" --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --argjson current_pr "${PR_NUMBER}" \
               --argjson owner_pr "${owner_pr_number}" '
                 .number == $owner_pr and .draft == false
                 and .user.login == $author and .base.ref == $base_ref
                 and .base.sha == $base and .base.repo.full_name == $repository
                 and .head.ref == $head_ref and .head.sha == $head
-                and .head.repo.full_name == $repository
+                and .head.repo.full_name == $hr
                 and (if $owner_pr == $current_pr then .state == "open"
                   else .state == "closed" and .merged_at == null end)
               ' <<<"${owner_pr}" >/dev/null
@@ -489,18 +497,19 @@ jobs:
           source "${RUNNER_TEMP}/current-revision-rerun-guard.sh"
           validate_handoff_binding
           pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          hr="$(authenticated_head_repository "${pr}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
             --arg base_ref "${BASE_REF}" \
             --arg head "${EXPECTED_HEAD}" \
-            --arg repository "${REPOSITORY}" '
+            --arg repository "${REPOSITORY}" --arg hr "${hr}" '
               .state == "open"
               and .draft == false
               and .base.sha == $base
               and .base.ref == $base_ref
               and .head.sha == $head
               and .base.repo.full_name == $repository
-              and .head.repo.full_name == $repository
+              and .head.repo.full_name == $hr
             ' <<<"${pr}" >/dev/null
           neutral_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -534,6 +543,9 @@ jobs:
           base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' <<<"${pr}")"
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
           validate_evidence_owner
+          if [ "${external_kind}" != copilot ] || [ "${evidence_version}" = v4 ]; then
+            test "${hr}" = "${REPOSITORY}"
+          fi
           if [ "${evidence_version}" = v4 ]; then
             v4_workflow_sha="$(jq -er \
               '.workflow_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
@@ -616,23 +628,20 @@ jobs:
                     and .merge_base_commit.sha == $controller)
               ' <<<"${controller_ancestry}" >/dev/null
             jq -e \
-              --arg actor "${author}" \
+              --arg actor "${author}" --arg repository "${REPOSITORY}" \
+              --arg hr "${hr}" --arg base_sha "${EXPECTED_BASE}" --arg base_ref "${base_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
               --argjson attempt "${producer_attempt}" \
               --argjson owner_pr "${owner_pr_number:-${PR_NUMBER}}" \
               --arg run_url "${producer_url}" '
-                .event == "pull_request_target"
-                and .path == ".github/workflows/copilot-review.yml"
-                and .name == "Current revision review gate"
-                and (.pull_requests | type) == "array"
-                and (.pull_requests | length) == 1
-                and .pull_requests[0].number == $owner_pr
+                .event == "pull_request_target" and .path == ".github/workflows/copilot-review.yml" and .name == "Current revision review gate"
+                and (.pull_requests | type) == "array" and (.pull_requests | length) == 1 and .pull_requests[0].number == $owner_pr
                 and ((.head_branch|strings) as $ref | ($ref|length)>0
                   and $ref==(.pull_requests[0].head.ref|strings))
-                and .head_sha == $head_sha
-                and .html_url == $run_url
-                and .actor.login == $actor
-                and .triggering_actor.login == (
+                and .head_sha == $head_sha and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
+                and .pull_requests[0].base.sha == $base_sha and .pull_requests[0].base.ref == $base_ref and [.pull_requests[0].base.repo.url,.pull_requests[0].head.repo.url]
+                  == [("https://api.github.com/repos/" + $repository),("https://api.github.com/repos/" + $hr)]
+                and .html_url == $run_url and .actor.login == $actor and .triggering_actor.login == (
                   if $attempt == 1 then $actor else "github-actions[bot]" end)
               ' <<<"${producer}" >/dev/null
           fi
@@ -687,7 +696,7 @@ jobs:
           producer_job_id="$(jq -er \
             '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
           producer_binding="$(jq -c '
-            {id,event,path,name,display_title,head_branch,head_sha,html_url,
+            {id,event,path,name,display_title,head_branch,head_sha,html_url,repository,head_repository,
              workflow_id,workflow_url,run_attempt,status,conclusion,
              actor:.actor.login,triggering_actor:.triggering_actor.login,
              pull_requests}
@@ -847,13 +856,14 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg server_url "${GITHUB_SERVER_URL}" \
               --argjson pr_number "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
                   select(.head_sha == $head_sha) |
+                  select([.repository.full_name,.head_repository.full_name] == [$repository,$hr]) |
                   select((.pull_requests | length) == 1) |
                   select(.pull_requests[0].number == $pr_number) |
                   select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
@@ -865,7 +875,7 @@ jobs:
                     ($r|length)>0
                     and $r==(.pull_requests[0].head.ref|strings)) |
                   select(.pull_requests[0].head.sha == $head_sha) |
-                  select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
+                  select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $hr)) |
                   select(.workflow_url == ($api_url + "/repos/" + $repository
                     + "/actions/required_workflows/" + (.workflow_id | tostring))) |
                   select(.html_url == ($server_url + "/" + $repository
@@ -1063,7 +1073,7 @@ jobs:
               --arg base_ref "${base_ref}" \
               --arg head "${EXPECTED_HEAD}" \
               --arg head_ref "${head_ref}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --argjson number "${PR_NUMBER}" '
                 .number == $number
                 and .state == "open"
@@ -1074,7 +1084,7 @@ jobs:
                 and .head.ref == $head_ref
                 and .head.sha == $head
                 and .base.repo.full_name == $repository
-                and .head.repo.full_name == $repository
+                and .head.repo.full_name == $hr
               ' <<<"${1}" >/dev/null
           }
 
@@ -1161,7 +1171,7 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg run_url "${verifier_run_url}" \
               --argjson id "${run_id}" \
               --argjson pr_number "${PR_NUMBER}" '
@@ -1183,6 +1193,7 @@ jobs:
                   ($r|length)>0
                   and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
+                and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
                 and .html_url == $run_url
                 and .actor.login == $author
                 and .triggering_actor.login == (
@@ -1198,7 +1209,7 @@ jobs:
                   == ($api_url + "/repos/" + $repository)
                 and .pull_requests[0].head.sha == $head_sha
                 and .pull_requests[0].head.repo.url
-                  == ($api_url + "/repos/" + $repository)
+                  == ($api_url + "/repos/" + $hr)
                 and (
                   if .status == "completed" then
                     (.conclusion == "success" or .conclusion == "failure"
@@ -1316,7 +1327,7 @@ jobs:
             local jobs="${2}" payload="${1}"
             local bound_job current_job_binding current_jobs_binding
             test "$(jq -c '
-              {id,event,path,name,display_title,head_branch,head_sha,html_url,
+              {id,event,path,name,display_title,head_branch,head_sha,html_url,repository,head_repository,
                workflow_id,workflow_url,run_attempt,status,conclusion,
                actor:.actor.login,triggering_actor:.triggering_actor.login,
                pull_requests}
@@ -1468,7 +1479,7 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg server_url "${GITHUB_SERVER_URL}" \
               --argjson id "${expected_id}" \
               --argjson pr_number "${PR_NUMBER}" '
@@ -1492,6 +1503,7 @@ jobs:
                   ($r|length)>0
                   and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
+                and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
                 and (.workflow_id | type) == "number" and .workflow_id > 0
                 and .workflow_url == ($api_url + "/repos/" + $repository
                   + "/actions/required_workflows/" + (.workflow_id | tostring))
@@ -1512,7 +1524,7 @@ jobs:
                 and .pull_requests[0].base.sha == $base_sha
                 and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
                 and .pull_requests[0].head.sha == $head_sha
-                and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
+                and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $hr)
                 and (
                   .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
                     + " opened " + $head_sha)

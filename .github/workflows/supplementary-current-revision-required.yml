@@ -4945,8 +4945,8 @@ jobs:
                       and .[0].submitted_at == "2026-09-07T06:48:29Z"
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
-                        | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                        | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
+                        | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
+                        | ["unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -5674,7 +5674,7 @@ jobs:
 
 
           FAILURE_MARKERS = (
-              "unabletoreviewthispullrequest",
+              "unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
               "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
@@ -5704,7 +5704,7 @@ jobs:
           def normalize(value: str) -> str:
               """Match the protected gate's ASCII fold, contraction and Unicode whitespace rules."""
               ascii_lower = "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in value)
-              expanded = ascii_lower.replace("n't", " not").replace("n’t", " not")
+              expanded = ascii_lower.replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not")
               return "".join(char for char in expanded if not char.isspace())
 
 
@@ -5811,13 +5811,14 @@ jobs:
                   return None if data["record"] is None else blob(data["record"])
 
 
-          def repository(repo, repo_id, source):
+          def repository(repo, repo_id, source, base_ref="develop"):
               require(repo in PILOTS and re.fullmatch(r"[1-9][0-9]*", repo_id) and sha(source), "pilot/source")
               meta = api(f"repos/{repo}")
               require(meta["full_name"] == repo and str(meta["id"]) == repo_id
                       and meta["default_branch"] == "develop", "repository")
-              branch = api(f"repos/{repo}/branches/develop")
-              require(branch["name"] == "develop" and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
+              require(base_ref in {"develop", "main"}, "protected base ref")
+              branch = api(f"repos/{repo}/branches/{base_ref}")
+              require(branch["name"] == base_ref and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
               ancestry = api(f"repos/{repo}/compare/{source}...{branch['commit']['sha']}")
               require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
                       and ancestry.get("behind_by") == 0 and ancestry.get("merge_base_commit", {}).get("sha") == source), "source ancestry")
@@ -5936,8 +5937,10 @@ jobs:
               expected = {"schema", "kind", "repository", "repository_id", "operation", "pr", "base", "head",
                           "base_ref", "head_ref", "owner_run", "owner_attempt", "source_sha", "event", "action",
                           "author", "actor", "triggering_actor", "created_at"}
+              if isinstance(intent, dict) and intent.get("schema") == 2:
+                  expected.add("source_ref")
               require(isinstance(intent, dict) and set(intent) == expected and type(intent["schema"]) is int
-                      and intent["schema"] == 1 and intent["kind"] == "deferred-first-request"
+                      and intent["schema"] in (1, 2) and intent["kind"] == "deferred-first-request"
                       and intent["repository"] == repo and intent["repository_id"] == repo_id and intent["operation"] == key
                       and positive(intent["pr"]) and positive(intent["owner_run"]) and type(intent["owner_attempt"]) is int
                       and intent["owner_attempt"] == 1 and intent["event"] == "pull_request_target"
@@ -5946,7 +5949,14 @@ jobs:
                       and intent["base_ref"] in {"develop", "main"} and isinstance(intent["head_ref"], str) and intent["head_ref"]
                       and all(sha(intent[field]) for field in ("base", "head", "source_sha")), "deferred intent")
               require(key == key_for(repo_id, intent["pr"], intent["head"]), "intent budget key")
-              repository(repo, repo_id, intent["source_sha"])
+              if intent["schema"] == 1:
+                  # Schema 1 always authenticated source_sha against the protected
+                  # default Develop controller, independently of the recorded PR base.
+                  source_ref = "develop"
+              else:
+                  require(intent["source_ref"] == "develop", "original default controller ref")
+                  source_ref = intent["source_ref"]
+              repository(repo, repo_id, intent["source_sha"], source_ref)
               run = original_run(repo, intent)
               job = native_job(repo, run, "Request Copilot review for current revision", ORIGINAL_STEPS)
               require(epoch(job["steps"][2]["started_at"]) <= epoch(intent["created_at"]) <= epoch(job["steps"][2]["completed_at"]), "intent outside original step")
@@ -5977,10 +5987,16 @@ jobs:
 
           def native_resume_run(repo, run_id, source, intent, review_id, completed=True):
               run = api(f"repos/{repo}/actions/runs/{run_id}/attempts/1")
-              require(type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
+              resume_ref = intent["base_ref"]
+              resume_sha = intent["base"]
+              # Completed legacy receipts may describe the old Develop consumer at
+              # its own later protected source, not the original request source.
+              if completed and intent["schema"] == 1 and run.get("head_branch") == "develop":
+                  resume_ref, resume_sha = "develop", source
+              require(sha(source) and type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
                       and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
                       and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
-                      and run["head_sha"] == source and run["head_branch"] == "develop"
+                      and run["head_sha"] == source == resume_sha and run["head_branch"] == resume_ref
                       and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"
                       and run["display_title"] == f"First review PR #{intent['pr']} head {intent['head']} owner {intent['owner_run']} old review {review_id}", "resume native run")
               if completed:
@@ -6009,8 +6025,8 @@ jobs:
               journal = Journal(repo, repo_id)
               journal.oid = record["intent_commit"]
               require(journal.read(record_path(key, True)) == intent and journal.read(record_path(key)) is None, "pre-request intent snapshot")
-              repository(repo, repo_id, record["source_sha"])
               run = native_resume_run(repo, record["claim_run"], record["source_sha"], intent, record["old_review"])
+              repository(repo, repo_id, record["source_sha"], run["head_branch"])
               job = native_job(repo, run, "Resume deferred first review request", RESUME_STEPS)
               start, end = epoch(job["steps"][2]["started_at"]), epoch(job["steps"][2]["completed_at"])
               require(epoch(original["updated_at"]) <= start, "resume ordering")
@@ -6106,7 +6122,7 @@ jobs:
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
             local key pages claims claim receipt refresh_id refresh_run refresh_jobs
-            local source_sha source_ancestry journal_commit journal_head journal_path journal_snapshot journal_record
+            local source_sha source_ancestry source_branch source_head journal_commit journal_head journal_path journal_snapshot journal_record
             key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
             pages="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" || return 1
             claims="$(jq -ce --arg key "${key}" '
@@ -6160,7 +6176,7 @@ jobs:
             refresh_id="$(jq -r .claim_run <<<"${receipt}")"
             refresh_run="$(gh api "repos/${REPOSITORY}/actions/runs/${refresh_id}")" || return 1
             jq -e --arg repo "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
-              --arg base "${EVENT_BASE}" --arg branch "${controller_branch}" \
+              --arg base "${EVENT_BASE}" --arg branch "${base_ref}" \
               --argjson id "${refresh_id}" --argjson pr "${owner_pr_number}" '
                 .id == $id and .run_attempt == 1
                 and .path == ".github/workflows/copilot-review-refresh.yml"
@@ -6185,7 +6201,13 @@ jobs:
               ' <<<"${refresh_run}" >/dev/null || return 1
             if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
               source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
-              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${controller_head}")" || return 1
+              [[ "${base_ref}" =~ ^(develop|main)$ ]] || return 1
+              source_branch="$(gh api "repos/${REPOSITORY}/branches/${base_ref}")" || return 1
+              source_head="$(jq -er --arg ref "${base_ref}" '
+                select(.name == $ref and .protected == true)
+                | .commit.sha | strings | select(test("^[0-9a-f]{40}$"))
+                ' <<<"${source_branch}")" || return 1
+              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${source_head}")" || return 1
               jq -e --arg source "${source_sha}" '
                 .status == "identical" or (.status == "ahead" and .behind_by == 0
                   and .merge_base_commit.sha == $source)
@@ -7562,13 +7584,7 @@ jobs:
 
               review_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/pulls/${owner_pr_number}/reviews?per_page=100")"
-              reviews="$(jq -c \
-                --arg producer_created_at "$(jq -er '.created_at | strings' \
-                  <<<"${attempt_one}")" \
-                --arg head "${EVENT_HEAD}" '
-                  [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
-                ' <<<"${review_pages}")"
+              reviews="$(jq -c --arg producer_created_at "$(jq -er '.created_at | strings'   <<<"${attempt_one}")" --arg head "${EVENT_HEAD}" '[.[][]?|select(.user.login=="copilot-pull-request-reviewer[bot]")|select(.user.type=="Bot")|select(.commit_id==$head)|select(.state=="COMMENTED" or .state=="APPROVED")|select((.id|type)=="number" and .id>0)|select((.submitted_at|type)=="string")|select((.submitted_at|fromdateiso8601?)>=($producer_created_at|fromdateiso8601))|select(((.body//"")|ascii_downcase|gsub("can[\u0027\u2019]t";"cannot")|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";""))as $b|["unabletoreviewthispullrequest","cannotreviewthispullrequest","cannotreviewanyfiles","notabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview","nofileswerereviewed","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
               review_submitted_at="$(jq -r .submitted_at <<<"${review}")"
@@ -7944,8 +7960,8 @@ jobs:
                   and .[0].submitted_at == "2026-09-07T06:48:29Z"
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
-                    | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
+                    | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
+                    | ["unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",
