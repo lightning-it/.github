@@ -67,6 +67,7 @@ class NativeRetryTests(unittest.TestCase):
         self.cas_hook = None
         self.cas_unknown = False
         self.effect_unknown = None
+        self.extra_run, self.extra_jobs = None, {}
         self.branches = {"develop": self.source, "main": self.receiver_source}
         self.env = {"LI219_EVENT_MODE": "enabled", "LI259_INFRA_RETRY": "enabled", "GITHUB_REPOSITORY": self.repo,
                     "GITHUB_REPOSITORY_ID": self.repo_id, "GITHUB_RUN_ID": "55", "GITHUB_RUN_ATTEMPT": "1",
@@ -84,8 +85,8 @@ class NativeRetryTests(unittest.TestCase):
         return RETRY.stamp(self.start + dt.timedelta(seconds=seconds))
 
     def native_writer(self, run_id):
-        return {"id": run_id, "run_attempt": 1, "path": RETRY.HELPER if run_id == 55 else RETRY.WORKFLOW,
-                "event": "workflow_dispatch" if run_id == 55 else "schedule", "head_sha": self.source,
+        return {"id": run_id, "run_attempt": 1, "path": RETRY.HELPER if run_id in (55, 155) else RETRY.WORKFLOW,
+                "event": "workflow_dispatch" if run_id in (55, 155) else "schedule", "head_sha": self.source,
                 "repository": {"full_name": self.repo}, "head_repository": {"full_name": self.repo},
                 "actor": {"login": "github-actions[bot]"}, "triggering_actor": {"login": "github-actions[bot]"}}
 
@@ -117,6 +118,9 @@ class NativeRetryTests(unittest.TestCase):
             return {"data": {"createCommitOnBranch": {"commit": {"oid": self.oid, "parents": {"nodes": [{"oid": prior}]}}}}}
         if payload is not None:
             self.effects.append((route, payload))
+            if route.endswith("/jobs/202/rerun"):
+                self.extra_run.update(run_attempt=3, status="in_progress", conclusion=None)
+                return None
             if self.effect_unknown != "not-delivered":
                 self.run = {**self.run, "run_attempt": self.run["run_attempt"] + 1, "status": "in_progress",
                             "conclusion": None, "run_started_at": RETRY.stamp(self.now + dt.timedelta(seconds=1))}
@@ -148,9 +152,11 @@ class NativeRetryTests(unittest.TestCase):
             return copy.deepcopy(self.pr)
         if route == prefix + "/actions/runs/99":
             return copy.deepcopy(self.run)
+        if route == prefix + "/actions/runs/199":
+            return copy.deepcopy(self.extra_run)
         if route == prefix + "/actions/runs/77":
             return copy.deepcopy(self.producer)
-        if route in (prefix + "/actions/runs/55", prefix + "/actions/runs/66"):
+        if route in (prefix + "/actions/runs/55", prefix + "/actions/runs/66", prefix + "/actions/runs/155"):
             return self.native_writer(int(route.rsplit("/", 1)[1]))
         if route.startswith(prefix + "/actions/runs/99/attempts/") and "jobs" not in route:
             return copy.deepcopy(self.history[int(route.rsplit("/", 1)[1])])
@@ -159,7 +165,9 @@ class NativeRetryTests(unittest.TestCase):
         if bare == "/pulls":
             return [copy.deepcopy(self.pr)]
         if bare == "/actions/runs":
-            rows, key = [self.run], "workflow_runs"
+            rows, key = [self.run] + ([] if self.extra_run is None else [self.extra_run]), "workflow_runs"
+        elif bare.startswith("/actions/runs/199/attempts/") and bare.endswith("/jobs"):
+            rows, key = self.extra_jobs[int(bare.split("/")[-2])], "jobs"
         elif bare.startswith("/actions/runs/99/attempts/") and bare.endswith("/jobs"):
             rows, key = self.jobs[int(bare.split("/")[-2])], "jobs"
         elif bare == "/actions/runs/77/attempts/1/jobs":
@@ -205,6 +213,104 @@ class NativeRetryTests(unittest.TestCase):
 
     def recover(self):
         return RETRY.recover(self.repo, self.repo_id, 99, self.source, self.now)
+
+    def second_candidate(self):
+        self.extra_run = {**self.history[1], "id": 199}
+        self.extra_jobs[1] = [{**copy.deepcopy(self.original), "id": 200, "run_id": 199}]
+        with patch.dict(os.environ, GITHUB_RUN_ID="155", GITHUB_EVENT_NAME="workflow_dispatch"):
+            RETRY.seal(self.repo, self.repo_id, 23, 199, self.source, self.start)
+        key = f"li219-verifier-operation:v1:23:{self.source}:{self.head}:199"
+        RETRY.proof.Journal(self.repo, self.repo_id).create(RETRY.proof.record_path(key), {
+            "schema": 1, "action": "rerun", "operation": key, "repository": self.repo, "repository_id": self.repo_id,
+            "claim_run": "155", "claim_attempt": "1", "source_sha": self.source})
+        self.extra_run = {**copy.deepcopy(self.run), "id": 199}
+        self.extra_jobs[2] = [{**copy.deepcopy(self.jobs[2][0]), "id": 202, "run_id": 199,
+                               "check_run_url": f"https://api.github.com/repos/{self.repo}/check-runs/202"}]
+
+    def reconcile(self):
+        with patch.object(sys, "argv", ["native_verifier_retry.py", "reconcile"]):
+            RETRY.main()
+
+    def test_first_candidate_original_helper_rerun_is_terminal_and_second_dispatches(self):
+        self.prime()
+        self.second_candidate()
+        native_writer = self.native_writer
+        with patch.object(self, "native_writer", side_effect=lambda run: {
+                **native_writer(run), "run_attempt": 2 if run == 55 else 1}):
+            self.reconcile()
+            self.assertEqual("inactive", self.recover())
+        self.assertEqual("contract-drift", self.snapshots[self.oid]["li259/99/terminal.json"]["state"])
+        self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+
+    def test_first_candidate_contract_drift_is_terminal_and_second_dispatches(self):
+        self.prime()
+        self.second_candidate()
+        self.original["steps"] = []
+        self.reconcile()
+        self.assertEqual("inactive", self.recover())
+        self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+
+    def test_post_cas_drift_closes_claim_get_only_and_sweep_continues(self):
+        self.prime()
+        self.second_candidate()
+        self.cas_hook = lambda: self.original.update(steps=[])
+        self.reconcile()
+        writes = len(self.writes)
+        self.assertEqual("consumed-readback-only", self.recover())
+        self.reconcile()
+        self.assertEqual(writes, len(self.writes))
+        self.assertNotIn("li259/99/terminal.json", self.snapshots[self.oid])
+        self.assertIn("li259/99/attempt-3.json", self.snapshots[self.oid])
+        self.assertEqual([(f"repos/{self.repo}/actions/jobs/202/rerun", {})], self.effects)
+
+    def test_original_helper_rerun_after_cas_closes_claim_without_post(self):
+        self.prime()
+        native_writer = self.native_writer
+        def rerun_helper():
+            self.native_writer = lambda run: {**native_writer(run), "run_attempt": 2 if run == 55 else 1}
+        self.cas_hook = rerun_helper
+        self.assertEqual("consumed-readback-only", self.recover())
+        writes = len(self.writes)
+        self.assertEqual("consumed-readback-only", self.recover())
+        self.assertEqual(writes, len(self.writes))
+        self.assertEqual([], self.effects)
+
+    def test_unconfirmed_terminal_record_stops_sweep_instead_of_claiming_closure(self):
+        self.prime()
+        self.second_candidate()
+        self.original["steps"] = []
+        with patch.object(RETRY.proof.Journal, "create", side_effect=subprocess.TimeoutExpired("gh", 30)):
+            with self.assertRaisesRegex(RETRY.GlobalReadFailure, "terminal record not confirmed"):
+                self.reconcile()
+        self.assertNotIn("li259/99/terminal.json", self.snapshots[self.oid])
+        self.assertEqual([], self.effects)
+
+    def test_global_read_and_inventory_failures_stop_sweep_before_second_candidate(self):
+        for corruption in ("timeout", "duplicate", "incomplete", "duplicate-thread", "incomplete-annotations"):
+            with self.subTest(corruption=corruption):
+                self.setUp()
+                self.prime()
+                self.second_candidate()
+                original = self.api
+                def malformed(route, payload=None, fields=()):
+                    if corruption == "timeout" and route.endswith("/actions/runs/55"):
+                        raise subprocess.TimeoutExpired("gh", 30)
+                    result = original(route, payload, fields)
+                    if "/runs/99/attempts/2/jobs?" in route and corruption in ("duplicate", "incomplete"):
+                        result["total_count"] = 2
+                        if corruption == "duplicate":
+                            result["jobs"] *= 2
+                    if "/check-runs/102/annotations?" in route and corruption == "incomplete-annotations":
+                        return []
+                    return result
+                if corruption == "duplicate-thread":
+                    self.thread_rows = [{"id": "T1", "isResolved": True}] * 2
+                writes = len(self.writes)
+                with patch.object(RETRY.proof, "api", side_effect=malformed):
+                    with self.assertRaises((RETRY.GlobalReadFailure, ValueError)):
+                        self.reconcile()
+                self.assertEqual(writes, len(self.writes))
+                self.assertEqual([], self.effects)
 
     def receive(self):
         os.environ.update(GITHUB_RUN_ID="99", GITHUB_RUN_ATTEMPT=str(self.run["run_attempt"]))
@@ -327,8 +433,7 @@ class NativeRetryTests(unittest.TestCase):
     def test_clock_crossing_deadline_after_claim_consumes_without_post(self):
         self.prime()
         with patch.object(RETRY, "utc_now", return_value=self.start + dt.timedelta(seconds=7201)):
-            with self.assertRaisesRegex(ValueError, "post-claim deadline"):
-                self.recover()
+            self.assertEqual("consumed-readback-only", self.recover())
         self.assertEqual([], self.effects)
         self.assertEqual("consumed-readback-only", self.recover())
 
@@ -402,7 +507,7 @@ class NativeRetryTests(unittest.TestCase):
                         result["jobs"] *= 2
                 return result
             with self.subTest(corruption=corruption), patch.object(RETRY.proof, "api", side_effect=malformed):
-                with self.assertRaises(ValueError):
+                with self.assertRaises(RETRY.GlobalReadFailure):
                     RETRY.infrastructure_cause(self.repo, self.run, self.head, self.now)
         self.assertEqual([], self.effects)
 
@@ -428,7 +533,7 @@ class NativeRetryTests(unittest.TestCase):
 class WorkflowCouplingTests(unittest.TestCase):
     def test_execute_real_handoff_caller_orders_seal_claim_rebind_and_post(self):
         text = (ROOT / ".github/workflows/current-revision-rerun.yml").read_text()
-        function = "rerun_protected_verifier_once() {" + text.split("          rerun_protected_verifier_once() {", 1)[1].split("\n          rerun_cross_job_once()", 1)[0]
+        function = "rerun_protected_verifier_once() {" + text.split("          rerun_protected_verifier_once() {", 1)[1].split("\n          }\n", 1)[0] + "\n}"
         shell = r'''set -euo pipefail
 authorize_protected_rerun_transaction() { printf 'authorize\n'; }
 require_deadline() { :; }
@@ -457,7 +562,7 @@ bash() {
 
     def test_existing_handoff_seals_before_claim_and_rebinds_before_post(self):
         text = (ROOT / ".github/workflows/current-revision-rerun.yml").read_text()
-        function = text.split("          rerun_protected_verifier_once() {", 1)[1].split("\n          rerun_cross_job_once()", 1)[0]
+        function = text.split("          rerun_protected_verifier_once() {", 1)[1].split("\n          }\n", 1)[0]
         self.assertLess(function.index('bash "${launcher}" seal'), function.index("claim_review_operation"))
         self.assertLess(function.index('bash "${RUNNER_TEMP}/li259-launcher.sh" seal'), function.index("--method POST"))
         self.assertNotIn("li259", text.split("          rerun_cross_job_once()", 1)[1].split("          wait_for_attempt_two_success", 1)[0])

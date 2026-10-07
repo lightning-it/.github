@@ -26,11 +26,35 @@ ACQUISITION = "The job was not acquired by Runner of type hosted even after mult
 POLICY = {"schema": 1, "max_attempt": 4, "total_seconds": 10800,
           "cooldown_seconds": {"3": 1200, "4": 2400}, "runtime_reserve_seconds": 3600,
           "cause": "github-hosted-runner-not-acquired", "receiver": RECEIVER, "job": JOB}
-require = proof.require
+
+
+class CandidateClosed(ValueError):
+    """A bound candidate lost authority; other candidates remain independent."""
+
+
+class GlobalReadFailure(RuntimeError):
+    """Unavailable or incomplete API evidence must stop the whole sweep."""
+
+
+def require(condition, message):
+    if not condition:
+        raise CandidateClosed(message)
 
 
 def api(route, payload=None, fields=()):
-    return proof.api(route, payload, fields)
+    try:
+        return proof.api(route, payload, fields)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        if payload is not None:
+            raise
+        raise GlobalReadFailure(f"API read failed: {route}") from exc
+
+
+def pages(route, key=None):
+    try:
+        return proof.pages(route, key)
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise GlobalReadFailure(f"API inventory failed: {route}") from exc
 
 
 def digest(value):
@@ -105,7 +129,7 @@ def bound_run(repo, pr, run):
 
 
 def jobs_for(repo, run_id, attempt, head):
-    jobs = proof.pages(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?filter=all", "jobs")
+    jobs = pages(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?filter=all", "jobs")
     require(jobs and all(job["run_id"] == run_id and type(job["run_attempt"]) is int
                         and job["run_attempt"] == attempt and job["head_sha"] == head for job in jobs), "native job binding")
     selected = [job for job in jobs if job["name"] == JOB]
@@ -120,20 +144,21 @@ def threads(repo, number):
         result = api("graphql", fields=["-f", "query=query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}",
                     "-f", f"owner={repo.split('/')[0]}", "-f", f"name={repo.split('/')[1]}",
                     "-F", f"number={number}", *([] if cursor is None else ["-f", f"after={cursor}"])])
-        require("errors" not in result, "partial thread inventory")
+        proof.require("errors" not in result, "partial thread inventory")
         connection = result["data"]["repository"]["pullRequest"]["reviewThreads"]
         batch = connection["nodes"]
-        require(isinstance(batch, list) and len(batch) <= 100, "thread inventory")
+        proof.require(isinstance(batch, list) and len(batch) <= 100, "thread inventory")
         for item in batch:
-            require(isinstance(item["id"], str) and item["id"] and item["id"] not in seen
-                    and item["isResolved"] is True, "unresolved or duplicate thread")
+            proof.require(isinstance(item["id"], str) and item["id"] and item["id"] not in seen,
+                          "duplicate thread")
             seen.add(item["id"])
         nodes.extend(batch)
         page = connection["pageInfo"]
-        require(type(page["hasNextPage"]) is bool, "thread pagination")
+        proof.require(type(page["hasNextPage"]) is bool, "thread pagination")
         if not page["hasNextPage"]:
+            require(all(item["isResolved"] is True for item in nodes), "unresolved thread")
             return sorted(nodes, key=lambda item: item["id"])
-        require(len(batch) == 100 and isinstance(page["endCursor"], str)
+        proof.require(len(batch) == 100 and isinstance(page["endCursor"], str)
                 and page["endCursor"] and page["endCursor"] != cursor, "incomplete thread inventory")
         cursor = page["endCursor"]
     raise ValueError("thread inventory limit")
@@ -142,27 +167,41 @@ def threads(repo, number):
 def snapshot(repo, repo_id, pr_number, run_id, writer_source):
     """GET-only binding of the actual native inputs, not caller-supplied claims."""
     require(repo in proof.PILOTS and proof.sha(writer_source), "pilot/controller")
-    pr = proof.live_pr(repo, pr_number)
-    require(proof.repository(repo, repo_id, writer_source, pr["base"]["ref"]) == writer_source, "writer controller drift")
+    pr = api(f"repos/{repo}/pulls/{pr_number}")
+    require(pr["number"] == pr_number and pr["state"] == "open" and pr["draft"] is False
+            and pr["user"]["login"] == "litroc" and pr["user"]["type"] == "User", "live human PR")
+    require(pr["head"]["repo"]["full_name"] == repo and pr["base"]["repo"]["full_name"] == repo
+            and pr["base"]["ref"] in {"develop", "main"} and pr["head"]["ref"]
+            and proof.sha(pr["head"]["sha"]) and proof.sha(pr["base"]["sha"]), "PR refs")
+    meta = api(f"repos/{repo}")
+    proof.require(meta["full_name"] == repo and str(meta["id"]) == repo_id
+                  and meta["default_branch"] == "develop", "repository")
     scheduler = api(f"repos/{repo}/branches/develop")
     require(scheduler["name"] == "develop" and scheduler["protected"] is True
             and proof.sha(scheduler["commit"]["sha"]), "scheduler source")
     branch = api(f"repos/{repo}/branches/{pr['base']['ref']}")
-    require(branch["protected"] is True and branch["commit"]["sha"] == pr["base"]["sha"], "base drift")
+    # Exact current source equality also proves the ancestry required at seal.
+    require(branch["name"] == pr["base"]["ref"] and branch["protected"] is True
+            and branch["commit"]["sha"] == writer_source == pr["base"]["sha"], "base/controller drift")
     run = api(f"repos/{repo}/actions/runs/{run_id}")
     require(run["id"] == run_id, "target run identity")
     bound_run(repo, pr, run)
     _, original = jobs_for(repo, run_id, 1, pr["head"]["sha"])
     source = source_marker(original, pr)
-    checks = proof.pages(f"repos/{repo}/commits/{pr['head']['sha']}/check-runs?filter=all", "check_runs")
+    checks = pages(f"repos/{repo}/commits/{pr['head']['sha']}/check-runs?filter=all", "check_runs")
     neutral = [check for check in checks if check["name"] == "Current revision review"]
     require(len(neutral) == 1, "ambiguous neutral evidence")
     check = neutral[0]
     require(check["app"]["id"] == 15368 and check["app"]["slug"] == "github-actions"
             and check["status"] == "completed" and check["conclusion"] == "success"
             and check["head_sha"] == pr["head"]["sha"], "neutral evidence")
-    summary = json.loads(check["output"]["summary"], object_pairs_hook=proof.unique)
-    owner = summary["producer_run_id"]
+    try:
+        summary = json.loads(check["output"]["summary"], object_pairs_hook=proof.unique)
+        require(isinstance(summary, dict) and {"schema", "producer_run_id", "pull_request_number",
+                "base_sha", "head_sha", "controller_sha"} <= summary.keys(), "neutral contract fields")
+        owner = summary["producer_run_id"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CandidateClosed("invalid neutral evidence") from exc
     require(proof.positive(owner) and type(summary["schema"]) is int and summary["schema"] == 4
             and summary["pull_request_number"] == pr_number
             and summary["base_sha"] == pr["base"]["sha"] and summary["head_sha"] == pr["head"]["sha"]
@@ -176,7 +215,7 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
             and type(producer["run_attempt"]) is int and producer["run_attempt"] in (1, 2)
             and producer["actor"]["login"] == "litroc"
             and producer["triggering_actor"]["login"] == ("litroc" if producer["run_attempt"] == 1 else "github-actions[bot]"), "producer identity")
-    producer_jobs = proof.pages(f"repos/{repo}/actions/runs/{owner}/attempts/{producer['run_attempt']}/jobs?filter=all", "jobs")
+    producer_jobs = pages(f"repos/{repo}/actions/runs/{owner}/attempts/{producer['run_attempt']}/jobs?filter=all", "jobs")
     verified = [job for job in producer_jobs if job["name"] == "Verify current revision policy"]
     require(len(verified) == 1 and verified[0]["conclusion"] == "success"
             and proof.positive(verified[0]["runner_id"])
@@ -187,15 +226,18 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
                     for job in producer_jobs), "producer verification")
     policy_steps = [step for step in verified[0]["steps"] if step["name"] == "Verify current Copilot review and resolved findings"]
     require(len(policy_steps) == 1 and policy_steps[0]["conclusion"] == "success", "producer policy execution")
-    reviews = proof.pages(f"repos/{repo}/pulls/{pr_number}/reviews")
+    reviews = pages(f"repos/{repo}/pulls/{pr_number}/reviews")
     reviews = [review for review in reviews if review["commit_id"] == pr["head"]["sha"]
                and review["user"]["login"] in proof.REVIEWERS]
     require(len(reviews) == 1, "ambiguous review evidence")
     review = reviews[0]
     require(review["user"]["type"] == "Bot" and review["state"] in ("COMMENTED", "APPROVED")
             and proof.epoch(review["submitted_at"]) <= proof.epoch(check["completed_at"]), "review identity/time")
-    comments = proof.pages(f"repos/{repo}/pulls/{pr_number}/reviews/{review['id']}/comments")
-    proof.require_usable_review_content(review["body"], [comment["body"] for comment in comments])
+    comments = pages(f"repos/{repo}/pulls/{pr_number}/reviews/{review['id']}/comments")
+    try:
+        proof.require_usable_review_content(review["body"], [comment["body"] for comment in comments])
+    except proof.ReviewContentError as exc:
+        raise CandidateClosed("unusable review content") from exc
     resolved = threads(repo, pr_number)
     # Immutable Git sources bind the complete policies and controller inputs.
     # Native receiver marker establishes its actual source, not today's branch.
@@ -215,11 +257,12 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
 
 def annotations(repo, check):
     count = check["output"]["annotations_count"]
-    require(type(count) is int and 0 < count < 1000, "annotation inventory")
+    proof.require(type(count) is int and 0 <= count < 1000, "annotation inventory")
+    require(count > 0, "no native failure annotation")
     rows = []
     for page in range(1, (count + 99) // 100 + 1):
         batch = api(f"repos/{repo}/check-runs/{check['id']}/annotations?per_page=100&page={page}")
-        require(isinstance(batch, list) and len(batch) == min(100, count - len(rows)), "incomplete annotations")
+        proof.require(isinstance(batch, list) and len(batch) == min(100, count - len(rows)), "incomplete annotations")
         rows.extend(batch)
     return rows
 
@@ -361,7 +404,8 @@ def terminal(journal, path, seed, reason, now, attempt=None):
     try:
         journal.create(path, record)
     except (ValueError, OSError, subprocess.SubprocessError):
-        readback_only(journal.repo, journal.repo_id, path)
+        if readback_only(journal.repo, journal.repo_id, path) != record:
+            raise GlobalReadFailure("terminal record not confirmed") from None
     print(f"LI-259 run {seed['contract']['run_id']}: terminal {reason}")
 
 
@@ -373,8 +417,15 @@ def recover(repo, repo_id, run_id, source, now):
     if seed is None or journal.read(path + "/terminal.json") is not None:
         return "inactive"
     validate_seed(seed, repo, repo_id, run_id)
+    try:
+        return recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, seed)
+    except CandidateClosed:
+        terminal(proof.Journal(repo, repo_id), path + "/terminal.json", seed, "contract-drift", now)
+        return "terminal"
+
+
+def recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, seed):
     c = seed["contract"]
-    original_consumption(journal, seed)
     deadline = proof.epoch(seed["created_at"]) + POLICY["total_seconds"]
     observed = api(f"repos/{repo}/actions/runs/{run_id}")
     observed_attempt = observed["run_attempt"]
@@ -383,10 +434,11 @@ def recover(repo, repo_id, run_id, source, now):
         # The claimed effect has not appeared natively. Even after expiry or
         # drift this worker is permanently GET-only; a new event is no authority.
         return "consumed-readback-only"
+    original_consumption(journal, seed)
     try:
         require(source == c["scheduler_source"]
                 and snapshot(repo, repo_id, c["pr"], run_id, c["writer_source"]) == c, "contract drift")
-    except (KeyError, TypeError, ValueError):
+    except CandidateClosed:
         terminal(journal, path + "/terminal.json", seed, "contract-drift", now, observed_attempt)
         return "terminal"
     run = api(f"repos/{repo}/actions/runs/{run_id}")
@@ -405,7 +457,7 @@ def recover(repo, repo_id, run_id, source, now):
         return "terminal"
     try:
         cause = infrastructure_cause(repo, run, c["head"], now)
-    except (KeyError, TypeError, ValueError):
+    except CandidateClosed:
         terminal(journal, path + "/terminal.json", seed, "non-retryable-native-failure", now, attempt)
         return "terminal"
     next_attempt = attempt + 1
@@ -422,12 +474,19 @@ def recover(repo, repo_id, run_id, source, now):
     except (ValueError, OSError, subprocess.SubprocessError):
         readback_only(repo, repo_id, claim_path)
         return "unconfirmed-claim-readback-only"
-    require(snapshot(repo, repo_id, c["pr"], run_id, c["writer_source"]) == c, "post-claim contract drift")
-    current = api(f"repos/{repo}/actions/runs/{run_id}")
-    require(infrastructure_cause(repo, current, c["head"], now) == cause, "post-claim native drift")
-    fresh = proof.Journal(repo, repo_id)
-    require(fresh.read(claim_path) == record and fresh.read(path + "/terminal.json") is None, "post-claim readback")
-    require(utc_now().timestamp() + POLICY["runtime_reserve_seconds"] <= deadline, "post-claim deadline")
+    try:
+        original_consumption(proof.Journal(repo, repo_id), seed)
+        require(snapshot(repo, repo_id, c["pr"], run_id, c["writer_source"]) == c, "post-claim contract drift")
+        current = api(f"repos/{repo}/actions/runs/{run_id}")
+        require(infrastructure_cause(repo, current, c["head"], now) == cause, "post-claim native drift")
+        fresh = proof.Journal(repo, repo_id)
+        require(fresh.read(claim_path) == record and fresh.read(path + "/terminal.json") is None, "post-claim readback")
+        require(utc_now().timestamp() + POLICY["runtime_reserve_seconds"] <= deadline, "post-claim deadline")
+    except CandidateClosed:
+        # The durable consumed slot closes this effect forever. Do not write a
+        # second record or POST after the CAS, including when authority drifts.
+        readback_only(repo, repo_id, claim_path)
+        return "consumed-readback-only"
     try:
         api(f"repos/{repo}/actions/jobs/{cause['job_id']}/rerun", {})
     except (OSError, subprocess.SubprocessError, ValueError):

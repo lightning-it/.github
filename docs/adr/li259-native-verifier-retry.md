@@ -73,6 +73,15 @@ drift, until native observation establishes that its attempt occurred. The
 pre-effect consumed record also covers crashes between claim and POST.
 No successor run or fresh event resets the clock or replenishes slots.
 
+Candidate-local contract drift, including a rerun of the original event helper,
+is durably terminal before a technical claim; the schedule then processes the
+next candidate. After a technical CAS, drift leaves the consumed slot permanently
+GET-only and the sweep continues without another write or rerun POST. Unavailable
+API evidence, incomplete or duplicate inventories, and an unconfirmed terminal
+record still abort the whole sweep. The handoff function resides in the existing
+materialized guard so the consuming workflow step stays below the 64,500-byte
+actionlint pipe limit without changing its authorization sequence.
+
 ## Native classification and receiver
 
 Classification requires the authenticated native execution job, its exact
