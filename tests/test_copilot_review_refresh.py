@@ -1100,7 +1100,8 @@ oa() {
                      "nodes": []}
             review = {"id": "REVIEW_1",
                       "author": {"login": "copilot-pull-request-reviewer"},
-                      "commit": {"oid": lhead}, "state": "COMMENTED"}
+                      "commit": {"oid": lhead}, "state": "COMMENTED",
+                      "submittedAt": "2026-10-07T00:00:00Z"}
             pages = (
                 {"errors": [], "data": {"repository": {"pullRequest": {
                     "headRefOid": lhead, "reviews": {
@@ -1113,6 +1114,16 @@ oa() {
                     "headRefOid": lhead, "reviewThreads": empty}}}},
             )
             with tempfile.TemporaryDirectory() as tmp:
+                # This test isolates head supersession; the metadata guard's
+                # real API binding is exercised in test_copilot_metadata_binding.
+                (Path(tmp) / "copilot-input-metadata.sh").write_text(
+                    "assert_copilot_metadata_revision() { :; }\n", encoding="utf-8")
+                (Path(tmp) / "copilot-input-metadata.json").write_text("null\n", encoding="utf-8")
+                timestamp_policy = COPILOT_WORKFLOW.read_text().split(
+                    "<<'COPILOT_TIMESTAMP_POLICY'\n", 1)[1].split(
+                    "          COPILOT_TIMESTAMP_POLICY", 1)[0]
+                (Path(tmp) / "copilot-timestamp.jq").write_text(
+                    textwrap.dedent(timestamp_policy), encoding="utf-8")
                 script = r'''set -euo pipefail
 sleep() { :; }
 gh() {
@@ -1122,7 +1133,7 @@ gh() {
   case "${calls}" in 0) printf %s "${PAGE_0}";; 1) printf %s "${PAGE_1}";; 2) printf %s "${PAGE_2}";; *) return 91;; esac
 }
 ''' + self._review_script()
-                env = {"PATH": TEST_TOOL_PATH,
+                env = {"PATH": TEST_TOOL_PATH, "RUNNER_TEMP": tmp,
                        "CALL_COUNTER": str(Path(tmp) / "calls"),
                        "COPILOT_REVIEWER_LOGIN": "copilot-pull-request-reviewer",
                        "EVENT_HEAD": bhead,

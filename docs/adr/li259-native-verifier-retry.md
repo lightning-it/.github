@@ -57,6 +57,32 @@ marker or seal can be added retroactively to old runs.
 Pre-rollout runs without the marker retain the original LI-219 attempt-two
 route, without a new seed or any additional technical entitlement.
 
+The repository-owned Core Copilot producer captures this same metadata revision
+before selecting review evidence. Its authenticated GraphQL input must match
+the immutable event repository/PR/base/head/title/body, and the edit revision
+must not be newer than the event. Selected reviews must strictly postdate that
+edit; equal second-resolution timestamps cannot establish the order.
+Event update, live edit and review-submission timestamps share one strict
+calendar parser: parse and format back to the identical UTC string under
+explicit `TZ=UTC` and `LC_ALL=C`. Invalid calendar dates, leap seconds,
+offsets and fractional seconds fail closed; only an unedited live PR may use
+null. This keeps the producer aligned with the native `proof.epoch` contract
+without depending on the runner's local timezone.
+The ordinary schema-4 summary includes the bound revision. Every neutral
+POST/PATCH and final publication acceptance revalidates it, including the
+existing invalidation/reuse paths; no retry may recapture a newer baseline.
+Source already carries its own producer binding and remains unchanged.
+
+Every snapshot reads live GraphQL `lastEditedAt` together with repository,
+PR number, base/head OIDs and title/body, and binds those inputs to the REST
+snapshot. The revision must be an explicit null or valid UTC timestamp and
+must equal the successful neutral schema-4 `pull_request_last_edited_at`.
+The seed seals that revision; pre-POST and receiver snapshots compare it again.
+Editing then restoring the original title/body therefore cannot reuse older
+neutral evidence. Drift before a technical claim closes the candidate; drift
+after claim consumes the slot without another POST. Missing or partial native
+metadata responses abort the sweep. Existing seeds are never upgraded in place.
+
 The claim is stored in the existing protected `lit-review-operations` Git ref:
 
 - `li259/<native-run>/seed.json`: prospective contract and original claimant.
@@ -153,3 +179,47 @@ above 2 then fail closed at receiver entry and cannot publish acceptance.
 No local test or historical incident is represented as a new native rollout
 acceptance. Native acceptance and governance-page changes remain deployment
 steps, outside this local implementation commit.
+
+Publication and compatibility follow-up: neutral results are first written as
+bound `completed/failure` records and promoted only after exact readback and
+fresh live validation. An unknown create is resolved by GET only; exactly one
+matching provisional result may then receive a bound PATCH, never another POST.
+Missing or ambiguous outcomes stop. Attempt two may create only if the native
+attempt-one publisher was skipped; otherwise it may only reuse an existing
+bound result. Promotion races revoke the exact owned result, including old-head
+results. An unavailable readback fails the producer; consumers still require its
+successful native job. No extra review request is authorized.
+
+Metadata GraphQL envelopes accept an absent `errors` member or an empty array
+only. Acquisition completion is compared with its fresh observation clock,
+without shifting the sealed deadline. Optional sealing leaves non-LI-259
+authors/repositories and the recognized marker-free historical single Required
+verifier on their original attempt-two path, without a seed. Snapshots and
+receivers retain strict LI-259 author, source, job and contract validation.
+
+The Core ordinary Copilot producer now emits the exact metadata-bound nine-key
+schema-4/v6 summary. Promotion recognizes that form in addition to its unchanged
+legacy eight-key and expanded thirteen-key contracts. The new form is Copilot
+only and rebinds `pull_request_last_edited_at` through GraphQL; arbitrary partial
+expanded forms remain invalid. The Core read-only shadow accepts its existing
+eight-key form and this exact nine-key form, with live metadata equality and
+strict review-after-edit ordering. Its formerly unsupported expanded form stays
+unsupported. No evidence is rewritten and no review is requested.
+
+The Required Workflow's thirteen-key Renovate and historical bootstrap validators
+retain their separate contracts. Its eight-key PR-568 recovery records bind fixed
+historical native IDs and also remain unchanged. Source has no local copy of the
+Core promotion or shadow validator: the protected Core controller owns them.
+Source root/default and generated rerun helpers already recognize an exact
+nine-key historical supplementary cutover; their repository, manifest and
+producer-blob limits stay intact. General Source producers still emit thirteen
+keys. The Source port manifest records the updated Core consumer commit.
+
+Metadata-bound Copilot review identity and strict review-after-edit ordering are
+validated before the native run/PR association branches diverge. A populated
+native `pull_requests` association cannot substitute for review chronology.
+Both associated and unassociated paths require a later review when the bound
+metadata revision is non-null; null retains its existing semantics. The
+unassociated sparse path still checks review comments, and expanded evidence
+still binds its explicit review ID. The shadow already applies chronology
+unconditionally after reading the bound native review and GraphQL revision.

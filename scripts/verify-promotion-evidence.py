@@ -1047,6 +1047,52 @@ query($owner:String!,$name:String!,$number:Int!){
 """
 
 
+def validate_review_edit_revision(
+    summary: JSON, *, repository: str, pull_number: int
+) -> None:
+    """Rebind the exact metadata revision in sparse and expanded v6 evidence."""
+    owner, name = repository.split("/", 1)
+    payload = exact_object(
+        gh_json(
+            [
+                "api",
+                "graphql",
+                "-f",
+                f"query={PULL_EDIT_QUERY}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+                "-F",
+                f"number={pull_number}",
+            ]
+        ),
+        "review-summary-edit-response",
+    )
+    require("errors" not in payload or type(payload["errors"]) is list
+            and not payload["errors"], "review-summary-edit-response-errors")
+    data = exact_object(payload.get("data"), "review-summary-edit-data")
+    live_repository = exact_object(
+        data.get("repository"), "review-summary-edit-repository"
+    )
+    live_pull = exact_object(
+        live_repository.get("pullRequest"), "review-summary-edit-pull"
+    )
+    require(
+        integer(live_pull.get("number"), "review-summary-edit-pull-number")
+        == pull_number,
+        "review-summary-edit-pull-number",
+    )
+    require("lastEditedAt" in live_pull, "review-summary-live-last-edited-at")
+    last_edited_at = live_pull.get("lastEditedAt")
+    if last_edited_at is not None:
+        timestamp(last_edited_at, "review-summary-live-last-edited-at")
+    require(
+        last_edited_at == summary.get("pull_request_last_edited_at"),
+        "review-summary-last-edited-at-mutated",
+    )
+
+
 def validate_expanded_review_metadata(
     pull: JSON,
     summary: JSON,
@@ -1083,46 +1129,7 @@ def validate_expanded_review_metadata(
         and hashlib.sha256(labels_json).hexdigest() == labels_sha256,
         "review-summary-labels-mutated",
     )
-    owner, name = repository.split("/", 1)
-    payload = exact_object(
-        gh_json(
-            [
-                "api",
-                "graphql",
-                "-f",
-                f"query={PULL_EDIT_QUERY}",
-                "-F",
-                f"owner={owner}",
-                "-F",
-                f"name={name}",
-                "-F",
-                f"number={pull_number}",
-            ]
-        ),
-        "review-summary-edit-response",
-    )
-    errors = payload.get("errors")
-    require(errors is None or errors == [], "review-summary-edit-response-errors")
-    data = exact_object(payload.get("data"), "review-summary-edit-data")
-    live_repository = exact_object(
-        data.get("repository"), "review-summary-edit-repository"
-    )
-    live_pull = exact_object(
-        live_repository.get("pullRequest"), "review-summary-edit-pull"
-    )
-    require(
-        integer(live_pull.get("number"), "review-summary-edit-pull-number")
-        == pull_number,
-        "review-summary-edit-pull-number",
-    )
-    require("lastEditedAt" in live_pull, "review-summary-live-last-edited-at")
-    last_edited_at = live_pull.get("lastEditedAt")
-    if last_edited_at is not None:
-        timestamp(last_edited_at, "review-summary-live-last-edited-at")
-    require(
-        last_edited_at == summary.get("pull_request_last_edited_at"),
-        "review-summary-last-edited-at-mutated",
-    )
+    validate_review_edit_revision(summary, repository=repository, pull_number=pull_number)
     if evidence_kind == "copilot":
         review_id = text(summary.get("review_id"), "review-summary-review-id")
         require(
@@ -1134,7 +1141,7 @@ def validate_expanded_review_metadata(
         require(summary.get("review_id") is None, "managed-sync-review-id")
 
 
-def validate_expanded_review_identity(
+def validate_bound_review_identity(
     *, repository: str, pull_number: int, head_sha: str, summary: JSON
 ) -> list[Any]:
     review_pages = exact_array(
@@ -1185,9 +1192,19 @@ def validate_expanded_review_identity(
     )
     require(
         len(current_reviews) == 1
-        and current_reviews[0].get("node_id") == summary.get("review_id"),
+        and ("review_id" not in summary
+             or current_reviews[0].get("node_id") == summary["review_id"]),
         "review-summary-review-binding",
     )
+    # Native run/PR association proves ownership, not review-after-edit order.
+    # Authenticate the review before either association branch can return.
+    edited = summary.get("pull_request_last_edited_at")
+    if edited is not None:
+        require(
+            timestamp(current_reviews[0].get("submitted_at"), "producer-review-submitted-at")
+            > timestamp(edited, "review-summary-last-edited-at"),
+            "review-summary-review-after-edit",
+        )
     return review_pages
 
 
@@ -1248,7 +1265,7 @@ def validate_producer_run(
     )
     require(summary.get("run_url") == run_url, "review-summary-run-url")
     repository_state: JSON | None = None
-    expanded_review_pages: list[Any] | None = None
+    bound_review_pages: list[Any] | None = None
     if evidence_kind != "release-app":
         expected_paths = {
             "copilot": "applicable Copilot or governed automation exemption",
@@ -1311,6 +1328,7 @@ def validate_producer_run(
                 "run_url",
                 "schema",
             }
+            metadata_v6_keys = legacy_v6_keys | {"pull_request_last_edited_at"}
             expanded_v6_keys = legacy_v6_keys | {
                 "controller_ref",
                 "head_repository",
@@ -1319,9 +1337,14 @@ def validate_producer_run(
                 "review_id",
             }
             require(
-                set(summary) in (legacy_v6_keys, expanded_v6_keys),
+                set(summary) in (legacy_v6_keys, metadata_v6_keys, expanded_v6_keys),
                 "review-summary-schema",
             )
+            if set(summary) == metadata_v6_keys:
+                require(evidence_kind == "copilot", "review-summary-metadata-kind")
+                validate_review_edit_revision(
+                    summary, repository=repository, pull_number=pull_number
+                )
             if set(summary) == expanded_v6_keys:
                 require(
                     evidence_kind in {"copilot", "managed-sync"},
@@ -1617,8 +1640,8 @@ def validate_producer_run(
                 "producer-post-evidence-failure-order",
             )
             failed_handoff_producer = True
-        if evidence_kind == "copilot" and "review_id" in summary:
-            expanded_review_pages = validate_expanded_review_identity(
+        if evidence_kind == "copilot" and "pull_request_last_edited_at" in summary:
+            bound_review_pages = validate_bound_review_identity(
                 repository=repository,
                 pull_number=pull_number,
                 head_sha=head_sha,
@@ -1763,7 +1786,7 @@ def validate_producer_run(
                     "producer-renovate-time-binding",
                 )
                 return summary, 0
-            if expanded_review_pages is None:
+            if bound_review_pages is None:
                 review_pages = exact_array(
                     gh_json(
                         [
@@ -1776,7 +1799,7 @@ def validate_producer_run(
                     "producer-review-pages",
                 )
             else:
-                review_pages = expanded_review_pages
+                review_pages = bound_review_pages
             run_created = timestamp(run.get("created_at"), "producer-run-created-at")
             run_updated = timestamp(run.get("updated_at"), "producer-run-updated-at")
             check_completed = timestamp(
@@ -1835,7 +1858,7 @@ def validate_producer_run(
                         ),
                         "producer-review-binding",
                     )
-                    if expanded_review_pages is None:
+                    if "review_id" not in summary:
                         comment_pages = exact_array(
                             gh_json(
                                 [
@@ -1906,7 +1929,7 @@ def validate_producer_run(
                 len(current_reviews) == 1,
                 "producer-current-copilot-review-not-unique",
             )
-            if expanded_review_pages is not None:
+            if "review_id" in summary:
                 require(
                     current_reviews[0].get("node_id") == summary.get("review_id"),
                     "review-summary-review-binding",
