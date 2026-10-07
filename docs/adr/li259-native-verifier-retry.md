@@ -179,3 +179,20 @@ above 2 then fail closed at receiver entry and cannot publish acceptance.
 No local test or historical incident is represented as a new native rollout
 acceptance. Native acceptance and governance-page changes remain deployment
 steps, outside this local implementation commit.
+
+Publication and compatibility follow-up: neutral results are first written as
+bound `completed/failure` records and promoted only after exact readback and
+fresh live validation. An unknown create is resolved by GET only; exactly one
+matching provisional result may then receive a bound PATCH, never another POST.
+Missing or ambiguous outcomes stop. Attempt two may create only if the native
+attempt-one publisher was skipped; otherwise it may only reuse an existing
+bound result. Promotion races revoke the exact owned result, including old-head
+results. An unavailable readback fails the producer; consumers still require its
+successful native job. No extra review request is authorized.
+
+Metadata GraphQL envelopes accept an absent `errors` member or an empty array
+only. Acquisition completion is compared with its fresh observation clock,
+without shifting the sealed deadline. Optional sealing leaves non-LI-259
+authors/repositories and the recognized marker-free historical single Required
+verifier on their original attempt-two path, without a seed. Snapshots and
+receivers retain strict LI-259 author, source, job and contract validation.

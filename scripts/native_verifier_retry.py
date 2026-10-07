@@ -128,10 +128,14 @@ def bound_run(repo, pr, run):
             and recorded["base"]["repo"]["url"] == f"https://api.github.com/repos/{repo}", "native PR binding")
 
 
-def jobs_for(repo, run_id, attempt, head):
+def jobs_for(repo, run_id, attempt, head, *, allow_pre_rollout=False):
     jobs = pages(f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs?filter=all", "jobs")
     require(jobs and all(job["run_id"] == run_id and type(job["run_attempt"]) is int
                         and job["run_attempt"] == attempt and job["head_sha"] == head for job in jobs), "native job binding")
+    if (allow_pre_rollout and len(jobs) == 1 and jobs[0]["name"] == AGGREGATE
+            and isinstance(jobs[0]["steps"], list)
+            and not any(step.get("name", "").startswith(SOURCE_MARKER) for step in jobs[0]["steps"])):
+        return jobs, jobs[0]
     selected = [job for job in jobs if job["name"] == JOB]
     require(len(selected) == 1, "ambiguous native verifier")
     return jobs, selected[0]
@@ -171,7 +175,8 @@ def metadata_revision(repo, pr):
                 "-f", f"owner={repo.split('/')[0]}", "-f", f"name={repo.split('/')[1]}",
                 "-F", f"number={pr['number']}"])
     try:
-        proof.require(isinstance(result, dict) and not result.get("errors"), "partial metadata response")
+        proof.require(isinstance(result, dict) and ("errors" not in result
+                      or isinstance(result["errors"], list) and not result["errors"]), "partial metadata response")
         repository = result["data"]["repository"]
         current = repository["pullRequest"]
         edited = current["lastEditedAt"]
@@ -313,8 +318,10 @@ def infrastructure_cause(repo, run, head, now):
     require(all(item["status"] == "completed" and (item["id"] == job["id"]
                 or item["conclusion"] in ("success", "skipped")
                 or dependent_failure(item)) for item in jobs), "independent failed job")
+    # Completion may become visible during the sweep. Observe it against the
+    # current clock; the separately sealed budget still uses its original epoch.
     require(proof.epoch(job["created_at"]) <= proof.epoch(job["started_at"])
-            <= proof.epoch(job["completed_at"]) <= now.timestamp(), "job timing")
+            <= proof.epoch(job["completed_at"]) <= utc_now().timestamp(), "job timing")
     check = api(f"repos/{repo}/check-runs/{job['id']}")
     require(check["id"] == job["id"] and check["name"] == JOB and check["head_sha"] == head
             and check["app"]["id"] == 15368 and check["app"]["slug"] == "github-actions"
@@ -420,9 +427,18 @@ def readback_only(repo, repo_id, path):
 
 
 def seal(repo, repo_id, pr, run_id, source, now):
+    # This optional grant must not narrow the existing attempt-two entitlement.
+    # snapshot() and receiver() retain strict LI-259 authority for every seed.
+    if repo not in proof.PILOTS:
+        return False
+    candidate = api(f"repos/{repo}/pulls/{pr}")
+    if (candidate["user"]["login"] != "litroc" or candidate["user"]["type"] != "User"
+            or candidate["head"]["repo"]["full_name"] != repo
+            or candidate["base"]["repo"]["full_name"] != repo):
+        return False
     claim_run = writer(repo, source, HELPER, "workflow_dispatch")
     live = proof.live_pr(repo, pr)
-    _, original = jobs_for(repo, run_id, 1, live["head"]["sha"])
+    _, original = jobs_for(repo, run_id, 1, live["head"]["sha"], allow_pre_rollout=True)
     if not any(step.get("name", "").startswith(SOURCE_MARKER) for step in original["steps"]):
         # A pre-rollout run keeps its original LI-219 attempt-two route. It
         # receives no seed and consequently no additional technical authority.

@@ -342,6 +342,23 @@ class NativeRetryTests(unittest.TestCase):
         self.assertEqual([], self.writes)
         self.assertEqual([], self.effects)
 
+    def test_metadata_errors_envelope_requires_an_explicit_empty_array(self):
+        original = self.api
+        for errors in (None, {}, "", False, 0, {"unexpected": "error"}, ["error"], []):
+            def envelope(route, payload=None, fields=()):
+                result = original(route, payload, fields)
+                if route == "graphql" and payload is None and any("lastEditedAt" in item for item in fields):
+                    result["errors"] = errors
+                return result
+            with self.subTest(errors=errors), patch.object(RETRY.proof, "api", side_effect=envelope):
+                if isinstance(errors, list) and not errors:
+                    self.assertIsNone(RETRY.metadata_revision(self.repo, self.pr))
+                else:
+                    with self.assertRaises(RETRY.GlobalReadFailure):
+                        RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
+        self.assertEqual([], self.effects)
+
     def test_metadata_read_must_match_rest_snapshot_identity_and_input(self):
         original = self.api
         for field, value in (("number", 24), ("headRefOid", "e" * 40), ("baseRefOid", "e" * 40),
@@ -700,6 +717,36 @@ class NativeRetryTests(unittest.TestCase):
         self.assertEqual("inactive", self.recover())
         with self.assertRaises((ValueError, TypeError)):
             RETRY.receiver(self.repo, self.repo_id, 99, 3, self.now)
+
+    def test_completion_during_sweep_uses_observation_clock_without_extending_seed(self):
+        self.prime()
+        stale = self.start + dt.timedelta(seconds=901)
+        self.assertEqual("cooldown", RETRY.recover(self.repo, self.repo_id, 99, self.source, stale))
+        seed = self.snapshots[self.oid]["li259/99/seed.json"]
+        self.assertEqual(self.at(0), seed["created_at"])
+        self.assertEqual("dispatched", self.recover())
+        self.receive()
+
+    def test_optional_seal_preserves_non_li259_author_entitlement(self):
+        for author in ({"login": "other-human", "type": "User"},
+                       {"login": "renovate[bot]", "type": "Bot"}):
+            with self.subTest(author=author):
+                self.pr["user"] = author
+                self.assertFalse(RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start))
+                with self.assertRaises(ValueError):
+                    RETRY.snapshot(self.repo, self.repo_id, 23, 99, self.source)
+        self.assertEqual([], self.writes)
+        self.assertEqual([], self.effects)
+
+    def test_pre_rollout_single_required_verifier_has_no_retry_grant(self):
+        self.original.update(name=RETRY.AGGREGATE, steps=[])
+        self.assertFalse(RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start))
+        self.assertEqual([], self.writes)
+        with self.assertRaisesRegex(ValueError, "ambiguous native verifier"):
+            RETRY.jobs_for(self.repo, 99, 1, self.head)
+        self.original["name"] = "Unknown verifier"
+        with self.assertRaisesRegex(ValueError, "ambiguous native verifier"):
+            RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
 
     def test_pre_rollout_receiver_keeps_baseline_route_without_new_authority(self):
         self.original["steps"] = []

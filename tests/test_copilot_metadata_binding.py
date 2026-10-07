@@ -44,6 +44,10 @@ if route == 'graphql':
         raise AssertionError(query)
 elif method in ('POST','PATCH'):
     d['writes'].append(method)
+    d.setdefault('write_conclusions', []).append(fields.get('conclusion'))
+    if method == 'POST' and d.get('unknown_post') == 'absent':
+        p.write_text(json.dumps(d))
+        sys.exit(1)
     if method == 'POST':
         d['check'] = {'id':79,'app':{'id':15368,'slug':'github-actions'},
                       'output':{},'details_url':None,'completed_at':'2026-10-07T00:00:00Z'}
@@ -53,12 +57,19 @@ elif method in ('POST','PATCH'):
         else:
             d['check'][key] = value
     result = d['check']
-    if d.get('drift_after_post'):
+    if d.get('drift_after_post') or (fields.get('conclusion') == 'success' and d.get('drift_after_promotion')):
         d['metadata']['lastEditedAt'] = '2026-10-07T00:01:00Z'
+    if (method == 'POST' and d.get('unknown_post')) or (fields.get('conclusion') == 'success' and d.get('unknown_promotion')):
+        p.write_text(json.dumps(d))
+        sys.exit(1)
 elif '/branches/' in route:
     result = {'commit':{'sha':d['base']}}
 elif '/compare/' in route:
     result = {'status':'identical'}
+elif '/attempts/1/jobs?' in route:
+    result = [{'total_count':1,'jobs':[{'id':78,'run_id':77,'run_attempt':1,'head_sha':d['head'],
+        'name':'Verify current revision policy','status':'completed','steps':[
+          {'name':'Publish bound neutral result','status':'completed','conclusion':d.get('previous_publish','failure')}]}]}]
 elif '/actions/runs/' in route:
     result = {'event':'pull_request_target','name':'Current revision review gate',
         'path':'.github/workflows/copilot-review.yml','head_branch':'fix/test','head_sha':d['head'],
@@ -67,6 +78,8 @@ elif '/pulls/' in route:
     result = d['pr']
 elif '/commits/' in route:
     rows = [] if d['check'] is None else [d['check']]
+    if d.get('unknown_post') == 'ambiguous' and rows:
+        rows.append({**rows[0], 'id':80})
     result = [{'total_count':len(rows),'check_runs':rows}]
 elif '/check-runs/' in route:
     result = d['check']
@@ -107,7 +120,7 @@ class ProducerMetadataTests(unittest.TestCase):
                     'FIXTURE':str(self.fixture),'RUNNER_TEMP':str(self.tmp),'GITHUB_EVENT_PATH':str(event),
                     'GITHUB_OUTPUT':str(self.tmp/'output'),'PR_NUMBER':'23','REPOSITORY':self.repo,
                     'GITHUB_REPOSITORY':self.repo,'GITHUB_SERVER_URL':'https://github.com',
-                    'GITHUB_RUN_ID':'77','OWNER_RUN_ID':'77','EVENT_BASE':self.base,'EVENT_HEAD':self.head,
+                    'GITHUB_RUN_ID':'77','GITHUB_RUN_ATTEMPT':'1','OWNER_RUN_ID':'77','EVENT_BASE':self.base,'EVENT_HEAD':self.head,
                     'EVENT_HEAD_REF':'fix/test','EVENT_HEAD_REPOSITORY':self.repo,'DEFAULT_BRANCH':'develop',
                     'TRUSTED_WORKFLOW_SHA':self.base,
                     'TRUSTED_WORKFLOW_REF':self.repo+'/.github/workflows/copilot-review.yml@refs/heads/develop',
@@ -242,7 +255,7 @@ class ProducerMetadataTests(unittest.TestCase):
                 self.assertTrue(outcome['sealed'])
                 self.assertEqual(1, outcome['reruns'])
                 self.assertTrue(outcome['received'])
-                self.assertEqual(['POST','PATCH'], self.data['writes'])
+                self.assertEqual(['POST','PATCH','PATCH'], self.data['writes'])
 
     def test_capture_rejects_missing_revision_and_event_input_drift(self):
         for field, value in (('lastEditedAt','missing'),('lastEditedAt','2026-10-07T00:01:00Z'),
@@ -302,6 +315,68 @@ class ProducerMetadataTests(unittest.TestCase):
         self.save()
         self.publish(False)
         self.assertEqual(['POST'], self.data['writes'])
+        self.assertEqual('failure', self.data['check']['conclusion'])
+
+    def test_drift_during_success_promotion_revokes_the_exact_owned_result(self):
+        self.capture()
+        self.verify()
+        self.data['drift_after_promotion'] = True
+        self.save()
+        self.publish(False)
+        self.assertEqual('failure', self.data['check']['conclusion'])
+        self.assertEqual(['failure', None, 'success', 'failure'], self.data['write_conclusions'])
+
+    def test_unknown_create_is_resolved_only_by_exact_readback(self):
+        for outcome in ('materialized', 'absent', 'ambiguous'):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                self.capture()
+                self.verify()
+                self.data['unknown_post'] = outcome
+                self.save()
+                self.publish(outcome == 'materialized')
+                self.assertEqual(1, self.data['writes'].count('POST'))
+                if outcome == 'materialized':
+                    self.assertEqual('success', self.data['check']['conclusion'])
+                    self.assertEqual(['POST', 'PATCH', 'PATCH'], self.data['writes'])
+                else:
+                    self.assertEqual(['POST'], self.data['writes'])
+                # A later authorized verification attempt never retries the create.
+                self.env['GITHUB_RUN_ATTEMPT'] = '2'
+                self.publish(outcome == 'materialized')
+                self.assertEqual(1, self.data['writes'].count('POST'))
+
+    def test_pending_owned_result_can_resume_without_new_post(self):
+        self.capture()
+        self.verify()
+        self.data['drift_after_post'] = True
+        self.save()
+        self.publish(False)
+        self.data['drift_after_post'] = False
+        self.data['metadata']['lastEditedAt'] = None
+        self.save()
+        self.env['GITHUB_RUN_ATTEMPT'] = '2'
+        self.publish()
+        self.assertEqual(1, self.data['writes'].count('POST'))
+        self.assertEqual('success', self.data['check']['conclusion'])
+
+    def test_attempt_two_can_create_only_when_native_publisher_was_skipped(self):
+        self.capture()
+        self.verify()
+        self.env['GITHUB_RUN_ATTEMPT'] = '2'
+        self.data['previous_publish'] = 'skipped'
+        self.save()
+        self.publish()
+        self.assertEqual(1, self.data['writes'].count('POST'))
+
+    def test_unknown_success_patch_uses_readback_without_repeating_write(self):
+        self.capture()
+        self.verify()
+        self.data['unknown_promotion'] = True
+        self.save()
+        self.publish()
+        self.assertEqual(['POST', 'PATCH', 'PATCH'], self.data['writes'])
+        self.assertEqual('success', self.data['check']['conclusion'])
 
     def test_all_run_blocks_stay_below_actionlint_pipe_guard(self):
         for job in self.workflow['jobs'].values():

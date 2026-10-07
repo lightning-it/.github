@@ -2482,8 +2482,11 @@ jobs:
                 and .head_sha == $head
                 and .external_id == $external_id
                 and .status == "completed"
-                and ($details_url == "" or .details_url == $details_url)
-                and .conclusion == "success"
+                and ($details_url == "" or .details_url == $details_url
+                  or (.details_url == null and .conclusion == "failure"
+                    and .output.title == "Current revision publication pending"))
+                and (.conclusion == "success" or (.conclusion == "failure"
+                  and .output.title == "Current revision publication pending"))
                 and .output.summary == $evidence
               ' <<<"${snapshot}" >/dev/null; then
               return 0
@@ -2749,8 +2752,75 @@ jobs:
                 + (if $trusted_kind == "none" then
                     {pull_request_last_edited_at:$last_edited_at} else {} end)')"
           fi
+          authorize_publication_create() {
+            local previous
+            [ "${GITHUB_RUN_ATTEMPT}" = 1 ] && return 0
+            [ "${GITHUB_RUN_ATTEMPT}" = 2 ] || return 1
+            # A lost create response in attempt one must never authorize a
+            # second POST. Only a natively skipped publisher proves no effect.
+            previous="$(api_read --paginate --slurp \
+              "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/1/jobs?filter=all&per_page=100")" || return 1
+            jq -e --argjson run "${GITHUB_RUN_ID}" --arg head "${EVENT_HEAD}" '
+              select(type == "array" and length > 0) |
+              [.[].jobs[]] as $jobs |
+              select(all(.[]; .total_count == ($jobs | length))
+                and ($jobs | map(.id) | unique | length) == ($jobs | length)) |
+              [$jobs[] | select(.name == "Verify current revision policy")] |
+              select(length == 1) | .[0] |
+              select(.run_id == $run and .run_attempt == 1 and .head_sha == $head
+                and .status == "completed") |
+              [.steps[] | select(.name == "Publish bound neutral result")] |
+              length == 1 and .[0].status == "completed" and .[0].conclusion == "skipped"
+            ' <<<"${previous}" >/dev/null
+          }
+          publication_inputs() {
+            ro && assert_copilot_metadata_current
+          }
+          publication_read() {
+            local check_id="$1" external_id="$2" conclusion="$3" snapshot attempt
+            for attempt in $(seq 1 5); do
+              if snapshot="$(gh api "repos/${REPOSITORY}/check-runs/${check_id}")"; then
+                jq -e --argjson id "${check_id}" --arg head "${EVENT_HEAD}" \
+                  --arg external "${external_id}" --arg evidence "${evidence}" \
+                  --arg conclusion "${conclusion}" '
+                    .id == $id and .name == "Current revision review"
+                    and .app.id == 15368 and .app.slug == "github-actions"
+                    and .head_sha == $head and .external_id == $external
+                    and .status == "completed" and .conclusion == $conclusion
+                    and .output.summary == $evidence
+                    and ($conclusion != "failure"
+                      or .output.title == "Current revision publication pending")
+                  ' <<<"${snapshot}" >/dev/null || return 1
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          promote_publication() {
+            local check_id="$1" external_id="$2"
+            # A confirmed create or exact unknown-create readback grants only
+            # this existing check's promotion, never another create/AI request.
+            publication_read "${check_id}" "${external_id}" failure || return 1
+            (publication_inputs) || return 1
+            # An unknown PATCH outcome is resolved through GET, never a retry.
+            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
+              -f status=completed -f conclusion=success \
+              -f "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -f "output[title]=${result_title}" >/dev/null || true
+            publication_read "${check_id}" "${external_id}" success || return 1
+            if (publication_inputs); then return 0; fi
+            # Drift observed during promotion revokes only this exact owned
+            # result. Head drift must not prevent invalidating its old-head check.
+            publication_read "${check_id}" "${external_id}" success || return 1
+            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
+              -f status=completed -f conclusion=failure \
+              -f 'output[title]=Current revision publication pending' >/dev/null || true
+            publication_read "${check_id}" "${external_id}" failure || return 1
+            return 1
+          }
           publish_once() {
-            local check_name="$1" external_id="$2" title="$3"
+            local check_name="$1" external_id="$2"
             local checks named count check_id check_url completed_at created
             local owner_attempt owner_id owner_jobs owner_pr owner_run owner_snapshot
             local recovered recovery_attempt updated
@@ -2911,11 +2981,11 @@ jobs:
                 "${check_id}" "${external_id}" "${check_name}" "${check_url}" \
                 "repos/${REPOSITORY}/check-runs/${check_id}" \
                 -f status=completed \
-                -f conclusion=success \
+                -f conclusion=failure \
                 -f "completed_at=${completed_at}" \
                 -f "details_url=${check_url}" \
                 -f "external_id=${external_id}" \
-                -f "output[title]=${title}" \
+                -f 'output[title]=Current revision publication pending' \
                 -f "output[summary]=${evidence}")"
               jq -e \
                 --arg check_name "${check_name}" \
@@ -2934,7 +3004,7 @@ jobs:
                   and .external_id == $external_id
                   and .completed_at == $completed_at
                   and .status == "completed"
-                  and .conclusion == "success"
+                  and .conclusion == "failure"
                   and .output.summary == $evidence
                 ' <<<"${updated}" >/dev/null
               printf '%s' "${check_id}"
@@ -2967,13 +3037,14 @@ jobs:
               return 1
             fi
             assert_copilot_metadata_current || return 1
+            authorize_publication_create || return 1
             if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
                 -f name="${check_name}" \
                 -f head_sha="${EVENT_HEAD}" \
                 -f status=completed \
-                -f conclusion=success \
+                -f conclusion=failure \
                 -f external_id="${external_id}" \
-                -f "output[title]=${title}" \
+                -f 'output[title]=Current revision publication pending' \
                 -f "output[summary]=${evidence}")"; then
               # Never retry a create blindly: GitHub can materialize the check
               # even when the client receives a non-success response. Recover
@@ -3007,6 +3078,7 @@ jobs:
             fi
             check_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${created}")"
             check_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${check_id}"
+            publication_read "${check_id}" "${external_id}" failure || return 1
             vc \
               "${check_id}" "${external_id}" "${check_name}" ''
             created="$(api_patch_bound \
@@ -3026,7 +3098,7 @@ jobs:
                 and .details_url == $url
                 and .external_id == $external_id
                 and .status == "completed"
-                and .conclusion == "success"
+                and .conclusion == "failure"
                 and .output.summary == $evidence
                 ' <<<"${created}" >/dev/null
             named="$(read_named_checks)" || return $?
@@ -3054,6 +3126,8 @@ jobs:
             echo 'Exact review evidence already has a protected producer; ownership retained.'
             exit 0
           fi
+          promote_publication "${published_check_id}" \
+            "mlx90-current-revision:${external_kind}:v6:${PR_NUMBER}:${GITHUB_RUN_ID}:${EVENT_BASE}:${EVENT_HEAD}" || exit $?
 
   request-protected-verifier-reevaluation:
     name: Request protected verifier re-evaluation
