@@ -74,7 +74,7 @@ COPILOT_LOGINS = {
     "github-copilot[bot]",
 }
 REJECTED_REVIEW_MARKERS = {
-    "unabletoreviewthispullrequest",
+    "unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles",
     "notabletoreviewthispullrequest",
     "nofileswerereviewed",
     "nofilestoreview",
@@ -151,7 +151,7 @@ def parse_timestamp(value: Any, name: str) -> dt.datetime:
 
 
 def normalized_review_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower().replace("n't", " not").replace("n’t", " not"))
+    return re.sub(r"[^a-z0-9]+", "", value.lower().replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not"))
 
 
 @dataclass(frozen=True)

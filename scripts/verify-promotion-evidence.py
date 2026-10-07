@@ -60,7 +60,7 @@ GITHUB_ACTIONS_ID = 41898282
 COPILOT_REVIEWER_LOGIN = "copilot-pull-request-reviewer[bot]"
 COPILOT_REVIEWER_ID = 175728472
 COPILOT_REVIEW_FAILURE_MARKERS = (
-    "unabletoreviewthispullrequest",
+    "unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles",
     "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
     "nofilestoreview", "nofileswerereviewed",
     "wasnotabletoreviewanyfiles",
@@ -252,7 +252,7 @@ def normalized_review_text(value: str) -> str:
     return re.sub(
         r"\s+",
         "",
-        value.lower().replace("n't", " not").replace("n’t", " not"),
+        value.lower().replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not"),
     )
 
 

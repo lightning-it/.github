@@ -30,12 +30,12 @@ class ProtectedReviewBranchTests(unittest.TestCase):
         }
         for run in ("88", "89"):
             fixture.route("/actions/runs/" + run + "/attempts/1")["head_branch"] = branch
-        # Real pull_request_target execution is always protected default develop.
-        # A Main-target PR deliberately has a different original controller.
+        # The workflow controller is default develop; the PRT runner uses the PR base.
+        # A Main-target PR deliberately has different runner and controller sources.
         original_source = "c" * 40 if branch == "main" else continuation.BASE
         fixture.route("/branches/develop")["commit"]["sha"] = original_source
-        fixture.env.update(GITHUB_REF="refs/heads/develop", WORKFLOW_SHA=original_source,
-                           GITHUB_SHA=original_source)
+        fixture.env.update(GITHUB_REF="refs/heads/" + branch, WORKFLOW_SHA=original_source,
+                           GITHUB_SHA=continuation.BASE)
         consumer = fixture.consumer
         fixture.consumer = lambda **changes: consumer(**{
             "GITHUB_REF": "refs/heads/" + branch,
@@ -67,6 +67,22 @@ class ProtectedReviewBranchTests(unittest.TestCase):
                 self.assertNotEqual(0, f.consumer().returncode)
                 self.assertEqual(1, len(f.state["requests"]))
 
+    def test_main_defer_rejects_wrong_runner_base_or_default_controller(self):
+        for changes in (
+                {"GITHUB_REF": "refs/heads/develop"},
+                {"GITHUB_SHA": "c" * 40},
+                {"EXPECTED_BASE": "e" * 40},
+                {"WORKFLOW_SHA": continuation.BASE},
+                {"GITHUB_WORKFLOW_REF": continuation.REPO + "/.github/workflows/copilot-review.yml@refs/heads/main"}):
+            with self.subTest(changes=changes):
+                fixture = self.fixture("main")
+                fixture.env.update(changes)
+                before = copy.deepcopy(fixture.state["versions"])
+                result = fixture.defer()
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(before, fixture.state["versions"])
+                self.assertEqual([], fixture.state["requests"])
+
     def test_main_intent_rejects_develop_consumer_before_request_CAS(self):
         f = self.fixture("main")
         self.assertEqual(0, f.defer().returncode)
@@ -85,6 +101,17 @@ class ProtectedReviewBranchTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(["main"], [v["ref"] for v in f.state["dispatches"]])
+
+    def test_review_event_direct_forward_is_same_repository_only(self):
+        fork = "contributor/dot-github-fork"
+        for branch in ("develop", "main"):
+            with self.subTest(branch=branch):
+                result, calls = self.refresh(branch, head_repository=fork)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual([], calls)
+                result, calls = self.refresh(branch)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(1, len(calls))
 
     def refresh(self, branch, consumer=False, execution_branch=None, controller=None, fence_only=False, protected_source=None, head_repository=continuation.REPO, expected_repository=None):
         workflow = yaml.safe_load((ROOT / ".github/workflows/copilot-review-refresh.yml").read_text())
@@ -169,14 +196,17 @@ else:raise SystemExit('unexpected fixture route '+repr(args))
             for consumer, fence in ((False, False), (True, False), (False, True)):
                 with self.subTest(branch=branch, consumer=consumer, fence=fence):
                     result, calls = self.refresh(branch, consumer=consumer, fence_only=fence, head_repository="contributor/core")
-                    self.assertEqual(0, result.returncode, result.stderr)
-                    self.assertEqual(0 if consumer or fence else 1, len(calls))
+                    if consumer or fence:
+                        self.assertEqual(0, result.returncode, result.stderr)
+                    else:
+                        self.assertNotEqual(0, result.returncode)
+                    self.assertEqual([], calls)
                     self.assertFalse(any("requested_reviewers" in arg for call in calls for arg in call))
         for fence in (False, True):
             result, calls = self.refresh("main", fence_only=fence, head_repository="other/core", expected_repository="contributor/core")
             self.assertNotEqual(0, result.returncode)
             self.assertEqual([], calls)
-        for repository in ("", "owner/repo/extra"):
+        for repository in ("", "owner/repo/extra", "../repo", "owner/.."):
             result, calls = self.refresh("main", consumer=True, head_repository=repository)
             self.assertNotEqual(0, result.returncode)
             self.assertEqual([], calls)

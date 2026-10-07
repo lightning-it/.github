@@ -53,9 +53,9 @@ print(json.dumps(value))
                 **os.environ, 'PATH': str(path) + os.pathsep + os.environ['PATH'],
                 'STATE': str(state), 'RUNNER_TEMP': str(path),
                 'BASE_REF': branch, 'DEFAULT_BRANCH': 'develop',
-                'WORKFLOW_SHA': 'd' * 40, 'GITHUB_SHA': 'd' * 40,
+                'WORKFLOW_SHA': 'd' * 40, 'GITHUB_SHA': ('d' if branch == 'develop' else 'a') * 40,
                 'TRUSTED_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review.yml@refs/heads/develop',
-                'GITHUB_REF': 'refs/heads/develop', 'GITHUB_REF_PROTECTED': 'true',
+                'GITHUB_REF': 'refs/heads/' + branch, 'GITHUB_REF_PROTECTED': 'true',
                 'REPOSITORY': 'lightning-it/.github',
                 'EXPECTED_BASE': ('d' if branch == 'develop' else 'a') * 40,
                 'EXPECTED_HEAD': 'b' * 40, 'EXPECTED_HEAD_REF': 'feature',
@@ -80,8 +80,8 @@ print(json.dumps(value))
 
     def test_wrong_or_drifting_execution_controller_never_dispatches(self):
         cases = (
-            {'DEFAULT_BRANCH': 'main'}, {'GITHUB_REF': 'refs/heads/main'},
-            {'WORKFLOW_SHA': 'a' * 40}, {'GITHUB_SHA': 'a' * 40},
+            {'DEFAULT_BRANCH': 'main'}, {'GITHUB_REF': 'refs/heads/develop'},
+            {'WORKFLOW_SHA': 'a' * 40}, {'GITHUB_SHA': 'd' * 40},
             {'EXPECTED_BASE': 'e' * 40},
             {'TRUSTED_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review.yml@refs/heads/main'},
             {'GITHUB_REF_PROTECTED': 'false'},

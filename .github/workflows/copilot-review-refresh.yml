@@ -40,7 +40,7 @@ concurrency:
     ${{
       github.event_name == 'workflow_dispatch' && github.ref_protected && github.actor == 'github-actions[bot]' &&
       format('current-revision-{0}-head-{1}-check-current-revision-review', github.repository_id, inputs.expected_head) ||
-      github.event.pull_request.draft == false && (github.event.pull_request.head.repo.full_name == github.repository || github.event.pull_request.user.type == 'User') &&
+      github.event.pull_request.draft == false && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository &&
       (
         ('pull_request_review' == github.event_name && (
           (contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) && 'copilot-pull-request-reviewer[bot]' == github.event.review.user.login) ||
@@ -67,7 +67,7 @@ jobs:
     if: >-
       (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
       github.event.pull_request.draft == false &&
-      (github.event.pull_request.head.repo.full_name == github.repository || github.event.pull_request.user.type == 'User') &&
+      github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository &&
       (
         (
           github.event_name == 'pull_request_review' &&
@@ -124,6 +124,7 @@ jobs:
           [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
           pr="$(api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           [[ "${EXPECTED_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          test "${EXPECTED_HEAD_REPOSITORY}" = "${REPOSITORY}"
           jq -e --arg repo "${REPOSITORY}" --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" \
             --arg head_repo "${EXPECTED_HEAD_REPOSITORY}" --arg head_ref "${EXPECTED_HEAD_REF}" \
             --arg base_ref "${EXPECTED_BASE_REF}" --arg author "${EXPECTED_AUTHOR}" --argjson number "${PR_NUMBER}" '
@@ -131,7 +132,7 @@ jobs:
             and .head.repo.full_name == $head_repo and .base.repo.full_name == $repo
             and .number == $number and .user.login == $author
             and .head.ref == $head_ref and .base.ref == $base_ref
-            and ($head_repo == $repo or .user.type == "User")
+            and $head_repo == $repo
             ' <<<"${pr}" >/dev/null
           branch="$(jq -er .base.ref <<<"${pr}")"
           [[ "${branch}" =~ ^(develop|main)$ ]]
@@ -348,7 +349,8 @@ jobs:
               --arg repo "${REPOSITORY}" --argjson number "${LOCATOR_PR}" '
                 .number == $number and .state == "open" and .draft == false
                 and .head.sha == $head and .base.sha == $base
-                and (.head.repo.full_name | strings | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+                and (.head.repo.full_name | strings | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+                  and (split("/") | all(. != "." and . != "..")))
                 and .base.repo.full_name == $repo
                 and (.head.repo.full_name == $repo or .user.type == "User")
               ' <<<"${pr}" >/dev/null
@@ -473,6 +475,7 @@ jobs:
             test "${HEAD_REPOSITORY}" = "${REPOSITORY}"
           fi
           export PRODUCER_OWNER_MODE
+          export EVENT_BASE_REF="${BASE_REF}"
           export EVENT_BASE="${BASE_SHA}"
           export LIVE_BASE="${BASE_SHA}"
           export EVENT_HEAD="${HEAD_SHA}"
@@ -504,13 +507,14 @@ jobs:
             local cassoc pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
             [[ "${EVENT_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+            case "${EVENT_HEAD_REPOSITORY}" in ./*|../*|*/.|*/..) return 1 ;; esac
             live_pr="$(oa "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
             jq -e --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" \
-              --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
+              --arg base_ref "${EVENT_BASE_REF}" --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
               --argjson number "${PR_NUMBER}" '
               .number == $number and .state == "open" and .draft == false
               and .base.repo.full_name == $repo and .base.sha == $b
-              and (.base.ref | IN("develop", "main"))
+              and .base.ref == $base_ref and ($base_ref | IN("develop", "main"))
               and .head.repo.full_name == $head_repo and .head.sha == $h and .head.ref == $ref
               and ($head_repo == $repo or .user.type == "User")
               ' <<<"${live_pr}" >/dev/null || return 1
@@ -617,7 +621,7 @@ jobs:
               pp="$(oa --method GET --paginate --slurp \
                 -f state=open -f "head=${EVENT_HEAD_REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
-              jq -e --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
+              jq -e --arg base_ref "${EVENT_BASE_REF}" --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
                 --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" \
                 --argjson n "${PR_NUMBER}" '
                   type == "array" and length > 0 and length <= 10
@@ -626,13 +630,14 @@ jobs:
                   and .[0][0].number == $n
                   and .[0][0].state == "open"
                   and .[0][0].base.sha == $b
+                  and .[0][0].base.ref == $base_ref
                   and .[0][0].base.repo.full_name == $repo
                   and .[0][0].head.ref == $ref
                   and .[0][0].head.sha == $h
                   and .[0][0].head.repo.full_name == $head_repo
                 ' <<<"${pp}" >/dev/null || return 1
             fi
-            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            cands="$(jq -ce --arg base_ref "${EVENT_BASE_REF}" --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
@@ -643,6 +648,7 @@ jobs:
                   select(any(.pull_requests[]?;
                     .number == $n
                     and .base.sha == $b
+                    and .base.ref == $base_ref
                     and .head.sha == $h
                     and .base.repo.url == ("https://api.github.com/repos/" + $repo)
                     and .head.repo.url == ("https://api.github.com/repos/" + $head_repo))
@@ -1528,11 +1534,11 @@ jobs:
                 | select(all(.[]; type == "array"))
                 | [$review.body, .[][].body]
                 | select(all(.[]; type == "string" or . == null))
-                | map((. // "") | ascii_downcase | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; ""))
+                | map((. // "") | ascii_downcase | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; ""))
                 ' <<<"${comments}")" || return 1
               if jq -e '
                 any(.[]; length > 0) and all(.[];
-                  (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
+                  (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest") or contains("cannotreviewthispullrequest") or contains("cannotreviewanyfiles")
                    or contains("notabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
                    or contains("suppressedcomments") or contains("nofilestoreview") or contains("nofileswerereviewed")

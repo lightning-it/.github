@@ -31,7 +31,7 @@ class ReviewEventTests(unittest.TestCase):
         self.assertEqual(['completed'], events['workflow_run']['types'])
         self.assertEqual({'Copilot', 'Running Copilot Code Review', 'Current revision review gate',
                           'Protected current-revision evidence verifier',
-                          'Protected dot-github current-revision verifier'}, set(events['workflow_run']['workflows']))
+                          'Protected dot-github current-revision verifier', 'Refresh Copilot review gate'}, set(events['workflow_run']['workflows']))
         self.assertEqual([{'cron': '*/10 * * * *'}], events['schedule'])
         job = workflow['jobs']['reconcile']
         self.assertIn("vars.LI219_EVENT_MODE == 'enabled'", job['if'])
@@ -44,6 +44,67 @@ class ReviewEventTests(unittest.TestCase):
         self.assertNotIn('GITHUB_EVENT_PATH', (ROOT / 'scripts/review-event-reconcile.py').read_text())
         mirror = ROOT / 'default/.github/workflows/review-event-reconcile.yml'
         if mirror.exists(): self.assertEqual(path.read_bytes(), mirror.read_bytes())
+
+    def test_review_completion_wakeup_is_event_scoped_and_loop_free(self):
+        import json
+        from types import SimpleNamespace as NS
+
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/review-event-reconcile.yml').read_text())
+        events = workflow.get('on', workflow.get(True))
+        expression = ' '.join(workflow['jobs']['reconcile']['if'].replace('&&', ' and ').replace('||', ' or ').split())
+        def enabled(name='Refresh Copilot review gate', upstream='pull_request_review',
+                    conclusion='success', event='workflow_run', mode='enabled', **changes):
+            run = dict(name=name, event=upstream, conclusion=conclusion, status='completed',
+                       run_attempt=1, path='.github/workflows/copilot-review-refresh.yml',
+                       repository=NS(full_name='lightning-it/shared-assets-lit'),
+                       head_repository=NS(full_name='lightning-it/shared-assets-lit'),
+                       actor=NS(login='Copilot', type='Bot'),
+                       triggering_actor=NS(login='Copilot', type='Bot'))
+            run.update(changes)
+            github = NS(repository='lightning-it/shared-assets-lit', event_name=event,
+                        event=NS(workflow_run=NS(**run)))
+            triggered = event == 'schedule' or name in events['workflow_run']['workflows']
+            return triggered and eval(expression, {'__builtins__': {}}, {
+                'github': github, 'vars': NS(LI219_EVENT_MODE=mode),
+                'contains': lambda values, item: item in values, 'fromJSON': json.loads})
+        for upstream in ('pull_request_review', 'pull_request_review_comment'):
+            for actor in ('Copilot', 'copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'):
+                with self.subTest(upstream=upstream, actor=actor):
+                    self.assertTrue(enabled(upstream=upstream, actor=NS(login=actor, type='Bot'),
+                                            triggering_actor=NS(login=actor, type='Bot')))
+            for conclusion in ('skipped', 'failure', 'cancelled', 'timed_out', 'action_required', None):
+                with self.subTest(upstream=upstream, conclusion=conclusion):
+                    self.assertFalse(enabled(upstream=upstream, conclusion=conclusion))
+        for upstream in ('workflow_dispatch', 'pull_request_target', 'push', 'schedule', 'workflow_run', None):
+            self.assertFalse(enabled(upstream=upstream))
+        for changes in (
+            {'status': 'in_progress'}, {'status': None}, {'run_attempt': 2}, {'run_attempt': None},
+            {'path': '.github/workflows/untrusted.yml'}, {'path': None},
+            {'repository': NS(full_name='attacker/fork')}, {'repository': NS(full_name=None)},
+            {'head_repository': NS(full_name='attacker/fork')}, {'head_repository': NS(full_name=None)},
+            {'actor': NS(login='attacker', type='User')}, {'actor': NS(login='attacker[bot]', type='Bot')},
+            {'actor': NS(login='litroc', type='User')}, {'actor': NS(login=None, type='Bot')},
+            {'actor': NS(login='Copilot', type='User')},
+            {'triggering_actor': NS(login='attacker', type='User')},
+            {'triggering_actor': NS(login='Copilot', type='User')},
+            {'triggering_actor': NS(login=None, type='Bot')},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(enabled(**changes))
+        # Repeated untrusted completions cannot start the inventory job.
+        self.assertFalse(any(enabled(actor=NS(login='attacker', type='User')) for _ in range(256)))
+        self.assertFalse(enabled(mode='disabled'))
+        self.assertFalse(enabled(name='Reconcile delayed review events'))
+        self.assertTrue(enabled(event='schedule', upstream='workflow_dispatch', conclusion='skipped'))
+        for name in ('Copilot', 'Running Copilot Code Review'):
+            self.assertTrue(enabled(name=name, upstream='dynamic', path='dynamic/copilot'))
+            self.assertFalse(enabled(name=name, actor=NS(login='attacker', type='User')))
+            self.assertFalse(enabled(name=name, conclusion='skipped'))
+        for name in ('Current revision review gate', 'Protected current-revision evidence verifier',
+                     'Protected dot-github current-revision verifier'):
+            self.assertFalse(enabled(name=name, upstream='pull_request_target'))
+        self.assertNotIn('Refresh Copilot review gate', workflow['jobs']['reconcile']['steps'][1]['run'])
 
     def review(self, **changes):
         return {"id": 17, "commit_id": self.head, "body": "Review complete.",
@@ -176,7 +237,7 @@ class ReviewEventTests(unittest.TestCase):
                 self.assertEqual([], self.reconcile(head_repository="contributor/core", producer_repository="other/core", neutral=neutral))
                 self.assertEqual([], self.reconcile(head_repository="contributor/core", live_repository="other/core", neutral=neutral))
         self.assertEqual([], self.reconcile(head_repository="contributor/core", missing=True))
-        for malformed in ("", "../other/core", "owner/repo/extra"):
+        for malformed in ("", "../other/core", "owner/repo/extra", "../repo", "owner/.."):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 self.reconcile(head_repository=malformed)
 

@@ -251,6 +251,38 @@ class ContinuationTests(unittest.TestCase):
         self.assertNotEqual(0, self.consumer().returncode)
         self.assertEqual(1, len(self.state['requests']))
 
+    def test_authentic_unconsumed_legacy_main_intent_resumes_from_exact_base(self):
+        main = 'f' * 40
+        live = self.route('/pulls/23')
+        live['base'].update(sha=main, ref='main')
+        recorded = self.route('/actions/runs/77/attempts/1')['pull_requests'][0]
+        recorded['base'].update(sha=main, ref='main')
+        self.state['routes'][f'repos/{REPO}/branches/main'] = {
+            'name': 'main', 'protected': True, 'commit': {'sha': main}}
+        self.env['EXPECTED_BASE'] = main
+        self.env.update(GITHUB_REF='refs/heads/main', GITHUB_SHA=main)
+        result = self.defer()
+        self.assertEqual(0, result.returncode, result.stderr)
+        intent = self.state['versions'][self.state['oid']][INTENT]
+        intent['schema'] = 1
+        del intent['source_ref']
+        self.assertEqual(('main', main, SOURCE),
+                         (intent['base_ref'], intent['base'], intent['source_sha']))
+        result = self.execute('python3 ' + str(ROOT / 'scripts/review-event-reconcile.py'), {},
+                              {'GITHUB_REF': 'refs/heads/develop', 'GITHUB_SHA': SOURCE})
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('main', self.state['dispatches'][0]['ref'])
+        self.assertNotEqual(0, self.consumer().returncode)
+        self.assertEqual([], self.state['requests'])
+        self.route('/actions/runs/88/attempts/1').update(head_sha=main, head_branch='main')
+        result = self.consumer(GITHUB_REF='refs/heads/main', GITHUB_SHA=main, WORKFLOW_SHA=main)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.state['requests']))
+        receipt = self.state['versions'][self.state['oid']][REQUEST]
+        self.assertEqual((1, 'main', main, main),
+                         (receipt['intent']['schema'], receipt['intent']['base_ref'],
+                          receipt['intent']['base'], receipt['source_sha']))
+
     def test_old_completion_before_intent_is_recovered_by_owner_completion(self):
         self.assertEqual(0, self.locator().returncode)
         self.assertEqual([], self.state['dispatches'])
@@ -328,7 +360,9 @@ class ContinuationTests(unittest.TestCase):
     def test_real_consumer_preserves_contractions_singular_marker_and_content_shapes(self):
         self.assertEqual(0, self.defer().returncode)
         baseline = copy.deepcopy(self.state)
-        markers = ('No files were reviewed', 'NO FILES\u00a0WERE\nREVIEWED',
+        markers = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     'No files were reviewed', 'NO FILES\u00a0WERE\nREVIEWED',
                    'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
                      "Copilot isn't able to review this pull request.",

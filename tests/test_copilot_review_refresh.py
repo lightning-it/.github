@@ -97,7 +97,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
         event_ref="feature/li179", fpulls=None, branch_pulls=None,
         runs2=None, cond=False, mode="copilot",
-        event_base=None, live_base=None, head_repository="lightning-it/shared-assets-lit",
+        event_base=None, live_base=None, event_base_ref="develop", head_repository="lightning-it/shared-assets-lit",
         add_req=True):
         njobs, ojobs = {}, {}
         for run_id, records in jobs.items():
@@ -149,7 +149,7 @@ gh() {
         with tempfile.TemporaryDirectory() as tmp:
             current_pull = {
                 "number": 2334, "state": "open", "draft": False, "user": {"type": "User"},
-                "base": {"sha": "b" * 40, "ref": "develop",
+                "base": {"sha": "b" * 40, "ref": event_base_ref,
                          "repo": {"full_name": "lightning-it/shared-assets-lit"}},
                 "head": {"ref": event_ref, "sha": "c" * 40,
                          "repo": {"full_name": head_repository}},
@@ -158,6 +158,7 @@ gh() {
                 "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
                 "REPOSITORY": "lightning-it/shared-assets-lit", "head_repository": "lightning-it/shared-assets-lit", "HEAD_REPOSITORY": "lightning-it/shared-assets-lit", "EVENT_HEAD_REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
                 "EVENT_BASE": event_base or "b" * 40,
+                "EVENT_BASE_REF": event_base_ref,
                 "LIVE_BASE": live_base or "b" * 40,
                 "EVENT_HEAD": "c" * 40,
                 "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
@@ -194,7 +195,7 @@ gh() {
             "status": "in_progress", "conclusion": None,
             "head_branch": "feature/li179", "head_sha": "c" * 40,
             "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
-            "pull_requests": [{"number": 2334, "base": {"sha": "b" * 40, "repo": {"url": "https://api.github.com/repos/" + repo}},
+            "pull_requests": [{"number": 2334, "base": {"ref": "develop", "sha": "b" * 40, "repo": {"url": "https://api.github.com/repos/" + repo}},
                 "head": {"sha": "c" * 40, "ref": "feature/li179", "repo": {"url": "https://api.github.com/repos/" + repo}}}]}
     @staticmethod
     def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
@@ -229,6 +230,45 @@ gh() {
                 result = self._run_guard(runs=[changed], jobs={101: [self._job(101)]},
                                          head_repository=fork, mode="verification", add_req=False, guard=guard)
                 self.assertNotEqual(0, result.returncode)
+
+    def test_owner_election_rejects_same_sha_cross_base_ref(self):
+        for branch in ("develop", "main"):
+            for repository in ("lightning-it/shared-assets-lit", "contributor/core"):
+                native = self._run(101)
+                native["head_repository"]["full_name"] = repository
+                native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + repository
+                native["pull_requests"][0]["base"]["ref"] = branch
+                for guard in self._guards():
+                    args = dict(runs=[native], jobs={101: [self._job(101)]},
+                                event_base_ref=branch, head_repository=repository,
+                                mode="verification", add_req=False, guard=guard)
+                    result = self._run_guard(**args)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    wrong = json.loads(json.dumps(native))
+                    wrong["pull_requests"][0]["base"]["ref"] = "main" if branch == "develop" else "develop"
+                    result = self._run_guard(**{**args, "runs": [wrong]})
+                    self.assertNotEqual(0, result.returncode)
+
+    def test_repository_components_reject_dot_traversal_in_owner_and_rerun_guards(self):
+        for malformed in ("../repo", "owner/.."):
+            native = self._run(101)
+            native["head_repository"]["full_name"] = malformed
+            native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + malformed
+            for guard in self._guards():
+                result = self._run_guard(runs=[native], jobs={101: [self._job(101)]},
+                                         head_repository=malformed, mode="verification", add_req=False, guard=guard)
+                self.assertNotEqual(0, result.returncode)
+        workflow = RERUN_WORKFLOW.read_text()
+        marker = "          authenticated_head_repository() {\n"
+        start = workflow.index(marker)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        function = textwrap.dedent(workflow[start:end])
+        for repository in ("lightning-it/.github", "contributor/core", "../repo", "owner/.."):
+            with self.subTest(repository=repository):
+                result = self._run_bash(function + '\nauthenticated_head_repository "${PR}"',
+                                        {"REPOSITORY": "lightning-it/.github",
+                                         "PR": json.dumps({"user": {"type": "User"}, "head": {"repo": {"full_name": repository}}})})
+                self.assertEqual(repository not in ("../repo", "owner/.."), result.returncode == 0, result.stderr)
 
     def test_owner_first(self):
         self._owner("101", runs=[self._run(101), self._run(102)],
@@ -320,7 +360,7 @@ gh() {
             "conclusion": "success",
             "pull_requests": [{
                 "number": 779,
-                "base": {"sha": base, "repo": {
+                "base": {"ref": "develop", "sha": base, "repo": {
                     "url": f"https://api.github.com/repos/{repository}"}},
                 "head": {"sha": head, "ref": "fix/permanent-owner", "repo": {
                     "url": f"https://api.github.com/repos/{repository}"}},
@@ -394,6 +434,7 @@ printf %s "${result}"
                     "CHECKS_FIRST": json.dumps(first, separators=(",", ":")),
                     "CHECKS_SECOND": json.dumps(second, separators=(",", ":")),
                     "EVENT_BASE": base,
+                    "EVENT_BASE_REF": "develop",
                     "EVENT_HEAD": head,
                     "EVENT_HEAD_REF": "fix/permanent-owner",
                     "GITHUB_API_URL": "https://api.github.com",
@@ -472,6 +513,12 @@ printf %s "${result}"
                 self.assertNotEqual(0, rejected.returncode)
                 self.assertEqual("", ownership)
                 self.assertFalse(mutated)
+
+        wrong_base_ref = json.loads(json.dumps(owner_run))
+        wrong_base_ref["pull_requests"][0]["base"]["ref"] = "main"
+        result, output, mutated = execute(run=wrong_base_ref)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(mutated)
 
     def test_publisher_rechecks_complete_zero_inventory_before_create(self):
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -681,7 +728,7 @@ printf %s "${result}"
         repo = "lightning-it/shared-assets-lit"
         current_pull = {
             "number": 2334, "state": "open",
-            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
+            "base": {"ref": "develop", "sha": "b" * 40, "repo": {"full_name": repo}},
             "head": {"ref": "feature/li179", "sha": "c" * 40,
                      "repo": {"full_name": repo}},
         }
@@ -712,6 +759,8 @@ printf %s "${result}"
                         jobs={101: [self._job(101)]},
                         branch_pulls=[closed_pull, current_pull], cond=True)
             for branch_pulls in ([], [current_pull, current_pull],
+                                 [{**current_pull, "base": {**current_pull["base"], "ref": "main"}}],
+                                 [{**current_pull, "base": {key: value for key, value in current_pull["base"].items() if key != "ref"}}],
                                  [{**current_pull, "number": 999}],
                                  [{**current_pull, "head": {
                                      **current_pull["head"], "sha": "d" * 40}}]):
@@ -983,7 +1032,9 @@ va() {
                      'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
                      'The bot was able to review any files.', 'able to review any files',
                      'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
-        negatives = ("Copilot wasn't able to review this pull request.",
+        negatives = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     "Copilot wasn't able to review this pull request.",
                      'Copilot wasn’t able to review this pull request.',
                      'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
@@ -1530,10 +1581,11 @@ ro() { :; }
         self.assertIn("PRODUCER_RUN_ATTEMPT: ${{ github.run_attempt }}", dispatch)
         self.assertNotIn("EXECUTED_WORKFLOW_SHA", dispatch)
         self.assertIn(
-            'test "${GITHUB_REF}" = "refs/heads/${DEFAULT_BRANCH}"',
+            'test "${GITHUB_REF}" = "refs/heads/${BASE_REF}"',
             dispatch,
         )
         self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', dispatch)
+        self.assertIn('test "${GITHUB_SHA}" = "${EXPECTED_BASE}"', dispatch)
         self.assertIn('-f "ref=${BASE_REF}"', dispatch)
         self.assertIn('-f "inputs[base_ref]=${BASE_REF}"', dispatch)
         self.assertIn(
@@ -1665,7 +1717,7 @@ ro() { :; }
         start = workflow.index(
             '            jq -e \\\n'
             '              --arg actor "${author}" --arg repository "${REPOSITORY}" \\\n'
-            '              --arg hr "${hr}" --arg base_sha "${EXPECTED_BASE}" \\\n'
+            '              --arg hr "${hr}" --arg base_sha "${EXPECTED_BASE}" --arg base_ref "${base_ref}" \\\n'
             '              --arg head_sha "${EXPECTED_HEAD}" \\\n'
             '              --argjson attempt "${producer_attempt}" \\\n'
         )
@@ -3506,7 +3558,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             "triggering_actor": {"login": "github-actions[bot]"},
             "pull_requests": [
                 {"number": 123, "head": {"ref": "fix/final", "repo": {"url": "https://api.github.com/repos/lightning-it/.github"}},
-                 "base": {"sha": "a" * 40, "repo": {"url": "https://api.github.com/repos/lightning-it/.github"}}}
+                 "base": {"ref": "develop", "sha": "a" * 40, "repo": {"url": "https://api.github.com/repos/lightning-it/.github"}}}
             ],
         }
 
@@ -3537,7 +3589,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     "https://github.example/actions/runs/77",
                     "--arg", "repository", "lightning-it/.github",
                     "--arg", "hr", "lightning-it/.github",
-                    "--arg", "base_sha", "a" * 40, identity_filter,
+                    "--arg", "base_sha", "a" * 40, "--arg", "base_ref", "develop", identity_filter,
                 ],
                 input=json.dumps(payload),
                 text=True,
@@ -3548,6 +3600,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         accepted = evaluate_identity(producer, 2)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
+        wrong_base_ref = json.loads(json.dumps(producer))
+        wrong_base_ref["pull_requests"][0]["base"]["ref"] = "main"
+        self.assertNotEqual(0, evaluate_identity(wrong_base_ref, 2).returncode)
         for field, value in (
             ("triggering_actor", {"login": "litroc"}),
             ("triggering_actor", {"login": "mallory"}),

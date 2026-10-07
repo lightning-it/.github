@@ -25,7 +25,7 @@ TTL = dt.timedelta(days=7)
 DISPATCH_INVENTORY_REQUESTS = 256
 REVIEWERS = {"copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"}
 MARKERS = (
-    "unable to review this pull request", "not able to review this pull request", "was not able to review this pull request", "no files to review", "no files were reviewed",
+    "unable to review this pull request", "cannot review this pull request", "cannot review any files", "not able to review this pull request", "was not able to review this pull request", "no files to review", "no files were reviewed",
     "was not able to review any files", "not able to review any files", "unable to review any files",
     "premium request quota", "premium requests quota",
     "quota exhausted", "quota exceeded", "suppressed comments",
@@ -155,7 +155,7 @@ def clean_review(review, comments, head):
     if any(text is not None and not isinstance(text, str) for text in texts):
         raise ValueError("malformed review body")
     normalized = [re.sub(r"\s", "", (text or "").lower()
-                         .replace("n't", " not").replace("n’t", " not"))
+                         .replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not"))
                   for text in texts]
     return any(normalized) and not any(
         re.sub(r"\s", "", marker) in text for marker in MARKERS for text in normalized)
@@ -266,6 +266,7 @@ def reconcile(repository, now):
         head_repository = pr["head"]["repo"]["full_name"]
         if (not isinstance(head_repository, str)
                 or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", head_repository)
+                or any(component in {".", ".."} for component in head_repository.split("/"))
                 or pr["base"]["repo"]["full_name"] != repository):
             raise ValueError("malformed PR repository binding")
         if (pr["draft"]
@@ -371,7 +372,7 @@ def reconcile(repository, now):
                     continue
                 if inputs is None:
                     continue
-                path, ref = CONTINUATION, pr["base"]["ref"]
+                path, ref = CONTINUATION, inputs.pop("resume_ref")
                 title = f"First review PR #{number} head {head} owner {inputs['owner_run']} old review {inputs['old_review']}"
             else:
                 review = max(usable, key=lambda item: item["id"])

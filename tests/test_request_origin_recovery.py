@@ -76,7 +76,7 @@ elif '/git/ref/' in route:
 elif '/compare/' in route:
     if 'ALLOWED_COMPARISONS' in state:
         assert route in state['ALLOWED_COMPARISONS'], route
-    result = state['ANCESTRY']
+    result = state.get('ANCESTRY_BY_ROUTE', {}).get(route, state['ANCESTRY'])
 elif route.endswith('/branches/develop'):
     result = state['BRANCH']
 elif route == 'repos/' + state['REPO']:
@@ -450,6 +450,41 @@ os.execvp(command[0], command)
                 self.assertNotEqual(0, self.run_caller(drifted, base_ref='main').returncode)
                 self.assertTrue(any('/branches/main' in ' '.join(call) for call in self.calls))
 
+    def test_actual_required_accepts_historical_schema1_main_resume_on_develop(self):
+        data = self.main_typed_resume_fixture()
+        later, current = 'd' * 40, 'e' * 40
+        record = json.loads(data['REQUEST_JOURNAL']['data']['repository']['record']['text'])
+        record['intent']['schema'] = 1
+        del record['intent']['source_ref']
+        record['source_sha'] = later
+        data['REQUEST_JOURNAL'] = snapshot(record)
+        key = record['intent_commit'] + ':' + REQUEST_PATH.replace('operations/', 'deferred/')
+        historical = data['EXTRA_JOURNALS'][key]['data']['repository']['record']
+        text = json.dumps(record['intent'])
+        historical.update(text=text, byteSize=len(text.encode()))
+        resume = data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1']
+        resume.update(head_sha=later, head_branch='develop')
+        jobs = data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1/jobs']['jobs']
+        for job in jobs:
+            job['head_sha'] = later
+        data['BRANCH']['commit']['sha'] = current
+        data['ALLOWED_COMPARISONS'] = [
+            f'repos/{REPO}/compare/{SOURCE}...{current}',
+            f'repos/{REPO}/compare/{later}...{current}',
+            f'repos/{REPO}/compare/{BASE}...{BASE}',
+            f'repos/{REPO}/compare/{JOURNAL}...{JOURNAL}',
+        ]
+        data['ANCESTRY_BY_ROUTE'] = {
+            f'repos/{REPO}/compare/{SOURCE}...{current}': {
+                'status': 'ahead', 'behind_by': 0, 'merge_base_commit': {'sha': SOURCE}},
+            f'repos/{REPO}/compare/{later}...{current}': {
+                'status': 'ahead', 'behind_by': 0, 'merge_base_commit': {'sha': later}},
+        }
+        result = self.run_caller(data, base_ref='main', controller_head=current)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/branches/develop' in ' '.join(call) for call in self.calls))
+        self.assertFalse(any('--method' in call for call in self.calls))
+
     def test_actual_required_allows_old_completion_before_owner_but_keeps_effect_age_limit(self):
         data = self.resume_fixture()
         old = data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']
@@ -567,7 +602,9 @@ os.execvp(command[0], command)
         self.assertEqual(3, len(classifiers))
         positives = ('Copilot was able to review this pull request.',
                      'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST')
-        negatives = ("Copilot wasn't able to review this pull request.",
+        negatives = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     "Copilot wasn't able to review this pull request.",
                      'Copilot wasn’t able to review this pull request.',
                      'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
@@ -577,8 +614,9 @@ os.execvp(command[0], command)
                      'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
         for classifier in classifiers:
             before = workflow[classifier.start() - 220:classifier.start()]
-            normalizers = re.findall(r'ascii_downcase\s*\|\s*gsub\([^)]*\)\s*\|\s*gsub\([^)]*\)', before)
+            normalizers = re.findall(r'ascii_downcase(?:\s*\|\s*gsub\([^)]*\))+', before)
             self.assertEqual(1, len(normalizers))
+            self.assertEqual(3, normalizers[0].count("gsub("))
             variable = re.search(r'as (\$[a-z]+)\s*\|\s*$', before)[1]
             program = '(' + normalizers[0] + ') as ' + variable + ' | ' + classifier[0]
             for texts, usable in ((positives, True), (negatives, False)):
