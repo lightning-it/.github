@@ -130,7 +130,7 @@ class ProducerMetadataTests(unittest.TestCase):
         self.data = json.loads(self.fixture.read_text())
         if succeeds:
             self.assertEqual(0, result.returncode, result.stderr + result.stdout)
-        else:
+        elif succeeds is False:
             self.assertNotEqual(0, result.returncode, result.stderr + result.stdout)
         return result
 
@@ -143,28 +143,52 @@ class ProducerMetadataTests(unittest.TestCase):
     def publish(self, succeeds=True):
         return self.execute('Publish bound neutral result', succeeds)
 
+    def producer_to_receiver(self):
+        outcome = {'summary': None, 'sealed': False, 'reruns': 0, 'received': False}
+        self.capture()
+        # Match Actions step ordering: a failed verifier cannot publish.
+        verified = self.execute('Verify current Copilot review and resolved findings', succeeds=None)
+        if verified.returncode != 0:
+            return outcome
+        self.publish()
+        summary = self.data['check']['output']['summary']
+        outcome['summary'] = summary
+        fixture = native.NativeRetryTests(methodName='runTest')
+        fixture.setUp()
+        try:
+            fixture.last_edited_at = self.data['metadata']['lastEditedAt']
+            fixture.review['submitted_at'] = self.data['submitted']
+            fixture.neutral['completed_at'] = self.data['check']['completed_at']
+            fixture.neutral['output']['summary'] = summary
+            fixture.prime()
+            outcome['sealed'] = 'li259/99/seed.json' in fixture.snapshots[fixture.oid]
+            self.assertEqual('dispatched', fixture.recover())
+            outcome['reruns'] = len(fixture.effects)
+            fixture.receive()
+            outcome['received'] = True
+        finally:
+            fixture.doCleanups()
+        return outcome
+
+    def test_equal_metadata_and_review_timestamp_cannot_enter_retry_pipeline(self):
+        self.data['metadata']['lastEditedAt'] = self.data['submitted']
+        self.save()
+        self.assertEqual({'summary': None, 'sealed': False, 'reruns': 0, 'received': False},
+                         self.producer_to_receiver())
+        self.assertEqual([], self.data['writes'])
+
     def test_real_producer_summary_is_accepted_by_native_seal_and_receiver(self):
-        for edited in (None, '2026-10-06T23:59:00Z'):
+        for edited in (None, '2026-10-06T23:59:00Z', '2026-10-06T23:59:59Z'):
             with self.subTest(revision=edited):
                 self.setUp()
                 self.data['metadata']['lastEditedAt'] = edited
                 self.save()
-                self.capture()
-                self.verify()
-                self.publish()
-                summary = self.data['check']['output']['summary']
-                self.assertEqual(edited, json.loads(summary)['pull_request_last_edited_at'])
+                outcome = self.producer_to_receiver()
+                self.assertEqual(edited, json.loads(outcome['summary'])['pull_request_last_edited_at'])
+                self.assertTrue(outcome['sealed'])
+                self.assertEqual(1, outcome['reruns'])
+                self.assertTrue(outcome['received'])
                 self.assertEqual(['POST','PATCH'], self.data['writes'])
-                fixture = native.NativeRetryTests(methodName='runTest')
-                fixture.setUp()
-                try:
-                    fixture.last_edited_at = edited
-                    fixture.neutral['output']['summary'] = summary
-                    fixture.prime()
-                    self.assertEqual('dispatched', fixture.recover())
-                    fixture.receive()
-                finally:
-                    fixture.doCleanups()
 
     def test_capture_rejects_missing_revision_and_event_input_drift(self):
         for field, value in (('lastEditedAt','missing'),('lastEditedAt','2026-10-07T00:01:00Z'),

@@ -2208,7 +2208,7 @@ jobs:
                     | select(.state == "COMMENTED" or .state == "APPROVED")
                     | select(.commit.oid == $head)
                     | select(.submittedAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-                    | select($edited == null or .submittedAt >= $edited)
+                    | select($edited == null or .submittedAt > $edited)
                     | (.id // empty)' <<<"${response}"
               )"
               while IFS= read -r review_id; do
