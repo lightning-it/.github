@@ -95,6 +95,7 @@ class NativeRetryTests(unittest.TestCase):
         return {"id": run_id, "run_attempt": 1, "path": RETRY.HELPER if run_id in (55, 155) else RETRY.WORKFLOW,
                 "event": "workflow_dispatch" if run_id in (55, 155) else "schedule", "head_sha": self.source,
                 "workflow_id": 6, "run_number": 1, "created_at": self.at(2102),
+                "head_branch": "develop", "status": "in_progress",
                 "repository": {"full_name": self.repo}, "head_repository": {"full_name": self.repo},
                 "actor": {"login": "github-actions[bot]"}, "triggering_actor": {"login": "github-actions[bot]"}}
 
@@ -464,6 +465,26 @@ class NativeRetryTests(unittest.TestCase):
         self.next_scheduler(67, 2702)
         self.snapshots[self.oid]["li259/99/attempt-3.json"]["claim_run"] = 67
         with self.assertRaisesRegex(ValueError, "receiver native owner"):
+            self.receive()
+
+    def test_native_owner_drift_after_cas_never_posts_and_stays_consumed(self):
+        for changes in ({"run_attempt": 2}, {"triggering_actor": {"login": "litroc"}},
+                        {"head_sha": "e" * 40}, {"head_branch": "feature"},
+                        {"status": "completed"}):
+            with self.subTest(changes=changes):
+                self.setUp()
+                self.prime()
+                self.cas_hook = lambda: self.scheduler_runs[0].update(changes)
+                self.assertEqual("consumed-readback-only", self.recover())
+                self.next_scheduler(67, 2702)
+                self.assertEqual("consumed-readback-only", self.recover())
+                self.assertEqual([], self.effects)
+
+    def test_receiver_rechecks_exact_native_claimant_authority(self):
+        self.prime()
+        self.assertEqual("dispatched", self.recover())
+        self.scheduler_runs[0]["run_attempt"] = 2
+        with self.assertRaisesRegex(ValueError, "native scheduler claimant"):
             self.receive()
 
     def test_cancelled_or_rerun_native_owner_never_elects_successor(self):

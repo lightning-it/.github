@@ -372,6 +372,20 @@ def writer(repo, source, path, event):
     return run_id
 
 
+def scheduler_claimant(repo, seed, claimant, *, posting=False):
+    """Re-read actual native authority; election alone proves only ownership."""
+    run = api(f"repos/{repo}/actions/runs/{claimant}")
+    require(run["id"] == claimant and run["workflow_id"] == seed["scheduler_frontier"]["workflow_id"]
+            and run["path"] == WORKFLOW and run["event"] == "schedule"
+            and run["head_sha"] == seed["contract"]["scheduler_source"]
+            and run["head_branch"] == "develop"
+            and type(run["run_attempt"]) is int and run["run_attempt"] == 1
+            and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
+            and run["actor"]["login"] in {"litroc", "github-actions[bot]"}
+            and run["triggering_actor"]["login"] == run["actor"]["login"]
+            and run["status"] in ({"in_progress"} if posting else {"in_progress", "completed"}), "native scheduler claimant")
+
+
 def readback_only(repo, repo_id, path):
     # No write follows an unknown CAS or effect result, even if our claim is seen.
     try:
@@ -545,6 +559,7 @@ def recover_bound(repo, repo_id, run_id, source, now, claimant, path, journal, s
         require(elected_claimant(repo, seed, cause, next_attempt) == claimant, "post-claim native owner drift")
         fresh = proof.Journal(repo, repo_id)
         require(fresh.read(claim_path) == record and fresh.read(path + "/terminal.json") is None, "post-claim readback")
+        scheduler_claimant(repo, seed, claimant, posting=True)
         require(utc_now().timestamp() + POLICY["runtime_reserve_seconds"] <= deadline, "post-claim deadline")
     except CandidateClosed:
         # The durable consumed slot closes this effect forever. Do not write a
@@ -580,15 +595,7 @@ def receiver(repo, repo_id, run_id, attempt, now):
         previous = api(f"repos/{repo}/actions/runs/{run_id}/attempts/{number - 1}")
         require(infrastructure_cause(repo, previous, c["head"], now) == claim["cause"], "receiver native cause")
         require(elected_claimant(repo, seed, claim["cause"], number) == claim["claim_run"], "receiver native owner")
-        writer_run = api(f"repos/{repo}/actions/runs/{claim['claim_run']}")
-        require(writer_run["id"] == claim["claim_run"]
-                and writer_run["path"] == WORKFLOW and writer_run["event"] == "schedule"
-                and writer_run["head_sha"] == c["scheduler_source"]
-                and type(writer_run["run_attempt"]) is int and writer_run["run_attempt"] == 1
-                and writer_run["repository"]["full_name"] == repo
-                and writer_run["head_repository"]["full_name"] == repo
-                and writer_run["actor"]["login"] in {"litroc", "github-actions[bot]"}
-                and writer_run["triggering_actor"]["login"] == writer_run["actor"]["login"], "receiver claimant")
+        scheduler_claimant(repo, seed, claim["claim_run"])
     run = api(f"repos/{repo}/actions/runs/{run_id}")
     require(run["run_attempt"] == attempt and run["triggering_actor"]["login"] == "github-actions[bot]"
             and proof.epoch(run["run_started_at"]) >= proof.epoch(claim["created_at"]), "receiver native attempt")
