@@ -57,6 +57,16 @@ marker or seal can be added retroactively to old runs.
 Pre-rollout runs without the marker retain the original LI-219 attempt-two
 route, without a new seed or any additional technical entitlement.
 
+Every snapshot reads live GraphQL `lastEditedAt` together with repository,
+PR number, base/head OIDs and title/body, and binds those inputs to the REST
+snapshot. The revision must be an explicit null or valid UTC timestamp and
+must equal the successful neutral schema-4 `pull_request_last_edited_at`.
+The seed seals that revision; pre-POST and receiver snapshots compare it again.
+Editing then restoring the original title/body therefore cannot reuse older
+neutral evidence. Drift before a technical claim closes the candidate; drift
+after claim consumes the slot without another POST. Missing or partial native
+metadata responses abort the sweep. Existing seeds are never upgraded in place.
+
 The claim is stored in the existing protected `lit-review-operations` Git ref:
 
 - `li259/<native-run>/seed.json`: prospective contract and original claimant.

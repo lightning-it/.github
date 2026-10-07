@@ -54,9 +54,11 @@ class NativeRetryTests(unittest.TestCase):
                         "app": {"id": 15368, "slug": "github-actions"}, "status": "completed", "conclusion": "success",
                         "completed_at": self.at(-1), "external_id": f"mlx90-current-revision:copilot:v6:23:77:{self.source}:{self.head}",
                         "output": {"summary": json.dumps({"schema": 4, "producer_run_id": 77, "pull_request_number": 23,
-                                                           "base_sha": self.source, "head_sha": self.head, "controller_sha": self.source})}}
+                                                           "base_sha": self.source, "head_sha": self.head, "controller_sha": self.source,
+                                                           "pull_request_last_edited_at": None})}}
         self.review = {"id": 17, "commit_id": self.head, "user": {"login": RETRY.proof.BOT, "type": "Bot"},
                        "state": "APPROVED", "body": "Review complete.", "submitted_at": self.at(-2)}
+        self.last_edited_at = None
         self.comments, self.thread_rows = [], []
         self.annotation_rows = [{"annotation_level": "failure", "message": RETRY.ACQUISITION,
                                  "path": ".github", "start_line": 1, "end_line": 1},
@@ -142,6 +144,10 @@ class NativeRetryTests(unittest.TestCase):
             return None
         if route == "graphql":
             values = dict(field.split("=", 1) for field in fields if "=" in field)
+            if "lastEditedAt" in values["query"]:
+                return {"data": {"repository": {"nameWithOwner": self.repo, "pullRequest": {
+                    "number": 23, "headRefOid": self.pr["head"]["sha"], "baseRefOid": self.pr["base"]["sha"],
+                    "title": self.pr["title"], "body": self.pr["body"] or "", "lastEditedAt": self.last_edited_at}}}}
             if "reviewThreads" in values["query"]:
                 return {"data": {"repository": {"pullRequest": {"reviewThreads": {
                     "nodes": copy.deepcopy(self.thread_rows), "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}}
@@ -251,6 +257,104 @@ class NativeRetryTests(unittest.TestCase):
     def reconcile(self):
         with patch.object(sys, "argv", ["native_verifier_retry.py", "reconcile"]):
             RETRY.main()
+
+    def edit_and_revert(self):
+        original = copy.deepcopy(self.pr)
+        self.pr.update(title="Edited title", body="Edited body")
+        self.last_edited_at = self.at(100)
+        self.pr.update(original)
+
+    def test_edit_revert_before_seal_rejects_old_neutral_without_write(self):
+        self.edit_and_revert()
+        with self.assertRaisesRegex(RETRY.CandidateClosed, "neutral metadata revision"):
+            RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
+        self.assertEqual([], self.effects)
+
+    def test_edit_revert_after_seal_is_terminal_even_when_input_bytes_return(self):
+        self.prime()
+        before = copy.deepcopy(self.pr)
+        self.edit_and_revert()
+        self.assertEqual(before, self.pr)
+        self.assertEqual("terminal", self.recover())
+        self.assertEqual("inactive", self.recover())
+        self.assertEqual("contract-drift", self.snapshots[self.oid]["li259/99/terminal.json"]["state"])
+        self.assertEqual([], self.effects)
+
+    def test_edit_revert_during_cas_consumes_slot_without_post(self):
+        self.prime()
+        self.cas_hook = self.edit_and_revert
+        self.assertEqual("consumed-readback-only", self.recover())
+        writes = len(self.writes)
+        self.assertEqual("consumed-readback-only", self.recover())
+        self.assertEqual(writes, len(self.writes))
+        self.assertEqual([], self.effects)
+
+    def test_receiver_rejects_edit_revert_after_dispatch(self):
+        self.prime()
+        self.assertEqual("dispatched", self.recover())
+        self.edit_and_revert()
+        with self.assertRaisesRegex(RETRY.CandidateClosed, "neutral metadata revision"):
+            self.receive()
+        self.assertEqual(1, len(self.effects))
+
+    def test_metadata_revision_null_and_timestamp_are_sealed_and_received(self):
+        for value in (None, self.at(-60)):
+            with self.subTest(revision=value):
+                self.setUp()
+                self.last_edited_at = value
+                summary = json.loads(self.neutral["output"]["summary"])
+                summary["pull_request_last_edited_at"] = value
+                self.neutral["output"]["summary"] = json.dumps(summary)
+                self.prime()
+                contract = self.snapshots[self.oid]["li259/99/seed.json"]["contract"]
+                self.assertIn("pull_request_last_edited_at", contract)
+                self.assertEqual(value, contract["pull_request_last_edited_at"])
+                self.assertEqual("dispatched", self.recover())
+                self.receive()
+
+    def test_neutral_requires_explicit_metadata_revision(self):
+        summary = json.loads(self.neutral["output"]["summary"])
+        del summary["pull_request_last_edited_at"]
+        self.neutral["output"]["summary"] = json.dumps(summary)
+        with self.assertRaises(RETRY.CandidateClosed):
+            RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
+
+    def test_partial_or_invalid_metadata_read_aborts_without_write(self):
+        original = self.api
+        cases = ("errors", "missing", "malformed", "wrong-type")
+        for corruption in cases:
+            def malformed(route, payload=None, fields=()):
+                result = original(route, payload, fields)
+                if route == "graphql" and payload is None and any("lastEditedAt" in item for item in fields):
+                    pr = result["data"]["repository"]["pullRequest"]
+                    if corruption == "errors":
+                        result["errors"] = [{"message": "partial response"}]
+                    elif corruption == "missing":
+                        del pr["lastEditedAt"]
+                    else:
+                        pr["lastEditedAt"] = "not-a-timestamp" if corruption == "malformed" else 0
+                return result
+            with self.subTest(corruption=corruption), patch.object(RETRY.proof, "api", side_effect=malformed):
+                with self.assertRaises(RETRY.GlobalReadFailure):
+                    RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
+        self.assertEqual([], self.effects)
+
+    def test_metadata_read_must_match_rest_snapshot_identity_and_input(self):
+        original = self.api
+        for field, value in (("number", 24), ("headRefOid", "e" * 40), ("baseRefOid", "e" * 40),
+                             ("title", "changed"), ("body", "changed")):
+            def changed(route, payload=None, fields=()):
+                result = original(route, payload, fields)
+                if route == "graphql" and payload is None and any("lastEditedAt" in item for item in fields):
+                    result["data"]["repository"]["pullRequest"][field] = value
+                return result
+            with self.subTest(field=field), patch.object(RETRY.proof, "api", side_effect=changed):
+                with self.assertRaises(RETRY.CandidateClosed):
+                    RETRY.seal(self.repo, self.repo_id, 23, 99, self.source, self.start)
+        self.assertEqual([], self.writes)
 
     def test_first_candidate_original_helper_rerun_is_terminal_and_second_dispatches(self):
         self.prime()

@@ -164,6 +164,28 @@ def threads(repo, number):
     raise ValueError("thread inventory limit")
 
 
+def metadata_revision(repo, pr):
+    # A content hash cannot detect edit-and-revert. Bind the producer's native
+    # metadata revision to the same live REST input, including both Git OIDs.
+    result = api("graphql", fields=["-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){nameWithOwner pullRequest(number:$number){number baseRefOid headRefOid title body lastEditedAt}}}",
+                "-f", f"owner={repo.split('/')[0]}", "-f", f"name={repo.split('/')[1]}",
+                "-F", f"number={pr['number']}"])
+    try:
+        proof.require(isinstance(result, dict) and not result.get("errors"), "partial metadata response")
+        repository = result["data"]["repository"]
+        current = repository["pullRequest"]
+        edited = current["lastEditedAt"]
+        if edited is not None:
+            proof.epoch(edited)
+        binding = (repository["nameWithOwner"], current["number"], current["baseRefOid"],
+                   current["headRefOid"], current["title"], current["body"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GlobalReadFailure("invalid metadata revision response") from exc
+    require(binding == (repo, pr["number"], pr["base"]["sha"], pr["head"]["sha"],
+                        pr["title"], pr["body"] or ""), "metadata snapshot drift")
+    return edited
+
+
 def snapshot(repo, repo_id, pr_number, run_id, writer_source):
     """GET-only binding of the actual native inputs, not caller-supplied claims."""
     require(repo in proof.PILOTS and proof.sha(writer_source), "pilot/controller")
@@ -198,7 +220,7 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
     try:
         summary = json.loads(check["output"]["summary"], object_pairs_hook=proof.unique)
         require(isinstance(summary, dict) and {"schema", "producer_run_id", "pull_request_number",
-                "base_sha", "head_sha", "controller_sha"} <= summary.keys(), "neutral contract fields")
+                "base_sha", "head_sha", "controller_sha", "pull_request_last_edited_at"} <= summary.keys(), "neutral contract fields")
         owner = summary["producer_run_id"]
     except (KeyError, TypeError, ValueError) as exc:
         raise CandidateClosed("invalid neutral evidence") from exc
@@ -239,6 +261,8 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
     except proof.ReviewContentError as exc:
         raise CandidateClosed("unusable review content") from exc
     resolved = threads(repo, pr_number)
+    edited = metadata_revision(repo, pr)
+    require(summary["pull_request_last_edited_at"] == edited, "neutral metadata revision")
     # Immutable Git sources bind the complete policies and controller inputs.
     # Native receiver marker establishes its actual source, not today's branch.
     return {"repository": repo, "repository_id": repo_id, "pr": pr_number,
@@ -248,6 +272,7 @@ def snapshot(repo, repo_id, pr_number, run_id, writer_source):
             "producer_run": owner, "producer_attempt": producer["run_attempt"],
             "producer_controller": summary["controller_sha"], "review_id": review["id"],
             "neutral_id": check["id"], "neutral_sha256": digest(check),
+            "pull_request_last_edited_at": edited,
             "review_sha256": digest({"review": review, "comments": comments, "threads": resolved}),
             "input_sha256": digest({"title": pr["title"], "body": pr["body"],
                                      "author": {key: pr["user"][key] for key in ("id", "login", "type")},
