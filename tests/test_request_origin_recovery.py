@@ -222,6 +222,83 @@ os.execvp(command[0], command)
         self.assertTrue(any('/check-runs?' in ' '.join(call) for call in self.calls))
         self.assertFalse(any('--method' in call for call in self.calls))
 
+    def test_dispatch_run_name_may_equal_its_exact_bound_title(self):
+        self.data['REFRESH']['name'] = self.data['REFRESH']['display_title']
+        result = self.run_caller()
+        self.assertEqual(0, result.returncode, result.stderr)
+        for name in ('Reconcile review PR #24 head ' + HEAD, 'forged'):
+            data = copy.deepcopy(self.data)
+            data['REFRESH']['name'] = name
+            self.assertNotEqual(0, self.run_caller(data).returncode)
+
+    def source_failed_dispatch_fixture(self):
+        repo, rid = 'lightning-it/shared-assets-lit', '1120841013'
+        data = json.loads(json.dumps(self.data).replace(REPO, repo).replace('1112629689', rid))
+        key = f'li219-review-request:v1:{rid}:{PR}:{HEAD}'
+        data['REQUEST_PATH'] = 'operations/' + hashlib.sha256(key.encode()).hexdigest() + '.json'
+        for kind in ('REQUEST_JOURNAL', 'RERUN_JOURNAL'):
+            for field in ('manifest', 'record'):
+                item = data[kind]['data']['repository'][field]
+                item['byteSize'] = len(item['text'].encode())
+        producer = json.loads(json.dumps(self.producer).replace(REPO, repo))
+        producer['conclusion'] = 'failure'
+        template = {'run_id': RUN, 'run_attempt': 2, 'head_sha': HEAD, 'status': 'completed',
+                    'workflow_name': 'Current revision review gate',
+                    'run_url': f'https://api.github.com/repos/{repo}/actions/runs/{RUN}'}
+        policy = {**template, 'id': 201, 'name': 'Verify current revision policy', 'conclusion': 'success',
+                  'runner_id': 6, 'steps': [
+                      {'name': name, 'number': index + 1, 'status': 'completed',
+                       'conclusion': 'skipped' if index + 1 in {3, 6, 7} else 'success'}
+                      for index, name in enumerate((
+                          'Set up job',
+                          f'Current revision tuple #{PR} develop@{BASE} -> {repo}:fix/final@{HEAD} run {RUN}',
+                          'Invalidate prior result after pull-request metadata change',
+                          'Capture live pull-request metadata revision', 'Classify trusted automation pull request',
+                          'Accept trusted automation exemption', 'Verify evidence-bound ancestry backmerge',
+                          'Verify current Copilot review and resolved findings', 'Publish bound neutral result', 'Complete job'))]}
+        dispatch = {**template, 'id': 202, 'name': 'Request protected verifier re-evaluation',
+                    'conclusion': 'failure', 'runner_id': 7, 'steps': [
+                        {'name': name, 'number': index + 1, 'status': 'completed', 'conclusion': conclusion}
+                        for index, (name, conclusion) in enumerate((('Set up job', 'success'),
+                            ('Dispatch protected event verifier locator', 'failure'), ('Complete job', 'success')))]}
+        inert = [{**template, 'id': 203 + index, 'name': name, 'conclusion': 'skipped',
+                  'runner_id': None, 'steps': []} for index, name in enumerate((
+                      'Classify protected main trust-root handoff', 'Request Copilot review for current revision',
+                      'Inactive legacy handoff', 'Dispatch protected managed-sync finalizer re-evaluation'))]
+        data['EXTRA_ROUTES'] = {f'repos/{repo}/actions/runs/{RUN}/attempts/2/jobs':
+                                {'total_count': 6, 'jobs': [policy, dispatch, *inert]}}
+        return data, {'REPOSITORY': repo, 'GITHUB_REPOSITORY_ID': rid, 'producer': json.dumps(producer)}
+
+    def test_source_failed_locator_requires_full_recovery_and_native_job_binding(self):
+        original, env = self.source_failed_dispatch_fixture()
+        result = self.run_caller(original, **env)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/attempts/2/jobs?' in ' '.join(call) for call in self.calls))
+        self.assertTrue(any(REQUEST_PATH.split('/')[0] in ' '.join(call) for call in self.calls))
+        route = next(iter(original['EXTRA_ROUTES']))
+        faults = {
+            'count': lambda d: d['EXTRA_ROUTES'][route].update(total_count=7),
+            'duplicate': lambda d: d['EXTRA_ROUTES'][route]['jobs'].append(copy.deepcopy(d['EXTRA_ROUTES'][route]['jobs'][0])),
+            'wrong attempt': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_attempt=True),
+            'wrong head': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(head_sha=BASE),
+            'wrong run': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_id=78),
+            'wrong path': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_url='foreign'),
+            'policy failure': lambda d: d['EXTRA_ROUTES'][route]['jobs'][0].update(conclusion='failure'),
+            'missing policy evidence': lambda d: d['EXTRA_ROUTES'][route]['jobs'][0].update(steps=[]),
+            'wrong failed step': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1]['steps'][1].update(name='Request AI again'),
+            'failed setup': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1]['steps'][0].update(conclusion='failure'),
+            'active extra': lambda d: d['EXTRA_ROUTES'][route]['jobs'][2].update(conclusion='success'),
+            'stale CAS': lambda d: d['RERUN_JOURNAL']['data']['repository'].update(record=blob({'schema': 1})),
+            'failed helper': lambda d: d['REFRESH'].update(conclusion='failure'),
+            'wrong helper actor': lambda d: d['REFRESH'].update(actor={'login': 'mallory'}),
+            'late helper': lambda d: d['REFRESH_JOBS'][0]['jobs'][0]['steps'][1].update(started_at='2026-10-05T18:00:09Z'),
+        }
+        for label, mutate in faults.items():
+            with self.subTest(fault=label):
+                data = copy.deepcopy(original)
+                mutate(data)
+                self.assertNotEqual(0, self.run_caller(data, **env).returncode)
+
     def test_same_caller_proof_supports_each_other_enabled_pilot(self):
         for repo, repo_id in (("lightning-it/shared-assets-lit", "1120841013"),
                               ("lightning-it/ansible-collection-supplementary", "1103407173")):

@@ -5556,6 +5556,66 @@ jobs:
               return json.loads(text, object_pairs_hook=unique_object)
 
 
+          def second_attempt_dispatch_failure(context):
+              """Authenticate the Source-only failed locator after a successful policy."""
+              repo, producer = context["repository"], context["producer"]
+              if repo != "lightning-it/shared-assets-lit" or producer["conclusion"] != "failure":
+                  return False
+              run_id, head = context["run_id"], context["head"]
+              pages = api("--paginate", "--slurp",
+                          f"repos/{repo}/actions/runs/{run_id}/attempts/2/jobs?filter=all&per_page=100")
+              require(isinstance(pages, list) and 0 < len(pages) <= 3, "second attempt pages")
+              require(all(isinstance(page, dict) and type(page.get("total_count")) is int
+                          and page["total_count"] == 6 and isinstance(page.get("jobs"), list)
+                          for page in pages), "second attempt count")
+              jobs = [job for page in pages for job in page["jobs"]]
+              expected = {"Verify current revision policy", "Classify protected main trust-root handoff",
+                          "Request Copilot review for current revision", "Request protected verifier re-evaluation",
+                          "Inactive legacy handoff", "Dispatch protected managed-sync finalizer re-evaluation"}
+              require(len(jobs) == 6 and all(isinstance(job, dict) for job in jobs), "second attempt inventory")
+              require({job["name"] for job in jobs} == expected
+                      and all(positive(job["id"]) for job in jobs)
+                      and len({job["id"] for job in jobs}) == 6, "second attempt identities")
+              for job in jobs:
+                  require(type(job["run_id"]) is int and job["run_id"] == run_id
+                          and type(job["run_attempt"]) is int and job["run_attempt"] == 2
+                          and job["head_sha"] == head and job["status"] == "completed"
+                          and job["workflow_name"] == "Current revision review gate"
+                          and job["run_url"] == f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
+                          "second attempt job binding")
+                  if job["name"] not in {"Verify current revision policy", "Request protected verifier re-evaluation"}:
+                      require(job["conclusion"] == "skipped" and job.get("runner_id") is None
+                              and "runner_id" in job and job["steps"] == [], "second attempt inert job")
+                      continue
+                  require(positive(job.get("runner_id")), "second attempt native runner")
+                  steps = job["steps"]
+                  require(isinstance(steps, list) and all(isinstance(step, dict)
+                          and positive(step["number"]) and step["status"] == "completed" for step in steps)
+                          and len({step["number"] for step in steps}) == len(steps)
+                          and len({step["name"] for step in steps}) == len(steps), "second attempt steps")
+                  if job["name"] == "Request protected verifier re-evaluation":
+                      require(job["conclusion"] == "failure" and len(steps) == 3, "second attempt dispatch failure")
+                      require([(step["name"], step["number"], step["conclusion"]) for step in steps]
+                              == [("Set up job", 1, "success"), ("Dispatch protected event verifier locator", 2, "failure"),
+                                  ("Complete job", 3, "success")], "second attempt exact failed dispatch")
+                  else:
+                      require(job["conclusion"] == "success"
+                              and all(step["conclusion"] in {"success", "skipped"} for step in steps), "second attempt policy")
+                      binding = (f"Current revision tuple #{context['owner']} {context['base_ref']}@{context['base']} -> "
+                                 f"{repo}:{producer['head_branch']}@{head} run {run_id}")
+                      names = ["Set up job", binding, "Invalidate prior result after pull-request metadata change",
+                               "Capture live pull-request metadata revision", "Classify trusted automation pull request",
+                               "Accept trusted automation exemption", "Verify evidence-bound ancestry backmerge",
+                               "Verify current Copilot review and resolved findings", "Publish bound neutral result", "Complete job"]
+                      require(len(steps) == len(names), "second attempt policy layout")
+                      for index, (step, name) in enumerate(zip(steps, names), 1):
+                          require(step["name"] == name and type(step["number"]) is int and step["number"] == index
+                                  and (step["conclusion"] in {"success", "skipped"} if index == 3
+                                       else step["conclusion"] == ("skipped" if index in {6, 7} else "success")),
+                                  "second attempt policy evidence")
+              return True
+
+
           def verify(context):
               repo, repo_id = context["repository"], context["repository_id"]
               require(repo in {"lightning-it/.github", "lightning-it/shared-assets-lit",
@@ -5568,12 +5628,15 @@ jobs:
               require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
                           for value in (head, base, source)), "revision binding")
               first, producer = context["first"], context["producer"]
+              recovered_dispatch = second_attempt_dispatch_failure(context)
               for run, attempt, conclusion, trigger in ((first, 1, "failure", "litroc"),
                                                       (producer, 2, "success", "github-actions[bot]")):
                   require(type(run["id"]) is int and run["id"] == run_id
                           and type(run["run_attempt"]) is int and run["run_attempt"] == attempt
                           and run["event"] == "pull_request_target" and run["status"] == "completed"
-                          and run["conclusion"] == conclusion and run["head_sha"] == head
+                          and (run["conclusion"] == conclusion
+                               or (attempt == 2 and recovered_dispatch and run["conclusion"] == "failure"))
+                          and run["head_sha"] == head
                           and run["path"] == ".github/workflows/copilot-review.yml"
                           and run["name"] == "Current revision review gate"
                           and run["actor"]["login"] == "litroc" and run["triggering_actor"]["login"] == trigger
@@ -5674,7 +5737,11 @@ jobs:
 
           if __name__ == "__main__":
               try:
-                  verify(json.load(sys.stdin))
+                  context = json.load(sys.stdin)
+                  if sys.argv[1:] == ["--second-attempt"]:
+                      print(json.dumps(second_attempt_dispatch_failure(context)))
+                  else:
+                      verify(context)
               except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
                   print(f"Protected request origin rejected: {exc}", file=sys.stderr)
                   sys.exit(1)
@@ -6212,14 +6279,15 @@ jobs:
               --argjson id "${refresh_id}" --argjson pr "${owner_pr_number}" '
                 .id == $id and .run_attempt == 1
                 and .path == ".github/workflows/copilot-review-refresh.yml"
-                and .name == "Refresh Copilot review gate"
                 and .repository.full_name == $repo and .head_repository.full_name == $repo
                 and .status == "completed" and .conclusion == "success"
                 and (if .event == "workflow_dispatch" then
                   .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]"
                   and .head_branch == $branch
                   and .display_title == ("Reconcile review PR #" + ($pr|tostring) + " head " + $head)
+                  and (.name == "Refresh Copilot review gate" or .name == .display_title)
                 else
+                  .name == "Refresh Copilot review gate" and
                   (.event | IN("pull_request_review", "pull_request_review_comment"))
                   and .head_sha == $head
                   and .triggering_actor.login == .actor.login
@@ -7696,16 +7764,27 @@ jobs:
                 test "${recovery_status}" -eq 0
               fi
 
+              second_attempt_dispatch_failed=false
+              if [ "${recovery_status}" -eq 0 ]; then
+                second_attempt_dispatch_failed="$(jq -cn \
+                  --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                  --arg base "${EVENT_BASE}" --arg base_ref "${base_ref}" \
+                  --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
+                  --argjson producer "${producer}" '$ARGS.named' | \
+                  run_request_proof /proof/request-origin.py --second-attempt)"
+                [[ "${second_attempt_dispatch_failed}" =~ ^(true|false)$ ]]
+              fi
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
               verify_request_origin "${tl}"
               jq -e \
+                --argjson dispatch_failed "${second_attempt_dispatch_failed}" \
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --arg refresh_actor "github-actions[bot]" '
                   .event == "pull_request_target"
                   and .run_attempt == 2
                   and .status == "completed"
-                  and .conclusion == "success"
+                  and (.conclusion == "success" or ($dispatch_failed and .conclusion == "failure"))
                   and .path == ".github/workflows/copilot-review.yml"
                   and .name == "Current revision review gate"
                   and .head_sha == $head_sha
