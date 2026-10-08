@@ -6320,6 +6320,19 @@ jobs:
               --argjson refresh "${refresh_run}" --argjson event_claim true \
               -f "${RUNNER_TEMP}/native-recovery-ordering.jq" <<<"${refresh_jobs}" >/dev/null || return 1
           }
+          verify_second_attempt_dispatch() {
+            local result=false
+            if [ "${recovery_status}" -eq 0 ]; then
+              result="$(jq -cn \
+                --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                --arg base "${EVENT_BASE}" --arg base_ref "${base_ref}" \
+                --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
+                --argjson producer "${producer}" '$ARGS.named' | \
+                run_request_proof /proof/request-origin.py --second-attempt)" || return 1
+              [[ "${result}" =~ ^(true|false)$ ]] || return 1
+            fi
+            printf '%s\n' "${result}"
+          }
           EVENT_RECOVERY
 
       - name: Verify one protected result for the exact live revision
@@ -7652,16 +7665,16 @@ jobs:
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --argjson run_id "${producer_run_id}" '
-                  .id == $run_id
-                  and .event == "pull_request_target"
-                  and .run_attempt == 1
-                  and .status == "completed"
-                  and .conclusion == "failure"
-                  and .path == ".github/workflows/copilot-review.yml"
-                  and .name == "Current revision review gate"
-                  and .head_sha == $head_sha
-                  and .actor.login == $actor
-                  and .triggering_actor.login == $actor
+          .id == $run_id
+          and .event == "pull_request_target"
+          and .run_attempt == 1
+          and .status == "completed"
+          and .conclusion == "failure"
+          and .path == ".github/workflows/copilot-review.yml"
+          and .name == "Current revision review gate"
+          and .head_sha == $head_sha
+          and .actor.login == $actor
+          and .triggering_actor.login == $actor
                 ' <<<"${attempt_one}" >/dev/null
               attempt_one_jobs="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs/${producer_run_id}/attempts/1/jobs?filter=all&per_page=100")"
@@ -7764,32 +7777,23 @@ jobs:
                 test "${recovery_status}" -eq 0
               fi
 
-              second_attempt_dispatch_failed=false
-              if [ "${recovery_status}" -eq 0 ]; then
-                second_attempt_dispatch_failed="$(jq -cn \
-                  --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
-                  --arg base "${EVENT_BASE}" --arg base_ref "${base_ref}" \
-                  --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
-                  --argjson producer "${producer}" '$ARGS.named' | \
-                  run_request_proof /proof/request-origin.py --second-attempt)"
-                [[ "${second_attempt_dispatch_failed}" =~ ^(true|false)$ ]]
-              fi
+              dispatch_failed="$(verify_second_attempt_dispatch)"
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
               verify_request_origin "${tl}"
               jq -e \
-                --argjson dispatch_failed "${second_attempt_dispatch_failed}" \
+                --argjson dispatch_failed "${dispatch_failed}" \
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --arg refresh_actor "github-actions[bot]" '
-                  .event == "pull_request_target"
-                  and .run_attempt == 2
-                  and .status == "completed"
-                  and (.conclusion == "success" or ($dispatch_failed and .conclusion == "failure"))
-                  and .path == ".github/workflows/copilot-review.yml"
-                  and .name == "Current revision review gate"
-                  and .head_sha == $head_sha
-                  and .actor.login == $actor
-                  and .triggering_actor.login == $refresh_actor
+          .event == "pull_request_target"
+          and .run_attempt == 2
+          and .status == "completed"
+          and (.conclusion == "success" or ($dispatch_failed and .conclusion == "failure"))
+          and .path == ".github/workflows/copilot-review.yml"
+          and .name == "Current revision review gate"
+          and .head_sha == $head_sha
+          and .actor.login == $actor
+          and .triggering_actor.login == $refresh_actor
                 ' <<<"${producer}" >/dev/null
             fi
             jq -e \
