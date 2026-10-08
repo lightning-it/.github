@@ -299,6 +299,25 @@ os.execvp(command[0], command)
                 mutate(data)
                 self.assertNotEqual(0, self.run_caller(data, **env).returncode)
 
+    def test_failed_locator_rejects_other_enabled_pilot_callers(self):
+        source, env = self.source_failed_dispatch_fixture()
+        source_repo, source_id = 'lightning-it/shared-assets-lit', '1120841013'
+        for repo, repo_id in (('lightning-it/.github', '1112629689'),
+                              ('lightning-it/ansible-collection-supplementary', '1103407173')):
+            with self.subTest(repository=repo):
+                data = json.loads(json.dumps(source).replace(source_repo, repo).replace(source_id, repo_id))
+                key = f'li219-review-request:v1:{repo_id}:{PR}:{HEAD}'
+                data['REQUEST_PATH'] = 'operations/' + hashlib.sha256(key.encode()).hexdigest() + '.json'
+                for kind in ('REQUEST_JOURNAL', 'RERUN_JOURNAL'):
+                    for field in ('manifest', 'record'):
+                        item = data[kind]['data']['repository'][field]
+                        item['byteSize'] = len(item['text'].encode())
+                producer = env['producer'].replace(source_repo, repo)
+                result = self.run_caller(data, REPOSITORY=repo, GITHUB_REPOSITORY_ID=repo_id,
+                                         producer=producer)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+                self.assertFalse(any('--method' in call for call in self.calls))
+
     def test_same_caller_proof_supports_each_other_enabled_pilot(self):
         for repo, repo_id in (("lightning-it/shared-assets-lit", "1120841013"),
                               ("lightning-it/ansible-collection-supplementary", "1103407173")):
