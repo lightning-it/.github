@@ -6827,7 +6827,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("    timeout-minutes: 10\n", quality)
+        self.assertIn("    timeout-minutes: 20\n", quality)
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

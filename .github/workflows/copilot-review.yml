@@ -2807,7 +2807,8 @@ jobs:
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f status=completed -f conclusion=success \
               -f "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              -f "output[title]=${result_title}" >/dev/null || true
+              -f "output[title]=${result_title}" \
+              -f "output[summary]=${evidence}" >/dev/null || true
             publication_read "${check_id}" "${external_id}" success || return 1
             if (publication_inputs); then return 0; fi
             # Drift observed during promotion revokes only this exact owned
@@ -2815,7 +2816,8 @@ jobs:
             publication_read "${check_id}" "${external_id}" success || return 1
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f status=completed -f conclusion=failure \
-              -f 'output[title]=Current revision publication pending' >/dev/null || true
+              -f 'output[title]=Current revision publication pending' \
+              -f "output[summary]=${evidence}" >/dev/null || true
             publication_read "${check_id}" "${external_id}" failure || return 1
             return 1
           }
