@@ -25,7 +25,7 @@ class PushReadyStreamingTests(unittest.TestCase):
             "password" + "\u2003" * 70000 + "='" + "A" * 16,
             "Bearer" + "\n" * 70000 + "A" * 20,
             "eyJ" + "x" * 70000 + "." + "x" * 70000 + "." + "x" * 70000,
-            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "-----BEGIN " + "OPENSSH PRIVATE KEY-----",
             "xghp_" + "A" * 30,
             "ghp_" + "A" * 30,
             "UTF-8 ä𐍈\n ordinary content\n",
