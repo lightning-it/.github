@@ -26,6 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  LI259_INFRA_RETRY: ${{ vars.LI259_INFRA_RETRY }}
   LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
 
 jobs:
@@ -2440,6 +2441,21 @@ jobs:
       WORKFLOW_SHA: ${{ github.workflow_sha }}
 
     steps:
+      - name: Authenticate the consumed LI-259 technical attempt
+        if: github.run_attempt > 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "${LI259_INFRA_RETRY:-disabled}" = enabled
+          retry_source_repository="${WORKFLOW_REF%%/.github/workflows/*}"
+          test "${retry_source_repository}" = lightning-it/.github
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/${retry_source_repository}/contents/scripts/run-native-verifier-retry.sh?ref=${WORKFLOW_SHA}" \
+            --jq '.content' | base64 --decode >"${RUNNER_TEMP}/li259-launcher.sh"
+          bash "${RUNNER_TEMP}/li259-launcher.sh" receiver
+          touch "${RUNNER_TEMP}/li259-entry-authorized"
+
       - name: Mint source-read Release Automation App token
         id: source-app
         if: >-
@@ -4945,8 +4961,8 @@ jobs:
                       and .[0].submitted_at == "2026-09-07T06:48:29Z"
                       and (.[0].body | type) == "string"
                       and ((.[0].body | ascii_downcase
-                        | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                        | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
+                        | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
+                        | ["unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                            "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                            "premiumrequestquota","premiumrequestsquota",
                            "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -5276,7 +5292,14 @@ jobs:
           esac
 
           failure_stage='event-metadata-binding'
-          test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            # No numeric relaxation: the receiver authenticates a separate
+            # consumed technical slot and its unchanged prospective contract.
+            test "${LI259_INFRA_RETRY:-disabled}" = enabled
+            test -f "${RUNNER_TEMP}/li259-entry-authorized"
+          else
+            test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2
+          fi
           [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
           {
             echo "issue_564_stage_1=${issue_564_stage_1_authorized:-false}"
@@ -5284,6 +5307,15 @@ jobs:
             echo "issue_564_pr568=${issue_564_pr568_authorized:-false}"
             echo "issue_564_pr568_recovery=${issue_564_pr568_recovery_authorized:-false}"
           } >>"${GITHUB_OUTPUT}"
+
+      - name: LI-259 receiver source ${{ github.workflow_ref }} ${{ github.workflow_sha }} PR ${{ github.event.pull_request.number }} base ${{ github.event.pull_request.base.sha }} head ${{ github.event.pull_request.head.sha }}
+        if: vars.LI259_INFRA_RETRY == 'enabled'
+        run: |
+          set -euo pipefail
+          # This native successful step binds the actual immutable receiver,
+          # before any later attempt can acquire a technical-retry budget.
+          test "${LI219_EVENT_MODE}" = enabled
+          [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]]
 
       - name: Materialize the terminal producer inventory classifier
         run: |
@@ -5524,6 +5556,66 @@ jobs:
               return json.loads(text, object_pairs_hook=unique_object)
 
 
+          def second_attempt_dispatch_failure(context):
+              """Authenticate the Source-only failed locator after a successful policy."""
+              repo, producer = context["repository"], context["producer"]
+              if repo != "lightning-it/shared-assets-lit" or producer["conclusion"] != "failure":
+                  return False
+              run_id, head = context["run_id"], context["head"]
+              pages = api("--paginate", "--slurp",
+                          f"repos/{repo}/actions/runs/{run_id}/attempts/2/jobs?filter=all&per_page=100")
+              require(isinstance(pages, list) and 0 < len(pages) <= 3, "second attempt pages")
+              require(all(isinstance(page, dict) and type(page.get("total_count")) is int
+                          and page["total_count"] == 6 and isinstance(page.get("jobs"), list)
+                          for page in pages), "second attempt count")
+              jobs = [job for page in pages for job in page["jobs"]]
+              expected = {"Verify current revision policy", "Classify protected main trust-root handoff",
+                          "Request Copilot review for current revision", "Request protected verifier re-evaluation",
+                          "Inactive legacy handoff", "Dispatch protected managed-sync finalizer re-evaluation"}
+              require(len(jobs) == 6 and all(isinstance(job, dict) for job in jobs), "second attempt inventory")
+              require({job["name"] for job in jobs} == expected
+                      and all(positive(job["id"]) for job in jobs)
+                      and len({job["id"] for job in jobs}) == 6, "second attempt identities")
+              for job in jobs:
+                  require(type(job["run_id"]) is int and job["run_id"] == run_id
+                          and type(job["run_attempt"]) is int and job["run_attempt"] == 2
+                          and job["head_sha"] == head and job["status"] == "completed"
+                          and job["workflow_name"] == "Current revision review gate"
+                          and job["run_url"] == f"https://api.github.com/repos/{repo}/actions/runs/{run_id}",
+                          "second attempt job binding")
+                  if job["name"] not in {"Verify current revision policy", "Request protected verifier re-evaluation"}:
+                      require(job["conclusion"] == "skipped" and job.get("runner_id") is None
+                              and "runner_id" in job and job["steps"] == [], "second attempt inert job")
+                      continue
+                  require(positive(job.get("runner_id")), "second attempt native runner")
+                  steps = job["steps"]
+                  require(isinstance(steps, list) and all(isinstance(step, dict)
+                          and positive(step["number"]) and step["status"] == "completed" for step in steps)
+                          and len({step["number"] for step in steps}) == len(steps)
+                          and len({step["name"] for step in steps}) == len(steps), "second attempt steps")
+                  if job["name"] == "Request protected verifier re-evaluation":
+                      require(job["conclusion"] == "failure" and len(steps) == 3, "second attempt dispatch failure")
+                      require([(step["name"], step["number"], step["conclusion"]) for step in steps]
+                              == [("Set up job", 1, "success"), ("Dispatch protected event verifier locator", 2, "failure"),
+                                  ("Complete job", 3, "success")], "second attempt exact failed dispatch")
+                  else:
+                      require(job["conclusion"] == "success"
+                              and all(step["conclusion"] in {"success", "skipped"} for step in steps), "second attempt policy")
+                      binding = (f"Current revision tuple #{context['owner']} {context['base_ref']}@{context['base']} -> "
+                                 f"{repo}:{producer['head_branch']}@{head} run {run_id}")
+                      names = ["Set up job", binding, "Invalidate prior result after pull-request metadata change",
+                               "Capture live pull-request metadata revision", "Classify trusted automation pull request",
+                               "Accept trusted automation exemption", "Verify evidence-bound ancestry backmerge",
+                               "Verify current Copilot review and resolved findings", "Publish bound neutral result", "Complete job"]
+                      require(len(steps) == len(names), "second attempt policy layout")
+                      for index, (step, name) in enumerate(zip(steps, names), 1):
+                          require(step["name"] == name and type(step["number"]) is int and step["number"] == index
+                                  and (step["conclusion"] in {"success", "skipped"} if index == 3
+                                       else step["conclusion"] == ("skipped" if index in {6, 7} else "success")),
+                                  "second attempt policy evidence")
+              return True
+
+
           def verify(context):
               repo, repo_id = context["repository"], context["repository_id"]
               require(repo in {"lightning-it/.github", "lightning-it/shared-assets-lit",
@@ -5536,12 +5628,15 @@ jobs:
               require(all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value)
                           for value in (head, base, source)), "revision binding")
               first, producer = context["first"], context["producer"]
+              recovered_dispatch = second_attempt_dispatch_failure(context)
               for run, attempt, conclusion, trigger in ((first, 1, "failure", "litroc"),
                                                       (producer, 2, "success", "github-actions[bot]")):
                   require(type(run["id"]) is int and run["id"] == run_id
                           and type(run["run_attempt"]) is int and run["run_attempt"] == attempt
                           and run["event"] == "pull_request_target" and run["status"] == "completed"
-                          and run["conclusion"] == conclusion and run["head_sha"] == head
+                          and (run["conclusion"] == conclusion
+                               or (attempt == 2 and recovered_dispatch and run["conclusion"] == "failure"))
+                          and run["head_sha"] == head
                           and run["path"] == ".github/workflows/copilot-review.yml"
                           and run["name"] == "Current revision review gate"
                           and run["actor"]["login"] == "litroc" and run["triggering_actor"]["login"] == trigger
@@ -5642,7 +5737,11 @@ jobs:
 
           if __name__ == "__main__":
               try:
-                  verify(json.load(sys.stdin))
+                  context = json.load(sys.stdin)
+                  if sys.argv[1:] == ["--second-attempt"]:
+                      print(json.dumps(second_attempt_dispatch_failure(context)))
+                  else:
+                      verify(context)
               except (KeyError, TypeError, ValueError, subprocess.SubprocessError) as exc:
                   print(f"Protected request origin rejected: {exc}", file=sys.stderr)
                   sys.exit(1)
@@ -5674,7 +5773,7 @@ jobs:
 
 
           FAILURE_MARKERS = (
-              "unabletoreviewthispullrequest",
+              "unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles",
               "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
               "nofilestoreview", "nofileswerereviewed",
               "unabletoreviewanyfiles",
@@ -5704,7 +5803,7 @@ jobs:
           def normalize(value: str) -> str:
               """Match the protected gate's ASCII fold, contraction and Unicode whitespace rules."""
               ascii_lower = "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in value)
-              expanded = ascii_lower.replace("n't", " not").replace("n’t", " not")
+              expanded = ascii_lower.replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not")
               return "".join(char for char in expanded if not char.isspace())
 
 
@@ -5811,13 +5910,14 @@ jobs:
                   return None if data["record"] is None else blob(data["record"])
 
 
-          def repository(repo, repo_id, source):
+          def repository(repo, repo_id, source, base_ref="develop"):
               require(repo in PILOTS and re.fullmatch(r"[1-9][0-9]*", repo_id) and sha(source), "pilot/source")
               meta = api(f"repos/{repo}")
               require(meta["full_name"] == repo and str(meta["id"]) == repo_id
                       and meta["default_branch"] == "develop", "repository")
-              branch = api(f"repos/{repo}/branches/develop")
-              require(branch["name"] == "develop" and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
+              require(base_ref in {"develop", "main"}, "protected base ref")
+              branch = api(f"repos/{repo}/branches/{base_ref}")
+              require(branch["name"] == base_ref and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
               ancestry = api(f"repos/{repo}/compare/{source}...{branch['commit']['sha']}")
               require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
                       and ancestry.get("behind_by") == 0 and ancestry.get("merge_base_commit", {}).get("sha") == source), "source ancestry")
@@ -5936,8 +6036,10 @@ jobs:
               expected = {"schema", "kind", "repository", "repository_id", "operation", "pr", "base", "head",
                           "base_ref", "head_ref", "owner_run", "owner_attempt", "source_sha", "event", "action",
                           "author", "actor", "triggering_actor", "created_at"}
+              if isinstance(intent, dict) and intent.get("schema") == 2:
+                  expected.add("source_ref")
               require(isinstance(intent, dict) and set(intent) == expected and type(intent["schema"]) is int
-                      and intent["schema"] == 1 and intent["kind"] == "deferred-first-request"
+                      and intent["schema"] in (1, 2) and intent["kind"] == "deferred-first-request"
                       and intent["repository"] == repo and intent["repository_id"] == repo_id and intent["operation"] == key
                       and positive(intent["pr"]) and positive(intent["owner_run"]) and type(intent["owner_attempt"]) is int
                       and intent["owner_attempt"] == 1 and intent["event"] == "pull_request_target"
@@ -5946,7 +6048,14 @@ jobs:
                       and intent["base_ref"] in {"develop", "main"} and isinstance(intent["head_ref"], str) and intent["head_ref"]
                       and all(sha(intent[field]) for field in ("base", "head", "source_sha")), "deferred intent")
               require(key == key_for(repo_id, intent["pr"], intent["head"]), "intent budget key")
-              repository(repo, repo_id, intent["source_sha"])
+              if intent["schema"] == 1:
+                  # Schema 1 always authenticated source_sha against the protected
+                  # default Develop controller, independently of the recorded PR base.
+                  source_ref = "develop"
+              else:
+                  require(intent["source_ref"] == "develop", "original default controller ref")
+                  source_ref = intent["source_ref"]
+              repository(repo, repo_id, intent["source_sha"], source_ref)
               run = original_run(repo, intent)
               job = native_job(repo, run, "Request Copilot review for current revision", ORIGINAL_STEPS)
               require(epoch(job["steps"][2]["started_at"]) <= epoch(intent["created_at"]) <= epoch(job["steps"][2]["completed_at"]), "intent outside original step")
@@ -5977,10 +6086,16 @@ jobs:
 
           def native_resume_run(repo, run_id, source, intent, review_id, completed=True):
               run = api(f"repos/{repo}/actions/runs/{run_id}/attempts/1")
-              require(type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
+              resume_ref = intent["base_ref"]
+              resume_sha = intent["base"]
+              # Completed legacy receipts may describe the old Develop consumer at
+              # its own later protected source, not the original request source.
+              if completed and intent["schema"] == 1 and run.get("head_branch") == "develop":
+                  resume_ref, resume_sha = "develop", source
+              require(sha(source) and type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
                       and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
                       and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
-                      and run["head_sha"] == source and run["head_branch"] == "develop"
+                      and run["head_sha"] == source == resume_sha and run["head_branch"] == resume_ref
                       and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"
                       and run["display_title"] == f"First review PR #{intent['pr']} head {intent['head']} owner {intent['owner_run']} old review {review_id}", "resume native run")
               if completed:
@@ -6009,8 +6124,8 @@ jobs:
               journal = Journal(repo, repo_id)
               journal.oid = record["intent_commit"]
               require(journal.read(record_path(key, True)) == intent and journal.read(record_path(key)) is None, "pre-request intent snapshot")
-              repository(repo, repo_id, record["source_sha"])
               run = native_resume_run(repo, record["claim_run"], record["source_sha"], intent, record["old_review"])
+              repository(repo, repo_id, record["source_sha"], run["head_branch"])
               job = native_job(repo, run, "Resume deferred first review request", RESUME_STEPS)
               start, end = epoch(job["steps"][2]["started_at"]), epoch(job["steps"][2]["completed_at"])
               require(epoch(original["updated_at"]) <= start, "resume ordering")
@@ -6106,7 +6221,7 @@ jobs:
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
             local key pages claims claim receipt refresh_id refresh_run refresh_jobs
-            local source_sha source_ancestry journal_commit journal_head journal_path journal_snapshot journal_record
+            local source_sha source_ancestry source_branch source_head journal_commit journal_head journal_path journal_snapshot journal_record
             key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
             pages="$(gh api --paginate --slurp "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" || return 1
             claims="$(jq -ce --arg key "${key}" '
@@ -6160,18 +6275,19 @@ jobs:
             refresh_id="$(jq -r .claim_run <<<"${receipt}")"
             refresh_run="$(gh api "repos/${REPOSITORY}/actions/runs/${refresh_id}")" || return 1
             jq -e --arg repo "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
-              --arg base "${EVENT_BASE}" --arg branch "${controller_branch}" \
+              --arg base "${EVENT_BASE}" --arg branch "${base_ref}" \
               --argjson id "${refresh_id}" --argjson pr "${owner_pr_number}" '
                 .id == $id and .run_attempt == 1
                 and .path == ".github/workflows/copilot-review-refresh.yml"
-                and .name == "Refresh Copilot review gate"
                 and .repository.full_name == $repo and .head_repository.full_name == $repo
                 and .status == "completed" and .conclusion == "success"
                 and (if .event == "workflow_dispatch" then
                   .actor.login == "github-actions[bot]" and .triggering_actor.login == "github-actions[bot]"
                   and .head_branch == $branch
                   and .display_title == ("Reconcile review PR #" + ($pr|tostring) + " head " + $head)
+                  and (.name == "Refresh Copilot review gate" or .name == .display_title)
                 else
+                  .name == "Refresh Copilot review gate" and
                   (.event | IN("pull_request_review", "pull_request_review_comment"))
                   and .head_sha == $head
                   and .triggering_actor.login == .actor.login
@@ -6185,7 +6301,13 @@ jobs:
               ' <<<"${refresh_run}" >/dev/null || return 1
             if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
               source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
-              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${controller_head}")" || return 1
+              [[ "${base_ref}" =~ ^(develop|main)$ ]] || return 1
+              source_branch="$(gh api "repos/${REPOSITORY}/branches/${base_ref}")" || return 1
+              source_head="$(jq -er --arg ref "${base_ref}" '
+                select(.name == $ref and .protected == true)
+                | .commit.sha | strings | select(test("^[0-9a-f]{40}$"))
+                ' <<<"${source_branch}")" || return 1
+              source_ancestry="$(gh api "repos/${REPOSITORY}/compare/${source_sha}...${source_head}")" || return 1
               jq -e --arg source "${source_sha}" '
                 .status == "identical" or (.status == "ahead" and .behind_by == 0
                   and .merge_base_commit.sha == $source)
@@ -6197,6 +6319,19 @@ jobs:
               --arg producer_started_at "$(jq -er '.run_started_at | strings' <<<"${producer}")" \
               --argjson refresh "${refresh_run}" --argjson event_claim true \
               -f "${RUNNER_TEMP}/native-recovery-ordering.jq" <<<"${refresh_jobs}" >/dev/null || return 1
+          }
+          verify_second_attempt_dispatch() {
+            local result=false
+            if [ "${recovery_status}" -eq 0 ]; then
+              result="$(jq -cn \
+                --arg repository "${REPOSITORY}" --arg head "${EVENT_HEAD}" \
+                --arg base "${EVENT_BASE}" --arg base_ref "${base_ref}" \
+                --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
+                --argjson producer "${producer}" '$ARGS.named' | \
+                run_request_proof /proof/request-origin.py --second-attempt)" || return 1
+              [[ "${result}" =~ ^(true|false)$ ]] || return 1
+            fi
+            printf '%s\n' "${result}"
           }
           EVENT_RECOVERY
 
@@ -7530,16 +7665,16 @@ jobs:
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --argjson run_id "${producer_run_id}" '
-                  .id == $run_id
-                  and .event == "pull_request_target"
-                  and .run_attempt == 1
-                  and .status == "completed"
-                  and .conclusion == "failure"
-                  and .path == ".github/workflows/copilot-review.yml"
-                  and .name == "Current revision review gate"
-                  and .head_sha == $head_sha
-                  and .actor.login == $actor
-                  and .triggering_actor.login == $actor
+          .id == $run_id
+          and .event == "pull_request_target"
+          and .run_attempt == 1
+          and .status == "completed"
+          and .conclusion == "failure"
+          and .path == ".github/workflows/copilot-review.yml"
+          and .name == "Current revision review gate"
+          and .head_sha == $head_sha
+          and .actor.login == $actor
+          and .triggering_actor.login == $actor
                 ' <<<"${attempt_one}" >/dev/null
               attempt_one_jobs="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/actions/runs/${producer_run_id}/attempts/1/jobs?filter=all&per_page=100")"
@@ -7562,13 +7697,7 @@ jobs:
 
               review_pages="$(gh api --paginate --slurp \
                 "repos/${REPOSITORY}/pulls/${owner_pr_number}/reviews?per_page=100")"
-              reviews="$(jq -c \
-                --arg producer_created_at "$(jq -er '.created_at | strings' \
-                  <<<"${attempt_one}")" \
-                --arg head "${EVENT_HEAD}" '
-                  [.[][]? | select(.user.login == "copilot-pull-request-reviewer[bot]") | select(.user.type == "Bot") | select(.commit_id == $head) | select(.state == "COMMENTED" or .state == "APPROVED") | select((.id | type) == "number" and .id > 0) | select((.submitted_at | type) == "string") | select((.submitted_at | fromdateiso8601?)
-                      >= ($producer_created_at | fromdateiso8601)) | select(((.body//"")|ascii_downcase|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";"")) as $b|["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]
-                ' <<<"${review_pages}")"
+              reviews="$(jq -c --arg producer_created_at "$(jq -er '.created_at | strings'   <<<"${attempt_one}")" --arg head "${EVENT_HEAD}" '[.[][]?|select(.user.login=="copilot-pull-request-reviewer[bot]")|select(.user.type=="Bot")|select(.commit_id==$head)|select(.state=="COMMENTED" or .state=="APPROVED")|select((.id|type)=="number" and .id>0)|select((.submitted_at|type)=="string")|select((.submitted_at|fromdateiso8601?)>=($producer_created_at|fromdateiso8601))|select(((.body//"")|ascii_downcase|gsub("can[\u0027\u2019]t";"cannot")|gsub("n[\u0027\u2019]t";" not")|gsub("\\s";""))as $b|["unabletoreviewthispullrequest","cannotreviewthispullrequest","cannotreviewanyfiles","notabletoreviewthispullrequest","wasnotabletoreviewthispullrequest","nofilestoreview","nofileswerereviewed","wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles","premiumrequestquota","premiumrequestsquota","quotaexhausted","quotaexceeded","suppressedcomments","encounteredanerror"]|all(.[];. as $m|$b|contains($m)|not))]' <<<"${review_pages}")"
               test "$(jq 'length' <<<"${reviews}")" -eq 1
               review="$(jq -c '.[0]' <<<"${reviews}")"
               review_submitted_at="$(jq -r .submitted_at <<<"${review}")"
@@ -7648,21 +7777,23 @@ jobs:
                 test "${recovery_status}" -eq 0
               fi
 
+              dispatch_failed="$(verify_second_attempt_dispatch)"
               tl="$(gh api --paginate --slurp "repos/${REPOSITORY}/issues/${owner_pr_number}/timeline?per_page=100")"
               verify_request_origin "${tl}"
               jq -e \
+                --argjson dispatch_failed "${dispatch_failed}" \
                 --arg actor "${author}" \
                 --arg head_sha "${EVENT_HEAD}" \
                 --arg refresh_actor "github-actions[bot]" '
-                  .event == "pull_request_target"
-                  and .run_attempt == 2
-                  and .status == "completed"
-                  and .conclusion == "success"
-                  and .path == ".github/workflows/copilot-review.yml"
-                  and .name == "Current revision review gate"
-                  and .head_sha == $head_sha
-                  and .actor.login == $actor
-                  and .triggering_actor.login == $refresh_actor
+          .event == "pull_request_target"
+          and .run_attempt == 2
+          and .status == "completed"
+          and (.conclusion == "success" or ($dispatch_failed and .conclusion == "failure"))
+          and .path == ".github/workflows/copilot-review.yml"
+          and .name == "Current revision review gate"
+          and .head_sha == $head_sha
+          and .actor.login == $actor
+          and .triggering_actor.login == $refresh_actor
                 ' <<<"${producer}" >/dev/null
             fi
             jq -e \
@@ -7944,8 +8075,8 @@ jobs:
                   and .[0].submitted_at == "2026-09-07T06:48:29Z"
                   and (.[0].body | type) == "string"
                   and ((.[0].body | ascii_downcase
-                    | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
-                    | ["unabletoreviewthispullrequest","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
+                    | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; "")) as $body
+                    | ["unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles","notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest","nofilestoreview", "nofileswerereviewed",
                        "wasnotabletoreviewanyfiles","notabletoreviewanyfiles","unabletoreviewanyfiles",
                        "premiumrequestquota","premiumrequestsquota",
                        "quotaexhausted","quotaexceeded","suppressedcomments",
@@ -8222,6 +8353,10 @@ jobs:
           fi
 
           failure_stage='permanent-finalization'
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            # Repeat the contract/deadline guard immediately before acceptance.
+            bash "${RUNNER_TEMP}/li259-launcher.sh" receiver
+          fi
           finalized="$(gh api --method PATCH \
             "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
             -f status=completed \

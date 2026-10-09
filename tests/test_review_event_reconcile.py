@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -31,7 +32,7 @@ class ReviewEventTests(unittest.TestCase):
         self.assertEqual(['completed'], events['workflow_run']['types'])
         self.assertEqual({'Copilot', 'Running Copilot Code Review', 'Current revision review gate',
                           'Protected current-revision evidence verifier',
-                          'Protected dot-github current-revision verifier'}, set(events['workflow_run']['workflows']))
+                          'Protected dot-github current-revision verifier', 'Refresh Copilot review gate'}, set(events['workflow_run']['workflows']))
         self.assertEqual([{'cron': '*/10 * * * *'}], events['schedule'])
         job = workflow['jobs']['reconcile']
         self.assertIn("vars.LI219_EVENT_MODE == 'enabled'", job['if'])
@@ -44,6 +45,67 @@ class ReviewEventTests(unittest.TestCase):
         self.assertNotIn('GITHUB_EVENT_PATH', (ROOT / 'scripts/review-event-reconcile.py').read_text())
         mirror = ROOT / 'default/.github/workflows/review-event-reconcile.yml'
         if mirror.exists(): self.assertEqual(path.read_bytes(), mirror.read_bytes())
+
+    def test_review_completion_wakeup_is_event_scoped_and_loop_free(self):
+        import json
+        from types import SimpleNamespace as NS
+
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/review-event-reconcile.yml').read_text())
+        events = workflow.get('on', workflow.get(True))
+        expression = ' '.join(workflow['jobs']['reconcile']['if'].replace('&&', ' and ').replace('||', ' or ').split())
+        def enabled(name='Refresh Copilot review gate', upstream='pull_request_review',
+                    conclusion='success', event='workflow_run', mode='enabled', **changes):
+            run = dict(name=name, event=upstream, conclusion=conclusion, status='completed',
+                       run_attempt=1, path='.github/workflows/copilot-review-refresh.yml',
+                       repository=NS(full_name='lightning-it/shared-assets-lit'),
+                       head_repository=NS(full_name='lightning-it/shared-assets-lit'),
+                       actor=NS(login='Copilot', type='Bot'),
+                       triggering_actor=NS(login='Copilot', type='Bot'))
+            run.update(changes)
+            github = NS(repository='lightning-it/shared-assets-lit', event_name=event,
+                        event=NS(workflow_run=NS(**run)))
+            triggered = event == 'schedule' or name in events['workflow_run']['workflows']
+            return triggered and eval(expression, {'__builtins__': {}}, {
+                'github': github, 'vars': NS(LI219_EVENT_MODE=mode),
+                'contains': lambda values, item: item in values, 'fromJSON': json.loads})
+        for upstream in ('pull_request_review', 'pull_request_review_comment'):
+            for actor in ('Copilot', 'copilot-pull-request-reviewer', 'copilot-pull-request-reviewer[bot]'):
+                with self.subTest(upstream=upstream, actor=actor):
+                    self.assertTrue(enabled(upstream=upstream, actor=NS(login=actor, type='Bot'),
+                                            triggering_actor=NS(login=actor, type='Bot')))
+            for conclusion in ('skipped', 'failure', 'cancelled', 'timed_out', 'action_required', None):
+                with self.subTest(upstream=upstream, conclusion=conclusion):
+                    self.assertFalse(enabled(upstream=upstream, conclusion=conclusion))
+        for upstream in ('workflow_dispatch', 'pull_request_target', 'push', 'schedule', 'workflow_run', None):
+            self.assertFalse(enabled(upstream=upstream))
+        for changes in (
+            {'status': 'in_progress'}, {'status': None}, {'run_attempt': 2}, {'run_attempt': None},
+            {'path': '.github/workflows/untrusted.yml'}, {'path': None},
+            {'repository': NS(full_name='attacker/fork')}, {'repository': NS(full_name=None)},
+            {'head_repository': NS(full_name='attacker/fork')}, {'head_repository': NS(full_name=None)},
+            {'actor': NS(login='attacker', type='User')}, {'actor': NS(login='attacker[bot]', type='Bot')},
+            {'actor': NS(login='litroc', type='User')}, {'actor': NS(login=None, type='Bot')},
+            {'actor': NS(login='Copilot', type='User')},
+            {'triggering_actor': NS(login='attacker', type='User')},
+            {'triggering_actor': NS(login='Copilot', type='User')},
+            {'triggering_actor': NS(login=None, type='Bot')},
+        ):
+            with self.subTest(changes=changes):
+                self.assertFalse(enabled(**changes))
+        # Repeated untrusted completions cannot start the inventory job.
+        self.assertFalse(any(enabled(actor=NS(login='attacker', type='User')) for _ in range(256)))
+        self.assertFalse(enabled(mode='disabled'))
+        self.assertFalse(enabled(name='Reconcile delayed review events'))
+        self.assertTrue(enabled(event='schedule', upstream='workflow_dispatch', conclusion='skipped'))
+        for name in ('Copilot', 'Running Copilot Code Review'):
+            self.assertTrue(enabled(name=name, upstream='dynamic', path='dynamic/copilot'))
+            self.assertFalse(enabled(name=name, actor=NS(login='attacker', type='User')))
+            self.assertFalse(enabled(name=name, conclusion='skipped'))
+        for name in ('Current revision review gate', 'Protected current-revision evidence verifier',
+                     'Protected dot-github current-revision verifier'):
+            self.assertFalse(enabled(name=name, upstream='pull_request_target'))
+        self.assertNotIn('Refresh Copilot review gate', workflow['jobs']['reconcile']['steps'][1]['run'])
 
     def review(self, **changes):
         return {"id": 17, "commit_id": self.head, "body": "Review complete.",
@@ -90,17 +152,23 @@ class ReviewEventTests(unittest.TestCase):
         self.assertFalse(EVENT.clean_review(self.review(), [{"body": "Suppressed comments"}], self.head))
         self.assertTrue(EVENT.clean_review(self.review(body=""), [{"body": "Reviewed files"}], self.head))
 
-    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None):
+    def reconcile(self, *, delay=180, missing=False, state="completed", drift=False, uncertain=False, review_body="Review complete.", comment_body=None, history=(), pr_count=1, transform=None, neutral=False, required=None, inventory_transform=None, base_ref="develop", head_repository="lightning-it/.github", producer_repository=None, live_repository=None):
         prefix = "repos/lightning-it/.github"
         pr = {"id": 23, "number": 23, "draft": False, "state": "open",
               "user": {"login": "litroc", "type": "User"},
-              "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": "lightning-it/.github"}},
-              "base": {"sha": self.base, "ref": "develop"}}
+              "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": head_repository}},
+              "base": {"sha": self.base, "ref": base_ref, "repo": {"full_name": "lightning-it/.github"}}}
         run = {"id": 77, "path": EVENT.PRODUCER, "event": "pull_request_target",
                "repository": {"full_name": "lightning-it/.github"},
-               "head_repository": {"full_name": "lightning-it/.github"}, "run_attempt": 1, "head_sha": self.head,
+               "head_repository": {"full_name": producer_repository or head_repository}, "run_attempt": 1, "head_sha": self.head,
                "head_branch": "fix/final", "pull_requests": [],
                "status": state, "created_at": (self.now - dt.timedelta(seconds=delay)).isoformat()}
+        if required is None:
+            native = self.required_run()
+            native["head_repository"]["full_name"] = head_repository
+            native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + head_repository
+            native["pull_requests"][0]["base"]["ref"] = base_ref
+            required = [native]
         inventories = {
 
             f"{prefix}/pulls?state=open": [{**pr, "id": 23 + i, "number": 23 + i} for i in range(pr_count)],
@@ -138,6 +206,8 @@ class ReviewEventTests(unittest.TestCase):
             if route == prefix:
                 return {"default_branch": "develop"}
             if route.startswith(f"{prefix}/pulls/"):
+                if live_repository is not None:
+                    return {**pr, "head": {**pr["head"], "repo": {"full_name": live_repository}}}
                 return {**pr, "head": {**pr["head"], "sha": self.base}} if drift else pr
             raise AssertionError(route)
 
@@ -150,6 +220,84 @@ class ReviewEventTests(unittest.TestCase):
             else:
                 EVENT.reconcile("lightning-it/.github", self.now)
         return mutations
+
+    def test_authenticated_fork_completion_and_periodic_required_locator(self):
+        for branch in ("develop", "main"):
+            for neutral in (False, True):
+                with self.subTest(branch=branch, neutral=neutral):
+                    calls = self.reconcile(base_ref=branch, head_repository="contributor/core", neutral=neutral)
+                    self.assertEqual(1, len(calls))
+                    expected = EVENT.HELPER if neutral else EVENT.REFRESH
+                    self.assertTrue(calls[0][0].endswith(expected + "/dispatches"))
+                    self.assertEqual(branch, calls[0][1]["ref"])
+                    self.assertNotIn("requested_reviewers", calls[0][0])
+
+    def test_fork_identity_swap_and_missing_evidence_do_not_dispatch(self):
+        for neutral in (False, True):
+            with self.subTest(neutral=neutral):
+                self.assertEqual([], self.reconcile(head_repository="contributor/core", producer_repository="other/core", neutral=neutral))
+                self.assertEqual([], self.reconcile(head_repository="contributor/core", live_repository="other/core", neutral=neutral))
+        self.assertEqual([], self.reconcile(head_repository="contributor/core", missing=True))
+        for malformed in ("", "../other/core", "owner/repo/extra", "../repo", "owner/.."):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                self.reconcile(head_repository=malformed)
+
+    def test_main_refresh_dispatch_uses_authenticated_main_base(self):
+        calls = self.reconcile(base_ref="main")
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0][0].endswith("copilot-review-refresh.yml/dispatches"))
+        self.assertEqual("main", calls[0][1]["ref"])
+
+    def test_ambiguous_first_pr_stays_closed_and_later_pr_dispatches(self):
+        prefix = "repos/lightning-it/.github"
+        pulls = [{"id": number, "number": number, "draft": False, "state": "open",
+                  "user": {"login": "litroc", "type": "User"},
+                  "head": {"sha": head, "ref": f"fix/{number}",
+                           "repo": {"full_name": "lightning-it/.github"}},
+                  "base": {"sha": self.base, "ref": "develop",
+                           "repo": {"full_name": "lightning-it/.github"}}}
+                 for number, head in ((23, self.head), (24, "c" * 40))]
+        inventories = {f"{prefix}/pulls?state=open": pulls}
+        for pr in pulls:
+            head = pr["head"]["sha"]
+            inventories[f"{prefix}/actions/runs?event=pull_request_target&head_sha={head}"] = {
+                "total_count": 1, "workflow_runs": [{
+                    "id": 77 + pr["number"], "path": EVENT.PRODUCER,
+                    "event": "pull_request_target", "repository": pr["base"]["repo"],
+                    "head_repository": pr["head"]["repo"], "head_sha": head,
+                    "head_branch": pr["head"]["ref"], "pull_requests": [],
+                    "status": "completed", "created_at": self.now.isoformat()}]}
+            checks = [{"id": check_id, "name": "Current revision review",
+                       "app": {"id": 15368, "slug": "github-actions"},
+                       "status": "completed", "conclusion": "success"}
+                      for check_id in (79, 80)] if pr["number"] == 23 else []
+            inventories[f"{prefix}/commits/{head}/check-runs?filter=all"] = {
+                "total_count": len(checks), "check_runs": checks}
+        inventories[f"{prefix}/pulls/24/reviews"] = [self.review(commit_id="c" * 40)]
+        inventories[f"{prefix}/pulls/24/reviews/17/comments"] = []
+        mutations = []
+
+        def api(route, payload=None):
+            if payload is not None:
+                mutations.append((route, payload))
+                return None
+            if route == prefix:
+                return {"default_branch": "develop"}
+            if "/actions/workflows/" in route:
+                return self.inventory_response([], route)
+            if route == f"{prefix}/pulls/24":
+                return pulls[1]
+            inventory_route = re.sub(r"[?&]per_page=100&page=1$", "", route)
+            return inventories[inventory_route]
+
+        with patch.object(EVENT, "api", side_effect=api), \
+                patch.dict(os.environ, LI219_EVENT_MODE="enabled", GITHUB_REF="refs/heads/develop",
+                           GITHUB_REF_PROTECTED="true"), patch("builtins.print") as log:
+            EVENT.reconcile("lightning-it/.github", self.now)
+        self.assertEqual([(f"{prefix}/actions/workflows/{EVENT.REFRESH}/dispatches", {
+            "ref": "develop", "inputs": {"pr_number": "24", "expected_head": "c" * 40,
+                                           "expected_base": self.base, "review_id": "17"}})], mutations)
+        log.assert_any_call("PR 23: ambiguous neutral evidence; required failure remains blocking")
 
     def test_late_review_after_ten_minutes_dispatches_same_pr_without_review_request(self):
         for delay in (180, 601, 3600):
@@ -174,6 +322,21 @@ class ReviewEventTests(unittest.TestCase):
 
     def test_ambiguous_dispatch_response_is_not_retried(self):
         self.assertEqual(1, len(self.reconcile(uncertain=True)))
+
+    def test_completed_locator_cooldown_boundary_and_active_hold(self):
+        expected = [("repos/lightning-it/.github/actions/workflows/copilot-review-refresh.yml/dispatches", {
+            "ref": "develop",
+            "inputs": {"pr_number": "23", "expected_head": self.head,
+                       "expected_base": self.base, "review_id": "17"},
+        })]
+        for age in (599, 600, 601):
+            for status in ("completed", "queued", "in_progress"):
+                with self.subTest(age=age, status=status):
+                    locator = self.locator(0, pr=23, status=status, conclusion="failure" if status == "completed" else None,
+                        created_at=(self.now - dt.timedelta(seconds=1200)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        updated_at=(self.now - dt.timedelta(seconds=age)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                    calls = self.reconcile(delay=1800, history=[locator])
+                    self.assertEqual(expected if status == "completed" and age >= 600 else [], calls)
 
     def test_active_dispatch_is_deduplicated(self):
         run = {"path": ".github/workflows/copilot-review-refresh.yml",
@@ -253,7 +416,7 @@ class ReviewEventTests(unittest.TestCase):
             run["path"] = ".github/workflows/supplementary-current-revision-required.yml"
             run["name"] = "Protected current-revision evidence verifier"
             run["display_title"] = f"Protected current revision PR #23 opened {self.head}"
-            pr = {"number": 23, "head": {"sha": self.head, "ref": "fix/final"},
+            pr = {"number": 23, "head": {"sha": self.head, "ref": "fix/final", "repo": {"full_name": repo}},
                   "base": {"sha": self.base, "ref": "develop"}}
             self.assertTrue(EVENT.required_locator(run, repo, pr))
             run["workflow_url"] = run["workflow_url"].replace("required_workflows", "workflows")
@@ -451,6 +614,7 @@ gh() {
     *'/attempts/1/jobs?'*) printf %s "${JOBS}" ;;
     *'/actions/runs/500') printf %s "${REFRESH}" ;;
     *'/compare/'*) printf %s "${ANCESTRY}" ;;
+    *'/branches/develop') printf %s "${BRANCH}" ;;
     *'/git/ref/'*) printf %s "1111111111111111111111111111111111111111" ;;
     *'graphql'*) printf %s "${JOURNAL}" ;;
     *) return 99;;
@@ -492,12 +656,13 @@ gh() {
             (Path(tmp) / "native-recovery-ordering.jq").write_text(textwrap.dedent(ordering))
             for changes, expected in cases:
                 data = {"CLAIMS": [{"check_runs": [claim]}], "REFRESH": run,
+                        "BRANCH": {"name": "develop", "protected": True, "commit": {"sha": "c" * 40}},
                         "JOBS": full_jobs, "ANCESTRY": {"status": "identical"}, "JOURNAL": journal, **changes}
                 result = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, check=False,
                                         env={**os.environ, "LI219_EVENT_MODE": "enabled", "GITHUB_REPOSITORY_ID": "1112629689", **{k: json.dumps(v) for k, v in data.items()},
                                              "RUNNER_TEMP": tmp, "owner_pr_number": "23", "EVENT_BASE": self.base,
                                              "EVENT_HEAD": self.head, "producer_run_id": "77",
-                                             "REPOSITORY": "lightning-it/.github", "controller_branch": "develop",
+                                             "REPOSITORY": "lightning-it/.github", "controller_branch": "develop", "base_ref": "develop",
                                              "controller_head": "c" * 40, "first_verifier_completed_at": "2026-10-05T17:59:00Z",
                                              "producer": json.dumps({"run_started_at": "2026-10-05T18:00:04Z"})})
                 self.assertEqual(expected, result.returncode, result.stderr)

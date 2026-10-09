@@ -74,7 +74,9 @@ elif '/git/ref/' in route:
         print(state['OID']); sys.exit(0)
     result = state['REF']
 elif '/compare/' in route:
-    result = state['ANCESTRY']
+    if 'ALLOWED_COMPARISONS' in state:
+        assert route in state['ALLOWED_COMPARISONS'], route
+    result = state.get('ANCESTRY_BY_ROUTE', {}).get(route, state['ANCESTRY'])
 elif route.endswith('/branches/develop'):
     result = state['BRANCH']
 elif route == 'repos/' + state['REPO']:
@@ -197,8 +199,10 @@ os.execvp(command[0], command)
                                    'requested_reviewer': {'login': 'Copilot'}, 'created_at': '2026-10-05T17:50:10Z'}]]}
 
     def run_caller(self, data=None, **env):
+        data = data or self.data
+        controller = data.get('CONTROLLER', SOURCE)
         fixture, calls = self.root / 'fixture.json', self.root / 'calls.jsonl'
-        fixture.write_text(json.dumps(data or self.data))
+        fixture.write_text(json.dumps(data))
         calls.write_text('')
         result = subprocess.run(['bash', '-c', self.shell], text=True, capture_output=True, timeout=30, check=False,
                                 env={**os.environ, 'PATH': str(self.root) + os.pathsep + os.environ['PATH'],
@@ -206,7 +210,7 @@ os.execvp(command[0], command)
                                      'LI219_EVENT_MODE': 'enabled', 'GITHUB_REPOSITORY_ID': '1112629689',
                                      'GITHUB_API_URL': 'https://api.github.com', 'REPOSITORY': REPO, 'author': 'litroc',
                                      'owner_pr_number': '23', 'EVENT_BASE': BASE, 'EVENT_HEAD': HEAD, 'base_ref': 'develop',
-                                     'controller_branch': 'develop', 'controller_head': SOURCE, 'controller_sha': SOURCE,
+                                     'controller_branch': 'develop', 'controller_head': controller, 'controller_sha': controller,
                                      'producer_run_id': '77', 'producer': json.dumps(self.producer), **env})
         self.calls = [json.loads(line) for line in calls.read_text().splitlines()]
         return result
@@ -217,6 +221,102 @@ os.execvp(command[0], command)
         self.assertTrue(any(REQUEST_PATH in ' '.join(call) for call in self.calls))
         self.assertTrue(any('/check-runs?' in ' '.join(call) for call in self.calls))
         self.assertFalse(any('--method' in call for call in self.calls))
+
+    def test_dispatch_run_name_may_equal_its_exact_bound_title(self):
+        self.data['REFRESH']['name'] = self.data['REFRESH']['display_title']
+        result = self.run_caller()
+        self.assertEqual(0, result.returncode, result.stderr)
+        for name in ('Reconcile review PR #24 head ' + HEAD, 'forged'):
+            data = copy.deepcopy(self.data)
+            data['REFRESH']['name'] = name
+            self.assertNotEqual(0, self.run_caller(data).returncode)
+
+    def source_failed_dispatch_fixture(self):
+        repo, rid = 'lightning-it/shared-assets-lit', '1120841013'
+        data = json.loads(json.dumps(self.data).replace(REPO, repo).replace('1112629689', rid))
+        key = f'li219-review-request:v1:{rid}:{PR}:{HEAD}'
+        data['REQUEST_PATH'] = 'operations/' + hashlib.sha256(key.encode()).hexdigest() + '.json'
+        for kind in ('REQUEST_JOURNAL', 'RERUN_JOURNAL'):
+            for field in ('manifest', 'record'):
+                item = data[kind]['data']['repository'][field]
+                item['byteSize'] = len(item['text'].encode())
+        producer = json.loads(json.dumps(self.producer).replace(REPO, repo))
+        producer['conclusion'] = 'failure'
+        template = {'run_id': RUN, 'run_attempt': 2, 'head_sha': HEAD, 'status': 'completed',
+                    'workflow_name': 'Current revision review gate',
+                    'run_url': f'https://api.github.com/repos/{repo}/actions/runs/{RUN}'}
+        policy = {**template, 'id': 201, 'name': 'Verify current revision policy', 'conclusion': 'success',
+                  'runner_id': 6, 'steps': [
+                      {'name': name, 'number': index + 1, 'status': 'completed',
+                       'conclusion': 'skipped' if index + 1 in {3, 6, 7} else 'success'}
+                      for index, name in enumerate((
+                          'Set up job',
+                          f'Current revision tuple #{PR} develop@{BASE} -> {repo}:fix/final@{HEAD} run {RUN}',
+                          'Invalidate prior result after pull-request metadata change',
+                          'Capture live pull-request metadata revision', 'Classify trusted automation pull request',
+                          'Accept trusted automation exemption', 'Verify evidence-bound ancestry backmerge',
+                          'Verify current Copilot review and resolved findings', 'Publish bound neutral result', 'Complete job'))]}
+        dispatch = {**template, 'id': 202, 'name': 'Request protected verifier re-evaluation',
+                    'conclusion': 'failure', 'runner_id': 7, 'steps': [
+                        {'name': name, 'number': index + 1, 'status': 'completed', 'conclusion': conclusion}
+                        for index, (name, conclusion) in enumerate((('Set up job', 'success'),
+                            ('Dispatch protected event verifier locator', 'failure'), ('Complete job', 'success')))]}
+        inert = [{**template, 'id': 203 + index, 'name': name, 'conclusion': 'skipped',
+                  'runner_id': None, 'steps': []} for index, name in enumerate((
+                      'Classify protected main trust-root handoff', 'Request Copilot review for current revision',
+                      'Inactive legacy handoff', 'Dispatch protected managed-sync finalizer re-evaluation'))]
+        data['EXTRA_ROUTES'] = {f'repos/{repo}/actions/runs/{RUN}/attempts/2/jobs':
+                                {'total_count': 6, 'jobs': [policy, dispatch, *inert]}}
+        return data, {'REPOSITORY': repo, 'GITHUB_REPOSITORY_ID': rid, 'producer': json.dumps(producer)}
+
+    def test_source_failed_locator_requires_full_recovery_and_native_job_binding(self):
+        original, env = self.source_failed_dispatch_fixture()
+        result = self.run_caller(original, **env)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/attempts/2/jobs?' in ' '.join(call) for call in self.calls))
+        self.assertTrue(any(REQUEST_PATH.split('/')[0] in ' '.join(call) for call in self.calls))
+        route = next(iter(original['EXTRA_ROUTES']))
+        faults = {
+            'count': lambda d: d['EXTRA_ROUTES'][route].update(total_count=7),
+            'duplicate': lambda d: d['EXTRA_ROUTES'][route]['jobs'].append(copy.deepcopy(d['EXTRA_ROUTES'][route]['jobs'][0])),
+            'wrong attempt': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_attempt=True),
+            'wrong head': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(head_sha=BASE),
+            'wrong run': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_id=78),
+            'wrong path': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1].update(run_url='foreign'),
+            'policy failure': lambda d: d['EXTRA_ROUTES'][route]['jobs'][0].update(conclusion='failure'),
+            'missing policy evidence': lambda d: d['EXTRA_ROUTES'][route]['jobs'][0].update(steps=[]),
+            'wrong failed step': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1]['steps'][1].update(name='Request AI again'),
+            'failed setup': lambda d: d['EXTRA_ROUTES'][route]['jobs'][1]['steps'][0].update(conclusion='failure'),
+            'active extra': lambda d: d['EXTRA_ROUTES'][route]['jobs'][2].update(conclusion='success'),
+            'stale CAS': lambda d: d['RERUN_JOURNAL']['data']['repository'].update(record=blob({'schema': 1})),
+            'failed helper': lambda d: d['REFRESH'].update(conclusion='failure'),
+            'wrong helper actor': lambda d: d['REFRESH'].update(actor={'login': 'mallory'}),
+            'late helper': lambda d: d['REFRESH_JOBS'][0]['jobs'][0]['steps'][1].update(started_at='2026-10-05T18:00:09Z'),
+        }
+        for label, mutate in faults.items():
+            with self.subTest(fault=label):
+                data = copy.deepcopy(original)
+                mutate(data)
+                self.assertNotEqual(0, self.run_caller(data, **env).returncode)
+
+    def test_failed_locator_rejects_other_enabled_pilot_callers(self):
+        source, env = self.source_failed_dispatch_fixture()
+        source_repo, source_id = 'lightning-it/shared-assets-lit', '1120841013'
+        for repo, repo_id in (('lightning-it/.github', '1112629689'),
+                              ('lightning-it/ansible-collection-supplementary', '1103407173')):
+            with self.subTest(repository=repo):
+                data = json.loads(json.dumps(source).replace(source_repo, repo).replace(source_id, repo_id))
+                key = f'li219-review-request:v1:{repo_id}:{PR}:{HEAD}'
+                data['REQUEST_PATH'] = 'operations/' + hashlib.sha256(key.encode()).hexdigest() + '.json'
+                for kind in ('REQUEST_JOURNAL', 'RERUN_JOURNAL'):
+                    for field in ('manifest', 'record'):
+                        item = data[kind]['data']['repository'][field]
+                        item['byteSize'] = len(item['text'].encode())
+                producer = env['producer'].replace(source_repo, repo)
+                result = self.run_caller(data, REPOSITORY=repo, GITHUB_REPOSITORY_ID=repo_id,
+                                         producer=producer)
+                self.assertNotEqual(0, result.returncode, result.stderr)
+                self.assertFalse(any('--method' in call for call in self.calls))
 
     def test_same_caller_proof_supports_each_other_enabled_pilot(self):
         for repo, repo_id in (("lightning-it/shared-assets-lit", "1120841013"),
@@ -343,13 +443,23 @@ os.execvp(command[0], command)
 
     def resume_fixture(self):
         data = copy.deepcopy(self.data)
+        # A resumed writer executes the exact protected PR base, unlike the
+        # separate direct/historical fixtures whose controller may be older.
+        data['CONTROLLER'] = BASE
+        data['BRANCH']['commit']['sha'] = BASE
+        data['REFRESH']['head_sha'] = BASE
+        for refresh_job in data['REFRESH_JOBS'][0]['jobs']:
+            refresh_job['head_sha'] = BASE
+        rerun_record = json.loads(data['RERUN_JOURNAL']['data']['repository']['record']['text'])
+        rerun_record['source_sha'] = BASE
+        data['RERUN_JOURNAL'] = snapshot(rerun_record)
         intent = {'schema': 1, 'kind': 'deferred-first-request', 'repository': REPO, 'repository_id': '1112629689',
                   'operation': REQUEST_KEY, 'pr': PR, 'base': BASE, 'head': HEAD, 'base_ref': 'develop', 'head_ref': 'fix/final',
-                  'owner_run': RUN, 'owner_attempt': 1, 'source_sha': SOURCE, 'event': 'pull_request_target', 'action': 'synchronize',
+                  'owner_run': RUN, 'owner_attempt': 1, 'source_sha': BASE, 'event': 'pull_request_target', 'action': 'synchronize',
                   'author': 'litroc', 'actor': 'litroc', 'triggering_actor': 'litroc', 'created_at': '2026-10-05T17:50:10Z'}
         historical = '2' * 40
         old_head = 'd' * 40
-        record = {**self.record, 'schema': 2, 'claim_run': '88', 'intent': intent,
+        record = {**self.record, 'schema': 2, 'claim_run': '88', 'source_sha': BASE, 'intent': intent,
                   'intent_commit': historical, 'old_review': 16, 'old_head': old_head}
         data['REQUEST_JOURNAL'] = snapshot(record)
         def history(value):
@@ -367,7 +477,7 @@ os.execvp(command[0], command)
                   'display_title': f'First review PR #{PR} head {HEAD} owner {RUN} old review 16',
                   'created_at': '2026-10-05T17:59:31Z', 'updated_at': '2026-10-05T17:59:59Z'}
         job = copy.deepcopy(data['FIRST_JOBS'][0]['jobs'][0])
-        job.update(id=880, run_id=88, head_sha=SOURCE, name='Resume deferred first review request',
+        job.update(id=880, run_id=88, head_sha=BASE, name='Resume deferred first review request',
                    started_at='2026-10-05T17:59:32Z', completed_at='2026-10-05T17:59:59Z')
         names = ['Set up job', 'Materialize protected first-request continuation', 'Resume the deferred first request', 'Complete job']
         times = [('32', '33'), ('33', '34'), ('34', '58'), ('58', '59')]
@@ -396,6 +506,81 @@ os.execvp(command[0], command)
         self.assertTrue(any('deferred/' in ' '.join(call) for call in self.calls))
         self.assertFalse(any('--method' in call for call in self.calls))
 
+    def main_typed_resume_fixture(self):
+        data = self.resume_fixture()
+        data['CONTROLLER'] = SOURCE
+        data['ALLOWED_COMPARISONS'] = [f'repos/{REPO}/compare/{SOURCE}...{SOURCE}', f'repos/{REPO}/compare/{BASE}...{BASE}', f'repos/{REPO}/compare/{JOURNAL}...{JOURNAL}']
+        data['BRANCH']['commit']['sha'] = SOURCE
+        data['FIRST']['pull_requests'][0]['base']['ref'] = 'main'
+        self.producer['pull_requests'][0]['base']['ref'] = 'main'
+        data['REFRESH']['head_branch'] = 'main'
+        data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1']['head_branch'] = 'main'
+        data['EXTRA_ROUTES'][f'repos/{REPO}/branches/main'] = {
+            'name': 'main', 'protected': True, 'commit': {'sha': BASE},
+        }
+        record = json.loads(data['REQUEST_JOURNAL']['data']['repository']['record']['text'])
+        record['intent'].update(schema=2, source_ref='develop', source_sha=SOURCE, base_ref='main')
+        data['REQUEST_JOURNAL'] = snapshot(record)
+        key = record['intent_commit'] + ':' + REQUEST_PATH.replace('operations/', 'deferred/')
+        old = data['EXTRA_JOURNALS'][key]
+        old['data']['repository']['record']['text'] = json.dumps(record['intent'])
+        old['data']['repository']['record']['byteSize'] = len(json.dumps(record['intent']).encode())
+        return data
+
+    def test_actual_required_main_resume_keeps_default_and_dispatch_sources_distinct(self):
+        data = self.main_typed_resume_fixture()
+        result = self.run_caller(data, base_ref='main')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/branches/main' in ' '.join(call) for call in self.calls))
+        self.assertTrue(any('/actions/runs/88/attempts/1/jobs' in ' '.join(call) for call in self.calls))
+        self.assertFalse(any('--method' in call for call in self.calls))
+        for field, value in (('head_branch', 'develop'), ('head_sha', SOURCE)):
+            with self.subTest(refresh_field=field):
+                drifted = copy.deepcopy(data)
+                drifted['REFRESH'][field] = value
+                self.assertNotEqual(0, self.run_caller(drifted, base_ref='main').returncode)
+        for field, value in (('name', 'develop'), ('protected', False), ('commit', {'sha': 'not-a-sha'})):
+            with self.subTest(protected_branch_field=field):
+                drifted = copy.deepcopy(data)
+                drifted['EXTRA_ROUTES'][f'repos/{REPO}/branches/main'][field] = value
+                self.assertNotEqual(0, self.run_caller(drifted, base_ref='main').returncode)
+                self.assertTrue(any('/branches/main' in ' '.join(call) for call in self.calls))
+
+    def test_actual_required_accepts_historical_schema1_main_resume_on_develop(self):
+        data = self.main_typed_resume_fixture()
+        later, current = 'd' * 40, 'e' * 40
+        record = json.loads(data['REQUEST_JOURNAL']['data']['repository']['record']['text'])
+        record['intent']['schema'] = 1
+        del record['intent']['source_ref']
+        record['source_sha'] = later
+        data['REQUEST_JOURNAL'] = snapshot(record)
+        key = record['intent_commit'] + ':' + REQUEST_PATH.replace('operations/', 'deferred/')
+        historical = data['EXTRA_JOURNALS'][key]['data']['repository']['record']
+        text = json.dumps(record['intent'])
+        historical.update(text=text, byteSize=len(text.encode()))
+        resume = data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1']
+        resume.update(head_sha=later, head_branch='develop')
+        jobs = data['EXTRA_ROUTES'][f'repos/{REPO}/actions/runs/88/attempts/1/jobs']['jobs']
+        for job in jobs:
+            job['head_sha'] = later
+        data['BRANCH']['commit']['sha'] = current
+        data['ALLOWED_COMPARISONS'] = [
+            f'repos/{REPO}/compare/{SOURCE}...{current}',
+            f'repos/{REPO}/compare/{later}...{current}',
+            f'repos/{REPO}/compare/{BASE}...{BASE}',
+            f'repos/{REPO}/compare/{JOURNAL}...{JOURNAL}',
+        ]
+        data['ANCESTRY_BY_ROUTE'] = {
+            f'repos/{REPO}/compare/{SOURCE}...{current}': {
+                'status': 'ahead', 'behind_by': 0, 'merge_base_commit': {'sha': SOURCE}},
+            f'repos/{REPO}/compare/{later}...{current}': {
+                'status': 'ahead', 'behind_by': 0, 'merge_base_commit': {'sha': later}},
+        }
+        result = self.run_caller(data, base_ref='main', controller_head=current)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(any('/branches/develop' in ' '.join(call) for call in self.calls))
+        self.assertFalse(any('--method' in call for call in self.calls))
+
     def test_actual_required_allows_old_completion_before_owner_but_keeps_effect_age_limit(self):
         data = self.resume_fixture()
         old = data['EXTRA_ROUTES'][f'repos/{REPO}/pulls/{PR}/reviews/16']
@@ -415,6 +600,7 @@ os.execvp(command[0], command)
         original = self.resume_fixture()
         prefix = f'repos/{REPO}'
         mutations = {
+            'old default controller instead of exact base': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_sha=SOURCE),
             'PR head masquerading as writer source': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_sha=HEAD),
             'unprotected writer branch': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(head_branch='fix/final'),
             'wrong event': lambda d: d['EXTRA_ROUTES'][prefix + '/actions/runs/88/attempts/1'].update(event='pull_request_review'),
@@ -512,7 +698,9 @@ os.execvp(command[0], command)
         self.assertEqual(3, len(classifiers))
         positives = ('Copilot was able to review this pull request.',
                      'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST')
-        negatives = ("Copilot wasn't able to review this pull request.",
+        negatives = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     "Copilot wasn't able to review this pull request.",
                      'Copilot wasn’t able to review this pull request.',
                      'Copilot was not able to review this pull request.',
                      'Copilot is not able to review this pull request.',
@@ -522,8 +710,9 @@ os.execvp(command[0], command)
                      'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST')
         for classifier in classifiers:
             before = workflow[classifier.start() - 220:classifier.start()]
-            normalizers = re.findall(r'ascii_downcase\s*\|\s*gsub\([^)]*\)\s*\|\s*gsub\([^)]*\)', before)
+            normalizers = re.findall(r'ascii_downcase(?:\s*\|\s*gsub\([^)]*\))+', before)
             self.assertEqual(1, len(normalizers))
+            self.assertEqual(3, normalizers[0].count("gsub("))
             variable = re.search(r'as (\$[a-z]+)\s*\|\s*$', before)[1]
             program = '(' + normalizers[0] + ') as ' + variable + ' | ' + classifier[0]
             for texts, usable in ((positives, True), (negatives, False)):

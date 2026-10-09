@@ -22,7 +22,7 @@ WORKFLOW = ".github/workflows/review-request-continuation.yml"
 BOT = "copilot-pull-request-reviewer[bot]"
 REVIEWERS = frozenset({BOT, "copilot-pull-request-reviewer"})
 FAILURE_MARKERS = (
-    "unabletoreviewthispullrequest",
+    "unabletoreviewthispullrequest", "cannotreviewthispullrequest", "cannotreviewanyfiles",
     "notabletoreviewthispullrequest", "wasnotabletoreviewthispullrequest",
     "nofilestoreview", "nofileswerereviewed",
     "unabletoreviewanyfiles",
@@ -65,7 +65,7 @@ class ReviewContentError(ValueError):
 def normalize(value: str) -> str:
     """Match the protected gate's ASCII fold, contraction and Unicode whitespace rules."""
     ascii_lower = "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in value)
-    expanded = ascii_lower.replace("n't", " not").replace("n’t", " not")
+    expanded = ascii_lower.replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not")
     return "".join(char for char in expanded if not char.isspace())
 
 
@@ -221,13 +221,14 @@ class Journal:
         require(self.read(path) == record, "CAS readback")
 
 
-def repository(repo, repo_id, source):
+def repository(repo, repo_id, source, base_ref="develop"):
     require(repo in PILOTS and re.fullmatch(r"[1-9][0-9]*", repo_id) and sha(source), "pilot/source")
     meta = api(f"repos/{repo}")
     require(meta["full_name"] == repo and str(meta["id"]) == repo_id
             and meta["default_branch"] == "develop", "repository")
-    branch = api(f"repos/{repo}/branches/develop")
-    require(branch["name"] == "develop" and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
+    require(base_ref in {"develop", "main"}, "protected base ref")
+    branch = api(f"repos/{repo}/branches/{base_ref}")
+    require(branch["name"] == base_ref and branch["protected"] is True and sha(branch["commit"]["sha"]), "protected default")
     ancestry = api(f"repos/{repo}/compare/{source}...{branch['commit']['sha']}")
     require(ancestry.get("status") == "identical" or (ancestry.get("status") == "ahead"
             and ancestry.get("behind_by") == 0 and ancestry.get("merge_base_commit", {}).get("sha") == source), "source ancestry")
@@ -379,8 +380,10 @@ def validate_intent(intent, repo, repo_id, key):
     expected = {"schema", "kind", "repository", "repository_id", "operation", "pr", "base", "head",
                 "base_ref", "head_ref", "owner_run", "owner_attempt", "source_sha", "event", "action",
                 "author", "actor", "triggering_actor", "created_at"}
+    if isinstance(intent, dict) and intent.get("schema") == 2:
+        expected.add("source_ref")
     require(isinstance(intent, dict) and set(intent) == expected and type(intent["schema"]) is int
-            and intent["schema"] == 1 and intent["kind"] == "deferred-first-request"
+            and intent["schema"] in (1, 2) and intent["kind"] == "deferred-first-request"
             and intent["repository"] == repo and intent["repository_id"] == repo_id and intent["operation"] == key
             and positive(intent["pr"]) and positive(intent["owner_run"]) and type(intent["owner_attempt"]) is int
             and intent["owner_attempt"] == 1 and intent["event"] == "pull_request_target"
@@ -389,7 +392,14 @@ def validate_intent(intent, repo, repo_id, key):
             and intent["base_ref"] in {"develop", "main"} and isinstance(intent["head_ref"], str) and intent["head_ref"]
             and all(sha(intent[field]) for field in ("base", "head", "source_sha")), "deferred intent")
     require(key == key_for(repo_id, intent["pr"], intent["head"]), "intent budget key")
-    repository(repo, repo_id, intent["source_sha"])
+    if intent["schema"] == 1:
+        # Schema 1 always authenticated source_sha against the protected
+        # default Develop controller, independently of the recorded PR base.
+        source_ref = "develop"
+    else:
+        require(intent["source_ref"] == "develop", "original default controller ref")
+        source_ref = intent["source_ref"]
+    repository(repo, repo_id, intent["source_sha"], source_ref)
     run = original_run(repo, intent)
     job = native_job(repo, run, "Request Copilot review for current revision", ORIGINAL_STEPS)
     require(epoch(job["steps"][2]["started_at"]) <= epoch(intent["created_at"]) <= epoch(job["steps"][2]["completed_at"]), "intent outside original step")
@@ -461,7 +471,8 @@ def reconcile_candidate(repo, repo_id, pr, head, now):
     review_id = max(candidates, key=lambda item: (epoch(item["submitted_at"]), item["id"]))["id"]
     clean_old_review(repo, pr, review_id, head, owner["created_at"])
     unconsumed(repo, intent, journal)
-    return {"pr_number": str(pr), "owner_run": str(owner["id"]), "expected_head": head, "old_review": str(review_id)}
+    return {"resume_ref": intent["base_ref"], "pr_number": str(pr), "owner_run": str(owner["id"]),
+            "expected_head": head, "old_review": str(review_id)}
 
 
 def defer():
@@ -473,10 +484,16 @@ def defer():
     require(event["action"] in {"opened", "ready_for_review", "synchronize"}, "original action")
     pr = live_pr(repo, int(os.environ["PR_NUMBER"]), os.environ["EXPECTED_HEAD"], os.environ["EXPECTED_BASE"])
     require(event["pull_request"]["number"] == pr["number"] and event["pull_request"]["head"]["sha"] == pr["head"]["sha"]
-            and event["pull_request"]["base"]["sha"] == pr["base"]["sha"] and event["pull_request"]["user"]["login"] == "litroc", "event PR")
-    repository(repo, repo_id, source)
+            and event["pull_request"]["base"]["sha"] == pr["base"]["sha"] and event["pull_request"]["user"]["login"] == "litroc"
+            and all(event["pull_request"][side]["ref"] == pr[side]["ref"]
+                    and event["pull_request"][side]["repo"]["full_name"] == repo for side in ("base", "head")), "event PR")
+    require(os.environ["GITHUB_REF"] == "refs/heads/" + pr["base"]["ref"]
+            and os.environ["GITHUB_SHA"] == pr["base"]["sha"], "original PR base execution")
+    require(os.environ["GITHUB_WORKFLOW_REF"] == f"{repo}/{PRODUCER}@refs/heads/develop", "original default controller execution")
+    require(repository(repo, repo_id, source, "develop") == source, "current default controller")
+    require(repository(repo, repo_id, pr["base"]["sha"], pr["base"]["ref"]) == pr["base"]["sha"], "current PR base")
     key = key_for(repo_id, pr["number"], pr["head"]["sha"])
-    intent = {"schema": 1, "kind": "deferred-first-request", "repository": repo, "repository_id": repo_id,
+    intent = {"schema": 2, "source_ref": "develop", "kind": "deferred-first-request", "repository": repo, "repository_id": repo_id,
               "operation": key, "pr": pr["number"], "base": pr["base"]["sha"], "head": pr["head"]["sha"],
               "base_ref": pr["base"]["ref"], "head_ref": pr["head"]["ref"], "owner_run": int(os.environ["GITHUB_RUN_ID"]),
               "owner_attempt": 1, "source_sha": source, "event": "pull_request_target", "action": event["action"],
@@ -489,12 +506,16 @@ def defer():
     # This records eligibility only. No request marker or request budget is spent.
     for attempt in range(3):
         try:
+            current = live_pr(repo, intent["pr"], intent["head"], intent["base"])
+            require(current["base"]["ref"] == intent["base_ref"] and current["head"]["ref"] == intent["head_ref"], "intent ref drift")
+            require(repository(repo, repo_id, source, intent["source_ref"]) == source, "intent controller drift")
+            require(repository(repo, repo_id, intent["base"], intent["base_ref"]) == intent["base"], "intent PR base drift")
             journal.create(record_path(key, True), intent)
-            return
+            break
         except ConfirmedIntentConflict:
             journal = Journal(repo, repo_id)
             if journal.read(record_path(key)) is not None or journal.read(record_path(key, True)) is not None:
-                return
+                break
             require(attempt < 2, "deferred intent conflict budget exhausted")
             live_pr(repo, intent["pr"], intent["head"], intent["base"])
         except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError):
@@ -502,7 +523,14 @@ def defer():
             journal = Journal(repo, repo_id)
             require(journal.read(record_path(key, True)) == intent
                     and journal.read(record_path(key)) is None, "unconfirmed deferred intent")
-            return
+            break
+
+    # This fence is outside unknown-write reconciliation: an observed intent
+    # cannot turn a stale controller into a successful original requester job.
+    current = live_pr(repo, intent["pr"], intent["head"], intent["base"])
+    require(current["base"]["ref"] == intent["base_ref"] and current["head"]["ref"] == intent["head_ref"], "recorded intent ref drift")
+    require(repository(repo, repo_id, source, intent["source_ref"]) == source, "recorded intent controller drift")
+    require(repository(repo, repo_id, intent["base"], intent["base_ref"]) == intent["base"], "recorded intent PR base drift")
 
 
 def locate():
@@ -540,7 +568,7 @@ def locate():
     unconsumed(repo, intent, journal)
     # Locator only; no input below grants consumer mutation authority.
     api(f"repos/{repo}/actions/workflows/review-request-continuation.yml/dispatches",
-        {"ref": "develop", "inputs": {"pr_number": str(pr_number), "owner_run": str(owner["id"]),
+        {"ref": intent["base_ref"], "inputs": {"pr_number": str(pr_number), "owner_run": str(owner["id"]),
                                       "expected_head": intent["head"], "old_review": str(review_id)}})
 
 
@@ -548,8 +576,7 @@ def resume():
     repo, repo_id, source = environment()
     require(os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch" and os.environ["GITHUB_ACTOR"] == "github-actions[bot]"
             and os.environ["GITHUB_TRIGGERING_ACTOR"] == "github-actions[bot]" and os.environ["GITHUB_REF_PROTECTED"] == "true"
-            and os.environ["GITHUB_REF"] == "refs/heads/develop", "resume authority")
-    repository(repo, repo_id, source)
+            and os.environ["GITHUB_REF"] in {"refs/heads/develop", "refs/heads/main"}, "resume authority")
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(), object_pairs_hook=unique)
     inputs = event["inputs"]
     pr, owner_id, review_id = (int(inputs[key]) for key in ("pr_number", "owner_run", "old_review"))
@@ -559,6 +586,11 @@ def resume():
     intent = journal.read(record_path(key, True))
     owner = validate_intent(intent, repo, repo_id, key)
     require(intent["owner_run"] == owner_id, "resume original owner")
+    resume_ref, resume_sha = intent["base_ref"], intent["base"]
+    require(os.environ["GITHUB_REF"] == f"refs/heads/{resume_ref}"
+            and os.environ["GITHUB_SHA"] == source == resume_sha
+            and os.environ["GITHUB_WORKFLOW_REF"] == f"{repo}/{WORKFLOW}@refs/heads/{resume_ref}", "resume protected source")
+    require(repository(repo, repo_id, source, resume_ref) == source, "current resume controller")
     require(0 <= dt.datetime.now(dt.timezone.utc).timestamp() - epoch(owner["created_at"]) <= 604800, "expired intent")
     old = clean_old_review(repo, pr, review_id, intent["head"], owner["created_at"])
     native_resume_run(repo, os.environ["GITHUB_RUN_ID"], source, intent, review_id, completed=False)
@@ -566,19 +598,29 @@ def resume():
     record = {"schema": 2, "repository": repo, "repository_id": repo_id, "action": "request", "operation": key,
               "claim_run": os.environ["GITHUB_RUN_ID"], "claim_attempt": "1", "source_sha": source,
               "intent": intent, "intent_commit": journal.oid, "old_review": review_id, "old_head": old["commit_id"]}
+    current = live_pr(repo, pr, intent["head"], intent["base"])
+    require(current["base"]["ref"] == intent["base_ref"] and current["head"]["ref"] == intent["head_ref"], "claim ref drift")
+    require(repository(repo, repo_id, source, resume_ref) == source, "claim controller drift")
     journal.create(record_path(key), record)
     # Recheck the live PR at the effect boundary; a consumed stale claim stays closed.
     current = live_pr(repo, pr, intent["head"], intent["base"])
     require(current["base"]["ref"] == intent["base_ref"] and current["head"]["ref"] == intent["head_ref"], "effect ref drift")
+    require(repository(repo, repo_id, source, resume_ref) == source, "effect controller drift")
     api(f"repos/{repo}/pulls/{pr}/requested_reviewers", {"reviewers": [BOT]})
 
 
 def native_resume_run(repo, run_id, source, intent, review_id, completed=True):
     run = api(f"repos/{repo}/actions/runs/{run_id}/attempts/1")
-    require(type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
+    resume_ref = intent["base_ref"]
+    resume_sha = intent["base"]
+    # Completed legacy receipts may describe the old Develop consumer at
+    # its own later protected source, not the original request source.
+    if completed and intent["schema"] == 1 and run.get("head_branch") == "develop":
+        resume_ref, resume_sha = "develop", source
+    require(sha(source) and type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
             and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
             and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
-            and run["head_sha"] == source and run["head_branch"] == "develop"
+            and run["head_sha"] == source == resume_sha and run["head_branch"] == resume_ref
             and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"
             and run["display_title"] == f"First review PR #{intent['pr']} head {intent['head']} owner {intent['owner_run']} old review {review_id}", "resume native run")
     if completed:
@@ -607,8 +649,8 @@ def verify_receipt(context, record):
     journal = Journal(repo, repo_id)
     journal.oid = record["intent_commit"]
     require(journal.read(record_path(key, True)) == intent and journal.read(record_path(key)) is None, "pre-request intent snapshot")
-    repository(repo, repo_id, record["source_sha"])
     run = native_resume_run(repo, record["claim_run"], record["source_sha"], intent, record["old_review"])
+    repository(repo, repo_id, record["source_sha"], run["head_branch"])
     job = native_job(repo, run, "Resume deferred first review request", RESUME_STEPS)
     start, end = epoch(job["steps"][2]["started_at"]), epoch(job["steps"][2]["completed_at"])
     require(epoch(original["updated_at"]) <= start, "resume ordering")

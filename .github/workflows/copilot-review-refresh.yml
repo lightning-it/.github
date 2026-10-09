@@ -40,7 +40,7 @@ concurrency:
     ${{
       github.event_name == 'workflow_dispatch' && github.ref_protected && github.actor == 'github-actions[bot]' &&
       format('current-revision-{0}-head-{1}-check-current-revision-review', github.repository_id, inputs.expected_head) ||
-      github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false && github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository &&
       (
         ('pull_request_review' == github.event_name && (
           (contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) && 'copilot-pull-request-reviewer[bot]' == github.event.review.user.login) ||
@@ -67,7 +67,7 @@ jobs:
     if: >-
       (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository &&
       (
         (
           github.event_name == 'pull_request_review' &&
@@ -112,6 +112,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
           EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          EXPECTED_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EXPECTED_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
           api() { timeout --foreground --signal=TERM --kill-after=2s 30s gh api "$@"; }
@@ -119,11 +123,18 @@ jobs:
           [[ "${EXPECTED_HEAD}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${EXPECTED_BASE}" =~ ^[0-9a-f]{40}$ ]]
           pr="$(api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
-          jq -e --arg repo "${REPOSITORY}" --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" '
+          [[ "${EXPECTED_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          test "${EXPECTED_HEAD_REPOSITORY}" = "${REPOSITORY}"
+          jq -e --arg repo "${REPOSITORY}" --arg head "${EXPECTED_HEAD}" --arg base "${EXPECTED_BASE}" \
+            --arg head_repo "${EXPECTED_HEAD_REPOSITORY}" --arg head_ref "${EXPECTED_HEAD_REF}" \
+            --arg base_ref "${EXPECTED_BASE_REF}" --arg author "${EXPECTED_AUTHOR}" --argjson number "${PR_NUMBER}" '
             .state == "open" and .draft == false and .head.sha == $head and .base.sha == $base
-            and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+            and .head.repo.full_name == $head_repo and .base.repo.full_name == $repo
+            and .number == $number and .user.login == $author
+            and .head.ref == $head_ref and .base.ref == $base_ref
+            and $head_repo == $repo
             ' <<<"${pr}" >/dev/null
-          branch="$(api "repos/${REPOSITORY}" --jq .default_branch)"
+          branch="$(jq -er .base.ref <<<"${pr}")"
           [[ "${branch}" =~ ^(develop|main)$ ]]
           reviews="$(api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
           review="$(jq -er --arg head "${EXPECTED_HEAD}" '
@@ -133,6 +144,13 @@ jobs:
               | select(.state | ascii_downcase | IN("commented", "approved"))
               | .id | numbers | select(. > 0 and . == floor)] | max // empty
             ' <<<"${reviews}")" || exit 0
+          live_pr="$(api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          jq -e --argjson expected "${pr}" '
+            {number,state,draft,user,base:{ref:.base.ref,sha:.base.sha,repo:.base.repo.full_name},
+             head:{ref:.head.ref,sha:.head.sha,repo:.head.repo.full_name}}
+            == ($expected | {number,state,draft,user,base:{ref:.base.ref,sha:.base.sha,repo:.base.repo.full_name},
+                 head:{ref:.head.ref,sha:.head.sha,repo:.head.repo.full_name}})
+            ' <<<"${live_pr}" >/dev/null
           # Locators grant no mutation authority; the protected consumer repeats
           # all source, owner, review and current-head checks. Never retry POST.
           api --method POST "repos/${REPOSITORY}/actions/workflows/copilot-review-refresh.yml/dispatches" \
@@ -311,6 +329,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
@@ -325,16 +344,24 @@ jobs:
             [[ "${LOCATOR_REVIEW}" =~ ^[1-9][0-9]*$ ]]
             [[ "${LOCATOR_HEAD}" =~ ^[0-9a-f]{40}$ ]]
             [[ "${LOCATOR_BASE}" =~ ^[0-9a-f]{40}$ ]]
-            branch="$(gh api "repos/${REPOSITORY}" --jq .default_branch)"
-            [[ "${branch}" =~ ^(develop|main)$ ]]
-            test "${GITHUB_REF}" = "refs/heads/${branch}"
             pr="$(gh api "repos/${REPOSITORY}/pulls/${LOCATOR_PR}")"
             jq -e --arg head "${LOCATOR_HEAD}" --arg base "${LOCATOR_BASE}" \
               --arg repo "${REPOSITORY}" --argjson number "${LOCATOR_PR}" '
                 .number == $number and .state == "open" and .draft == false
                 and .head.sha == $head and .base.sha == $base
-                and .head.repo.full_name == $repo and .base.repo.full_name == $repo
+                and (.head.repo.full_name | strings | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+                  and (split("/") | all(. != "." and . != "..")))
+                and .base.repo.full_name == $repo
+                and (.head.repo.full_name == $repo or .user.type == "User")
               ' <<<"${pr}" >/dev/null
+            branch="$(jq -er .base.ref <<<"${pr}")"
+            [[ "${branch}" =~ ^(develop|main)$ ]]
+            test "${GITHUB_REF}" = "refs/heads/${branch}"
+            test "${WORKFLOW_SHA}" = "${LOCATOR_BASE}"
+            protected_base="$(gh api "repos/${REPOSITORY}/branches/${branch}")"
+            jq -e --arg branch "${branch}" --arg source "${WORKFLOW_SHA}" '
+              .name == $branch and .protected == true and .commit.sha == $source
+              ' <<<"${protected_base}" >/dev/null
             review="$(gh api "repos/${REPOSITORY}/pulls/${LOCATOR_PR}/reviews/${LOCATOR_REVIEW}")"
             jq -e --arg head "${LOCATOR_HEAD}" --argjson id "${LOCATOR_REVIEW}" '
                 .id == $id and .commit_id == $head
@@ -345,6 +372,7 @@ jobs:
             HEAD_SHA="${LOCATOR_HEAD}"
             BASE_SHA="${LOCATOR_BASE}"
             HEAD_REF="$(jq -er .head.ref <<<"${pr}")"
+            HEAD_REPOSITORY="$(jq -er .head.repo.full_name <<<"${pr}")"
             BASE_REF="$(jq -er .base.ref <<<"${pr}")"
             PR_AUTHOR="$(jq -er .user.login <<<"${pr}")"
             # Hydrate the locator exclusively from authoritative API reads. The
@@ -360,11 +388,12 @@ jobs:
           jq -e \
             --arg actor "${TRIGGER_ACTOR}" \
             --arg event "${EVENT_NAME}" \
-            --arg repository "${REPOSITORY}" '
+            --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" '
               type == "object"
               and (.pull_request | type) == "object"
               and .pull_request.draft == false
-              and .pull_request.head.repo.full_name == $repository
+              and .pull_request.head.repo.full_name == $head_repository
+              and .pull_request.base.repo.full_name == $repository
               and (
                 if $event == "pull_request_review" then
                   (.review | type) == "object"
@@ -429,7 +458,7 @@ jobs:
             exit 0
           fi
           PRODUCER_OWNER_MODE=verification
-          if [ "${PR_AUTHOR}" = litroc ]; then
+          if [ "${PR_AUTHOR}" = litroc ] && [ "${HEAD_REPOSITORY}" = "${REPOSITORY}" ]; then
             PRODUCER_OWNER_MODE=copilot
           fi
           if { [ "${PR_AUTHOR}" = "lightning-it-shared-assets-sync[bot]" ] \
@@ -442,11 +471,16 @@ jobs:
             test "${BASE_REF}" = develop
             PRODUCER_OWNER_MODE=deterministic
           fi
+          if [ "${PRODUCER_OWNER_MODE}" = deterministic ]; then
+            test "${HEAD_REPOSITORY}" = "${REPOSITORY}"
+          fi
           export PRODUCER_OWNER_MODE
+          export EVENT_BASE_REF="${BASE_REF}"
           export EVENT_BASE="${BASE_SHA}"
           export LIVE_BASE="${BASE_SHA}"
           export EVENT_HEAD="${HEAD_SHA}"
           export EVENT_HEAD_REF="${HEAD_REF}"
+          export EVENT_HEAD_REPOSITORY="${HEAD_REPOSITORY}"
           owner_guard="${RUNNER_TEMP}/current-revision-producer-owner.sh"
           umask 077
           cat >"${owner_guard}" <<'PRODUCER_OWNER_GUARD'
@@ -466,15 +500,27 @@ jobs:
           }
 
           elect_once() {
-            local ca cid cands crows
+            local ca cid cands crows live_pr
             local crj e fbase fhead
             local flive fpr frows
             local jpages ojp
             local cassoc pj pp rj rpages
             [[ "${PRODUCER_OWNER_MODE}" =~ ^(copilot|verification|deterministic)$ ]] || return 1
+            [[ "${EVENT_HEAD_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+            case "${EVENT_HEAD_REPOSITORY}" in ./*|../*|*/.|*/..) return 1 ;; esac
+            live_pr="$(oa "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
+            jq -e --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" \
+              --arg base_ref "${EVENT_BASE_REF}" --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" \
+              --argjson number "${PR_NUMBER}" '
+              .number == $number and .state == "open" and .draft == false
+              and .base.repo.full_name == $repo and .base.sha == $b
+              and .base.ref == $base_ref and ($base_ref | IN("develop", "main"))
+              and .head.repo.full_name == $head_repo and .head.sha == $h and .head.ref == $ref
+              and ($head_repo == $repo or .user.type == "User")
+              ' <<<"${live_pr}" >/dev/null || return 1
             rpages="$(oa --paginate --slurp "repos/${REPOSITORY}/actions/runs?event=pull_request_target&head_sha=${EVENT_HEAD}&per_page=100")" || return 1
             jq -e --arg h "${EVENT_HEAD}" \
-              --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+              --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${PR_NUMBER}" '
               type == "array" and length > 0 and length <= 10
               and all(.[];
                 type == "object"
@@ -526,13 +572,13 @@ jobs:
                     and .name == "Current revision review gate"
                     and .head_sha == $h
                     and .repository.full_name == $repo
-                    and .head_repository.full_name == $repo
+                    and .head_repository.full_name == $head_repo
                   then (.pull_requests | length) <= 1
                   else true end))
               and ([.[].workflow_runs[].id] | length)
                 == ([.[].workflow_runs[].id] | unique | length)
               ' <<<"${rpages}" >/dev/null || return 1
-            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            frows="$(jq -cer --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[]
                   | select(.event == "pull_request_target")
                   | select(.path == ".github/workflows/copilot-review.yml")
@@ -540,7 +586,7 @@ jobs:
                   | select(.head_sha == $h)
                   | select(.head_branch == $ref)
                   | select(.repository.full_name == $repo)
-                  | select(.head_repository.full_name == $repo)
+                  | select(.head_repository.full_name == $head_repo)
                   | select((.pull_requests | length) == 1)
                   | .pull_requests[0]
                   | select(.number != $n)
@@ -552,16 +598,16 @@ jobs:
             while IFS=$'\t' read -r fpr fbase fhead; do
               [ -n "${fpr}" ] || continue
               flive="$(oa "repos/${REPOSITORY}/pulls/${fpr}")" || return 1
-              jq -e --arg b "${fbase}" --arg h "${fhead}" --arg repo "${REPOSITORY}" --argjson n "${fpr}" '
+              jq -e --arg b "${fbase}" --arg h "${fhead}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${fpr}" '
                   .number == $n
                   and .base.sha == $b
                   and .base.repo.full_name == $repo
                   and .head.sha == $h
-                  and .head.repo.full_name == $repo
+                  and .head.repo.full_name == $head_repo
                 ' <<<"${flive}" >/dev/null || return 1
             done <<<"${frows}"
             if jq -e --arg h "${EVENT_HEAD}" \
-              --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" '
+              --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" '
                 any(.[].workflow_runs[]?;
                   .event == "pull_request_target"
                   and .path == ".github/workflows/copilot-review.yml"
@@ -569,14 +615,14 @@ jobs:
                   and .head_sha == $h
                   and .head_branch == $ref
                   and .repository.full_name == $repo
-                  and .head_repository.full_name == $repo
+                  and .head_repository.full_name == $head_repo
                   and .pull_requests == [])
               ' <<<"${rpages}" >/dev/null; then
               pp="$(oa --method GET --paginate --slurp \
-                -f state=open -f "head=${REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
+                -f state=open -f "head=${EVENT_HEAD_REPOSITORY%%/*}:${EVENT_HEAD_REF}" \
                 -F per_page=100 "repos/${REPOSITORY}/pulls")" || return 1
-              jq -e --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
-                --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" \
+              jq -e --arg base_ref "${EVENT_BASE_REF}" --arg b "${LIVE_BASE}" --arg h "${EVENT_HEAD}" \
+                --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" \
                 --argjson n "${PR_NUMBER}" '
                   type == "array" and length > 0 and length <= 10
                   and all(.[]; type == "array")
@@ -584,24 +630,28 @@ jobs:
                   and .[0][0].number == $n
                   and .[0][0].state == "open"
                   and .[0][0].base.sha == $b
+                  and .[0][0].base.ref == $base_ref
                   and .[0][0].base.repo.full_name == $repo
                   and .[0][0].head.ref == $ref
                   and .[0][0].head.sha == $h
-                  and .[0][0].head.repo.full_name == $repo
+                  and .[0][0].head.repo.full_name == $head_repo
                 ' <<<"${pp}" >/dev/null || return 1
             fi
-            cands="$(jq -ce --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --argjson n "${PR_NUMBER}" '
+            cands="$(jq -ce --arg base_ref "${EVENT_BASE_REF}" --arg b "${EVENT_BASE}" --arg h "${EVENT_HEAD}" --arg ref "${EVENT_HEAD_REF}" --arg repo "${REPOSITORY}" --arg head_repo "${EVENT_HEAD_REPOSITORY}" --argjson n "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/copilot-review.yml") |
                   select(.name == "Current revision review gate") |
                   select(.head_sha == $h) |
                   select(.repository.full_name == $repo) |
-                  select(.head_repository.full_name == $repo) |
+                  select(.head_repository.full_name == $head_repo) |
                   select(any(.pull_requests[]?;
                     .number == $n
                     and .base.sha == $b
-                    and .head.sha == $h)
+                    and .base.ref == $base_ref
+                    and .head.sha == $h
+                    and .base.repo.url == ("https://api.github.com/repos/" + $repo)
+                    and .head.repo.url == ("https://api.github.com/repos/" + $head_repo))
                     or (.pull_requests == [] and .head_branch == $ref))]
                 | if length == 0 then error("producer-owner-missing")
                   elif length > 20 then error("producer-owner-overflow")
@@ -751,7 +801,13 @@ jobs:
           # shellcheck source=/dev/null
           source "${owner_guard}"
           validate_live_pr_tuple() {
-            local live_pr
+            test "${GITHUB_REF}" = "refs/heads/${BASE_REF}" || return 1
+            test "${WORKFLOW_SHA}" = "${BASE_SHA}" || return 1
+            local live_pr protected_base
+            protected_base="$(oa "repos/${REPOSITORY}/branches/${BASE_REF}")" || return 1
+            jq -e --arg branch "${BASE_REF}" --arg source "${WORKFLOW_SHA}" '
+              .name == $branch and .protected == true and .commit.sha == $source
+            ' <<<"${protected_base}" >/dev/null || return 1
             live_pr="$(oa \
               "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
             jq -e \
@@ -760,7 +816,7 @@ jobs:
               --arg base_sha "${BASE_SHA}" \
               --arg head_ref "${HEAD_REF}" \
               --arg head_sha "${HEAD_SHA}" \
-              --arg repository "${REPOSITORY}" '
+              --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" '
                 .state == "open"
                 and .draft == false
                 and .user.login == $author
@@ -769,7 +825,7 @@ jobs:
                 and .base.repo.full_name == $repository
                 and .head.ref == $head_ref
                 and .head.sha == $head_sha
-                and .head.repo.full_name == $repository
+                and .head.repo.full_name == $head_repository
               ' <<<"${live_pr}" >/dev/null
           }
           validate_live_pr_tuple
@@ -895,7 +951,7 @@ jobs:
               --arg base "${BASE_SHA}" \
               --arg head "${HEAD_SHA}" \
               --arg head_ref "${HEAD_REF}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" \
               --argjson owner_run_id "${expected_owner}" \
               --argjson pr "${expected_pr}" '
                 . as $run
@@ -908,7 +964,7 @@ jobs:
                 and (.head_branch | length) > 0
                 and .head_sha == $head
                 and .repository.full_name == $repository
-                and .head_repository.full_name == $repository
+                and .head_repository.full_name == $head_repository
                 and (any(.pull_requests[]?;
                   .number == $pr
                   and .base.sha == $base
@@ -933,7 +989,7 @@ jobs:
             id="$(jq -er '.id | select(type == "number" and . > 0 and . == floor)' \
               <<<"${event}")" || return 1
             jq -e --arg api "${GITHUB_API_URL}" --arg head "${HEAD_SHA}" \
-              --arg repository "${REPOSITORY}" --argjson pr "${PR_NUMBER}" '
+              --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" --argjson pr "${PR_NUMBER}" '
                 .commit_id == $head and (.user.login | type) == "string"
                 and (.author_association | type) == "string"
                 and .pull_request_url == ($api + "/repos/" + $repository + "/pulls/" + ($pr | tostring))
@@ -1196,7 +1252,7 @@ jobs:
               --arg base_ref "${BASE_REF}" \
               --arg head "${HEAD_SHA}" \
               --arg head_ref "${HEAD_REF}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" \
               --argjson current_pr "${PR_NUMBER}" \
               --argjson owner_pr "${owner_pr_number}" '
                 .number == $owner_pr
@@ -1207,7 +1263,7 @@ jobs:
                 and .base.repo.full_name == $repository
                 and .head.ref == $head_ref
                 and .head.sha == $head
-                and .head.repo.full_name == $repository
+                and .head.repo.full_name == $head_repository
                 and (
                   if $owner_pr == $current_pr then
                     .state == "open"
@@ -1343,7 +1399,7 @@ jobs:
               --arg head "${HEAD_SHA}" \
               --arg pr "${PR_NUMBER}" \
               --arg owner_pr "${owner_pr_number}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" \
               --argjson pr_number "${PR_NUMBER}" \
               --argjson owner_pr_number "${owner_pr_number}" \
               --arg owner_run_id "${evidence_owner_run_id}" \
@@ -1478,11 +1534,11 @@ jobs:
                 | select(all(.[]; type == "array"))
                 | [$review.body, .[][].body]
                 | select(all(.[]; type == "string" or . == null))
-                | map((. // "") | ascii_downcase | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; ""))
+                | map((. // "") | ascii_downcase | gsub("can[\u0027\u2019]t"; "cannot") | gsub("n[\u0027\u2019]t"; " not") | gsub("\\s"; ""))
                 ' <<<"${comments}")" || return 1
               if jq -e '
                 any(.[]; length > 0) and all(.[];
-                  (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest")
+                  (contains("wasnotabletoreviewanyfiles") or contains("unabletoreviewthispullrequest") or contains("cannotreviewthispullrequest") or contains("cannotreviewanyfiles")
                    or contains("notabletoreviewthispullrequest")
                    or contains("quotaexhausted") or contains("quotaexceeded")
                    or contains("suppressedcomments") or contains("nofilestoreview") or contains("nofileswerereviewed")

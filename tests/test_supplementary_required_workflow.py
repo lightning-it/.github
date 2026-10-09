@@ -3112,6 +3112,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(1, workflow.count(late_authorization_marker))
         late = workflow.split(late_authorization_marker, 1)[1]
+        # Ignore layout only; preserve every quoted JQ string verbatim.
+        def jq_tokens(value):
+            return ''.join(re.findall(r'"(?:\\.|[^"\\])*"|[^\s]', value))
+        late_tokens = jq_tokens(late)
 
         self.assertIn(
             '.path == ".github/workflows/copilot-review-refresh.yml"',
@@ -3123,13 +3127,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             late,
         )
         self.assertIn(
-            '.user.login == "copilot-pull-request-reviewer[bot]"',
-            late,
+            jq_tokens('.user.login == "copilot-pull-request-reviewer[bot]"'),
+            late_tokens,
         )
         self.assertIn(
-            'select((.submitted_at | fromdateiso8601?)\n'
-            '                      >= ($producer_created_at | fromdateiso8601))',
-            late,
+            jq_tokens('select((.submitted_at | fromdateiso8601?) '
+                      '>= ($producer_created_at | fromdateiso8601))'),
+            late_tokens,
         )
         self.assertIn(
             'actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}',
@@ -3199,11 +3203,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         late = workflow.split(
             '              test "${producer_kind}" = copilot\n', 1
         )[1]
-        review_command = late.split('              reviews="$(jq -c \\\n', 1)[1]
-        review_command = review_command.split(
-            '\n                \' <<<"${review_pages}")"', 1
-        )[0]
-        review_filter = review_command.rsplit(" '\n", 1)[1]
+        review_match = re.search(
+            r'reviews="\$\(jq -c\b.*?--arg head "\$\{EVENT_HEAD\}"\s*'
+            r"'(?P<filter>.*?)'\s*<<<\"\$\{review_pages\}\"\)\"",
+            late, re.S,
+        )
+        self.assertIsNotNone(review_match, "actual bound review jq command")
+        review_filter = review_match['filter']
         refresh_command = late.split('              refresh_runs="$(jq -c \\\n', 1)[1]
         refresh_command = refresh_command.split(
             '\n                \' <<<"${refresh_pages}")"', 1
@@ -6821,7 +6827,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("    timeout-minutes: 10\n", quality)
+        self.assertIn("    timeout-minutes: 20\n", quality)
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
