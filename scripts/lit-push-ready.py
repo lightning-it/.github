@@ -718,7 +718,15 @@ def filtered_scan_chunks(
                         old_number += 1
                         new_number += 1
             entry = documented.get(match_path or "", {}).get(match_number)
-            if entry is not None and digest.hexdigest() == entry[0]:
+            if (
+                entry is not None
+                and digest.hexdigest() == entry[0]
+                and (
+                    (isinstance(documented, RetiredFixtureLines) and diff and old_content)
+                    or (not isinstance(documented, RetiredFixtureLines)
+                        and not SECRET_CONTENT_PATTERNS[0].search(entry[1]))
+                )
+            ):
                 mask = True
             flags = line_scan.finish()
             if redact and old_content and old_path not in documented and flags & ~1:
@@ -754,7 +762,9 @@ def streaming_review_safe(change, documented, *, redact=False):
         raise RuntimeError(
             "local review refused for secret-like paths: " + ", ".join(sorted(unsafe))
         )
-    if redact and scan_chunks(patch_chunks(change.patch)) & 1:
+    if redact and scan_chunks(filtered_scan_chunks(
+        patch_chunks(change.patch), documented, diff=True, redact=False
+    )) & 1:
         raise RuntimeError(
             "local review refused because the planned patch contains PEM private key material"
         )
@@ -2995,14 +3005,52 @@ def secret_fixture_manifest_at_commit(
     return parse_secret_fixture_manifest(payload)
 
 
+class RetiredFixtureLines(dict):
+    """One audited historical removal; never a workspace or added-line exemption."""
+
+
+STREAMING_FIXTURE_BASE_BLOB = "ea829448ff388c475684bc599ec154b1f2abf7a7"
+
+
+def retire_streaming_fixture(change: PlannedChange) -> RetiredFixtureLines:
+    """Retire the owner's exact existing synthetic header without an allowlist."""
+    path = "tests/test_push_ready_streaming.py"
+    if path not in change.paths or secret_fixture_manifest_at_commit(change.base_tip):
+        raise RuntimeError("fixture retirement requires its exact source and no base manifest")
+    if secret_fixture_manifest_at_commit(change.head_commit):
+        raise RuntimeError("fixture retirement must not install a head manifest")
+    for commit in (change.base_tip, change.base_commit, change.head_commit):
+        entry = git_tree_entry(commit, path)
+        if not entry.startswith("100644 blob ") or not entry.endswith(f"\t{path}\0"):
+            raise RuntimeError("fixture retirement requires the exact non-executable tree mode")
+    source = repository_blob_at_commit(change.base_tip, path, max_bytes=MAX_SECRET_FIXTURE_SOURCE_BYTES)
+    head = repository_blob_at_commit(change.head_commit, path, max_bytes=MAX_SECRET_FIXTURE_SOURCE_BYTES)
+    if source is None or head is None:
+        raise RuntimeError("fixture retirement requires both exact source blobs")
+    raw = source.encode("utf-8")
+    blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+    if blob != STREAMING_FIXTURE_BASE_BLOB:
+        raise RuntimeError("fixture retirement base blob is not owner-authorized")
+    diff_source = repository_blob_at_commit(change.base_commit, path, max_bytes=MAX_SECRET_FIXTURE_SOURCE_BYTES)
+    if diff_source != source:
+        raise RuntimeError("fixture retirement merge-base blob differs from its exact live base")
+    line = bytes.fromhex(
+        "202020202020202020202020222d2d2d2d2d424547494e204f50454e5353482050524956415445204b45592d2d2d2d2d222c"
+    ).decode("utf-8")
+    replacement = '            "-----BEGIN " + "OPENSSH PRIVATE KEY-----",'
+    if len(source.splitlines()) < 28 or source.splitlines()[27] != line or source.count(line) != 1:
+        raise RuntimeError("fixture retirement source position is not exact")
+    if head != source.replace(line + "\n", replacement + "\n", 1):
+        raise RuntimeError("fixture retirement permits only exact runtime composition")
+    return RetiredFixtureLines({path: {28: (sha256_text(line), line)}})
+
+
 def bootstrap_secret_fixture_manifest(
     change: PlannedChange,
 ) -> dict[str, dict[int, tuple[str, str]]]:
     """Authorize only pre-existing synthetic lines for one manifest bootstrap."""
     if SECRET_FIXTURE_MANIFEST_PATH not in change.paths:
-        raise RuntimeError(
-            "fixture manifest bootstrap requires a changed manifest"
-        )
+        return retire_streaming_fixture(change)
     changelog_paths = [
         path
         for path in change.paths

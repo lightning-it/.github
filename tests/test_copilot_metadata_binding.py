@@ -45,6 +45,9 @@ if route == 'graphql':
     else:
         raise AssertionError(query)
 elif method in ('POST','PATCH'):
+    if method == 'PATCH' and 'output[title]' in fields and 'output[summary]' not in fields:
+        print('"summary" wasn\'t supplied. (HTTP 422)', file=sys.stderr)
+        sys.exit(1)
     d['writes'].append(method)
     d.setdefault('write_conclusions', []).append(fields.get('conclusion'))
     if method == 'POST' and d.get('unknown_post') == 'absent':
