@@ -259,7 +259,25 @@ def normalized_review_text(value: str) -> str:
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
     headings = [line for line in lines if "## Copilot review overview" in line]
+    verdicts = [line for line in lines if "### " in line]
+    require(
+        len(verdicts) <= 1
+        and all(verdict in {
+            "### 🟢 Approval recommended",
+            "### 🟡 Changes recommended",
+            "### 🔵 Needs a closer look",
+        } for verdict in verdicts),
+        "producer-review-binding",
+    )
+    if not headings:
+        require(len(verdicts) == 1, "producer-review-binding")
+        return current_copilot_findings_count(lines, verdicts[0])
     require(headings == ["## Copilot review overview"], "producer-review-binding")
+    require(
+        not any("open finding" in line for line in lines
+                if "**" in line or "<summary><strong>" in line),
+        "producer-review-binding",
+    )
     fields = [line for line in lines if "**Findings:**" in line]
     require(len(fields) == 1, "producer-review-binding")
     if fields[0] == "**Findings:** None":
@@ -297,6 +315,92 @@ def historical_copilot_findings_count(body: str) -> int:
         if icon is not None:
             observed_icons.add(icon)
         count += int(match.group("count"))
+    return count
+
+
+def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
+    # Only the two observed native CCR renderings are admitted. Counts remain
+    # submission-time metadata; exact review binding and live thread coverage
+    # are independently required by the caller.
+    nonempty = [line for line in lines if line]
+    require(
+        nonempty[:2] == ["<!-- ccr-overview-v2 -->", verdict]
+        and not any("**Findings:**" in line for line in lines),
+        "producer-review-binding",
+    )
+    fields = [line for line in lines if "open finding" in line
+              and ("**" in line or "<summary" in line)]
+    require(len(fields) == 1, "producer-review-binding")
+    if fields[0] == "**0 open findings**":
+        count = 0
+    else:
+        match = re.fullmatch(
+            r"<summary><strong>([1-9][0-9]{0,3}) open (finding|findings)"
+            r"</strong></summary>", fields[0],
+        )
+        require(match is not None, "producer-review-binding")
+        count = int(match.group(1))
+        require(
+            count <= MAX_REVIEW_COMMENTS_PER_REVIEW
+            and match.group(2) == ("finding" if count == 1 else "findings"),
+            "producer-review-binding",
+        )
+        position = nonempty.index(fields[0])
+        require(
+            position > 0 and nonempty[position - 1] == "<details open>"
+            and "</details>" in nonempty[position + 1:],
+            "producer-review-binding",
+        )
+    require(
+        verdict != "### 🟢 Approval recommended" or count == 0,
+        "producer-review-binding",
+    )
+    supported_summaries = {
+        "<summary><strong>What changed in this PR</strong></summary>"
+    }
+    if count:
+        supported_summaries.add(fields[0])
+    # These sections describe earlier reviews, not open findings on this
+    # submission. Validate their count syntax and uniqueness without adding
+    # them to the current review's live-thread coverage minimum.
+    for label in ("Resolved since last review", "Previously missed"):
+        sections = [line for line in lines if label in line
+                    and "<summary" in line]
+        require(len(sections) <= 1, "producer-review-binding")
+        if sections:
+            match = re.fullmatch(
+                rf"<summary><strong>{label} \(([1-9][0-9]{{0,3}})\)"
+                r"</strong></summary>", sections[0],
+            )
+            require(
+                match is not None
+                and int(match.group(1)) <= MAX_REVIEW_COMMENTS_PER_REVIEW,
+                "producer-review-binding",
+            )
+            position = nonempty.index(sections[0])
+            require(
+                position > 0 and nonempty[position - 1] == "<details>"
+                and "</details>" in nonempty[position + 1:],
+                "producer-review-binding",
+            )
+            supported_summaries.add(sections[0])
+    summaries = [line for line in lines if "<summary><strong>" in line]
+    require(
+        len(summaries) == len(set(summaries))
+        and all(line in supported_summaries for line in summaries),
+        "producer-review-binding",
+    )
+    depth = 0
+    for line in lines:
+        if "<details" in line:
+            require(line in {"<details>", "<details open>"}, "producer-review-binding")
+            depth += 1
+        elif "</details>" in line:
+            require(line == "</details>" and depth > 0, "producer-review-binding")
+            depth -= 1
+        elif line == "**0 open findings**":
+            require(depth == 0, "producer-review-binding")
+    require(depth == 0, "producer-review-binding")
     return count
 
 

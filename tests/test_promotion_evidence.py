@@ -24,6 +24,30 @@ BASE = "1" * 40
 HEAD = "2" * 40
 MERGE = "3" * 40
 INPUT = "4" * 64
+CURRENT_COPILOT_OVERVIEW = (
+    "<!-- ccr-overview-v2 -->\n\n"
+    "### 🔵 Needs a closer look\n\n"
+    "Final confidence depends on protected live credential and GitHub inventory "
+    "behavior that mocked tests cannot verify.\n\n"
+    "**0 open findings**\n\n"
+    "<details>\n"
+    "<summary><strong>What changed in this PR</strong></summary>\n\n"
+    "Enables the guarded, read-only Terraform creation preview.\n"
+    "</details>\n\n"
+    "🧠 **Review effort:** Balanced\n"
+)
+CURRENT_COPILOT_OPEN_FINDING = (
+    "<details open>\n"
+    "<summary><strong>1 open finding</strong></summary>\n\n"
+    "- Finding recorded in its native review thread.\n"
+    "</details>"
+)
+COPILOT_RESOLVED_HISTORY = (
+    "<details>\n"
+    "<summary><strong>Resolved since last review (1)</strong></summary>\n\n"
+    "- Finding from the earlier review.\n"
+    "</details>\n"
+)
 
 
 def promotion() -> dict[str, object]:
@@ -3531,6 +3555,154 @@ class PromotionEvidenceTests(unittest.TestCase):
                     "pageInfo": {"hasNextPage": False},
                 }
             )
+
+    def test_current_copilot_overview_counts_only_submission_findings(self) -> None:
+        for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
+            body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
+            for history in (
+                "", COPILOT_RESOLVED_HISTORY,
+                COPILOT_RESOLVED_HISTORY.replace("Resolved since last review", "Previously missed"),
+            ):
+                with self.subTest(verdict=verdict, history=history):
+                    self.assertEqual(
+                        0, MODULE.historical_copilot_findings_count(body + history)
+                    )
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for count in (1, 2):
+            body = open_body.replace(
+                "1 open finding</strong>",
+                f"{count} open {'finding' if count == 1 else 'findings'}</strong>",
+            )
+            with self.subTest(count=count):
+                self.assertEqual(count, MODULE.historical_copilot_findings_count(body))
+
+    def test_current_copilot_overview_rejects_unknown_or_conflicting_fields(self) -> None:
+        body = CURRENT_COPILOT_OVERVIEW
+        open_body = body.replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for invalid in (
+            body.replace("<!-- ccr-overview-v2 -->", "<!-- ccr-overview-v3 -->"),
+            body.replace("🔵 Needs a closer look", "Unknown verdict"),
+            body.replace("### 🔵", "prefix ### 🔵"),
+            body + "\n### 🟢 Approval recommended",
+            body + "\n### 🔵 Needs a closer look",
+            body + "\nprefix ### 🟢 Approval recommended",
+            body + "\n## Copilot review overview",
+            body + "\n**Findings:** None",
+            body + "\n**0 open findings**",
+            body + "\n" + CURRENT_COPILOT_OPEN_FINDING,
+            body.replace("**0 open findings**", "**0 open finding**"),
+            body.replace("**0 open findings**", "**2 open findings**"),
+            body.replace("**0 open findings**", "**unknown open findings**"),
+            body.replace("**0 open findings**", "prefix **0 open findings**"),
+            body.replace("**0 open findings**", "**0 open findings** extra"),
+            body.replace("**0 open findings**", ""),
+            body.replace("</details>", ""),
+            body + "\n</details>",
+            body.replace("What changed in this PR", "Unknown findings (1)"),
+            body + "\n<summary><strong>What changed in this PR</strong></summary>",
+            body.replace("**0 open findings**", "<details>\n**0 open findings**\n</details>"),
+            open_body.replace("1 open finding", "0 open findings"),
+            open_body.replace("1 open finding", "01 open finding"),
+            open_body.replace("1 open finding", "-1 open finding"),
+            open_body.replace("1 open finding", "1 open findings"),
+            open_body.replace("1 open finding", "2 open finding"),
+            open_body.replace("1 open finding", "1001 open findings"),
+            open_body.replace("1 open finding", "unknown open finding"),
+            open_body.replace("<details open>", "<details>"),
+            open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
+            body + COPILOT_RESOLVED_HISTORY * 2,
+            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)"),
+            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)"),
+            body + COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>"),
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(invalid)
+
+    def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
+        review = {
+            "id": 17001, "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z", "body": body,
+            **review_changes,
+        }
+        check = check_run(
+            f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}",
+            expanded_v6_summary() if expanded else v6_summary(),
+        )
+        pull = ingress_pull()
+        pull["labels"] = []
+        run = producer_run()
+        run["pull_requests"] = []
+        remote = evidence_api(run, review=review)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return remote(arguments)
+
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(MODULE, "collect_review_threads", return_value={
+                "nodes": nodes, "pageInfo": {"hasNextPage": False},
+            }),
+        ):
+            return MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example", pull=pull,
+                pull_number=17, base_sha=BASE, head_sha=HEAD,
+            )
+
+    def test_current_copilot_overview_requires_live_thread_evidence(self) -> None:
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "**0 open findings**", CURRENT_COPILOT_OPEN_FINDING
+        )
+        resolved = [{"id": "PRRT_1", "isResolved": True}]
+        for body, nodes, count in (
+            (CURRENT_COPILOT_OVERVIEW, [], 0),
+            (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
+            (open_body, resolved, 1),
+        ):
+            with self.subTest(body=body, nodes=nodes):
+                result = self.collect_current_copilot_evidence(body, nodes)
+                self.assertEqual(count, result["review"]["historical_findings_count"])
+                self.assertEqual(88, result["review"]["producer_run_id"])
+        result = self.collect_current_copilot_evidence(
+            CURRENT_COPILOT_OVERVIEW, [], expanded=False
+        )
+        self.assertEqual(0, result["review"]["historical_findings_count"])
+        for body in (CURRENT_COPILOT_OVERVIEW, open_body):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "unresolved-review-thread"):
+                    self.collect_current_copilot_evidence(
+                        body, [{"id": "PRRT_1", "isResolved": False}]
+                    )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+            self.collect_current_copilot_evidence(open_body, [])
+
+    def test_current_copilot_overview_preserves_review_bindings(self) -> None:
+        for changes in (
+            {"commit_id": BASE},
+            {"user": {"login": "copilot-pull-request-reviewer[bot]",
+                      "id": 1, "type": "Bot"}},
+            {"node_id": "PRR_wrong"},
+            {"state": "CHANGES_REQUESTED"},
+            {"submitted_at": "2026-09-27T00:05:00Z"},
+        ):
+            with self.subTest(changes=changes):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [], **changes
+                    )
+        for marker in MODULE.COPILOT_REVIEW_FAILURE_MARKERS:
+            with self.subTest(marker=marker):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW + "\n" + marker, []
+                    )
 
     def test_historical_copilot_overview_uses_live_thread_resolution(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
