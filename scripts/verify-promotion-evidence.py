@@ -272,7 +272,7 @@ def copilot_severity_icons() -> set[str]:
 
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
-    headings = [line for line in lines if "## Copilot review overview" in line]
+    headings = [line for line in lines if "## copilot review overview" in line.lower()]
     verdicts = [line for line in lines if "### " in line]
     require(
         len(verdicts) <= 1
@@ -288,11 +288,11 @@ def historical_copilot_findings_count(body: str) -> int:
         return current_copilot_findings_count(lines, verdicts[0])
     require(headings == ["## Copilot review overview"], "producer-review-binding")
     require(
-        not any("open finding" in line for line in lines
-                if "**" in line or "<summary><strong>" in line),
+        not any("open finding" in line.lower() for line in lines
+                if "**" in line or "<summary" in line.lower()),
         "producer-review-binding",
     )
-    fields = [line for line in lines if "**Findings:**" in line]
+    fields = [line for line in lines if "**findings:**" in line.lower()]
     require(len(fields) == 1, "producer-review-binding")
     if fields[0] == "**Findings:** None":
         return 0
@@ -329,11 +329,11 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     nonempty = [line for line in lines if line]
     require(
         nonempty[:2] == ["<!-- ccr-overview-v2 -->", verdict]
-        and not any("**Findings:**" in line for line in lines),
+        and not any("**findings:**" in line.lower() for line in lines),
         "producer-review-binding",
     )
-    fields = [line for line in lines if "open finding" in line
-              and ("**" in line or "<summary" in line)]
+    fields = [line for line in lines if "open finding" in line.lower()
+              and ("**" in line or "<summary" in line.lower())]
     require(len(fields) == 1, "producer-review-binding")
     if fields[0] == "**0 open findings**":
         count = 0
@@ -369,20 +369,24 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # These sections describe earlier reviews, not open findings on this
     # submission. Validate their count syntax and uniqueness without adding
     # them to the current review's live-thread coverage minimum.
-    for label in ("Resolved since last review", "Previously missed"):
-        sections = [line for line in lines if label in line
-                    and "<summary" in line]
+    history_patterns = {
+        "Resolved since last review": (
+            r"(?:Resolved since last review \(([1-9][0-9]{0,3})\)"
+            r"|([1-9][0-9]{0,3}) resolved since last review)"
+        ),
+        "Previously missed": r"Previously missed \(([1-9][0-9]{0,3})\)",
+    }
+    for label, pattern in history_patterns.items():
+        sections = [line for line in lines if label.lower() in line.lower()
+                    and "<summary" in line.lower()]
         require(len(sections) <= 1, "producer-review-binding")
         if sections:
             match = re.fullmatch(
-                rf"<summary><strong>{label} \(([1-9][0-9]{{0,3}})\)"
-                r"</strong></summary>", sections[0],
+                rf"<summary><strong>{pattern}</strong></summary>", sections[0],
             )
-            require(
-                match is not None
-                and int(match.group(1)) <= MAX_REVIEW_COMMENTS_PER_REVIEW,
-                "producer-review-binding",
-            )
+            require(match is not None, "producer-review-binding")
+            history_count = int(next(group for group in match.groups() if group is not None))
+            require(history_count <= MAX_REVIEW_COMMENTS_PER_REVIEW, "producer-review-binding")
             position = nonempty.index(sections[0])
             require(
                 position > 0 and nonempty[position - 1] == "<details>"
@@ -392,7 +396,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             supported_summaries.add(sections[0])
             if label == "Previously missed":
                 missed_summary = sections[0]
-                missed_count = int(match.group(1))
+                missed_count = history_count
     # Every block must own exactly one supported summary. The observed native
     # Previously missed rendering alone nests individual severity/title blocks;
     # ordinary overview/history blocks may not nest or borrow another summary.
@@ -400,7 +404,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
     for line in nonempty:
-        if "<details" in line:
+        marker_line = line.lower()
+        if "<details" in marker_line:
             require(line in {"<details>", "<details open>"}, "producer-review-binding")
             require(
                 not blocks or (
@@ -411,7 +416,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
                 "producer-review-binding",
             )
             blocks.append({"opening": line, "summary": None, "children": 0})
-        elif "<summary" in line or "</summary" in line:
+        elif "<summary" in marker_line or "</summary" in marker_line:
             require(blocks and blocks[-1]["summary"] is None, "producer-review-binding")
             if len(blocks) == 1:
                 require(
@@ -433,7 +438,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
                 blocks[0]["children"] += 1
                 require(blocks[0]["children"] <= missed_count, "producer-review-binding")
             blocks[-1]["summary"] = line
-        elif "</details" in line:
+        elif "</details" in marker_line:
             require(
                 line == "</details>" and blocks and blocks[-1]["summary"] is not None,
                 "producer-review-binding",

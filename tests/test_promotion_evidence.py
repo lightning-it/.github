@@ -48,6 +48,9 @@ COPILOT_RESOLVED_HISTORY = (
     "- Finding from the earlier review.\n"
     "</details>\n"
 )
+CURRENT_COPILOT_RESOLVED_HISTORY = COPILOT_RESOLVED_HISTORY.replace(
+    "Resolved since last review (1)", "1 resolved since last review"
+)
 COPILOT_MEDIUM_ICON = (
     '<picture><source media="(prefers-color-scheme: dark)" '
     'srcset="https://github.githubassets.com/static/images/icons/'
@@ -3582,7 +3585,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
             body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
             for history in (
-                "", COPILOT_RESOLVED_HISTORY,
+                "", COPILOT_RESOLVED_HISTORY, CURRENT_COPILOT_RESOLVED_HISTORY,
                 COPILOT_PREVIOUSLY_MISSED_HISTORY,
             ):
                 with self.subTest(verdict=verdict, history=history):
@@ -3613,8 +3616,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             body + "\nprefix ### 🟢 Approval recommended",
             body + "\n## Copilot review overview",
             body + "\n**Findings:** None",
+            body + "\n**FINDINGS:** 1",
             body + "\n**0 open findings**",
             body + "\n" + CURRENT_COPILOT_OPEN_FINDING,
+            body + "\n" + CURRENT_COPILOT_OPEN_FINDING.upper(),
             body.replace("**0 open findings**", "**0 open finding**"),
             body.replace("**0 open findings**", "**2 open findings**"),
             body.replace("**0 open findings**", "**unknown open findings**"),
@@ -3628,6 +3633,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             body.replace("**0 open findings**", "<details>\n**0 open findings**\n</details>"),
             body + "\n<details>\n</details>",
             body + "\n<details>\n<summary>Unknown section</summary>\n</details>",
+            body + "\n<DETAILS>\n<SUMMARY>Unknown section</SUMMARY>\n</DETAILS>",
+            body + "\n<DeTaIlS>\n<SuMmArY>Unknown section</SuMmArY>\n</DeTaIlS>",
+            body + "\n" + COPILOT_RESOLVED_HISTORY.upper(),
             body + "\n<details>\nbody without summary\n</details>",
             body.replace("</details>", "</details invalid>\n</details>"),
             body.replace("</details>", "<details>\n</details>\n</details>"),
@@ -3644,6 +3652,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
             open_body,
             body + COPILOT_RESOLVED_HISTORY * 2,
+            body + COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY,
+            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved"),
+            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved"),
+            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved"),
             body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)"),
             body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)"),
             body + COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>"),
@@ -3703,6 +3715,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         for body, nodes, count in (
             (CURRENT_COPILOT_OVERVIEW, [], 0),
             (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
+            (CURRENT_COPILOT_OVERVIEW + CURRENT_COPILOT_RESOLVED_HISTORY, resolved, 0),
             (CURRENT_COPILOT_OVERVIEW + COPILOT_PREVIOUSLY_MISSED_HISTORY, [], 0),
             (open_body, resolved, 1),
         ):
@@ -3729,6 +3742,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             (open_body.replace("🟡 Changes recommended", "🔵 Needs a closer look"), resolved),
             (CURRENT_COPILOT_OVERVIEW + "\n<details>\n</details>", []),
             (CURRENT_COPILOT_OVERVIEW + "\n<details>\n<summary>Unknown</summary>\n</details>", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n**FINDINGS:** 1", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n<DETAILS>\n<SUMMARY>Unknown</SUMMARY>\n</DETAILS>", []),
         ):
             with self.subTest(conflicting_body=body, nodes=nodes):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
@@ -3901,6 +3916,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 f"**Findings:** 2 {high_icon} · 1",
             ),
             valid_body + "\n**Findings:** None",
+            valid_body + "\n**FINDINGS:** None",
+            valid_body + "\n" + CURRENT_COPILOT_OPEN_FINDING.upper(),
             valid_body + "\nprefix **Findings:** None",
             valid_body + "\nprefix ## Copilot review overview",
             valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
