@@ -288,6 +288,11 @@ def historical_copilot_findings_count(body: str) -> int:
         return current_copilot_findings_count(lines, verdicts[0])
     require(headings == ["## Copilot review overview"], "producer-review-binding")
     require(
+        not any("previously missed" in line.lower() and "<summary" in line.lower()
+                for line in lines),
+        "producer-review-binding",
+    )
+    require(
         not any("open finding" in line.lower() for line in lines
                 if "**" in line or "<summary" in line.lower()),
         "producer-review-binding",
@@ -366,9 +371,9 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     missed_count = 0
     if count:
         supported_summaries.add(fields[0])
-    # These sections describe earlier reviews, not open findings on this
-    # submission. Validate their count syntax and uniqueness without adding
-    # them to the current review's live-thread coverage minimum.
+    # Resolved sections are history. Previously missed entries are newly
+    # surfaced findings, even when the overview reports zero open findings.
+    # The all-PR thread inventory cannot bind body-only entries to this review.
     history_patterns = {
         "Resolved since last review": (
             r"(?:Resolved since last review \(([1-9][0-9]{0,3})\)"
@@ -451,6 +456,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
     require(not blocks, "producer-review-binding")
+    require(missed_count == 0, "producer-review-binding")
     return count
 
 

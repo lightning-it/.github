@@ -3581,12 +3581,42 @@ class PromotionEvidenceTests(unittest.TestCase):
                 }
             )
 
+    def test_previously_missed_body_only_findings_cannot_pass_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            body = overview + COPILOT_PREVIOUSLY_MISSED_HISTORY
+            for expanded in (True, False):
+                for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                    with self.subTest(overview=overview, expanded=expanded, nodes=nodes):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, "producer-review-binding"
+                        ):
+                            self.collect_current_copilot_evidence(
+                                body, nodes, expanded=expanded
+                            )
+
+    def test_current_copilot_overview_rejects_previously_missed_findings(self) -> None:
+        for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
+            body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
+            for resolved in ("", COPILOT_RESOLVED_HISTORY, CURRENT_COPILOT_RESOLVED_HISTORY):
+                with self.subTest(verdict=verdict, resolved=resolved):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        MODULE.historical_copilot_findings_count(
+                            body + resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY
+                        )
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+            MODULE.historical_copilot_findings_count(
+                open_body + COPILOT_PREVIOUSLY_MISSED_HISTORY
+            )
+
     def test_current_copilot_overview_counts_only_submission_findings(self) -> None:
         for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
             body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
             for history in (
                 "", COPILOT_RESOLVED_HISTORY, CURRENT_COPILOT_RESOLVED_HISTORY,
-                COPILOT_PREVIOUSLY_MISSED_HISTORY,
             ):
                 with self.subTest(verdict=verdict, history=history):
                     self.assertEqual(
@@ -3716,7 +3746,6 @@ class PromotionEvidenceTests(unittest.TestCase):
             (CURRENT_COPILOT_OVERVIEW, [], 0),
             (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
             (CURRENT_COPILOT_OVERVIEW + CURRENT_COPILOT_RESOLVED_HISTORY, resolved, 0),
-            (CURRENT_COPILOT_OVERVIEW + COPILOT_PREVIOUSLY_MISSED_HISTORY, [], 0),
             (open_body, resolved, 1),
         ):
             with self.subTest(body=body, nodes=nodes):
