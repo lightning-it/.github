@@ -3612,6 +3612,28 @@ class PromotionEvidenceTests(unittest.TestCase):
                 open_body + COPILOT_PREVIOUSLY_MISSED_HISTORY
             )
 
+    def test_unwrapped_previously_missed_markers_cannot_pass_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            for marker in (
+                "<strong>Previously missed (1)</strong>",
+                "**Previously missed (1)**",
+                "Previously missed (1)",
+                "<strong>1 previously missed</strong>",
+                "**1 previously missed**",
+                "1 previously missed",
+            ):
+                for expanded in (True, False):
+                    for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                        with self.subTest(overview=overview, marker=marker,
+                                          expanded=expanded, nodes=nodes):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, "producer-review-binding"
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    overview + marker, nodes, expanded=expanded
+                                )
+
     def test_current_copilot_overview_counts_only_submission_findings(self) -> None:
         for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
             body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)

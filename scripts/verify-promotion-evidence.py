@@ -272,6 +272,16 @@ def copilot_severity_icons() -> set[str]:
 
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
+    # A missed-finding section remains actionable without its HTML wrapper.
+    # Apply the semantic heading check before selecting either overview parser.
+    require(
+        not any(re.match(
+            r"\s*(?:<summary>\s*)?(?:<strong>\s*|\*\*)?"
+            r"(?:[1-9][0-9]*\s+)?previously\s+missed\b",
+            line, re.IGNORECASE,
+        ) for line in lines),
+        "producer-review-binding",
+    )
     headings = [line for line in lines if "## copilot review overview" in line.lower()]
     verdicts = [line for line in lines if "### " in line]
     require(
@@ -287,11 +297,6 @@ def historical_copilot_findings_count(body: str) -> int:
         require(len(verdicts) == 1, "producer-review-binding")
         return current_copilot_findings_count(lines, verdicts[0])
     require(headings == ["## Copilot review overview"], "producer-review-binding")
-    require(
-        not any("previously missed" in line.lower() and "<summary" in line.lower()
-                for line in lines),
-        "producer-review-binding",
-    )
     require(
         not any("open finding" in line.lower() for line in lines
                 if "**" in line or "<summary" in line.lower()),
