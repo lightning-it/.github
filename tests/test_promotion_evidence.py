@@ -48,6 +48,28 @@ COPILOT_RESOLVED_HISTORY = (
     "- Finding from the earlier review.\n"
     "</details>\n"
 )
+COPILOT_MEDIUM_ICON = (
+    '<picture><source media="(prefers-color-scheme: dark)" '
+    'srcset="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-dark.svg">'
+    '<source media="(prefers-color-scheme: light)" '
+    'srcset="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-light.svg">'
+    '<img src="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-light.png" alt="Medium severity" '
+    'width="62" height="18" align="texttop"></picture>'
+)
+# Native Management #728, review 5480298386, nests individually titled findings
+# only inside its Previously missed history section.
+COPILOT_PREVIOUSLY_MISSED_HISTORY = (
+    "<details>\n"
+    "<summary><strong>Previously missed (1)</strong></summary>\n\n"
+    "In code that hasn't changed since last review\n\n"
+    "<details>\n"
+    f"<summary>{COPILOT_MEDIUM_ICON} Add subprocess coverage for import paths</summary>\n\n"
+    "The existing-resource import paths need regression coverage.\n"
+    "</details>\n</details>\n"
+)
 
 
 def promotion() -> dict[str, object]:
@@ -3561,7 +3583,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
             for history in (
                 "", COPILOT_RESOLVED_HISTORY,
-                COPILOT_RESOLVED_HISTORY.replace("Resolved since last review", "Previously missed"),
+                COPILOT_PREVIOUSLY_MISSED_HISTORY,
             ):
                 with self.subTest(verdict=verdict, history=history):
                     self.assertEqual(
@@ -3584,6 +3606,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         for invalid in (
             body.replace("<!-- ccr-overview-v2 -->", "<!-- ccr-overview-v3 -->"),
             body.replace("🔵 Needs a closer look", "Unknown verdict"),
+            body.replace("🔵 Needs a closer look", "🟡 Changes recommended"),
             body.replace("### 🔵", "prefix ### 🔵"),
             body + "\n### 🟢 Approval recommended",
             body + "\n### 🔵 Needs a closer look",
@@ -3603,6 +3626,13 @@ class PromotionEvidenceTests(unittest.TestCase):
             body.replace("What changed in this PR", "Unknown findings (1)"),
             body + "\n<summary><strong>What changed in this PR</strong></summary>",
             body.replace("**0 open findings**", "<details>\n**0 open findings**\n</details>"),
+            body + "\n<details>\n</details>",
+            body + "\n<details>\n<summary>Unknown section</summary>\n</details>",
+            body + "\n<details>\nbody without summary\n</details>",
+            body.replace("</details>", "</details invalid>\n</details>"),
+            body.replace("</details>", "<details>\n</details>\n</details>"),
+            body.replace("</details>", COPILOT_RESOLVED_HISTORY + "</details>"),
+            body.replace("</details>", "<summary>Unknown</summary>\n</details>"),
             open_body.replace("1 open finding", "0 open findings"),
             open_body.replace("1 open finding", "01 open finding"),
             open_body.replace("1 open finding", "-1 open finding"),
@@ -3612,10 +3642,17 @@ class PromotionEvidenceTests(unittest.TestCase):
             open_body.replace("1 open finding", "unknown open finding"),
             open_body.replace("<details open>", "<details>"),
             open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
+            open_body,
             body + COPILOT_RESOLVED_HISTORY * 2,
             body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)"),
             body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)"),
             body + COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>"),
+            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)"),
+            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>"),
+            body + COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY),
+            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
+                "</details>\n</details>", "<details>\n</details>\n</details>\n</details>"
+            ),
         ):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
@@ -3658,12 +3695,15 @@ class PromotionEvidenceTests(unittest.TestCase):
 
     def test_current_copilot_overview_requires_live_thread_evidence(self) -> None:
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace(
             "**0 open findings**", CURRENT_COPILOT_OPEN_FINDING
         )
         resolved = [{"id": "PRRT_1", "isResolved": True}]
         for body, nodes, count in (
             (CURRENT_COPILOT_OVERVIEW, [], 0),
             (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
+            (CURRENT_COPILOT_OVERVIEW + COPILOT_PREVIOUSLY_MISSED_HISTORY, [], 0),
             (open_body, resolved, 1),
         ):
             with self.subTest(body=body, nodes=nodes):
@@ -3682,6 +3722,17 @@ class PromotionEvidenceTests(unittest.TestCase):
                     )
         with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
             self.collect_current_copilot_evidence(open_body, [])
+        for body, nodes in (
+            (CURRENT_COPILOT_OVERVIEW.replace(
+                "🔵 Needs a closer look", "🟡 Changes recommended"
+            ), []),
+            (open_body.replace("🟡 Changes recommended", "🔵 Needs a closer look"), resolved),
+            (CURRENT_COPILOT_OVERVIEW + "\n<details>\n</details>", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n<details>\n<summary>Unknown</summary>\n</details>", []),
+        ):
+            with self.subTest(conflicting_body=body, nodes=nodes):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    self.collect_current_copilot_evidence(body, nodes)
 
     def test_current_copilot_overview_preserves_review_bindings(self) -> None:
         for changes in (
