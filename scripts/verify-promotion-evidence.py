@@ -273,12 +273,14 @@ def copilot_severity_icons() -> set[str]:
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
     # A missed-finding section remains actionable without its HTML wrapper.
-    # Apply the semantic heading check before selecting either overview parser.
+    # Match a complete heading, not narrative prose beginning with these words.
     require(
-        not any(re.match(
-            r"\s*(?:<summary>\s*)?(?:<strong>\s*|\*\*)?"
-            r"(?:[1-9][0-9]*\s+)?previously\s+missed\b",
-            line, re.IGNORECASE,
+        not any(re.fullmatch(
+            r"(?:previously\s+missed(?:\s*\([^()\r\n]*\))?"
+            r"|[0-9]+\s+previously\s+missed)",
+            re.sub(r"</?(?:summary|strong)>", "", line,
+                   flags=re.IGNORECASE).strip().strip("*").strip(),
+            re.IGNORECASE,
         ) for line in lines),
         "producer-review-binding",
     )

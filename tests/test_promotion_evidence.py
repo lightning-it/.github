@@ -3634,6 +3634,24 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     overview + marker, nodes, expanded=expanded
                                 )
 
+    def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            for prose in (
+                "Previously missed issues have now been resolved.",
+                "<strong>Previously missed issues have now been resolved.</strong>",
+                "Previously missed (1) is an example documented in the change description.",
+                "1 previously missed issue was corrected.",
+            ):
+                for expanded in (True, False):
+                    for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                        with self.subTest(overview=overview, prose=prose,
+                                          expanded=expanded, nodes=nodes):
+                            evidence = self.collect_current_copilot_evidence(
+                                overview + prose, nodes, expanded=expanded
+                            )
+                            self.assertIsInstance(evidence, dict)
+
     def test_current_copilot_overview_counts_only_submission_findings(self) -> None:
         for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
             body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
