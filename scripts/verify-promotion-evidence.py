@@ -256,21 +256,9 @@ def normalized_review_text(value: str) -> str:
     )
 
 
-def historical_copilot_findings_count(body: str) -> int:
-    lines = body.splitlines()
-    headings = [line for line in lines if "## Copilot review overview" in line]
-    require(headings == ["## Copilot review overview"], "producer-review-binding")
-    fields = [line for line in lines if "**Findings:**" in line]
-    require(len(fields) == 1, "producer-review-binding")
-    if fields[0] == "**Findings:** None":
-        return 0
-    require(
-        fields[0].startswith("**Findings:** "), "producer-review-binding"
-    )
-    groups = fields[0].removeprefix("**Findings:** ").split(" · ")
-    require(1 <= len(groups) <= 3, "producer-review-binding")
+def copilot_severity_icons() -> set[str]:
     prefix = "https://github.githubassets.com/static/images/icons/copilot-code-review/"
-    supported_icons = {
+    return {
         '<picture><source media="(prefers-color-scheme: dark)" '
         f'srcset="{prefix}{severity}-v2-dark.svg">'
         '<source media="(prefers-color-scheme: light)" '
@@ -280,6 +268,40 @@ def historical_copilot_findings_count(body: str) -> int:
         'align="texttop"></picture>'
         for severity in ("high", "medium", "low")
     }
+
+
+def historical_copilot_findings_count(body: str) -> int:
+    lines = body.splitlines()
+    headings = [line for line in lines if "## copilot review overview" in line.lower()]
+    verdicts = [line for line in lines if "### " in line]
+    require(
+        len(verdicts) <= 1
+        and all(verdict in {
+            "### 🟢 Approval recommended",
+            "### 🟡 Changes recommended",
+            "### 🔵 Needs a closer look",
+        } for verdict in verdicts),
+        "producer-review-binding",
+    )
+    if not headings:
+        require(len(verdicts) == 1, "producer-review-binding")
+        return current_copilot_findings_count(lines, verdicts[0])
+    require(headings == ["## Copilot review overview"], "producer-review-binding")
+    require(
+        not any("open finding" in line.lower() for line in lines
+                if "**" in line or "<summary" in line.lower()),
+        "producer-review-binding",
+    )
+    fields = [line for line in lines if "**findings:**" in line.lower()]
+    require(len(fields) == 1, "producer-review-binding")
+    if fields[0] == "**Findings:** None":
+        return 0
+    require(
+        fields[0].startswith("**Findings:** "), "producer-review-binding"
+    )
+    groups = fields[0].removeprefix("**Findings:** ").split(" · ")
+    require(1 <= len(groups) <= 3, "producer-review-binding")
+    supported_icons = copilot_severity_icons()
     count = 0
     observed_icons: set[str] = set()
     for group in groups:
@@ -297,6 +319,138 @@ def historical_copilot_findings_count(body: str) -> int:
         if icon is not None:
             observed_icons.add(icon)
         count += int(match.group("count"))
+    return count
+
+
+def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
+    # Only the two observed native CCR renderings are admitted. Counts remain
+    # submission-time metadata; exact review binding and live thread coverage
+    # are independently required by the caller.
+    nonempty = [line for line in lines if line]
+    require(
+        nonempty[:2] == ["<!-- ccr-overview-v2 -->", verdict]
+        and not any("**findings:**" in line.lower() for line in lines),
+        "producer-review-binding",
+    )
+    fields = [line for line in lines if "open finding" in line.lower()
+              and ("**" in line or "<summary" in line.lower())]
+    require(len(fields) == 1, "producer-review-binding")
+    if fields[0] == "**0 open findings**":
+        count = 0
+    else:
+        match = re.fullmatch(
+            r"<summary><strong>([1-9][0-9]{0,3}) open (finding|findings)"
+            r"</strong></summary>", fields[0],
+        )
+        require(match is not None, "producer-review-binding")
+        count = int(match.group(1))
+        require(
+            count <= MAX_REVIEW_COMMENTS_PER_REVIEW
+            and match.group(2) == ("finding" if count == 1 else "findings"),
+            "producer-review-binding",
+        )
+        position = nonempty.index(fields[0])
+        require(
+            position > 0 and nonempty[position - 1] == "<details open>"
+            and "</details>" in nonempty[position + 1:],
+            "producer-review-binding",
+        )
+    require(
+        (verdict == "### 🟡 Changes recommended") == (count > 0),
+        "producer-review-binding",
+    )
+    supported_summaries = {
+        "<summary><strong>What changed in this PR</strong></summary>"
+    }
+    missed_summary = None
+    missed_count = 0
+    if count:
+        supported_summaries.add(fields[0])
+    # These sections describe earlier reviews, not open findings on this
+    # submission. Validate their count syntax and uniqueness without adding
+    # them to the current review's live-thread coverage minimum.
+    history_patterns = {
+        "Resolved since last review": (
+            r"(?:Resolved since last review \(([1-9][0-9]{0,3})\)"
+            r"|([1-9][0-9]{0,3}) resolved since last review)"
+        ),
+        "Previously missed": r"Previously missed \(([1-9][0-9]{0,3})\)",
+    }
+    for label, pattern in history_patterns.items():
+        sections = [line for line in lines if label.lower() in line.lower()
+                    and "<summary" in line.lower()]
+        require(len(sections) <= 1, "producer-review-binding")
+        if sections:
+            match = re.fullmatch(
+                rf"<summary><strong>{pattern}</strong></summary>", sections[0],
+            )
+            require(match is not None, "producer-review-binding")
+            history_count = int(next(group for group in match.groups() if group is not None))
+            require(history_count <= MAX_REVIEW_COMMENTS_PER_REVIEW, "producer-review-binding")
+            position = nonempty.index(sections[0])
+            require(
+                position > 0 and nonempty[position - 1] == "<details>"
+                and "</details>" in nonempty[position + 1:],
+                "producer-review-binding",
+            )
+            supported_summaries.add(sections[0])
+            if label == "Previously missed":
+                missed_summary = sections[0]
+                missed_count = history_count
+    # Every block must own exactly one supported summary. The observed native
+    # Previously missed rendering alone nests individual severity/title blocks;
+    # ordinary overview/history blocks may not nest or borrow another summary.
+    blocks: list[JSON] = []
+    seen_summaries: set[str] = set()
+    supported_icons = copilot_severity_icons()
+    for line in nonempty:
+        marker_line = line.lower()
+        if "<details" in marker_line:
+            require(line in {"<details>", "<details open>"}, "producer-review-binding")
+            require(
+                not blocks or (
+                    len(blocks) == 1 and missed_summary is not None
+                    and blocks[0]["summary"] == missed_summary
+                    and line == "<details>"
+                ),
+                "producer-review-binding",
+            )
+            blocks.append({"opening": line, "summary": None, "children": 0})
+        elif "<summary" in marker_line or "</summary" in marker_line:
+            require(blocks and blocks[-1]["summary"] is None, "producer-review-binding")
+            if len(blocks) == 1:
+                require(
+                    line in supported_summaries and line not in seen_summaries
+                    and blocks[-1]["opening"] == (
+                        "<details open>" if count and line == fields[0] else "<details>"
+                    ),
+                    "producer-review-binding",
+                )
+                seen_summaries.add(line)
+            else:
+                match = re.fullmatch(
+                    r"<summary>(<picture>.*</picture>) ([^<>]+)</summary>", line
+                )
+                require(
+                    match is not None and match.group(1) in supported_icons,
+                    "producer-review-binding",
+                )
+                blocks[0]["children"] += 1
+                require(blocks[0]["children"] <= missed_count, "producer-review-binding")
+            blocks[-1]["summary"] = line
+        elif "</details" in marker_line:
+            require(
+                line == "</details>" and blocks and blocks[-1]["summary"] is not None,
+                "producer-review-binding",
+            )
+            block = blocks.pop()
+            if block["summary"] == missed_summary:
+                require(block["children"] == missed_count, "producer-review-binding")
+        elif line == "**0 open findings**":
+            require(not blocks, "producer-review-binding")
+        elif blocks:
+            require(blocks[-1]["summary"] is not None, "producer-review-binding")
+    require(not blocks, "producer-review-binding")
     return count
 
 
