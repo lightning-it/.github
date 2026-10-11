@@ -3653,12 +3653,19 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "Previously missed (1) is an example documented in the change description.",
                 "1 previously missed issue was corrected.",
             ):
+                # Current native narrative belongs to an owned section, not
+                # arbitrary top-level text between its findings and footer.
+                body = (
+                    overview.replace("</details>", prose + "\n</details>", 1)
+                    if overview == CURRENT_COPILOT_OVERVIEW
+                    else overview_with_tail(overview, prose)
+                )
                 for expanded in (True, False):
                     for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
                         with self.subTest(overview=overview, prose=prose,
                                           expanded=expanded, nodes=nodes):
                             evidence = self.collect_current_copilot_evidence(
-                                overview_with_tail(overview, prose), nodes, expanded=expanded
+                                body, nodes, expanded=expanded
                             )
                             self.assertIsInstance(evidence, dict)
 
@@ -3846,6 +3853,30 @@ class PromotionEvidenceTests(unittest.TestCase):
                 for expanded in (True, False):
                     with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                         self.collect_current_copilot_evidence(invalid, [], expanded=expanded)
+
+    def test_current_copilot_overview_rejects_unframed_content_after_findings(self) -> None:
+        positive = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for tail in (
+            "Arbitrary top-level tail.\n",
+            "## Borrowed section\nContent before the footer.\n",
+            "> Quoted top-level tail.\n",
+            "- Top-level list item.\n",
+            "<div>Unframed content.</div>\n",
+            "<!-- ccr-overview-v2 -->\n",
+            "### 🔵 Needs a closer look\n",
+            "---\n",
+        ):
+            for original in (CURRENT_COPILOT_OVERVIEW, positive):
+                body = overview_with_tail(original, tail)
+                with self.subTest(tail=tail, positive=original == positive):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        MODULE.historical_copilot_findings_count(body)
+                    if original == CURRENT_COPILOT_OVERVIEW:
+                        for expanded in (True, False):
+                            with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                                self.collect_current_copilot_evidence(body, [], expanded=expanded)
 
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {

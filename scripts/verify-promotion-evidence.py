@@ -451,7 +451,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     blocks: list[JSON] = []
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
-    for line in nonempty:
+    for position, line in enumerate(nonempty):
         require(
             not (not blocks and line.lstrip().startswith(("```", "~~~"))),
             "producer-review-binding",
@@ -502,6 +502,10 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             require(not blocks, "producer-review-binding")
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
+        else:
+            # The prefix was checked as introductory prose. After findings,
+            # only an owned native section or the terminal footer is legal.
+            require(position < field_position, "producer-review-binding")
     require(not blocks, "producer-review-binding")
     require(missed_count == 0, "producer-review-binding")
     return count
