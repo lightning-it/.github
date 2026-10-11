@@ -583,9 +583,9 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
             # A closed comment may be followed by another opener on the same
             # line. Only closers end a live comment; nested openers are literal.
-            for token in re.findall(r"<!--|-->", line):
+            for token in re.findall(r"<!--|--!?>", line):
                 if comment:
-                    if token == "-->":
+                    if token in {"-->", "--!>"}:
                         comment = False
                 elif token == "<!--":
                     comment = True

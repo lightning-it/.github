@@ -3934,6 +3934,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "~~~~text\nQuoted section content.",
             "<!--\nHidden section content.",
             "<!-- closed --> <!--",
+            "<!-- closed --!> <!--",
             "<!-- first\nclosed --> <!--",
             "```text\n<!--\nQuoted comment and section content.",
         ):
@@ -3952,6 +3953,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             "~~~~text\n</details>\n~~~\n~~~~",
             "<!--\n</details>\nHidden explanatory content.\n-->",
             "<!-- inline explanatory comment -->",
+            "<!-- inline explanatory comment --!>",
+            "<!-- first --!> <!-- second -->",
             "<!-- first --> <!-- second -->",
             "<!-- first\nclosed --> <!-- second -->",
         ):
