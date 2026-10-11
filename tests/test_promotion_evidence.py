@@ -3830,6 +3830,10 @@ class PromotionEvidenceTests(unittest.TestCase):
             "+\tBorrowed list\nContent under this list is not introductory prose.",
             "1.\tBorrowed list\nContent under this list is not introductory prose.",
             "1)\tBorrowed list\nContent under this list is not introductory prose.",
+            "_ _ _",
+            "___",
+            "_\t_\t_",
+            "____",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
             with self.subTest(replacement=replacement):
