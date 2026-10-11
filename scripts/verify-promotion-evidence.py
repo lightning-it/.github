@@ -1595,7 +1595,8 @@ def validate_expanded_review_metadata(
 
 
 def validate_bound_review_identity(
-    *, repository: str, pull_number: int, head_sha: str, summary: JSON
+    *, repository: str, pull_number: int, head_sha: str, summary: JSON,
+    check_completed_at: Any,
 ) -> list[Any]:
     review_pages = exact_array(
         gh_json(
@@ -1647,18 +1648,95 @@ def validate_bound_review_identity(
         len(current_reviews) == 1
         and ("review_id" not in summary
              or current_reviews[0].get("node_id") == summary["review_id"]),
-        "review-summary-review-binding",
+        ("review-summary-review-binding" if "review_id" in summary
+         else "producer-current-copilot-review-not-unique"),
     )
-    # Native run/PR association proves ownership, not review-after-edit order.
-    # Authenticate the review before either association branch can return.
+    # Association proves ownership, not that this review existed when the
+    # producer accepted it. Reject late replacements before either route.
+    submitted = timestamp(
+        current_reviews[0].get("submitted_at"), "producer-review-submitted-at"
+    )
+    require(
+        submitted <= timestamp(check_completed_at, "candidate-check-completed-at"),
+        "producer-review-binding",
+    )
     edited = summary.get("pull_request_last_edited_at")
     if edited is not None:
         require(
-            timestamp(current_reviews[0].get("submitted_at"), "producer-review-submitted-at")
-            > timestamp(edited, "review-summary-last-edited-at"),
+            submitted > timestamp(edited, "review-summary-last-edited-at"),
             "review-summary-review-after-edit",
         )
     return review_pages
+
+
+def bind_copilot_review_findings(
+    pages: list[Any], *, repository: str, pull_number: int, head_sha: str
+) -> JSON:
+    """Retain native findings across both producer association routes."""
+    native_reviews: dict[str, JSON] = {}
+    for page in pages:
+        for item in exact_array(page, "finding-review-page"):
+            review = exact_object(item, "finding-review")
+            actor = exact_object(review.get("user"), "finding-review-user")
+            if (actor.get("login") != COPILOT_REVIEWER_LOGIN
+                    or type(actor.get("id")) is not int
+                    or actor.get("id") != COPILOT_REVIEWER_ID
+                    or actor.get("type") != "Bot"
+                    or review.get("state") not in {"COMMENTED", "APPROVED"}):
+                continue
+            node_id = text(review.get("node_id"), "finding-review-node-id")
+            require(PULL_REQUEST_REVIEW_NODE_ID.fullmatch(node_id) is not None,
+                    "producer-review-thread-coverage")
+            native_reviews[node_id] = {
+                "id": integer(review.get("id"), "finding-review-id"),
+                "head_sha": sha(review.get("commit_id"), "finding-review-head"),
+                "submitted_at": text(review.get("submitted_at"), "finding-review-submitted"),
+            }
+    current = [review for page in pages for review in page
+               if review.get("node_id") in native_reviews
+               and review.get("commit_id") == head_sha]
+    require(len(current) == 1, "producer-current-copilot-review-not-unique")
+    review = current[0]
+    body = text(review.get("body"), "producer-review-body")
+    require(body.startswith("<!-- ccr-overview-v2 -->")
+            and not any(marker in normalized_review_text(body)
+                        for marker in COPILOT_REVIEW_FAILURE_MARKERS),
+            "producer-review-binding")
+    count = historical_copilot_findings_count(body)
+    targets: list[int] | None = None
+    if count and "## Copilot review overview" not in body.splitlines():
+        lines = [line for line in body.splitlines() if line]
+        summary = f"<summary><strong>{count} open {'finding' if count == 1 else 'findings'}</strong></summary>"
+        start = lines.index(summary) + 1
+        entries = lines[start:lines.index("</details>", start)]
+        if any("discussion_r" in line or "https://github.com/" in line
+               for line in entries):
+            targets = []
+            for line in entries:
+                match = re.fullmatch(
+                    r"- (?:(<picture>.*</picture>) )?\[[^\r\n]+\]"
+                    + r"\(https://github\.com/" + re.escape(repository)
+                    + r"/pull/" + str(pull_number)
+                    + r"#discussion_r([1-9][0-9]{0,19})\)(?: · New)?", line,
+                )
+                require(match is not None and (match.group(1) is None
+                        or match.group(1) in copilot_severity_icons()),
+                        "producer-review-thread-coverage")
+                # Native titles are Markdown labels and can contain severity
+                # brackets or inline code. Authority comes from the unique
+                # same-PR target, never from the title's display text.
+                require(len(re.findall(
+                    r"https://github\.com/[^\s()]+#discussion_r[0-9]+", line,
+                )) == 1, "producer-review-thread-coverage")
+                targets.append(int(match.group(2)))
+            require(len(targets) == count and len(set(targets)) == count,
+                    "producer-review-thread-coverage")
+    return {
+        "review_id": review["node_id"], "review_database_id": review["id"],
+        "review_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "historical_findings_count": count,
+        "finding_comment_ids": targets, "native_reviews": native_reviews,
+    }
 
 
 def validate_producer_run(
@@ -1672,6 +1750,7 @@ def validate_producer_run(
     evidence_kind: str,
     evidence_version: str,
     producer_run_id: int,
+    copilot_binding: JSON | None = None,
 ) -> tuple[JSON, int]:
     check_id = integer(check.get("id"), "check-id")
     require(
@@ -2093,13 +2172,20 @@ def validate_producer_run(
                 "producer-post-evidence-failure-order",
             )
             failed_handoff_producer = True
-        if evidence_kind == "copilot" and "pull_request_last_edited_at" in summary:
+        if evidence_kind == "copilot":
             bound_review_pages = validate_bound_review_identity(
                 repository=repository,
                 pull_number=pull_number,
                 head_sha=head_sha,
                 summary=summary,
+                check_completed_at=check.get("completed_at"),
             )
+            native_binding = bind_copilot_review_findings(
+                bound_review_pages, repository=repository,
+                pull_number=pull_number, head_sha=head_sha,
+            )
+            if copilot_binding is not None:
+                copilot_binding.update(native_binding)
         require(repository_state is not None, "producer-repository-state")
         repository_id = integer(repository_state.get("id"), "producer-repository-id")
         repository_name = repository.split("/", 1)[1]
@@ -2422,7 +2508,8 @@ def validate_producer_run(
             and association.get("url") == f"{repository_url}/pulls/{pull_number}",
             "producer-run-pull-request-binding",
         )
-    return summary, 0
+    return summary, (native_binding["historical_findings_count"]
+                     if evidence_kind == "copilot" else 0)
 
 
 def bound_review_check(
@@ -2466,6 +2553,7 @@ def bound_review_check(
                 and v6.group("head") == head_sha
                 and output_title == v6_titles[expected_kind]
             ):
+                native_binding: JSON = {}
                 summary, historical_findings_count = validate_producer_run(
                     check,
                     repository=repository,
@@ -2475,6 +2563,7 @@ def bound_review_check(
                     head_sha=head_sha,
                     evidence_kind=v6.group("kind"),
                     evidence_version="v6",
+                    copilot_binding=native_binding,
                     producer_run_id=int(v6.group("run")),
                 )
                 match = {
@@ -2486,6 +2575,8 @@ def bound_review_check(
                     "summary_sha256": digest(summary),
                     "historical_findings_count": historical_findings_count,
                 }
+                if native_binding:
+                    match["copilot_binding"] = native_binding
                 matches.append(match)
             continue
         v5 = V5_EXTERNAL_ID.fullmatch(external_id)
@@ -2496,6 +2587,7 @@ def bound_review_check(
                 and v5.group("head") == head_sha
                 and output_title == "Current revision review passed"
             ):
+                native_binding: JSON = {}
                 summary, historical_findings_count = validate_producer_run(
                     check,
                     repository=repository,
@@ -2505,6 +2597,7 @@ def bound_review_check(
                     head_sha=head_sha,
                     evidence_kind=v5.group("kind"),
                     evidence_version="v5",
+                    copilot_binding=native_binding,
                     producer_run_id=int(v5.group("run")),
                 )
                 match = {
@@ -2516,6 +2609,8 @@ def bound_review_check(
                     "summary_sha256": digest(summary),
                     "historical_findings_count": historical_findings_count,
                 }
+                if native_binding:
+                    match["copilot_binding"] = native_binding
                 matches.append(match)
             continue
         v4 = V4_EXTERNAL_ID.fullmatch(external_id)
@@ -2637,7 +2732,9 @@ query($owner:String!,$name:String!,$number:Int!,$after:String){
     pullRequest(number:$number){
       number
       reviewThreads(first:100,after:$after){
-        nodes{id isResolved}
+        nodes{id isResolved comments(first:1){
+          nodes{id databaseId pullRequestReview{id databaseId}}
+        }}
         pageInfo{hasNextPage endCursor}
       }
     }
@@ -2723,15 +2820,95 @@ def collect_bound_ingress_evidence(
         head_sha=head_sha,
         merge_base_sha=merge_base_sha,
     )
-    threads = validate_review_threads(
-        collect_review_threads(repository, pull_number)
-    )
-    require(
-        len(threads["resolved_thread_ids"])
-        >= review["historical_findings_count"],
-        "producer-review-thread-coverage",
-    )
+    connection = collect_review_threads(repository, pull_number)
+    threads = validate_review_threads(connection)
+    if review["evidence_kind"] == "copilot":
+        binding = exact_object(review.pop("copilot_binding", None), "copilot-binding")
+        threads["copilot_finding_binding"] = bind_copilot_live_threads(
+            binding, connection, repository=repository,
+            pull_number=pull_number, head_sha=head_sha,
+        )
     return {"review": review, "threads": threads}
+
+
+def bind_copilot_live_threads(
+    binding: JSON, connection: JSON, *, repository: str,
+    pull_number: int, head_sha: str,
+) -> JSON:
+    """Cover counted and current findings with native resolved root comments."""
+    roots: dict[int, JSON] = {}
+    root_node_ids: set[str] = set()
+    for thread in connection["nodes"]:
+        comments = exact_array(exact_object(thread.get("comments"),
+                              "thread-root-comments").get("nodes"), "thread-root-nodes")
+        require(len(comments) == 1, "producer-review-thread-coverage")
+        root = exact_object(comments[0], "thread-root")
+        comment_id = integer(root.get("databaseId"), "thread-root-id")
+        node_id = text(root.get("id"), "thread-root-node-id")
+        require(len(node_id) <= 256 and comment_id not in roots
+                and node_id not in root_node_ids, "producer-review-thread-coverage")
+        root_node_ids.add(node_id)
+        roots[comment_id] = {
+            "comment_id": comment_id, "comment_node_id": node_id,
+            "thread_id": thread["id"], "review": root.get("pullRequestReview"),
+        }
+    pages = exact_array(gh_json([
+        "api", "--paginate", "--slurp",
+        f"repos/{repository}/pulls/{pull_number}/reviews/"
+        f"{binding['review_database_id']}/comments?per_page=100",
+    ]), "finding-comment-pages")
+    current_ids: list[int] = []
+    for page in pages:
+        for item in exact_array(page, "finding-comment-page"):
+            comment = exact_object(item, "finding-comment")
+            comment_id = integer(comment.get("id"), "finding-comment-id")
+            current_ids.append(comment_id)
+            require(len(current_ids) <= MAX_REVIEW_COMMENTS_PER_REVIEW
+                    and integer(comment.get("pull_request_review_id"), "finding-comment-review-id")
+                    == binding["review_database_id"]
+                    and comment.get("original_commit_id") == head_sha,
+                    "producer-review-thread-coverage")
+            require(not any(marker in normalized_review_text(
+                        text(comment.get("body"), "finding-comment-body"))
+                        for marker in COPILOT_REVIEW_FAILURE_MARKERS),
+                    "producer-review-binding")
+            root = roots.get(comment_id)
+            require(root is not None
+                    and root["comment_node_id"] == comment.get("node_id")
+                    and root["review"] == {
+                        "id": binding["review_id"],
+                        "databaseId": binding["review_database_id"],
+                    }, "producer-review-thread-coverage")
+    require(len(current_ids) == len(set(current_ids)), "producer-review-thread-coverage")
+    targets = binding["finding_comment_ids"]
+    if targets is None:
+        # Legacy/unlinked counts cannot borrow arbitrary old PR threads. A
+        # carried finding is admissible only when the exact current body links it.
+        require(not binding["historical_findings_count"]
+                or len(current_ids) == binding["historical_findings_count"],
+                "producer-review-thread-coverage")
+        targets = current_ids
+    required = sorted(set(targets) | set(current_ids))
+    authenticated: list[JSON] = []
+    current_review = binding["native_reviews"][binding["review_id"]]
+    for comment_id in required:
+        root = roots.get(comment_id)
+        require(root is not None, "producer-review-thread-coverage")
+        owner = exact_object(root["review"], "finding-root-review")
+        native = binding["native_reviews"].get(owner.get("id"))
+        require(native is not None
+                and integer(owner.get("databaseId"), "finding-root-review-id") == native["id"]
+                and timestamp(native["submitted_at"], "finding-review-submitted")
+                <= timestamp(current_review["submitted_at"], "current-review-submitted"),
+                "producer-review-thread-coverage")
+        authenticated.append({**root, "review_head_sha": native["head_sha"]})
+    return {
+        "review_id": binding["review_id"],
+        "review_body_sha256": binding["review_body_sha256"],
+        "finding_comment_ids": sorted(targets),
+        "current_comment_ids": sorted(current_ids),
+        "resolved_roots": authenticated,
+    }
 
 
 def private_runtime_directory() -> Path:

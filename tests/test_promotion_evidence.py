@@ -46,6 +46,26 @@ def overview_with_tail(body, tail):
     return body + tail
 
 
+def native_finding_comment(comment_id=10001, review_id=17001):
+    return {
+        "id": comment_id, "node_id": f"PRRC_native_{comment_id}",
+        "pull_request_review_id": review_id, "original_commit_id": HEAD,
+        "body": "Native inline finding.",
+    }
+
+
+def native_finding_thread(comment_id=10001, *, review_id=17001,
+                          review_node_id="PRR_kwDOQs6tNc8AAAABPj6qbQ",
+                          resolved=True, thread_id="PRRT_1"):
+    return {
+        "id": thread_id, "isResolved": resolved,
+        "comments": {"nodes": [{
+            "id": f"PRRC_native_{comment_id}", "databaseId": comment_id,
+            "pullRequestReview": {"id": review_node_id, "databaseId": review_id},
+        }]},
+    }
+
+
 CURRENT_COPILOT_OPEN_FINDING = (
     "<details open>\n"
     "<summary><strong>1 open finding</strong></summary>\n\n"
@@ -347,7 +367,8 @@ def evidence_api(
             "repos/lightning-it/example/pulls/17/reviews/17001/"
             "comments?per_page=100"
         ):
-            return [[review_comment] if review_comment is not None else []]
+            return [review_comment if type(review_comment) is list else
+                    [review_comment] if review_comment is not None else []]
         raise AssertionError(endpoint)
 
     return dispatch
@@ -1155,6 +1176,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         run["pull_requests"] = []
         valid_review = {
             "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
             "user": {
                 "login": "copilot-pull-request-reviewer[bot]",
                 "id": 175728472,
@@ -3071,14 +3093,14 @@ class PromotionEvidenceTests(unittest.TestCase):
                      "**Findings:** 1\n"
                      "<strong>Open (1)</strong>"),
         }
-        delegate = evidence_api(run, review=review)
+        delegate = evidence_api(run, review=review, review_comment=native_finding_comment())
 
         def api(arguments):
             if "check-runs?check_name=" in arguments[-1]:
                 return [{"check_runs": [check]}]
             return delegate(arguments)
 
-        for nodes in ([], [{"id": "PRRT_1", "isResolved": True}]):
+        for nodes in ([], [native_finding_thread()]):
             with (
                 self.subTest(nodes=nodes),
                 mock.patch.object(MODULE, "gh_json", side_effect=api),
@@ -3109,13 +3131,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                         )
 
         review["body"] += "\nEncountered an error"
-        delegate = evidence_api(run, review=review)
+        delegate = evidence_api(run, review=review, review_comment=native_finding_comment())
         with (
             mock.patch.object(MODULE, "gh_json", side_effect=api),
             mock.patch.object(
                 MODULE, "collect_review_threads",
                 return_value={
-                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "nodes": [native_finding_thread()],
                     "pageInfo": {"hasNextPage": False},
                 },
             ),
@@ -3596,7 +3618,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
             body = overview_with_tail(overview, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             for expanded in (True, False):
-                for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
                     with self.subTest(overview=overview, expanded=expanded, nodes=nodes):
                         with self.assertRaisesRegex(
                             MODULE.EvidenceError, "producer-review-binding"
@@ -3634,7 +3657,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "1 previously missed",
             ):
                 for expanded in (True, False):
-                    for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                    for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
                         with self.subTest(overview=overview, marker=marker,
                                           expanded=expanded, nodes=nodes):
                             with self.assertRaisesRegex(
@@ -3661,7 +3685,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                     else overview_with_tail(overview, prose)
                 )
                 for expanded in (True, False):
-                    for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
+                    for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
                         with self.subTest(overview=overview, prose=prose,
                                           expanded=expanded, nodes=nodes):
                             evidence = self.collect_current_copilot_evidence(
@@ -4048,7 +4073,9 @@ class PromotionEvidenceTests(unittest.TestCase):
                         self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
                     )
 
-    def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
+    def collect_current_copilot_evidence(self, body, nodes, *, expanded=True,
+                                       comments=None, associated=False,
+                                       prior_reviews=(), **review_changes):
         review = {
             "id": 17001, "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
             "user": {"login": "copilot-pull-request-reviewer[bot]",
@@ -4064,12 +4091,15 @@ class PromotionEvidenceTests(unittest.TestCase):
         pull = ingress_pull()
         pull["labels"] = []
         run = producer_run()
-        run["pull_requests"] = []
-        remote = evidence_api(run, review=review)
+        if not associated:
+            run["pull_requests"] = []
+        remote = evidence_api(run, review=review, review_comment=comments)
 
         def api(arguments):
             if "check-runs?check_name=" in arguments[-1]:
                 return [{"check_runs": [check]}]
+            if arguments[-1].endswith("/reviews?per_page=100") and prior_reviews:
+                return [[*prior_reviews, review]]
             return remote(arguments)
 
         with (
@@ -4083,13 +4113,195 @@ class PromotionEvidenceTests(unittest.TestCase):
                 pull_number=17, base_sha=BASE, head_sha=HEAD,
             )
 
+    def test_completed_producer_rejects_late_replacement_copilot_review(self):
+        dismissed = {
+            "id": 16001, "node_id": "PRR_dismissed_review",
+            "commit_id": HEAD, "state": "DISMISSED",
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": CURRENT_COPILOT_OVERVIEW,
+            "user": {"id": 175728472, "type": "Bot",
+                     "login": "copilot-pull-request-reviewer[bot]"},
+        }
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-27T00:04:31Z",
+                                  "2026-09-27T02:04:31+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, "producer-review-binding"
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                prior_reviews=[dismissed], submitted_at=submitted,
+                            )
+
+    def test_completed_producer_preserves_earlier_and_equal_review_submission(self):
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-26T23:59:00Z",
+                                  "2026-09-27T00:04:30Z",
+                                  "2026-09-27T02:04:30+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        self.assertIsInstance(
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                submitted_at=submitted,
+                            ), dict,
+                        )
+
+    def test_current_findings_cannot_be_masked_by_older_resolved_thread(self):
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        older = native_finding_thread(
+            9001, review_id=16001, review_node_id="PRR_older_review"
+        )
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        self.collect_current_copilot_evidence(
+                            body, [older], comments=[native_finding_comment()],
+                            expanded=expanded, associated=associated,
+                        )
+
+    def linked_copilot_overview(self, ids):
+        count = len(ids)
+        rows = "\n".join(
+            f"- {COPILOT_MEDIUM_ICON} [Finding {value}]"
+            f"(https://github.com/lightning-it/example/pull/17#discussion_r{value})"
+            for value in ids
+        )
+        return CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", "<details open>\n"
+                  f"<summary><strong>{count} open {'finding' if count == 1 else 'findings'}</strong></summary>\n\n"
+                  + rows + "\n</details>")
+
+    def test_current_review_covers_linked_carried_native_findings(self):
+        old_review = {
+            "id": 16001, "node_id": "PRR_older_review",
+            "commit_id": BASE, "state": "COMMENTED",
+            "submitted_at": "2026-09-26T00:04:00Z",
+            "user": {"id": 175728472, "type": "Bot",
+                     "login": "copilot-pull-request-reviewer[bot]"},
+        }
+        body = self.linked_copilot_overview([10001, 9001])
+        roots = [native_finding_thread(), native_finding_thread(
+            9001, review_id=16001, review_node_id="PRR_older_review",
+            thread_id="PRRT_OLD",
+        )]
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    result = self.collect_current_copilot_evidence(
+                        body, roots, comments=[native_finding_comment()],
+                        prior_reviews=[old_review], associated=associated,
+                        expanded=expanded,
+                    )
+                    self.assertEqual(2, result["review"]["historical_findings_count"])
+                    bound = result["threads"]["copilot_finding_binding"]
+                    self.assertEqual([9001, 10001], bound["finding_comment_ids"])
+                    self.assertEqual([10001], bound["current_comment_ids"])
+                    self.assertEqual(BASE, bound["resolved_roots"][0]["review_head_sha"])
+                    self.assertEqual(HEAD, bound["resolved_roots"][1]["review_head_sha"])
+                    self.assertEqual(2, len(bound["resolved_roots"]))
+        for change in (
+            {"user": {"id": 1, "type": "User", "login": "litroc"}},
+            {"state": "DISMISSED"},
+            {"submitted_at": "2026-09-28T00:04:00Z"},
+            {"user": {"id": 175728472.0, "type": "Bot",
+                      "login": "copilot-pull-request-reviewer[bot]"}},
+        ):
+            with self.subTest(change=change):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        body, roots, comments=[native_finding_comment()],
+                        prior_reviews=[old_review | change],
+                    )
+
+    def test_counted_links_require_unique_same_pull_live_roots(self):
+        body = self.linked_copilot_overview([10001])
+        for invalid_body, roots in (
+            (body, []),
+            (body, [native_finding_thread(9999)]),
+            (body, [native_finding_thread() | {"comments": {"nodes": []}}]),
+            (body, [native_finding_thread() | {"comments": {"nodes": [{
+                "id": "PRRC_native_10001", "databaseId": 10001,
+                "pullRequestReview": {"id": "PRR_older_review", "databaseId": 16001},
+            }]}}]),
+            (body.replace("lightning-it/example/pull/17", "attacker/example/pull/17"),
+             [native_finding_thread()]),
+            (body.replace("/pull/17#", "/pull/18#"), [native_finding_thread()]),
+            (self.linked_copilot_overview([10001, 10001]), [native_finding_thread()]),
+            (body, [native_finding_thread(), native_finding_thread(thread_id="PRRT_DUP")]),
+        ):
+            with self.subTest(body=invalid_body, roots=roots):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        invalid_body, roots, comments=[native_finding_comment()],
+                    )
+
+    def test_native_finding_link_titles_preserve_markdown_brackets(self):
+        for title in ("[P1] Bound the copied finding", "Keep `items[0]` valid",
+                      r"Keep escaped \[items\] valid"):
+            body = self.linked_copilot_overview([10001]).replace("Finding 10001", title)
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(title=title, associated=associated, expanded=expanded):
+                        result = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()],
+                            comments=[native_finding_comment()],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual([10001], result["threads"]["copilot_finding_binding"]["finding_comment_ids"])
+
+    def test_current_inline_findings_survive_even_with_zero_overview_count(self):
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    result = self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                        comments=[native_finding_comment()], expanded=expanded,
+                        associated=associated,
+                    )
+                    self.assertEqual([10001], result["threads"]["copilot_finding_binding"]["current_comment_ids"])
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+                        self.collect_current_copilot_evidence(
+                            CURRENT_COPILOT_OVERVIEW, [],
+                            comments=[native_finding_comment()], expanded=expanded,
+                            associated=associated,
+                        )
+        for invalid_comment in (
+            native_finding_comment(review_id=16001),
+            native_finding_comment() | {"node_id": "PRRC_other"},
+            native_finding_comment() | {"original_commit_id": BASE},
+        ):
+            with self.subTest(comment=invalid_comment):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                        comments=[invalid_comment],
+                    )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+            self.collect_current_copilot_evidence(
+                CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                comments=[native_finding_comment(), native_finding_comment()],
+            )
+
     def test_current_copilot_overview_requires_live_thread_evidence(self) -> None:
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"
         ).replace(
             "**0 open findings**", CURRENT_COPILOT_OPEN_FINDING
         )
-        resolved = [{"id": "PRRT_1", "isResolved": True}]
+        resolved = [native_finding_thread()]
         for body, nodes, count in (
             (CURRENT_COPILOT_OVERVIEW, [], 0),
             (overview_with_tail(CURRENT_COPILOT_OVERVIEW, COPILOT_RESOLVED_HISTORY), resolved, 0),
@@ -4097,7 +4309,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             (open_body, resolved, 1),
         ):
             with self.subTest(body=body, nodes=nodes):
-                result = self.collect_current_copilot_evidence(body, nodes)
+                result = self.collect_current_copilot_evidence(
+                    body, nodes, comments=[native_finding_comment()] if count else None
+                )
                 self.assertEqual(count, result["review"]["historical_findings_count"])
                 self.assertEqual(88, result["review"]["producer_run_id"])
         result = self.collect_current_copilot_evidence(
@@ -4165,7 +4379,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         }
         run = producer_run()
         run["pull_requests"] = []
-        remote = evidence_api(run, review=review)
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
 
         def api(arguments):
             if "check-runs?check_name=" in arguments[-1]:
@@ -4179,7 +4393,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                 mock.patch.object(
                     MODULE, "collect_review_threads",
                     return_value={
-                        "nodes": [{"id": "PRRT_1", "isResolved": resolved}],
+                        "nodes": [native_finding_thread(resolved=resolved)],
                         "pageInfo": {"hasNextPage": False},
                     },
                 ),
@@ -4216,13 +4430,13 @@ class PromotionEvidenceTests(unittest.TestCase):
             'copilot-code-review/high-v2-light.png" alt="High severity" '
             'width="62" height="18" align="texttop"></picture>',
         )
-        remote = evidence_api(run, review=review)
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
         with (
             mock.patch.object(MODULE, "gh_json", side_effect=api),
             mock.patch.object(
                 MODULE, "collect_review_threads",
                 return_value={
-                    "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                    "nodes": [native_finding_thread()],
                     "pageInfo": {"hasNextPage": False},
                 },
             ),
@@ -4241,7 +4455,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             f"**Findings:** 2 {high_icon} · 1 {medium_icon}",
         )
         review["body"] = mixed_body
-        remote = evidence_api(run, review=review)
+        remote = evidence_api(run, review=review, review_comment=[
+            native_finding_comment(10001 + index) for index in range(3)
+        ])
         for thread_count in (3, 2):
             with (
                 self.subTest(thread_count=thread_count),
@@ -4250,7 +4466,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     MODULE, "collect_review_threads",
                     return_value={
                         "nodes": [
-                            {"id": f"PRRT_{index}", "isResolved": True}
+                            native_finding_thread(10001 + index, thread_id=f"PRRT_{index}")
                             for index in range(thread_count)
                         ],
                         "pageInfo": {"hasNextPage": False},
@@ -4305,13 +4521,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                 mock.patch.object(
                     MODULE, "collect_review_threads",
                     return_value={
-                        "nodes": [{"id": "PRRT_1", "isResolved": True}],
+                        "nodes": [native_finding_thread()],
                         "pageInfo": {"hasNextPage": False},
                     },
                 ),
             ):
                 review["body"] = invalid_body
-                remote = evidence_api(run, review=review)
+                remote = evidence_api(run, review=review, review_comment=native_finding_comment())
                 with self.assertRaisesRegex(
                     MODULE.EvidenceError, "producer-review-binding"
                 ):
@@ -4322,7 +4538,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                     )
 
         review["body"] = valid_body
-        remote = evidence_api(run, review=review)
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
         with (
             mock.patch.object(MODULE, "gh_json", side_effect=api),
             mock.patch.object(
@@ -4366,7 +4582,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             {
                 "nodes": [
                     {"id": "PRRT_2", "isResolved": True},
-                    {"id": "PRRT_1", "isResolved": True},
+                    native_finding_thread(),
                 ],
                 "pageInfo": {"hasNextPage": False},
             }
@@ -4376,8 +4592,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE.validate_review_threads(
                 {
                     "nodes": [
-                        {"id": "PRRT_1", "isResolved": True},
-                        {"id": "PRRT_1", "isResolved": True},
+                        native_finding_thread(),
+                        native_finding_thread(),
                     ],
                     "pageInfo": {"hasNextPage": False},
                 }
