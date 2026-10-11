@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import re
@@ -334,6 +335,108 @@ def historical_copilot_findings_count(body: str) -> int:
     return count
 
 
+def assessment_visible_text(text: str, depth: int = 0) -> str:
+    """Count prose, not entity names, link targets/titles or image metadata.
+
+    This is deliberately limited to inline syntax in the admitted native
+    paragraph. Backslash escapes and code spans retain their literal text;
+    only ordinary text decodes character references. Unbalanced destinations
+    and excessive nesting cannot establish assessment evidence.
+    """
+    require(depth <= 8, "producer-review-binding")
+
+    def code_end(position: int) -> tuple[int, int]:
+        ticks = re.match(r"`+", text[position:]).group()
+        close = re.search(r"(?<!`)" + ticks + r"(?!`)", text[position + len(ticks):])
+        return len(ticks), (position + len(ticks) + close.start() if close else -1)
+
+    def balanced_end(position: int, opener: str, closer: str) -> int:
+        nesting = 1
+        cursor = position + 1
+        quoted = None
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+                continue
+            if opener == "(":
+                if quoted is not None:
+                    if text[cursor] == quoted:
+                        quoted = None
+                    cursor += 1
+                    continue
+                if text[cursor] in ('"', "'", "<"):
+                    quoted = ">" if text[cursor] == "<" else text[cursor]
+                    cursor += 1
+                    continue
+            if opener == "[" and text[cursor] == "`":
+                ticks, end = code_end(cursor)
+                if end >= 0:
+                    cursor = end + ticks
+                    continue
+            if text[cursor] == opener:
+                nesting += 1
+            elif text[cursor] == closer:
+                nesting -= 1
+                if nesting == 0:
+                    return cursor
+            cursor += 1
+        return -1
+
+    visible = []
+    position = 0
+    while position < len(text):
+        char = text[position]
+        if char == "\\" and position + 1 < len(text) and re.fullmatch(
+            r"[!-/:-@\[-`{-~]", text[position + 1]
+        ):
+            visible.append(text[position + 1])
+            position += 2
+            continue
+        if char == "`":
+            ticks, end = code_end(position)
+            if end >= 0:
+                visible.append(text[position + ticks:end])
+                position = end + ticks
+                continue
+        image = text.startswith("![", position)
+        label_start = position + (1 if image else 0)
+        if text[label_start] == "[":
+            end = balanced_end(label_start, "[", "]")
+            if end >= 0:
+                destination = end + 1
+                if destination < len(text) and text[destination] == "(":
+                    target_end = balanced_end(destination, "(", ")")
+                    require(target_end >= 0, "producer-review-binding")
+                    if not image:
+                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
+                    position = target_end + 1
+                    continue
+                reference = destination
+                while reference < len(text) and text[reference] in " \t":
+                    reference += 1
+                if reference < len(text) and text[reference] == "[":
+                    target_end = balanced_end(reference, "[", "]")
+                    require(target_end >= 0, "producer-review-binding")
+                    if not image:
+                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
+                    position = target_end + 1
+                    continue
+                if image:
+                    # A shortcut image may resolve against definitions elsewhere
+                    # in the frame. Its alt text cannot establish visible prose.
+                    position = end + 1
+                    continue
+        if char == "&":
+            entity = re.match(r"&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});", text[position:])
+            if entity:
+                visible.append(html.unescape(entity.group()))
+                position += len(entity.group())
+                continue
+        visible.append(char)
+        position += 1
+    return "".join(visible)
+
+
 def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # Only the two observed native CCR renderings are admitted. Counts remain
     # submission-time metadata; exact review binding and live thread coverage
@@ -402,7 +505,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
         and all(
             line == line.strip() and re.fullmatch(r"[^<>]+", line)
-            and re.search(r"[^\W_]", line)
+            and re.search(r"[^\W_]", assessment_visible_text(line))
             and not line.startswith(("#", "**", "```", "~~~", "🧠", "|", ">"))
             and not re.match(r"[-*+]\s", line)
             and not re.match(r"[0-9]+[.)]\s", line)

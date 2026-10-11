@@ -3824,6 +3824,12 @@ class PromotionEvidenceTests(unittest.TestCase):
         for prose in (
             "The [assessment](https://example.invalid) remains visible prose.",
             r"\[assessment]: This escaped label is visible prose.",
+            "[Assessment](https://example.invalid)",
+            "&#65;ssessment remains visible.",
+            r"\&nbsp;",
+            "`&nbsp;`",
+            "[Assessment][reference]",
+            "[Assessment](https://example.invalid/path_(balanced) \"title) hidden\")",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
             with self.subTest(prose=prose):
@@ -3850,6 +3856,16 @@ class PromotionEvidenceTests(unittest.TestCase):
             "[^assessment]: This is footnote metadata.",
             "[assessment\\]]: https://example.invalid",
             "[assessment\nreference]: https://example.invalid",
+            "&nbsp;",
+            "&#160; &#x200b; &shy;",
+            "[](https://example.invalid)",
+            "[ ](https://example.invalid \"invisible title\")",
+            "![assessment](https://example.invalid)",
+            "![assessment][reference]",
+            "![assessment]",
+            "[ ] [reference]",
+            "[ ](https://example.invalid \"title) hidden\")",
+            r"\\&nbsp;",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
             with self.subTest(replacement=replacement):
