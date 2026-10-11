@@ -4038,6 +4038,93 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     associated=associated, expanded=expanded,
                                 )
 
+    def test_quote_projection_preserves_tabs_and_indented_literals(self) -> None:
+        for source, projected in (
+            ('>\t> ordinary text', ['', 'ordinary text']),
+            ('> \t> ordinary text', ['', '    > ordinary text']),
+            ('\t> ordinary text', ['    > ordinary text']),
+            ('   >\t > ordinary text', ['', 'ordinary text']),
+            ('>\t\tcode', ['', '    code']),
+            ('> - item', ['', '', 'item']),
+            ('>   > text', ['', 'text']),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(projected, MODULE.copilot_container_lines([source]))
+        self.assertEqual(['', '', 'item', 'continuation', '', 'outside'],
+                         MODULE.copilot_container_lines(
+                             ['> - item', '>   continuation', '', 'outside']))
+
+    def test_quote_projection_scan_and_suffix_copy_work_is_bounded(self) -> None:
+        # Python events catch repeated scans; substitution input lengths also
+        # catch copies performed in C, invisible to the Python trace hook.
+        substitute = re.sub
+        for count in (128, 1024):
+            for prefix in ('>', '> ', '>\t', '   > ', ' >\t'):
+                for suffix in ('ordinary text', 'ordinary ' + 'x' * 4096):
+                    source = prefix * count + suffix
+                    copied = 0
+                    events = 0
+                    budget = 32 * len(source) + 1024
+
+                    class MeteredText(str):
+                        def __getitem__(self, key):
+                            nonlocal copied
+                            value = super().__getitem__(key)
+                            if isinstance(key, slice):
+                                copied += len(value)
+                            return value
+
+                    def metered_sub(pattern, replacement, text, *args, **kwargs):
+                        nonlocal copied
+                        if pattern == r'^ {0,3}>[ \t]?':
+                            copied += len(text)
+                        return substitute(pattern, replacement, text, *args, **kwargs)
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('quote projection exceeded linear scan budget')
+                        return trace
+
+                    with self.subTest(count=count, prefix=prefix, suffix=len(suffix)):
+                        previous = sys.gettrace()
+                        try:
+                            with mock.patch.object(MODULE.re, 'sub', side_effect=metered_sub):
+                                sys.settrace(trace)
+                                projected = MODULE.copilot_container_lines([MeteredText(source)])
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(['', suffix], projected)
+                        self.assertLessEqual(events, budget)
+                        self.assertLessEqual(copied, 4 * len(source))
+
+    def test_deep_quotes_preserve_native_ingress_and_marker_rejection(self) -> None:
+        for prefix in ('>', '> ', '>\t', '   > '):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(prefix=prefix, count=count, associated=associated,
+                                          expanded=expanded):
+                            arguments = {
+                                'comments': [native_finding_comment()] if count else [],
+                                'associated': associated, 'expanded': expanded,
+                            }
+                            threads = [native_finding_thread()] if count else []
+                            evidence = self.collect_current_copilot_evidence(
+                                body + prefix * 128 + 'ordinary text\n', threads, **arguments)
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    body + prefix * 128 + 'Previously missed (1)\n',
+                                    threads, **arguments)
+
     def test_link_matching_work_is_bounded(self) -> None:
         functions = (
             MODULE.copilot_reference_text, MODULE.copilot_inline_emphasis,

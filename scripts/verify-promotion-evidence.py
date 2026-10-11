@@ -328,6 +328,23 @@ def copilot_frame_control_lines(body: str) -> tuple[list[str], bool]:
     return lines, has_fences
 
 
+def copilot_quote_line(original: str) -> tuple[str, int]:
+    """Consume quote prefixes once, with a fresh tab stop after each marker."""
+    cursor = 0
+    depth = 0
+    while True:
+        indentation = 0
+        while cursor < len(original) and original[cursor] in " \t":
+            indentation += 1 if original[cursor] == " " else 4 - indentation % 4
+            cursor += 1
+        if indentation > 3 or cursor == len(original) or original[cursor] != ">":
+            return " " * indentation + original[cursor:], depth
+        cursor += 1
+        if cursor < len(original) and original[cursor] in " \t":
+            cursor += 1
+        depth += 1
+
+
 def copilot_container_lines(lines: list[str]) -> list[str]:
     """Expose block syntax inside quote/list containers, not indented code."""
     result: list[str] = []
@@ -338,14 +355,7 @@ def copilot_container_lines(lines: list[str]) -> list[str]:
     previous = ""
     blank = True
     for original in lines:
-        leading = re.match(r"[ \t]*", original).group()
-        line = leading.expandtabs(4) + original[len(leading):]
-        depth = 0
-        while re.match(r"^ {0,3}>", line):
-            line = re.sub(r"^ {0,3}>[ \t]?", "", line, count=1)
-            leading = re.match(r"[ \t]*", line).group()
-            line = leading.expandtabs(4) + line[len(leading):]
-            depth += 1
+        line, depth = copilot_quote_line(original)
         if depth > quote_depth:
             # A new container interrupts the outer paragraph before its
             # indentation/marker is removed from the projection.
