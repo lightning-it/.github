@@ -428,8 +428,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     field_position = nonempty.index(fields[0])
     for position, line in enumerate(nonempty):
         require(
-            not (not blocks and 2 <= position < field_position
-                 and line.lstrip().startswith(("```", "~~~"))),
+            not (not blocks and line.lstrip().startswith(("```", "~~~"))),
             "producer-review-binding",
         )
         marker_line = line.lower()

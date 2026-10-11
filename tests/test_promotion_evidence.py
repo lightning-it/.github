@@ -3772,6 +3772,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "**0 open findings**",
             ) + footer,
             CURRENT_COPILOT_OVERVIEW + "Trailing data after completion.\n",
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "```\n" + footer),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "~~~\n" + footer),
             CURRENT_COPILOT_OVERVIEW.replace(footer, ""),
             CURRENT_COPILOT_OVERVIEW + footer,
             CURRENT_COPILOT_OVERVIEW.replace("Review effort:** Balanced", "Review effort:** Unknown"),
