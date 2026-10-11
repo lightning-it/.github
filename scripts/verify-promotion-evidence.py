@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
 from collections.abc import Iterable
 from html.parser import HTMLParser
@@ -626,12 +627,210 @@ def copilot_reference_text(source: str) -> str:
                 label = source[target + 1:label_end] if label_end >= 0 else ""
                 label = label or source[start + 1:end]
                 if " ".join(label.split()).casefold() in references:
-                    rendered.append("\ufffc" if image else source[start + 1:end])
+                    # Preserve the label's inline-parser scope: delimiters in
+                    # a link label cannot pair with delimiters outside it.
+                    rendered.append("\ufffc" if image else "[" + source[start + 1:end] + "]()")
                     position = label_end + 1 if label_end >= 0 else end + 1
                     continue
         rendered.append(source[position])
         position += 1
     return "".join(rendered)
+
+
+def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
+    """Remove consumed GFM delimiters, keeping literal and residual runs."""
+    require(depth <= 8, "producer-review-binding")
+    removed: set[int] = set()
+    replacements: dict[int, tuple[int, str]] = {}
+    openers: list[dict[str, Any]] = []
+    tag_pattern = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
+    literal_depth = 0
+
+    def punctuation(char: str) -> bool:
+        return bool(char) and (unicodedata.category(char).startswith("P")
+                               or re.fullmatch(r"[!-/:-@\[-`{-~]", char) is not None)
+
+    def balanced_end(start: int, opening: str, closing: str) -> int:
+        nesting, cursor = 1, start + 1
+        quoted: str | None = None
+        while cursor < len(source):
+            char = source[cursor]
+            if char == "\\":
+                cursor += 2
+                continue
+            if quoted is not None:
+                if char == quoted:
+                    quoted = None
+            elif opening == "(" and (char == "<" or (
+                    char in "\"'" and source[cursor - 1].isspace())):
+                quoted = ">" if char == "<" else char
+            elif char == opening:
+                nesting += 1
+            elif char == closing:
+                nesting -= 1
+                if not nesting:
+                    return cursor
+            cursor += 1
+        return -1
+
+    position = 0
+    while position < len(source):
+        char = source[position]
+        if char == "\\":
+            position += 2
+            continue
+        if source.startswith("<!--", position):
+            end = re.search(r"--!?>", source[position + 4:])
+            position = position + 4 + end.end() if end else len(source)
+            continue
+        tag = tag_pattern.match(source, position)
+        if tag:
+            name = re.match(r"</?([A-Za-z][A-Za-z0-9-]*)", tag.group()).group(1).lower()
+            if name in {"script", "style"} and not tag.group().startswith("</"):
+                end = re.search(r"</" + name + r"[ \t]*>", source[tag.end():], re.I)
+                position = tag.end() + end.end() if end else len(source)
+                continue
+            if name in {"code", "pre"}:
+                literal_depth += -int(bool(literal_depth)) if tag.group().startswith("</") else 1
+            position = tag.end()
+            continue
+        if literal_depth:
+            position += 1
+            continue
+        if char == "`":
+            end = copilot_code_span_end(source, position)
+            if end >= 0:
+                position = end
+                continue
+        if char == "[":
+            end = balanced_end(position, "[", "]")
+            target_end = (balanced_end(end + 1, "(", ")")
+                          if end >= 0 and source.startswith("(", end + 1) else -1)
+            if target_end >= 0:
+                if end > position + 1:
+                    replacements[position + 1] = (
+                        end, copilot_inline_emphasis(source[position + 1:end], depth + 1),
+                    )
+                position = target_end + 1
+                continue
+        if char not in "*_~":
+            position += 1
+            continue
+        width = len(re.match(re.escape(char) + "+", source[position:]).group())
+        before = source[position - 1] if position else ""
+        after = source[position + width] if position + width < len(source) else ""
+        before_space, after_space = not before or before.isspace(), not after or after.isspace()
+        before_punct, after_punct = punctuation(before), punctuation(after)
+        left = not after_space and (not after_punct or before_space or before_punct)
+        right = not before_space and (not before_punct or after_space or after_punct)
+        can_open = left and (char != "_" or not right or before_punct)
+        can_close = right and (char != "_" or not left or after_punct)
+        if char == "~" and width not in {1, 2}:
+            position += width
+            continue
+        remaining = width
+        while can_close and remaining:
+            found = None
+            for index in range(len(openers) - 1, -1, -1):
+                opener = openers[index]
+                if opener["char"] != char:
+                    continue
+                if char == "~" and opener["remaining"] != remaining:
+                    continue
+                if char != "~" and (opener["can_close"] or can_open) and (
+                    (opener["width"] + width) % 3 == 0
+                    and (opener["width"] % 3 or width % 3)
+                ):
+                    continue
+                found = index
+                break
+            if found is None:
+                break
+            opener = openers[found]
+            used = remaining if char == "~" else min(2, opener["remaining"], remaining)
+            removed.update(range(opener["start"] + opener["remaining"] - used,
+                                 opener["start"] + opener["remaining"]))
+            removed.update(range(position + width - remaining,
+                                 position + width - remaining + used))
+            opener["remaining"] -= used
+            remaining -= used
+            del openers[found + 1:]
+            if not opener["remaining"]:
+                openers.pop()
+        if can_open and remaining:
+            openers.append({"char": char, "start": position + width - remaining,
+                            "remaining": remaining, "width": width, "can_close": can_close})
+        position += width
+    output: list[str] = []
+    position = 0
+    while position < len(source):
+        if position in replacements:
+            position, replacement = replacements[position]
+            output.append(replacement)
+        elif position not in removed:
+            output.append(source[position])
+            position += 1
+        else:
+            position += 1
+    return "".join(output)
+
+
+def copilot_heading_markup(source: str) -> str:
+    """Keep block boundaries and raw-HTML literal markup before rendering."""
+    boundary = "\n\ufffd\n"
+    output: list[str] = []
+    paragraph: list[str] = []
+    raw_block: str | None = None
+    previous = ""
+
+    def flush() -> None:
+        if paragraph:
+            output.append(copilot_inline_emphasis("".join(paragraph)))
+            paragraph.clear()
+
+    for line in source.splitlines(keepends=True):
+        raw = line.rstrip("\n")
+        if raw_block == "blank" and not raw.strip():
+            raw_block = None
+        if raw_block is None:
+            if re.match(r"^ {0,3}<!--", raw):
+                raw_block = r"--!?>"
+            elif review_raw_html_block_start(raw) and (
+                not paragraph or review_raw_html_block_start(raw, interrupt_only=True)
+            ):
+                tag = re.match(r" {0,3}<(script|pre|style|textarea)(?=[ \t/>]|$)", raw, re.I)
+                if tag:
+                    raw_block = r"</" + tag.group(1) + r"[ \t]*>"
+                elif raw.lstrip().startswith("<?"):
+                    raw_block = r"\?>"
+                elif raw.lstrip().startswith("<![CDATA["):
+                    raw_block = r"\]\]>"
+                elif raw.lstrip().startswith("<!"):
+                    raw_block = r">"
+                else:
+                    raw_block = "blank"
+        if raw_block is not None:
+            if paragraph:
+                flush()
+                output.append(boundary)
+            output.append(line)
+            if raw_block != "blank" and re.search(raw_block, raw, re.I):
+                raw_block = None
+                output.append(boundary)
+            previous = ""
+        elif not raw.strip():
+            flush()
+            output.append(boundary)
+            previous = ""
+        elif copilot_paragraph_interrupts(previous, raw):
+            flush()
+            output.extend((boundary, copilot_inline_emphasis(line), boundary))
+            previous = ""
+        else:
+            paragraph.append(line)
+            previous = raw
+    flush()
+    return "".join(output)
 
 
 def copilot_has_missed_heading(lines: list[str]) -> bool:
@@ -688,7 +887,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
 
     class HeadingText(HTMLParser):
         blocks = {"summary", "details", "p", "div", "li", "ul", "ol", "table",
-                  "tr", "td", "th", "blockquote", "br", "hr", "pre",
+                  "tr", "td", "th", "blockquote", "hr", "pre",
                   "h1", "h2", "h3", "h4", "h5", "h6"}
 
         def __init__(self) -> None:
@@ -704,16 +903,24 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
                 self.hidden_depth += 1
             if tag == "img" and self.code_depth and not self.hidden_depth:
                 self.parts.append(literal)
-            if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
+            if tag == "br":
                 self.parts.append("\n")
+            elif tag not in {"script", "style"} and (
+                tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True)
+            ):
+                self.parts.append("\n\ufffd\n")
 
         def handle_endtag(self, tag: str) -> None:
             if tag in {"code", "pre"} and self.code_depth:
                 self.code_depth -= 1
             if tag in {"script", "style"} and self.hidden_depth:
                 self.hidden_depth -= 1
-            if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
+            if tag == "br":
                 self.parts.append("\n")
+            elif tag not in {"script", "style"} and (
+                tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True)
+            ):
+                self.parts.append("\n\ufffd\n")
 
         def handle_data(self, data: str) -> None:
             if self.hidden_depth:
@@ -737,7 +944,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             self.handle_data(f"&#{name};")
 
     parser = HeadingText()
-    parser.feed("".join(masked))
+    parser.feed(copilot_heading_markup("".join(masked)))
     parser.close()
     rendered = "".join(parser.parts)
     # Raw emphasis and ATX headings are markup; entity-encoded punctuation is
@@ -748,7 +955,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
                       r"\1", rendered)
     rendered = rendered.replace("<", literal).replace(">", literal)
     rendered = assessment_visible_text(
-        rendered, strict_links=False, references=set(), heading_markup=True,
+        rendered, strict_links=False, references=set(),
     )
     return re.search(
         r"(?im)^[ \t]*(?:previously\s+missed(?:\s*\([^()]*\))?"
@@ -823,6 +1030,8 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
     and excessive nesting cannot establish assessment evidence.
     """
     require(depth <= 8, "producer-review-binding")
+    if heading_markup:
+        text = copilot_inline_emphasis(text)
 
     def code_end(position: int) -> tuple[int, int]:
         ticks = re.match(r"`+", text[position:]).group()
@@ -949,8 +1158,7 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
         # Raw HTML cannot lend its tag name to assessment prose; escapes/code
         # and decoded character references still retain actual literal text.
         require(char not in "<>", "producer-review-binding")
-        if not heading_markup or char not in "*_~":
-            visible.append(char)
+        visible.append(char)
         position += 1
     return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
 
