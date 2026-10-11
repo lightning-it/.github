@@ -80,6 +80,14 @@ MAX_THREADS_PER_PULL = 1000
 MAX_REVIEWS_PER_PULL = 1000
 MAX_REVIEW_COMMENTS_PER_REVIEW = 1000
 MAX_ASSESSMENT_CHARACTERS = 4096
+# Unicode 17 Default_Ignorable_Code_Point; apply after entity/code normalization.
+# https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+ASSESSMENT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f"
+    r"\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]"
+)
 GH_JSON_MAX_ATTEMPTS = 3
 GH_JSON_TRANSIENT_ERRORS = ("command-failed:gh:unexpected end of JSON input",)
 GITHUB_API_PROXY_PORT = 8080
@@ -441,9 +449,13 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
                 visible.append(html.unescape(entity.group()))
                 position += len(entity.group())
                 continue
+        # Angle destinations have already been consumed by the link lexer.
+        # Raw HTML cannot lend its tag name to assessment prose; escapes/code
+        # and decoded character references still retain actual literal text.
+        require(char not in "<>", "producer-review-binding")
         visible.append(char)
         position += 1
-    return "".join(visible)
+    return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
 
 
 def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
@@ -516,8 +528,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         and re.search(r"[^\W_]", assessment_visible_text("\n".join(assessment_lines)))
         and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
         and all(
-            line == line.strip() and re.fullmatch(r"[^<>]+", line)
-            and re.search(r"[^\W_]", assessment_visible_text(line))
+            line == line.strip()
+            and not re.fullmatch(r"[-=]+|(?:[ \t]*[-*_]){3,}[ \t]*", line)
             and not line.startswith(("#", "**", "```", "~~~", "🧠", "|", ">"))
             and not re.match(r"[-*+]\s", line)
             and not re.match(r"[0-9]+[.)]\s", line)

@@ -3823,6 +3823,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         )
         for prose in (
             "The [assessment](https://example.invalid) remains visible prose.",
+            "[Assessment](<https://example.invalid/a b>)",
+            "評価は明確です。",
             r"\[assessment]: This escaped label is visible prose.",
             "[Assessment](https://example.invalid)",
             "&#65;ssessment remains visible.",
@@ -3869,6 +3871,12 @@ class PromotionEvidenceTests(unittest.TestCase):
             "[ ](https://example.invalid \"title) hidden\")",
             r"\\&nbsp;",
             "[^assessment]",
+            "\u3164",
+            "\u115f\u1160",
+            "\uffa0",
+            "&#x3164;",
+            "`\u3164`",
+            "[\u3164](https://example.invalid)",
             "![hidden\nimage](https://example.invalid)",
             "Assessment " + "[" * 4096,
         ):
