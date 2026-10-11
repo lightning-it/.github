@@ -28,6 +28,8 @@ import tempfile
 import time
 import unicodedata
 import urllib.parse
+from array import array
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable
 from html.parser import HTMLParser
 from pathlib import Path
@@ -397,13 +399,49 @@ def copilot_paragraph_interrupts(previous: str, line: str) -> bool:
             or assessment_table_header(previous, line))
 
 
-def copilot_code_span_end(source: str, position: int) -> int:
-    ticks = re.match(r"`+", source[position:]).group()
-    end = re.search(r"(?<!`)" + ticks + r"(?!`)", source[position + len(ticks):])
-    if end is None:
+def copilot_code_span_index(source: str) -> tuple[array, array, array, array]:
+    """Index exact closing runs, including queries inside failed openers."""
+    widths = array("i", [0]) * len(source)
+    closings = array("i", [-1]) * len(source)
+    nearest: dict[int, int] = {}
+    position = len(source) - 1
+    while position >= 0:
+        if source[position] != "`":
+            position -= 1
+            continue
+        stop = position + 1
+        while position >= 0 and source[position] == "`":
+            position -= 1
+        start = position + 1
+        for cursor in range(start, stop):
+            width = stop - cursor
+            widths[cursor] = width
+            closings[cursor] = nearest.get(width, -1)
+        nearest[stop - start] = start
+    line_starts = array("i", [0])
+    line_starts.extend(match.end() for match in re.finditer(r"\n", source))
+    breaks = array("i", (match.start() for match in re.finditer(
+        r"[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]", source)))
+    return widths, closings, line_starts, breaks
+
+
+def copilot_code_span_end(source: str, position: int,
+                          index: tuple[array, array, array, array] | None = None,
+                          budget: list[int] | None = None) -> int:
+    if index is None:
+        index = copilot_code_span_index(source)
+    width, closing = index[0][position], index[1][position]
+    if closing < 0:
         return -1
-    stop = position + len(ticks) + end.end()
-    paragraph = source[source.rfind("\n", 0, position) + 1:stop - len(ticks)].splitlines()
+    stop = closing + width
+    beginning = index[2][bisect_right(index[2], position) - 1]
+    boundary = bisect_left(index[3], beginning)
+    if boundary == len(index[3]) or index[3][boundary] >= closing:
+        return stop
+    if budget is not None:
+        require(closing - beginning <= budget[0], "producer-review-binding")
+        budget[0] -= closing - beginning
+    paragraph = source[beginning:closing].splitlines()
     if any(copilot_paragraph_interrupts(previous, line)
            for previous, line in zip(paragraph, paragraph[1:])):
         return -1
@@ -425,6 +463,79 @@ def copilot_reference_label_end(source: str, position: int) -> int:
             return cursor if label.strip() and not re.search(r"\n[ \t]*\n", label) else -1
         cursor += 1
     return -1
+
+
+def copilot_bracket_ends(source: str, *, shadow: list[str] | None = None,
+                         code_end: Any = None) -> array:
+    """Pair brackets once, retaining the caller's literal/escape policy."""
+    ends = array("i", [-1]) * len(source)
+    stack = array("i")
+    position = 0
+    while position < len(source):
+        if source[position] == "\\":
+            position += 2
+            continue
+        if code_end is not None and source[position] == "`":
+            ticks, end = code_end(position)
+            if end >= 0:
+                position = end + ticks
+                continue
+        char = shadow[position] if shadow is not None else source[position]
+        if char == "[":
+            stack.append(position)
+        elif char == "]" and stack:
+            ends[stack.pop()] = position
+        position += 1
+    return ends
+
+
+def copilot_parenthesis_ends(source: str, *, title_at_any_depth: bool) -> array:
+    """Index each independent destination scan, including failed outer quotes.
+
+    Backward suffix states preserve scans that start inside an earlier quoted
+    region. A global delimiter stack would incorrectly inherit that region.
+    Compact integer arrays keep the index proportional to the input size.
+    """
+    top = array("i", [-1]) * (len(source) + 2)
+    nested = top if title_at_any_depth else array("i", [-1]) * (len(source) + 2)
+    states = ((top, True),) if title_at_any_depth else ((nested, False), (top, True))
+    quotes = {char: (-1, -1) for char in "\"'>"}
+    for position in range(len(source) - 1, -1, -1):
+        char = source[position]
+        for state, allow_title in states:
+            if char == "\\":
+                end = state[position + 2]
+            elif char == ")":
+                end = position
+            elif char == "(":
+                closing = nested[position + 1]
+                end = state[closing + 1] if closing >= 0 else -1
+            elif char == "<" or (allow_title and char in "\"'" and position > 0 and (
+                    source[position - 1].isspace() if title_at_any_depth
+                    else source[position - 1] in " \t\r\n")):
+                closing = quotes[">" if char == "<" else char][0]
+                end = state[closing + 1] if closing >= 0 else -1
+            else:
+                end = state[position + 1]
+            state[position] = end
+        for quote, (next_one, next_two) in quotes.items():
+            closing = next_two if char == "\\" else (position if char == quote else next_one)
+            quotes[quote] = (closing, next_one)
+    return top
+
+
+def copilot_known_reference(source: str, start: int, stop: int, references: set[str],
+                             budget: list[int], *, decode_entities: bool = False) -> bool:
+    """Bound aggregate label copying/normalization as well as delimiter scans."""
+    if not references:
+        return False
+    width = max(0, stop - start)
+    require(width <= budget[0], "producer-review-binding")
+    budget[0] -= width
+    label = source[start:stop]
+    if decode_entities:
+        label = html.unescape(label)
+    return " ".join(label.split()).casefold() in references
 
 
 def copilot_reference_definition(source: str, position: int) -> tuple[str, int] | None:
@@ -501,6 +612,8 @@ def copilot_reference_definition(source: str, position: int) -> tuple[str, int] 
 def copilot_reference_text(source: str) -> str:
     """Resolve only valid reference links before literal/HTML normalization."""
     shadow = list(source)
+    code_index = copilot_code_span_index(source) if "`" in source else None
+    code_budget = [32 * len(source) + 4096]
 
     def conceal(start: int, stop: int) -> None:
         for cursor in range(start, stop):
@@ -526,7 +639,7 @@ def copilot_reference_text(source: str) -> str:
             position = stop
             continue
         if source[position] == "`":
-            stop = copilot_code_span_end(source, position)
+            stop = copilot_code_span_end(source, position, code_index, code_budget)
             if stop >= 0:
                 conceal(position, stop)
                 position = stop
@@ -597,6 +710,8 @@ def copilot_reference_text(source: str) -> str:
         for cursor in range(start, stop):
             output[cursor] = "\ufffc"
     source = "".join(output)
+    bracket_ends = copilot_bracket_ends(source, shadow=shadow)
+    reference_budget = [32 * len(source) + 4096]
     rendered: list[str] = []
     position = 0
     while position < len(source):
@@ -607,26 +722,17 @@ def copilot_reference_text(source: str) -> str:
         image = source.startswith("![", position)
         start = position + int(image)
         if source[start] == "[" and shadow[start] == "[":
-            nesting, end = 1, start + 1
-            while end < len(source) and nesting:
-                if source[end] == "\\":
-                    end += 2
-                    continue
-                if shadow[end] == "[":
-                    nesting += 1
-                elif shadow[end] == "]":
-                    nesting -= 1
-                if nesting:
-                    end += 1
-            if end < len(source) and not source.startswith("(", end + 1):
+            end = bracket_ends[start]
+            if end >= 0 and not source.startswith("(", end + 1):
                 target = end + 1
                 label_end = copilot_reference_label_end(source, target) if source.startswith("[", target) else -1
                 # Collapsed labels are explicitly empty, unlike definitions.
                 if source.startswith("[]", target):
                     label_end = target + 1
-                label = source[target + 1:label_end] if label_end >= 0 else ""
-                label = label or source[start + 1:end]
-                if " ".join(label.split()).casefold() in references:
+                label_start, label_stop = ((target + 1, label_end)
+                                          if label_end > target + 1 else (start + 1, end))
+                if copilot_known_reference(source, label_start, label_stop,
+                                            references, reference_budget):
                     # Preserve the label's inline-parser scope: delimiters in
                     # a link label cannot pair with delimiters outside it.
                     rendered.append("\ufffc" if image else "[" + source[start + 1:end] + "]()")
@@ -647,6 +753,10 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
     tag_pattern = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
     delimiter_pattern = re.compile(r"\*+|_+|~+")
     literal_depth = 0
+    bracket_ends = copilot_bracket_ends(source)
+    parenthesis_ends: array | None = None
+    code_index = copilot_code_span_index(source) if "`" in source else None
+    code_budget = [32 * len(source) + 4096]
 
     def drop_opener() -> None:
         opener = openers.pop()
@@ -658,29 +768,6 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
     def punctuation(char: str) -> bool:
         return bool(char) and (unicodedata.category(char).startswith("P")
                                or re.fullmatch(r"[!-/:-@\[-`{-~]", char) is not None)
-
-    def balanced_end(start: int, opening: str, closing: str) -> int:
-        nesting, cursor = 1, start + 1
-        quoted: str | None = None
-        while cursor < len(source):
-            char = source[cursor]
-            if char == "\\":
-                cursor += 2
-                continue
-            if quoted is not None:
-                if char == quoted:
-                    quoted = None
-            elif opening == "(" and (char == "<" or (
-                    char in "\"'" and source[cursor - 1].isspace())):
-                quoted = ">" if char == "<" else char
-            elif char == opening:
-                nesting += 1
-            elif char == closing:
-                nesting -= 1
-                if not nesting:
-                    return cursor
-            cursor += 1
-        return -1
 
     position = 0
     while position < len(source):
@@ -707,14 +794,17 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
             position += 1
             continue
         if char == "`":
-            end = copilot_code_span_end(source, position)
+            end = copilot_code_span_end(source, position, code_index, code_budget)
             if end >= 0:
                 position = end
                 continue
         if char == "[":
-            end = balanced_end(position, "[", "]")
-            target_end = (balanced_end(end + 1, "(", ")")
-                          if end >= 0 and source.startswith("(", end + 1) else -1)
+            end = bracket_ends[position]
+            target_end = -1
+            if end >= 0 and source.startswith("(", end + 1):
+                if parenthesis_ends is None:
+                    parenthesis_ends = copilot_parenthesis_ends(source, title_at_any_depth=True)
+                target_end = parenthesis_ends[end + 2]
             if target_end >= 0:
                 if end > position + 1:
                     replacements[position + 1] = (
@@ -860,6 +950,8 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
     normalized = "\n".join(copilot_container_lines(lines))
     projected, _ = copilot_frame_control_lines(normalized)
     source = copilot_reference_text("\n".join(projected))
+    code_index = copilot_code_span_index(source) if "`" in source else None
+    code_budget = [32 * len(source) + 4096]
     literal = "\ufffc"
     masked: list[str] = []
     html_tag = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
@@ -896,7 +988,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             position += 2
             continue
         if source[position] == "`":
-            stop = copilot_code_span_end(source, position)
+            stop = copilot_code_span_end(source, position, code_index, code_budget)
             if stop >= 0:
                 masked.append(literal)
                 position = stop
@@ -904,7 +996,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             # An unmatched delimiter is visible punctuation, not authority for
             # the later inline lexer to quote across already established blocks.
             masked.append(literal)
-            position += len(re.match(r"`+", source[position:]).group())
+            position += code_index[0][position]
             continue
         masked.append(source[position])
         position += 1
@@ -1150,47 +1242,14 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
     require(depth <= 8, "producer-review-binding")
     if heading_markup:
         text = copilot_inline_emphasis(text)
+    code_index = copilot_code_span_index(text) if "`" in text else None
 
     def code_end(position: int) -> tuple[int, int]:
-        ticks = re.match(r"`+", text[position:]).group()
-        close = re.search(r"(?<!`)" + ticks + r"(?!`)", text[position + len(ticks):])
-        return len(ticks), (position + len(ticks) + close.start() if close else -1)
+        return code_index[0][position], code_index[1][position]
 
-    def balanced_end(position: int, opener: str, closer: str) -> int:
-        nesting = 1
-        cursor = position + 1
-        quoted = None
-        while cursor < len(text):
-            if text[cursor] == "\\":
-                cursor += 2
-                continue
-            if opener == "(":
-                if quoted is not None:
-                    if text[cursor] == quoted:
-                        quoted = None
-                    cursor += 1
-                    continue
-                if text[cursor] == "<" or (
-                    text[cursor] in ('"', "'") and nesting == 1
-                    and text[cursor - 1] in " \t\r\n"
-                ):
-                    quoted = ">" if text[cursor] == "<" else text[cursor]
-                    cursor += 1
-                    continue
-            if opener == "[" and text[cursor] == "`":
-                ticks, end = code_end(cursor)
-                if end >= 0:
-                    cursor = end + ticks
-                    continue
-            if text[cursor] == opener:
-                nesting += 1
-            elif text[cursor] == closer:
-                nesting -= 1
-                if nesting == 0:
-                    return cursor
-            cursor += 1
-        return -1
-
+    bracket_ends = copilot_bracket_ends(text, code_end=code_end)
+    parenthesis_ends: array | None = None
+    reference_budget = [32 * len(text) + 4096]
     visible = []
     position = 0
     while position < len(text):
@@ -1210,7 +1269,7 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
         image = text.startswith("![", position)
         label_start = position + (1 if image else 0)
         if text[label_start] == "[":
-            end = balanced_end(label_start, "[", "]")
+            end = bracket_ends[label_start]
             if end >= 0:
                 if text.startswith("[^", label_start):
                     # A definition elsewhere renders only a footnote marker;
@@ -1219,7 +1278,9 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
                     continue
                 destination = end + 1
                 if destination < len(text) and text[destination] == "(":
-                    target_end = balanced_end(destination, "(", ")")
+                    if parenthesis_ends is None:
+                        parenthesis_ends = copilot_parenthesis_ends(text, title_at_any_depth=False)
+                    target_end = parenthesis_ends[destination + 1]
                     require(target_end >= 0 or not strict_links, "producer-review-binding")
                     if target_end >= 0:
                         if not image:
@@ -1234,11 +1295,14 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
                 while reference < len(text) and text[reference] in " \t":
                     reference += 1
                 if reference < len(text) and text[reference] == "[":
-                    target_end = balanced_end(reference, "[", "]")
+                    target_end = bracket_ends[reference]
                     require(target_end >= 0 or not strict_links, "producer-review-binding")
-                    reference_label = text[reference + 1:target_end] or text[label_start + 1:end]
-                    known_reference = references is None or (
-                        " ".join(html.unescape(reference_label).split()).casefold() in references
+                    ref_start, ref_stop = ((reference + 1, target_end)
+                                           if target_end > reference + 1 else (label_start + 1, end))
+                    known_reference = target_end >= 0 and (
+                        references is None or copilot_known_reference(
+                            text, ref_start, ref_stop, references, reference_budget, decode_entities=True,
+                        )
                     )
                     if target_end >= 0 and known_reference:
                         if not image:
@@ -1249,9 +1313,8 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
                             ))
                         position = target_end + 1
                         continue
-                elif references is not None and (
-                    " ".join(html.unescape(text[label_start + 1:end]).split()).casefold()
-                    in references
+                elif references is not None and copilot_known_reference(
+                    text, label_start + 1, end, references, reference_budget, decode_entities=True,
                 ):
                     if not image:
                         visible.append(assessment_visible_text(

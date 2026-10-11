@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -4036,6 +4037,141 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     comments=[native_finding_comment()] if count else [],
                                     associated=associated, expanded=expanded,
                                 )
+
+    def test_link_matching_work_is_bounded(self) -> None:
+        functions = (
+            MODULE.copilot_reference_text, MODULE.copilot_inline_emphasis,
+            lambda text: MODULE.assessment_visible_text(text, strict_links=False, references=set()),
+            MODULE.copilot_has_missed_heading,
+        )
+        for count in (128, 1024):
+            for source in ('[' * count, '[a](' * count, '[' * count + ']' * count,
+                           '[' + '`' * count):
+                for function in functions:
+                    events = 0
+                    budget = 512 * len(source) + 8192
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('link parsing exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, source=source[:12], function=function):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = function(source)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(False if function is MODULE.copilot_has_missed_heading
+                                         else source, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_link_indexes_preserve_literal_and_quote_policies(self) -> None:
+        # Parenthesis scans start independently even inside an earlier failed
+        # destination's quoted region. Quotes at nested depth differ by caller.
+        def previous_end(text, start, any_depth):
+            nesting, cursor, quoted = 1, start + 1, None
+            while cursor < len(text):
+                char = text[cursor]
+                if char == '\\':
+                    cursor += 2
+                    continue
+                if quoted is not None:
+                    if char == quoted:
+                        quoted = None
+                elif char == '<' or (char in '\"\'' and (
+                        text[cursor - 1].isspace() if any_depth
+                        else nesting == 1 and text[cursor - 1] in ' \t\r\n')):
+                    quoted = '>' if char == '<' else char
+                elif char == '(':
+                    nesting += 1
+                elif char == ')':
+                    nesting -= 1
+                    if not nesting:
+                        return cursor
+                cursor += 1
+            return -1
+
+        for text in ('(url "title)")', '(url <target)> tail)', '(outer (x "t)") end)',
+                     '(url "failed [x](ok)', '(url <failed [x](ok)', '(a\\)b)',
+                     '(url\u00a0"title)")', '(outer (x\u00a0\'t)\') end)',
+                     '[x](u "t\\\")") [y](v)', '(' * 64 + ')' * 64):
+            for any_depth in (False, True):
+                ends = MODULE.copilot_parenthesis_ends(text, title_at_any_depth=any_depth)
+                for start, char in enumerate(text):
+                    if char == '(':
+                        with self.subTest(text=text, any_depth=any_depth, start=start):
+                            self.assertEqual(previous_end(text, start, any_depth), ends[start + 1])
+        text = '[a `]` b](u)'
+        self.assertEqual('[a `]` b](u)', MODULE.copilot_inline_emphasis(text))
+        self.assertEqual('a ] b', MODULE.assessment_visible_text(text))
+        self.assertEqual('[x\\[y]', MODULE.copilot_reference_text('[x\\[y]'))
+        self.assertEqual('[outer[inner]]()', MODULE.copilot_reference_text(
+            '[outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        self.assertEqual('\ufffc', MODULE.copilot_reference_text(
+            '![outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        spaced = 'a' + ' ' * 2000 + 'b'
+        self.assertEqual('[' + spaced + ']()', MODULE.copilot_reference_text(
+            '[' + spaced + ']\n\n[a b]: /x').splitlines()[0])
+
+    def test_nested_unknown_reference_normalization_is_bounded(self) -> None:
+        source = '[' * 1024 + ']' * 1024
+        for function in (lambda text: MODULE.copilot_reference_text(text + '\n\n[r]: /x'),
+                         lambda text: MODULE.assessment_visible_text(
+                             text, strict_links=False, references={'r'})):
+            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                function(source)
+        # Ordinary reference lookups, including long whitespace, remain valid.
+        self.assertEqual('a' + ' ' * 2000 + 'b', MODULE.assessment_visible_text(
+            '[a' + ' ' * 2000 + 'b]', references={'a b'}))
+
+    def test_code_run_index_preserves_each_independent_start(self) -> None:
+        for text in ('`a`', '```unmatched', '```a``b`', '`a``b`c``',
+                     '``a\\`b``', '`a\n\nb`', '`a\n- b`', '`a\n  b`'):
+            index = MODULE.copilot_code_span_index(text)
+            for position, char in enumerate(text):
+                if char != '`':
+                    continue
+                ticks = re.match(r'`+', text[position:]).group()
+                close = re.search(
+                    r'(?<!`)' + ticks + r'(?!`)', text[position + len(ticks):])
+                closing = position + len(ticks) + close.start() if close else -1
+                with self.subTest(text=text, position=position):
+                    self.assertEqual(len(ticks), index[0][position])
+                    self.assertEqual(closing, index[1][position])
+        for text, expected in (('`a\n\nb`', -1), ('`a\n- b`', -1),
+                               ('`a\n  b`', len('`a\n  b`'))):
+            self.assertEqual(expected, MODULE.copilot_code_span_end(text, 0))
+        text = '`a\n\nb`'
+        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+            MODULE.copilot_code_span_end(text, 0, MODULE.copilot_code_span_index(text), [0])
+        # Many ordinary spans on a single line do not repeatedly copy its prefix.
+        text = ' '.join(['`x`'] * 128)
+        self.assertEqual(text, MODULE.copilot_reference_text(text))
+        self.assertEqual(text, MODULE.copilot_inline_emphasis(text))
+        self.assertEqual(' '.join(['x'] * 128), MODULE.assessment_visible_text(text))
+
+    def test_unmatched_links_remain_valid_ingress(self) -> None:
+        for source in ('[' * 128, '[a](' * 128, '[' + '`' * 128):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n{source}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(source=source[:12], count=count,
+                                          associated=associated, expanded=expanded):
+                            evidence = self.collect_current_copilot_evidence(
+                                body, [native_finding_thread()] if count else [],
+                                comments=[native_finding_comment()] if count else [],
+                                associated=associated, expanded=expanded,
+                            )
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
 
     def test_delimiter_matching_work_is_bounded(self) -> None:
         # Count executed matcher lines rather than relying on machine speed.
