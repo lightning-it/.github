@@ -375,9 +375,36 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # a terminal effort footer. The compact native rendering may omit What
     # changed, so that section alone cannot prove a complete overview.
     footer = "🧠 **Review effort:** Balanced"
+    # GitHub optionally appends this fixed informational tip to the native
+    # frame. Admit only its observed platform rendering, never arbitrary tail.
+    if len(nonempty) >= 3 and nonempty[-3:-1] == [footer, "---"]:
+        appendix = (
+            r'💡 <a href="/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/new/(?:develop|main)'
+            r'\?filename=\.github/skills/code-review/SKILL\.md" '
+            r'class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">'
+            r'Add a `code-review` agent skill</a> or configure MCP servers for '
+            r'context-aware, tailored reviews\. <a href="https://docs\.github\.com/'
+            r'copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review'
+            r'\?tool=webui#mcp-servers-and-agent-skills" class="Link--inTextBlock" '
+            r'target="_blank" rel="noopener noreferrer">Learn more in the docs\.</a>'
+        )
+        require(re.fullmatch(appendix, nonempty[-1]) is not None, "producer-review-binding")
+        nonempty = nonempty[:-2]
     require(
         [line for line in lines if "**review effort:**" in line.lower()] == [footer]
         and nonempty[-1] == footer,
+        "producer-review-binding",
+    )
+    field_position = nonempty.index(fields[0])
+    assessment_lines = nonempty[2:field_position - (1 if count else 0)]
+    require(
+        bool(assessment_lines) and all(
+            line == line.strip() and re.fullmatch(r"[^<>]+", line)
+            and re.search(r"\w", line)
+            and not line.startswith(("#", "**", "```", "~~~", "🧠", "- ", "* ", "+ ", "|", ">"))
+            and not re.match(r"[0-9]+[.)]\s", line)
+            for line in assessment_lines
+        ),
         "producer-review-binding",
     )
     supported_summaries = {
@@ -424,9 +451,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     blocks: list[JSON] = []
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
-    assessment_seen = False
-    field_position = nonempty.index(fields[0])
-    for position, line in enumerate(nonempty):
+    for line in nonempty:
         require(
             not (not blocks and line.lstrip().startswith(("```", "~~~"))),
             "producer-review-binding",
@@ -477,14 +502,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             require(not blocks, "producer-review-binding")
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
-        elif (
-            2 <= position < field_position
-            and re.fullmatch(r"[^<>]+", line) and re.search(r"\w", line)
-            and line == line.lstrip()
-            and not line.lstrip().startswith(("#", "**", "```", "~~~", "🧠"))
-        ):
-            assessment_seen = True
-    require(not blocks and assessment_seen, "producer-review-binding")
+    require(not blocks, "producer-review-binding")
     require(missed_count == 0, "producer-review-binding")
     return count
 

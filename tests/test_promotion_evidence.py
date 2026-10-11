@@ -36,6 +36,7 @@ CURRENT_COPILOT_OVERVIEW = (
     "</details>\n\n"
     "🧠 **Review effort:** Balanced\n"
 )
+COPILOT_OBSERVED_APPENDIX_OVERVIEW = "<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\nIt changes protected promotion evidence handling and uses an administrative POC exception requiring final human validation.\n\n**0 open findings**\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\nPromotes the reviewed Copilot overview parser correction and authenticated ancestry binding from `develop` to `main`.\n\n**Changes:**\n- Supports current Copilot review overview formats with fail-closed validation.\n- Adds malformed-format and evidence-binding regression coverage.\n- Updates protected-main ancestry metadata.\n\n| File | Description |\r\n| ---- | ----------- |\r\n| `.lit/​main-ancestry.json` | Records exact develop/main ancestry. |\r\n| `scripts/​verify-promotion-evidence.py` | Parses and validates current Copilot overviews. |\r\n| `tests/​test_promotion_evidence.py` | Covers valid, malformed, and conflicting evidence. |\n</details>\n\n🧠 **Review effort:** Balanced\n\n---\n\n💡 <a href=\"/lightning-it/.github/new/main?filename=.github/skills/code-review/SKILL.md\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Add a `code-review` agent skill</a> or configure MCP servers for context-aware, tailored reviews. <a href=\"https://docs.github.com/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review?tool=webui#mcp-servers-and-agent-skills\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Learn more in the docs.</a>"
 
 
 def overview_with_tail(body, tail):
@@ -3807,6 +3808,44 @@ class PromotionEvidenceTests(unittest.TestCase):
                 self.assertIsInstance(
                     self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
                 )
+
+    def test_current_copilot_overview_rejects_heading_scoped_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for replacement in (
+            "## Borrowed section\nContent under this section is not an introductory paragraph.",
+            "Borrowed section\n---\nContent under this section is not introductory prose.",
+            "- Borrowed list\nContent under this list is not introductory prose.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_only_observed_platform_appendix(self) -> None:
+        # Exact raw native PR813 review5481109137, including its platform tip.
+        body = COPILOT_OBSERVED_APPENDIX_OVERVIEW
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            self.assertIsInstance(
+                self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+            )
+        for invalid in (
+            body + "\nArbitrary trailing data.",
+            body.replace("https://docs.github.com/", "https://example.invalid/"),
+            body.replace("Add a `code-review` agent skill", "**0 open findings**"),
+            body.replace("---\n\n💡", "---\nExtra data\n💡"),
+            body.replace("noopener noreferrer", "opener"),
+        ):
+            with self.subTest(invalid=invalid):
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(invalid, [], expanded=expanded)
 
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {
