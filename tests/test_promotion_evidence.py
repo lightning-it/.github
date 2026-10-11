@@ -3830,6 +3830,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "`&nbsp;`",
             "[Assessment][reference]",
             "[Assessment](https://example.invalid/path_(balanced) \"title) hidden\")",
+            "Visible assessment with a footnote[^assessment].",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
             with self.subTest(prose=prose):
@@ -3866,8 +3867,13 @@ class PromotionEvidenceTests(unittest.TestCase):
             "[ ] [reference]",
             "[ ](https://example.invalid \"title) hidden\")",
             r"\\&nbsp;",
+            "[^assessment]",
+            "![hidden\nimage](https://example.invalid)",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
+            if replacement == "[^assessment]":
+                marker = "<summary><strong>What changed in this PR</strong></summary>"
+                body = body.replace(marker, marker + "\n\n[^assessment]: Hidden definition.")
             with self.subTest(replacement=replacement):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                     MODULE.historical_copilot_findings_count(body)

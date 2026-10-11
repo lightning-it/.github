@@ -403,6 +403,11 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
         if text[label_start] == "[":
             end = balanced_end(label_start, "[", "]")
             if end >= 0:
+                if text.startswith("[^", label_start):
+                    # A definition elsewhere renders only a footnote marker;
+                    # its source label is never introductory assessment prose.
+                    position = end + 1
+                    continue
                 destination = end + 1
                 if destination < len(text) and text[destination] == "(":
                     target_end = balanced_end(destination, "(", ")")
@@ -502,6 +507,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     assessment_lines = nonempty[2:field_position - (1 if count else 0)]
     require(
         bool(assessment_lines)
+        and re.search(r"[^\W_]", assessment_visible_text("\n".join(assessment_lines)))
         and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
         and all(
             line == line.strip() and re.fullmatch(r"[^<>]+", line)
