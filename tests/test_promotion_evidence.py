@@ -4113,6 +4113,46 @@ class PromotionEvidenceTests(unittest.TestCase):
                 pull_number=17, base_sha=BASE, head_sha=HEAD,
             )
 
+    def test_completed_producer_rejects_late_replacement_copilot_review(self):
+        dismissed = {
+            "id": 16001, "node_id": "PRR_dismissed_review",
+            "commit_id": HEAD, "state": "DISMISSED",
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": CURRENT_COPILOT_OVERVIEW,
+            "user": {"id": 175728472, "type": "Bot",
+                     "login": "copilot-pull-request-reviewer[bot]"},
+        }
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-27T00:04:31Z",
+                                  "2026-09-27T02:04:31+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, "producer-review-binding"
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                prior_reviews=[dismissed], submitted_at=submitted,
+                            )
+
+    def test_completed_producer_preserves_earlier_and_equal_review_submission(self):
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-26T23:59:00Z",
+                                  "2026-09-27T00:04:30Z",
+                                  "2026-09-27T02:04:30+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        self.assertIsInstance(
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                submitted_at=submitted,
+                            ), dict,
+                        )
+
     def test_current_findings_cannot_be_masked_by_older_resolved_thread(self):
         body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"

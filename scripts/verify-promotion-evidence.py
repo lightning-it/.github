@@ -1595,7 +1595,8 @@ def validate_expanded_review_metadata(
 
 
 def validate_bound_review_identity(
-    *, repository: str, pull_number: int, head_sha: str, summary: JSON
+    *, repository: str, pull_number: int, head_sha: str, summary: JSON,
+    check_completed_at: Any,
 ) -> list[Any]:
     review_pages = exact_array(
         gh_json(
@@ -1650,13 +1651,19 @@ def validate_bound_review_identity(
         ("review-summary-review-binding" if "review_id" in summary
          else "producer-current-copilot-review-not-unique"),
     )
-    # Native run/PR association proves ownership, not review-after-edit order.
-    # Authenticate the review before either association branch can return.
+    # Association proves ownership, not that this review existed when the
+    # producer accepted it. Reject late replacements before either route.
+    submitted = timestamp(
+        current_reviews[0].get("submitted_at"), "producer-review-submitted-at"
+    )
+    require(
+        submitted <= timestamp(check_completed_at, "candidate-check-completed-at"),
+        "producer-review-binding",
+    )
     edited = summary.get("pull_request_last_edited_at")
     if edited is not None:
         require(
-            timestamp(current_reviews[0].get("submitted_at"), "producer-review-submitted-at")
-            > timestamp(edited, "review-summary-last-edited-at"),
+            submitted > timestamp(edited, "review-summary-last-edited-at"),
             "review-summary-review-after-edit",
         )
     return review_pages
@@ -2171,6 +2178,7 @@ def validate_producer_run(
                 pull_number=pull_number,
                 head_sha=head_sha,
                 summary=summary,
+                check_completed_at=check.get("completed_at"),
             )
             native_binding = bind_copilot_review_findings(
                 bound_review_pages, repository=repository,
