@@ -4046,6 +4046,79 @@ class PromotionEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
             MODULE.historical_copilot_findings_count("```text\n" + CURRENT_COPILOT_OVERVIEW + "\n```")
 
+    def test_legacy_copilot_overview_rejects_unowned_fences(self) -> None:
+        for count in (0, 1):
+            findings = "None" if count == 0 else "1"
+            original = (
+                "<!-- ccr-overview-v2 -->\n## Copilot review overview\n"
+                f"**Findings:** {findings}\n"
+            )
+            comments = [native_finding_comment()] if count else []
+            nodes = [native_finding_thread()] if count else []
+            for opening, closing in (
+                ("```text", "```"),
+                ("`````text", "``````  "),
+                ("   ~~~~text", "   ~~~~~\t"),
+                ("~~~### literal info", "~~~"),
+                ("```text <!-- literal info", "```"),
+                ("~~~info ` <!--", "~~~"),
+            ):
+                fence = f"{opening}\n**Previously missed (1)**\n{closing}\n"
+                bodies = (
+                    original.replace("## Copilot review overview", fence + "## Copilot review overview"),
+                    original.replace("**Findings:**", fence + "**Findings:**"),
+                    original + fence,
+                    original + "<details><summary>Example</summary>\n"
+                    + fence + "</details>\n",
+                )
+                for body in bodies:
+                    for associated in (False, True):
+                        for expanded in (False, True):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, "producer-review-binding"
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    body, nodes, comments=comments,
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_legacy_copilot_overview_rejects_fenced_controls_and_empty_fences(self) -> None:
+        original = "## Copilot review overview\n**Findings:** None\n"
+        for payload in (
+            "", "**Findings:** 1", "## Copilot review overview",
+            "**0 open findings**", "### Unsupported verdict",
+            "<summary><strong>Previously missed (1)</strong></summary>",
+            "1 previously missed",
+        ):
+            for opening, closing in (("```", "```"), ("~~~~text", "~~~~~")):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(
+                        original + f"{opening}\n{payload}\n{closing}\n"
+                    )
+
+    def test_legacy_copilot_overview_preserves_nonfence_literals(self) -> None:
+        for count in (0, 1):
+            findings = "None" if count == 0 else "1"
+            original = (
+                "<!-- ccr-overview-v2 -->\n## Copilot review overview\n"
+                f"**Findings:** {findings}\n"
+            )
+            for literal in (
+                "<!--\n```\n-->", "<!--\n~~~\n--!>",
+                "Inline ``` delimiter prose", "    ```text\n    ```",
+                "```invalid`info", "ordinary narrative tail",
+            ):
+                body = original + literal
+                self.assertEqual(count, MODULE.historical_copilot_findings_count(body))
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        result = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()] if count else [],
+                            comments=[native_finding_comment()] if count else [],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(count, result["review"]["historical_findings_count"])
+
     def test_current_copilot_overview_rejects_unknown_raw_html_blocks(self) -> None:
         sentence = "Enables the guarded, read-only Terraform creation preview."
         for content in (
