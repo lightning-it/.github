@@ -401,7 +401,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         bool(assessment_lines) and all(
             line == line.strip() and re.fullmatch(r"[^<>]+", line)
             and re.search(r"\w", line)
-            and not line.startswith(("#", "**", "```", "~~~", "🧠", "- ", "* ", "+ ", "|", ">"))
+            and not line.startswith(("#", "**", "```", "~~~", "🧠", "|", ">"))
+            and not re.match(r"[-*+]\s", line)
             and not re.match(r"[0-9]+[.)]\s", line)
             for line in assessment_lines
         ),

@@ -3825,6 +3825,11 @@ class PromotionEvidenceTests(unittest.TestCase):
             "## Borrowed section\nContent under this section is not an introductory paragraph.",
             "Borrowed section\n---\nContent under this section is not introductory prose.",
             "- Borrowed list\nContent under this list is not introductory prose.",
+            "-\tBorrowed list\nContent under this list is not introductory prose.",
+            "*\tBorrowed list\nContent under this list is not introductory prose.",
+            "+\tBorrowed list\nContent under this list is not introductory prose.",
+            "1.\tBorrowed list\nContent under this list is not introductory prose.",
+            "1)\tBorrowed list\nContent under this list is not introductory prose.",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
             with self.subTest(replacement=replacement):
