@@ -4,11 +4,15 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+
+from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify-promotion-evidence.py"
@@ -284,6 +288,17 @@ def expanded_v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
+def rendered_review_fixture(review):
+    """Supply independent renderer output for mocked full-media native reviews."""
+    body = review.get("body")
+    return {
+        "body_html": MarkdownIt("commonmark", {"html": True}).enable(
+            ["table", "strikethrough"],
+        ).render(body) if type(body) is str else "",
+        **review,
+    }
+
+
 def evidence_api(
     run: dict[str, object],
     suite: dict[str, object] | None = None,
@@ -342,7 +357,7 @@ def evidence_api(
         if endpoint == "repos/lightning-it/example/pulls/17/reviews?per_page=100":
             return [
                 [
-                    review
+                    rendered_review_fixture(review
                     or {
                         "id": 17001,
                         "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
@@ -360,7 +375,7 @@ def evidence_api(
                             "### 🟢 Approval recommended\n\n"
                             "**Findings:** None\n"
                         ),
-                    }
+                    })
                 ]
             ]
         if endpoint == (
@@ -3668,6 +3683,668 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     overview_with_tail(overview, marker), nodes, expanded=expanded
                                 )
 
+    def test_rendered_legacy_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '<summary><strong><em>Previously missed (1)</em></strong></summary>',
+            '<summary class="finding">Previously\nmissed\n(1)</summary>',
+            '<span>Previously missed (1)</span>',
+            '<summary>Previously m&#105;ssed (&#49;)</summary>',
+            '&#80;reviously missed (1)',
+            '<em>1 previously missed</em>',
+            '## Previously missed (1)',
+            '## Previously missed (1) ##',
+            '_Previously missed (1)_',
+            '[Previously missed (1)](https://example.test/a(b))',
+            'Previously\nmissed (1)',
+            'Previously<!-- explanatory comment --> missed (1)',
+            '> ## Previously missed (1)',
+            '- **Previously missed (1)**',
+            '1. Previously missed (1)',
+            'Narrative `opening\n\n<details>\n<summary><strong>Previously missed (1)'
+            '</strong></summary>\n</details>\n\nclosing`',
+            'Narrative `opening\n<summary>Previously missed (1)</summary>\nclosing`',
+            '[Previously missed (1)][finding]\n\n[finding]: https://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]: <https://example.test/issue>',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]: https://example.test/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]: https://example.test/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_legacy_missed_heading_literals_remain_valid_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '`Previously missed (1)`',
+            r'\*Previously missed (1)\*',
+            '<code>Previously missed (1)</code>',
+            '&lt;summary&gt;Previously missed (1)&lt;/summary&gt;',
+            '<!--\nPreviously missed (1)\n-->',
+            'Previously missed issues [have been resolved](unfinished',
+            '[Previously missed (1)][undefined-reference]',
+            '[Previously missed (1)][]',
+            '[Previously missed (1)]',
+            '[Previously missed (1)][undefined_ref]\n\n[undefinedref]: https://example.test',
+            '&ast;Previously missed (1)&ast;',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated,
+                                      expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_continued_reference_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '[Previously missed (1)][finding]\n\n[finding]:\nhttps://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<https://example.test/issue>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<issue with space>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b(c)) "title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n\t/issue\n"title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue\n"unclosed',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)][finding\nlabel]\n\n[finding\nlabel]:\n/issue',
+            '[Previously missed (1)][finding]\n\n> [finding]:\n> /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n  /issue',
+            '[Previously missed (1)][other]\n\n[first]:\n/first\n[other]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<!-- definition follows -->\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n=\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n---\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n\t/issue',
+            '[Previously missed (1)][find&amp;ing]\n\n[find&amp;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\!ing]:' + '\n/issue',
+            r'[Previously missed (1)][find\]ing]' + '\n\n' + r'[find\]ing]:' + '\n/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_invalid_reference_definitions_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        literals = (
+            '[Previously missed (1)][finding]\n\n[finding]:\n\n/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]: /issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "title" extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "unclosed',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<unclosed',
+            '[Previously missed (1)][finding]\n\n    [finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\ntext\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<div>\n[finding]:\n/issue\n</div>',
+            '[Previously missed (1)][finding]\n\n<!--\n[finding]:\n/issue\n-->',
+            '[Previously missed (1)][finding]\n\n`[finding]: /issue`',
+            '[Previously missed (1)][find&ing]\n\n[find&amp;ing]:\n/issue',
+            '[Previously missed (1)][find!ing]\n\n[find&#33;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\?ing]:' + '\n/issue',
+            '[Previously missed (1)][finding\n\nlabel]\n\n[finding\n\nlabel]:\n/issue',
+        )
+        for literal in literals:
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_paragraph_interruptions_cannot_hide_missed_headings(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('***', '_ _ _', '---', '===', '#', '<section>',
+                         '<SeCtIoN class="review">', '<!-- block -->', '<?instruction ?>',
+                         '<!DOCTYPE html>', '<![CDATA[literal]]>', '<style></style>', '<script></script>',
+                         '<textarea>'):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+        for marker in (
+            'Narrative `opening\n> Previously missed (1)\n> closing`',
+            'Narrative `opening\n- Previously missed (1)\n  closing`',
+            '1. Narrative `opening\n2. Previously missed (1)\n   closing`',
+            'Narrative `opening\n***\n**Previously missed (1)**\nclosing`',
+            'Narrative `opening\n<section>\n<em>Previously missed (1)</em>\nclosing`',
+            '| Narrative `opening | other |\n| --- | --- |\nPreviously missed (1)\nclosing`',
+            '1. Narrative `opening\n    ***\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ===\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ~~~text\n    literal\n    ~~~\n'
+            '    Previously missed (1)\n    closing`',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+
+    def test_noninterrupting_inline_code_remains_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('**', '    ***', '<x-widget>', '<span>', '<strong>',
+                         '2. Previously missed (1)', '* ', '+ ', '1. '):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + marker, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+        # Seven hashes are not a code-span boundary. Legacy verdict admission
+        # separately rejects arbitrary triple-hash text, so assert this lexical
+        # compatibility at its owning helper rather than relaxing that contract.
+        self.assertFalse(MODULE.copilot_has_missed_heading(
+            'Narrative `opening\n####### heading\nPreviously missed (1)\nclosing`'.splitlines()
+        ))
+        for literal in ('    Previously missed (1)', '\tPreviously missed (1)',
+                        '>     Previously missed (1)', '-     Previously missed (1)'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    evidence = self.collect_current_copilot_evidence(
+                        original + '\n' + literal, [], associated=associated, expanded=expanded,
+                    )
+                    self.assertEqual(0, evidence['review']['historical_findings_count'])
+        marker = ('1. Narrative `opening\n    ~~~text\n    Previously missed (1)\n'
+                  '    ~~~\n    closing`')
+        for associated in (False, True):
+            for expanded in (False, True):
+                evidence = self.collect_current_copilot_evidence(
+                    original + marker, [], associated=associated, expanded=expanded,
+                )
+                self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_empty_code_wrappers_cannot_hide_missed_headings_ingress(self) -> None:
+        markers = (
+            '<code></code>Previously missed (1)',
+            'Previously missed (1)<code></code>',
+            'Previously<code></code> missed (1)',
+            'Previously <code></code>missed (1)',
+            '<code><span><!-- none --></span></code>Previously missed (1)',
+            'Previously<code><code><!-- none --></code></code> missed (1)',
+            '<code> \t</code>Previously missed (1)',
+            'Previously<code> \t</code>missed (1)',
+            '<code>&nbsp;</code>Previously missed (1)',
+            'Previously<code>&nbsp;</code>missed (1)',
+            'Previously missed (1)<code>&#160;</code>',
+            'Previously<code>&#8203;</code> missed (1)',
+            '<code>\u200b</code>Previously missed (1)',
+            '<code><script>hidden</script></code>Previously missed (1)',
+            'Previously<script>hidden</script> missed (1)',
+            'Previously<style>hidden</style> missed (1)',
+            '<pre></pre>Previously missed (1)',
+            '<code></code>**Previously missed (1)**<code></code>',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_visible_code_and_hidden_headings_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '<code>Previously missed (1)</code>',
+            '<pre>Previously missed (1)</pre>',
+            'Previously<code>x</code> missed (1)',
+            'Previously<code><span>x</span></code> missed (1)',
+            'Previously<code>x<script>hidden</script></code> missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="x"></code>'
+            'Previously missed (1)',
+            'Previously<code><img src="https://example.test/icon.png" alt="x"></code>'
+            ' missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="" /></code>'
+            'Previously missed (1)',
+            '<code>&ast;</code>Previously missed (1)',
+            '<code>&lt;summary&gt;</code>Previously missed (1)',
+            '<script>Previously missed (1)</script>',
+            '<style>Previously missed (1)</style>',
+            '<code>Previously<script>hidden</script> missed (1)</code>',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_separate_blocks_and_inactive_punctuation_remain_valid_ingress(self) -> None:
+        literals = (
+            'Previously\n\nmissed (1)',
+            '<p>Previously</p><p>missed (1)</p>',
+            '<div>Previously</div><div>missed (1)</div>',
+            '<h2>Previously</h2><h2>missed (1)</h2>',
+            '<li>Previously</li><li>missed (1)</li>',
+            '<td>Previously</td><td>missed (1)</td>',
+            '## Previously\n## missed (1)',
+            '- Previously\n- missed (1)',
+            '> Previously\n>\n> missed (1)',
+            '- Previously\n\n  missed (1)',
+            'Previously *missed (1)',
+            'Previously _missed (1)',
+            'Previously * missed* (1)',
+            'Previously *missed * (1)',
+            'Previously **missed* (1)',
+            'Previously *missed** (1)',
+            'Previously *missed_* (1)',
+            'Previously _missed*_ (1)',
+            'Previously **mi*ss**ed* (1)',
+            'Previously *mi**ss*ed** (1)',
+            'Previously ~~~missed~~~ (1)',
+            '<p>Previously *missed* (1)</p>',
+            '<summary>Previously **missed** (1)</summary>',
+            '<p>Previously\n\nmissed (1)</p>',
+            'Previously *[missed*](x) (1)',
+            'Previously *[missed*][r] (1)\n\n[r]: /url',
+            'Previously [*missed][r]* (1)\n\n[r]: /url',
+            'Previously<!-- x\n\n y --> missed (1)',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for literal in literals:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, literal=literal, associated=associated,
+                                          expanded=expanded):
+                            evidence = self.collect_current_copilot_evidence(
+                                original + literal,
+                                [native_finding_thread()] if count else [],
+                                comments=[native_finding_comment()] if count else [],
+                                associated=associated, expanded=expanded,
+                            )
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_same_block_active_gfm_markers_cannot_pass_ingress(self) -> None:
+        markers = (
+            'Previously\nmissed (1)',
+            '<p>Previously<br>missed (1)</p>',
+            '- Previously\n  missed (1)',
+            '> Previously\n> missed (1)',
+            'Previously *missed* (1)',
+            'Previously _missed_ (1)',
+            'Previously ***missed*** (1)',
+            'Previously *mi**ss**ed* (1)',
+            'Previously **mi*ss*ed** (1)',
+            'Previously ***mi**ss*ed (1)',
+            'Previously *mi**ss***ed (1)',
+            'Previously ~missed~ (1)',
+            'Previously ~~missed~~ (1)',
+            'Previously&nbsp;missed (1)',
+            '<strong>Previously *missed* (1)</strong>',
+            '<div>\n\nPreviously *missed* (1)\n</div>',
+            'Previously *[missed](x) (1)*',
+            'Previously [*missed*][r] (1)\n\n[r]: /url',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_quote_projection_preserves_tabs_and_indented_literals(self) -> None:
+        for source, projected in (
+            ('>\t> ordinary text', ['', 'ordinary text']),
+            ('> \t> ordinary text', ['', '    > ordinary text']),
+            ('\t> ordinary text', ['    > ordinary text']),
+            ('   >\t > ordinary text', ['', 'ordinary text']),
+            ('>\t\tcode', ['', '    code']),
+            ('> - item', ['', '', 'item']),
+            ('>   > text', ['', 'text']),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(projected, MODULE.copilot_container_lines([source]))
+        self.assertEqual(['', '', 'item', 'continuation', '', 'outside'],
+                         MODULE.copilot_container_lines(
+                             ['> - item', '>   continuation', '', 'outside']))
+
+    def test_quote_projection_scan_and_suffix_copy_work_is_bounded(self) -> None:
+        # Python events catch repeated scans; substitution input lengths also
+        # catch copies performed in C, invisible to the Python trace hook.
+        substitute = re.sub
+        for count in (128, 1024):
+            for prefix in ('>', '> ', '>\t', '   > ', ' >\t'):
+                for suffix in ('ordinary text', 'ordinary ' + 'x' * 4096):
+                    source = prefix * count + suffix
+                    copied = 0
+                    events = 0
+                    budget = 32 * len(source) + 1024
+
+                    class MeteredText(str):
+                        def __getitem__(self, key):
+                            nonlocal copied
+                            value = super().__getitem__(key)
+                            if isinstance(key, slice):
+                                copied += len(value)
+                            return value
+
+                    def metered_sub(pattern, replacement, text, *args, **kwargs):
+                        nonlocal copied
+                        if pattern == r'^ {0,3}>[ \t]?':
+                            copied += len(text)
+                        return substitute(pattern, replacement, text, *args, **kwargs)
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('quote projection exceeded linear scan budget')
+                        return trace
+
+                    with self.subTest(count=count, prefix=prefix, suffix=len(suffix)):
+                        previous = sys.gettrace()
+                        try:
+                            with mock.patch.object(MODULE.re, 'sub', side_effect=metered_sub):
+                                sys.settrace(trace)
+                                projected = MODULE.copilot_container_lines([MeteredText(source)])
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(['', suffix], projected)
+                        self.assertLessEqual(events, budget)
+                        self.assertLessEqual(copied, 4 * len(source))
+
+    def test_deep_quotes_preserve_native_ingress_and_marker_rejection(self) -> None:
+        for prefix in ('>', '> ', '>\t', '   > '):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(prefix=prefix, count=count, associated=associated,
+                                          expanded=expanded):
+                            arguments = {
+                                'comments': [native_finding_comment()] if count else [],
+                                'associated': associated, 'expanded': expanded,
+                            }
+                            threads = [native_finding_thread()] if count else []
+                            evidence = self.collect_current_copilot_evidence(
+                                body + prefix * 128 + 'ordinary text\n', threads, **arguments)
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    body + prefix * 128 + 'Previously missed (1)\n',
+                                    threads, **arguments)
+
+    def test_link_matching_work_is_bounded(self) -> None:
+        functions = (
+            MODULE.copilot_reference_text, MODULE.copilot_inline_emphasis,
+            lambda text: MODULE.assessment_visible_text(text, strict_links=False, references=set()),
+            MODULE.copilot_has_missed_heading,
+        )
+        for count in (128, 1024):
+            for source in ('[' * count, '[a](' * count, '[' * count + ']' * count,
+                           '[' + '`' * count):
+                for function in functions:
+                    events = 0
+                    budget = 512 * len(source) + 8192
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('link parsing exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, source=source[:12], function=function):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = function(source)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(False if function is MODULE.copilot_has_missed_heading
+                                         else source, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_link_indexes_preserve_literal_and_quote_policies(self) -> None:
+        # Parenthesis scans start independently even inside an earlier failed
+        # destination's quoted region. Quotes at nested depth differ by caller.
+        def previous_end(text, start, any_depth):
+            nesting, cursor, quoted = 1, start + 1, None
+            while cursor < len(text):
+                char = text[cursor]
+                if char == '\\':
+                    cursor += 2
+                    continue
+                if quoted is not None:
+                    if char == quoted:
+                        quoted = None
+                elif char == '<' or (char in '\"\'' and (
+                        text[cursor - 1].isspace() if any_depth
+                        else nesting == 1 and text[cursor - 1] in ' \t\r\n')):
+                    quoted = '>' if char == '<' else char
+                elif char == '(':
+                    nesting += 1
+                elif char == ')':
+                    nesting -= 1
+                    if not nesting:
+                        return cursor
+                cursor += 1
+            return -1
+
+        for text in ('(url "title)")', '(url <target)> tail)', '(outer (x "t)") end)',
+                     '(url "failed [x](ok)', '(url <failed [x](ok)', '(a\\)b)',
+                     '(url\u00a0"title)")', '(outer (x\u00a0\'t)\') end)',
+                     '[x](u "t\\\")") [y](v)', '(' * 64 + ')' * 64):
+            for any_depth in (False, True):
+                ends = MODULE.copilot_parenthesis_ends(text, title_at_any_depth=any_depth)
+                for start, char in enumerate(text):
+                    if char == '(':
+                        with self.subTest(text=text, any_depth=any_depth, start=start):
+                            self.assertEqual(previous_end(text, start, any_depth), ends[start + 1])
+        text = '[a `]` b](u)'
+        self.assertEqual('[a `]` b](u)', MODULE.copilot_inline_emphasis(text))
+        self.assertEqual('a ] b', MODULE.assessment_visible_text(text))
+        self.assertEqual('[x\\[y]', MODULE.copilot_reference_text('[x\\[y]'))
+        self.assertEqual('[outer[inner]]()', MODULE.copilot_reference_text(
+            '[outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        self.assertEqual('\ufffc', MODULE.copilot_reference_text(
+            '![outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        spaced = 'a' + ' ' * 2000 + 'b'
+        self.assertEqual('[' + spaced + ']()', MODULE.copilot_reference_text(
+            '[' + spaced + ']\n\n[a b]: /x').splitlines()[0])
+
+    def test_nested_unknown_reference_normalization_is_bounded(self) -> None:
+        source = '[' * 1024 + ']' * 1024
+        for function in (lambda text: MODULE.copilot_reference_text(text + '\n\n[r]: /x'),
+                         lambda text: MODULE.assessment_visible_text(
+                             text, strict_links=False, references={'r'})):
+            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                function(source)
+        # Ordinary reference lookups, including long whitespace, remain valid.
+        self.assertEqual('a' + ' ' * 2000 + 'b', MODULE.assessment_visible_text(
+            '[a' + ' ' * 2000 + 'b]', references={'a b'}))
+
+    def test_code_run_index_preserves_each_independent_start(self) -> None:
+        for text in ('`a`', '```unmatched', '```a``b`', '`a``b`c``',
+                     '``a\\`b``', '`a\n\nb`', '`a\n- b`', '`a\n  b`'):
+            index = MODULE.copilot_code_span_index(text)
+            for position, char in enumerate(text):
+                if char != '`':
+                    continue
+                ticks = re.match(r'`+', text[position:]).group()
+                close = re.search(
+                    r'(?<!`)' + ticks + r'(?!`)', text[position + len(ticks):])
+                closing = position + len(ticks) + close.start() if close else -1
+                with self.subTest(text=text, position=position):
+                    self.assertEqual(len(ticks), index[0][position])
+                    self.assertEqual(closing, index[1][position])
+        for text, expected in (('`a\n\nb`', -1), ('`a\n- b`', -1),
+                               ('`a\n  b`', len('`a\n  b`'))):
+            self.assertEqual(expected, MODULE.copilot_code_span_end(text, 0))
+        text = '`a\n\nb`'
+        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+            MODULE.copilot_code_span_end(text, 0, MODULE.copilot_code_span_index(text), [0])
+        # Many ordinary spans on a single line do not repeatedly copy its prefix.
+        text = ' '.join(['`x`'] * 128)
+        self.assertEqual(text, MODULE.copilot_reference_text(text))
+        self.assertEqual(text, MODULE.copilot_inline_emphasis(text))
+        self.assertEqual(' '.join(['x'] * 128), MODULE.assessment_visible_text(text))
+
+    def test_unmatched_links_remain_valid_ingress(self) -> None:
+        for source in ('[' * 128, '[a](' * 128, '[' + '`' * 128):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n{source}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(source=source[:12], count=count,
+                                          associated=associated, expanded=expanded):
+                            evidence = self.collect_current_copilot_evidence(
+                                body, [native_finding_thread()] if count else [],
+                                comments=[native_finding_comment()] if count else [],
+                                associated=associated, expanded=expanded,
+                            )
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_delimiter_matching_work_is_bounded(self) -> None:
+        # Count executed matcher lines rather than relying on machine speed.
+        # Cross-character and rule-of-three mismatches must not rescan all
+        # previously unmatched openers, including inside a visible link label.
+        for count in (64, 512):
+            for source, expected in (
+                (('*a ' * count) + ('a_ ' * count),
+                 ('*a ' * count) + ('a_ ' * count)),
+                (('_a ' * count) + ('a* ' * count),
+                 ('_a ' * count) + ('a* ' * count)),
+                (('*a ' * count) + ('a**b ' * count),
+                 ('*a ' * count) + ('ab ' * count)),
+            ):
+                for linked in (False, True):
+                    text = f'[{source}](x)' if linked else source
+                    events = 0
+                    budget = (640 if linked else 320) * count + 2048
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code is not MODULE.copilot_inline_emphasis.__code__:
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('delimiter matching exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, linked=linked, source=source[:12]):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = MODULE.copilot_inline_emphasis(text)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(f'[{expected}](x)' if linked else expected, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_delimiter_index_preserves_partial_and_intervening_runs(self) -> None:
+        for source, expected in (
+            ('*a _b c* d_', 'a _b c d_'),
+            ('*a **b* c**', 'a b c'),
+            ('***a** b*', 'a b'),
+            ('a*b c**', 'a*b c**'),
+            ('~~a ~b c~~ d~', 'a ~b c d~'),
+            ('*a _b c_ d*', 'a b c d'),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(expected, MODULE.copilot_inline_emphasis(source))
+
+    def test_long_unmatched_delimiters_remain_valid_ingress(self) -> None:
+        source = ('*a ' * 512) + ('a_ ' * 512)
+        for count in (0, 1):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    f'**Findings:** {"1" if count else "None"}\n'
+                    f'[{source}](x)\n')
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(count=count, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()] if count else [],
+                            comments=[native_finding_comment()] if count else [],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            '🔵 Needs a closer look', '🟡 Changes recommended'
+        ).replace('**0 open findings**', CURRENT_COPILOT_OPEN_FINDING)
+        for associated in (False, True):
+            for expanded in (False, True):
+                node = native_finding_thread()
+                node['comments']['nodes'][0]['pullRequestReview']['databaseId'] = 17001.0
+                with self.assertRaisesRegex(MODULE.EvidenceError,
+                                           'finding-root-review-id-not-positive-integer'):
+                    self.collect_current_copilot_evidence(
+                        body, [node], comments=[native_finding_comment()],
+                        associated=associated, expanded=expanded,
+                    )
+                self.assertIsInstance(self.collect_current_copilot_evidence(
+                    body, [native_finding_thread()], comments=[native_finding_comment()],
+                    associated=associated, expanded=expanded,
+                ), dict)
+
     def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
         legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
         for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
@@ -4204,6 +4881,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z", "body": body,
             **review_changes,
         }
+        review = rendered_review_fixture(review)
         check = check_run(
             f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}",
             expanded_v6_summary() if expanded else v6_summary(),
@@ -4231,6 +4909,138 @@ class PromotionEvidenceTests(unittest.TestCase):
             return MODULE.collect_bound_ingress_evidence(
                 repository="lightning-it/example", pull=pull,
                 pull_number=17, base_sha=BASE, head_sha=HEAD,
+            )
+
+    def test_native_rendered_scope_transitions_cannot_mask_missed_headings(self):
+        markers = (
+            '> > ```\n> Previously missed (1)\n> ```',
+            '- ```\n- Previously missed (1)\n- ```',
+            '1. ```\n2. Previously missed (1)\n3. ```',
+            '> - ```\n> - Previously missed (1)\n> - ```',
+            '> > ~~~~python\n> Previously missed (1)\n> ~~~~',
+            '> > ```\n> &nbsp;Previously missed (1)&nbsp;\n> ```',
+            '> > ```\n> &#x200a;Previously missed (1)\n> ```',
+        )
+        for count in (0, 1):
+            overview = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                body = overview_with_tail(overview, marker)
+                # The old raw projection loses container scope; native HTML
+                # must reject at the common binder even if raw count passes.
+                self.assertEqual(MODULE.historical_copilot_findings_count(body), count)
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, 'producer-review-binding',
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    body, [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_native_rendered_literal_scopes_remain_valid_ingress(self):
+        for marker in (
+            '> ```\n> Previously missed (1)\n> ```',
+            '> > `opening\n> Previously missed (1)\n> closing`',
+            '> ```\n> > Previously missed (1)\n> - <!-- literal -->\n> ```',
+            '<!-- Previously missed (1) -->',
+        ):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    '**Findings:** None\n' + marker)
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated,
+                                      expanded=expanded):
+                        self.assertIsInstance(self.collect_current_copilot_evidence(
+                            body, [], associated=associated, expanded=expanded,
+                        ), dict)
+
+    def test_native_rendered_body_is_required_and_not_markdown_reparsed(self):
+        for invalid in (None, '', False, 1, {}, [], '<div>', '<p>x</div>',
+                        '<p>literal</p></p>', '<![CDATA[hidden]]>'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(invalid=invalid, associated=associated,
+                                      expanded=expanded):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, 'producer-review-rendered',
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [], body_html=invalid,
+                                associated=associated, expanded=expanded,
+                            )
+        for literal in (
+            '<p>**Previously missed (1)**</p>',
+            '<p>&amp;#80;reviously missed (1)</p>',
+            '<p>`Previously missed (1)`</p>',
+            '<p>Previously</p><p>missed (1)</p>',
+            '<p><code>Previously missed (1)</code></p>',
+        ):
+            with self.subTest(literal=literal):
+                self.assertFalse(MODULE.copilot_rendered_has_missed_heading(literal))
+        for active in (
+            '<p>Previously<br>missed (1)</p>',
+            '<p><strong>Previously missed (1)</strong></p>',
+            '<p>Previously <code></code>missed (1)</p>',
+            '<p>Previously<code> </code>missed (1)</p>',
+            '<p>Previously m&#105;ssed (1)</p>',
+            '<p>Previously m\u200bissed (1)</p>',
+            '<p>&nbsp;Previously missed (1)&nbsp;</p>',
+        ):
+            with self.subTest(active=active):
+                self.assertTrue(MODULE.copilot_rendered_has_missed_heading(active))
+
+    def test_provider_sanitized_raw_script_does_not_mask_visible_heading(self):
+        body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                '**Findings:** None\n'
+                '> > <script>\n> Previously missed (1)\n> </script>')
+        self.assertEqual(MODULE.historical_copilot_findings_count(body), 0)
+        # Actual GitHub GFM/sanitization response: escaped script is visible,
+        # while the quote ends before the heading in the outer paragraph.
+        native_html = (
+            '<blockquote><blockquote>\n&lt;script&gt;\n</blockquote>\n'
+            '<p dir="auto">Previously missed (1)<br>\n'
+            '&lt;/script&gt;</p>\n</blockquote>'
+        )
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                'producer-review-binding'):
+                        self.collect_current_copilot_evidence(
+                            body, [], body_html=native_html,
+                            associated=associated, expanded=expanded,
+                        )
+
+    def test_native_reviews_request_full_media_on_existing_get(self):
+        review = rendered_review_fixture({
+            'id': 17001, 'node_id': 'PRR_kwDOQs6tNc8AAAABPj6qbQ',
+            'user': {'login': 'copilot-pull-request-reviewer[bot]',
+                     'id': 175728472, 'type': 'Bot'},
+            'commit_id': HEAD, 'state': 'COMMENTED',
+            'submitted_at': '2026-09-27T00:04:00Z',
+            'body': CURRENT_COPILOT_OVERVIEW,
+        })
+        with mock.patch.object(MODULE, 'gh_json', return_value=[[review]]) as api:
+            MODULE.validate_bound_review_identity(
+                repository='lightning-it/example', pull_number=17, head_sha=HEAD,
+                summary={}, check_completed_at='2026-09-27T00:04:30Z',
+            )
+        api.assert_called_once_with([
+            'api', '--paginate', '--slurp', '--header',
+            'Accept: application/vnd.github-commitcomment.full+json',
+            'repos/lightning-it/example/pulls/17/reviews?per_page=100',
+        ])
+        review.pop('body_html')
+        with self.assertRaisesRegex(MODULE.EvidenceError,
+                                    'producer-review-rendered-body-not-string'):
+            MODULE.bind_copilot_review_findings(
+                [[review]], repository='lightning-it/example',
+                pull_number=17, head_sha=HEAD,
             )
 
     def test_completed_producer_rejects_late_replacement_copilot_review(self):
