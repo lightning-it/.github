@@ -280,8 +280,52 @@ def copilot_severity_icons() -> set[str]:
     }
 
 
+def copilot_frame_control_lines(body: str) -> tuple[list[str], bool]:
+    """Exclude fenced literals from frame discovery, preserving their bounds.
+
+    The owned-section parser still sees every opening and closing fence and
+    rejects fences outside an admitted section. The original native body is
+    unchanged for its authenticated evidence digest and thread binding.
+    """
+    lines: list[str] = []
+    has_fences = False
+    fence: tuple[str, int] | None = None
+    comment = False
+    for line in body.splitlines():
+        if fence is not None:
+            closing = re.fullmatch(
+                r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*",
+                line,
+            )
+            lines.append(line if closing else "")
+            if closing:
+                fence = None
+            continue
+        opening = None if comment else re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            has_fences = True
+            # The info string is literal too, including apparent comments.
+            # Retain the actual fence width for the owned-section parser.
+            lines.append(opening.group(1))
+            continue
+        # Backticks quoted in a live comment cannot hide a later live verdict.
+        if comment or "<!--" in line:
+            for token in re.findall(r"<!--|--!?>", line):
+                if comment:
+                    if token in {"-->", "--!>"}:
+                        comment = False
+                elif token == "<!--":
+                    comment = True
+            lines.append(line)
+            continue
+        lines.append(line)
+    require(fence is None, "producer-review-binding")
+    return lines, has_fences
+
+
 def historical_copilot_findings_count(body: str) -> int:
-    lines = body.splitlines()
+    lines, has_fences = copilot_frame_control_lines(body)
     # A missed-finding section remains actionable without its HTML wrapper.
     # Match a complete heading, not narrative prose beginning with these words.
     require(
@@ -308,6 +352,9 @@ def historical_copilot_findings_count(body: str) -> int:
     if not headings:
         require(len(verdicts) == 1, "producer-review-binding")
         return current_copilot_findings_count(lines, verdicts[0])
+    # Legacy frames have no admitted section that owns fenced literals.
+    # Reject actual fences, preserving tick prose and commented delimiters.
+    require(not has_fences, "producer-review-binding")
     require(headings == ["## Copilot review overview"], "producer-review-binding")
     require(
         not any("open finding" in line.lower() for line in lines
