@@ -79,6 +79,7 @@ MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
 MAX_REVIEWS_PER_PULL = 1000
 MAX_REVIEW_COMMENTS_PER_REVIEW = 1000
+MAX_ASSESSMENT_CHARACTERS = 4096
 GH_JSON_MAX_ATTEMPTS = 3
 GH_JSON_TRANSIENT_ERRORS = ("command-failed:gh:unexpected end of JSON input",)
 GITHUB_API_PROXY_PORT = 8080
@@ -364,7 +365,10 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
                         quoted = None
                     cursor += 1
                     continue
-                if text[cursor] in ('"', "'", "<"):
+                if text[cursor] == "<" or (
+                    text[cursor] in ('"', "'") and nesting == 1
+                    and text[cursor - 1] in " \t\r\n"
+                ):
                     quoted = ">" if text[cursor] == "<" else text[cursor]
                     cursor += 1
                     continue
@@ -507,6 +511,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     assessment_lines = nonempty[2:field_position - (1 if count else 0)]
     require(
         bool(assessment_lines)
+        # Bound only the intro parser, never truncate the native review/diff.
+        and sum(len(line) + 1 for line in assessment_lines) <= MAX_ASSESSMENT_CHARACTERS
         and re.search(r"[^\W_]", assessment_visible_text("\n".join(assessment_lines)))
         and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
         and all(

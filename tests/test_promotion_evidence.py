@@ -3831,6 +3831,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "[Assessment][reference]",
             "[Assessment](https://example.invalid/path_(balanced) \"title) hidden\")",
             "Visible assessment with a footnote[^assessment].",
+            "[Assessment](https://example.invalid/it's)",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
             with self.subTest(prose=prose):
@@ -3869,6 +3870,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             r"\\&nbsp;",
             "[^assessment]",
             "![hidden\nimage](https://example.invalid)",
+            "Assessment " + "[" * 4096,
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
             if replacement == "[^assessment]":
