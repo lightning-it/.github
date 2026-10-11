@@ -3974,6 +3974,80 @@ class PromotionEvidenceTests(unittest.TestCase):
                         self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
                     )
 
+    def test_current_copilot_overview_rejects_unknown_raw_html_blocks(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "<script>\nHidden section content.",
+            "<script><!-- closed -->\nHidden section content.",
+            "<PRE><!-- closed --!>\nHidden section content.",
+            "<?processing<!-- closed -->\nHidden section content.",
+            '<PRE class="example">\nHidden section content.',
+            "<StYlE>\nHidden section content.",
+            "<textarea>\nHidden section content.",
+            '<script\n type="text/plain">\nHidden section content.',
+            "<?processing\nHidden section content.",
+            "<![CDATA[\nHidden section content.",
+            "<!DOCTYPE\nHidden section content.",
+            "<div>\nHidden section content.",
+            "<custom-element>\nHidden section content.",
+            "</ins>\nHidden section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "```html\n<script>\n</details>\n```",
+            "Uses `<script>` as an inline literal.",
+            r"\<script> is escaped literal text.",
+            "&lt;script&gt; is an encoded literal.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def test_current_copilot_overview_rejects_table_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for content in (
+            "Assessment | Detail\n--- | ---",
+            "Assessment | Detail\n:-: | -:",
+            "Assessment | Detail\n-|-",
+            "Assessment | Detail\n--- | --- |",
+            "Assessment\n:-:",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "Assessment uses `|` and pipes | as ordinary prose.",
+            r"Assessment uses escaped \| as ordinary prose.",
+            "Assessment uses `--- | ---` as an inline literal.",
+            "Assessment uses a separator\n`--- | ---` literally.",
+            "Assessment uses a blank-separated literal.\n\n--- | ---",
+            "Assessment paragraph.\n--- | ---",
+            "Assessment |\n--- | ---",
+            r"Assessment uses escaped \|" + "\n--- | ---",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {
             "id": 17001, "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",

@@ -458,6 +458,75 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
     return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
 
 
+def review_raw_html_block_start(line: str) -> bool:
+    """Identify raw GFM blocks while retaining inline HTML paragraph prose."""
+    raw = line.removeprefix(" " * min(len(line) - len(line.lstrip(" ")), 3))
+    if raw.startswith(("<?", "<!")) and not raw.startswith("<!--"):
+        return True
+    tag = re.match(r"</?([A-Za-z][A-Za-z0-9-]*)(?=[ \t/>]|$)", raw)
+    if tag is None:
+        return False
+    # GFM block types 1/6 can interrupt paragraphs, including partial tags.
+    # Type 7 needs a whole tag on its own line. Do not reject inline <strong>
+    # prose merely because the paragraph begins with an HTML tag.
+    block_tags = {
+        "script", "pre", "style", "textarea", "address", "article", "aside",
+        "base", "basefont", "blockquote", "body", "caption", "center", "col",
+        "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+        "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+        "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html",
+        "iframe", "legend", "li", "link", "main", "menu", "menuitem", "nav",
+        "noframes", "ol", "optgroup", "option", "p", "param", "section", "source",
+        "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr",
+        "track", "ul",
+    }
+    if tag.group(1).lower() in block_tags:
+        return True
+    quote = None
+    for position in range(tag.end(), len(raw)):
+        char = raw[position]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ">":
+            return not raw[position + 1:].strip()
+        elif char == "<":
+            return False
+    return False
+
+
+def assessment_table_header(previous: str, delimiter: str) -> bool:
+    """Recognize GFM table headers without changing literal paragraph prose."""
+    if not previous:
+        return False
+    cells = delimiter.strip().split("|")
+    if cells and not cells[0]:
+        cells = cells[1:]
+    if cells and not cells[-1]:
+        cells = cells[:-1]
+    if not cells or any(re.fullmatch(r":?-+:?", cell.strip()) is None for cell in cells):
+        return False
+    # GFM splits raw pipes before parsing inline code; escaped pipes alone
+    # remain cell content. Count delimiters linearly, including escape parity.
+    header = previous.strip()
+    columns = 1
+    escaped = False
+    trailing_pipe = False
+    for char in header:
+        trailing_pipe = False
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            columns += 1
+            trailing_pipe = True
+    columns -= int(header.startswith("|")) + int(trailing_pipe)
+    return columns == len(cells)
+
+
 def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # Only the two observed native CCR renderings are admitted. Counts remain
     # submission-time metadata; exact review binding and live thread coverage
@@ -521,12 +590,20 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     )
     field_position = nonempty.index(fields[0])
     assessment_lines = nonempty[2:field_position - (1 if count else 0)]
+    # Keep original adjacency: GFM table delimiters transform the preceding
+    # line into a header, but a blank-separated literal is still a paragraph.
+    # Only the intro must be prose; native owned sections may contain tables.
+    assessment_source = lines[lines.index(verdict) + 1:lines.index(fields[0])]
     require(
         bool(assessment_lines)
         # Bound only the intro parser, never truncate the native review/diff.
         and sum(len(line) + 1 for line in assessment_lines) <= MAX_ASSESSMENT_CHARACTERS
         and re.search(r"[^\W_]", assessment_visible_text("\n".join(assessment_lines)))
         and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
+        and not any(
+            assessment_table_header(previous, line)
+            for previous, line in zip(assessment_source, assessment_source[1:])
+        )
         and all(
             line == line.strip()
             and not re.fullmatch(r"[-=]+|(?:[ \t]*[-*_]){3,}[ \t]*", line)
@@ -591,6 +668,19 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
                 fence = None
             continue
+        child_summary = re.fullmatch(
+            r"<summary>(<picture>.*</picture>) ([^<>]+)</summary>", line
+        )
+        if not comment and review_raw_html_block_start(line):
+            # Own only exact native control tags. Check before the comment
+            # lexer: a raw block opener followed by a comment still owns every
+            # apparent closing tag/footer until its own GFM terminator.
+            require(
+                line in {"<details>", "<details open>", "</details>"}
+                or line in supported_summaries
+                or (child_summary is not None and child_summary.group(1) in supported_icons),
+                "producer-review-binding",
+            )
         if comment or (blocks and "<!--" in line):
             require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
             # A closed comment may be followed by another opener on the same
@@ -635,11 +725,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
                 )
                 seen_summaries.add(line)
             else:
-                match = re.fullmatch(
-                    r"<summary>(<picture>.*</picture>) ([^<>]+)</summary>", line
-                )
                 require(
-                    match is not None and match.group(1) in supported_icons,
+                    child_summary is not None and child_summary.group(1) in supported_icons,
                     "producer-review-binding",
                 )
                 blocks[0]["children"] += 1
