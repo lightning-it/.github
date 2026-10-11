@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -4035,6 +4036,72 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     comments=[native_finding_comment()] if count else [],
                                     associated=associated, expanded=expanded,
                                 )
+
+    def test_delimiter_matching_work_is_bounded(self) -> None:
+        # Count executed matcher lines rather than relying on machine speed.
+        # Cross-character and rule-of-three mismatches must not rescan all
+        # previously unmatched openers, including inside a visible link label.
+        for count in (64, 512):
+            for source, expected in (
+                (('*a ' * count) + ('a_ ' * count),
+                 ('*a ' * count) + ('a_ ' * count)),
+                (('_a ' * count) + ('a* ' * count),
+                 ('_a ' * count) + ('a* ' * count)),
+                (('*a ' * count) + ('a**b ' * count),
+                 ('*a ' * count) + ('ab ' * count)),
+            ):
+                for linked in (False, True):
+                    text = f'[{source}](x)' if linked else source
+                    events = 0
+                    budget = (640 if linked else 320) * count + 2048
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code is not MODULE.copilot_inline_emphasis.__code__:
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('delimiter matching exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, linked=linked, source=source[:12]):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = MODULE.copilot_inline_emphasis(text)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(f'[{expected}](x)' if linked else expected, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_delimiter_index_preserves_partial_and_intervening_runs(self) -> None:
+        for source, expected in (
+            ('*a _b c* d_', 'a _b c d_'),
+            ('*a **b* c**', 'a b c'),
+            ('***a** b*', 'a b'),
+            ('a*b c**', 'a*b c**'),
+            ('~~a ~b c~~ d~', 'a ~b c d~'),
+            ('*a _b c_ d*', 'a b c d'),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(expected, MODULE.copilot_inline_emphasis(source))
+
+    def test_long_unmatched_delimiters_remain_valid_ingress(self) -> None:
+        source = ('*a ' * 512) + ('a_ ' * 512)
+        for count in (0, 1):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    f'**Findings:** {"1" if count else "None"}\n'
+                    f'[{source}](x)\n')
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(count=count, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()] if count else [],
+                            comments=[native_finding_comment()] if count else [],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(count, evidence['review']['historical_findings_count'])
 
     def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
         body = CURRENT_COPILOT_OVERVIEW.replace(

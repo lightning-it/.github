@@ -643,8 +643,17 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
     removed: set[int] = set()
     replacements: dict[int, tuple[int, str]] = {}
     openers: list[dict[str, Any]] = []
+    opener_buckets: dict[tuple[str, int, bool], list[dict[str, Any]]] = {}
     tag_pattern = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
+    delimiter_pattern = re.compile(r"\*+|_+|~+")
     literal_depth = 0
+
+    def drop_opener() -> None:
+        opener = openers.pop()
+        bucket = opener_buckets[opener["bucket"]]
+        bucket.pop()
+        if not bucket:
+            del opener_buckets[opener["bucket"]]
 
     def punctuation(char: str) -> bool:
         return bool(char) and (unicodedata.category(char).startswith("P")
@@ -716,7 +725,7 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
         if char not in "*_~":
             position += 1
             continue
-        width = len(re.match(re.escape(char) + "+", source[position:]).group())
+        width = delimiter_pattern.match(source, position).end() - position
         before = source[position - 1] if position else ""
         after = source[position + width] if position + width < len(source) else ""
         before_space, after_space = not before or before.isspace(), not after or after.isspace()
@@ -731,8 +740,11 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
         remaining = width
         while can_close and remaining:
             found = None
-            for index in range(len(openers) - 1, -1, -1):
-                opener = openers[index]
+            # Eligibility has a constant number of classes. Every member of
+            # a bucket shares the same rule-of-three/tilde result; inspect
+            # only its newest live opener, then pick the nearest globally.
+            for bucket in opener_buckets.values():
+                opener = bucket[-1]
                 if opener["char"] != char:
                     continue
                 if char == "~" and opener["remaining"] != remaining:
@@ -742,8 +754,8 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
                     and (opener["width"] % 3 or width % 3)
                 ):
                     continue
-                found = index
-                break
+                if found is None or opener["index"] > found:
+                    found = opener["index"]
             if found is None:
                 break
             opener = openers[found]
@@ -754,12 +766,17 @@ def copilot_inline_emphasis(source: str, depth: int = 0) -> str:
                                  position + width - remaining + used))
             opener["remaining"] -= used
             remaining -= used
-            del openers[found + 1:]
+            while len(openers) > found + 1:
+                drop_opener()
             if not opener["remaining"]:
-                openers.pop()
+                drop_opener()
         if can_open and remaining:
-            openers.append({"char": char, "start": position + width - remaining,
-                            "remaining": remaining, "width": width, "can_close": can_close})
+            key = (char, width if char == "~" else width % 3, can_close)
+            opener = {"char": char, "start": position + width - remaining,
+                      "remaining": remaining, "width": width, "can_close": can_close,
+                      "index": len(openers), "bucket": key}
+            openers.append(opener)
+            opener_buckets.setdefault(key, []).append(opener)
         position += width
     output: list[str] = []
     position = 0
