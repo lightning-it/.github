@@ -36,6 +36,16 @@ CURRENT_COPILOT_OVERVIEW = (
     "</details>\n\n"
     "🧠 **Review effort:** Balanced\n"
 )
+COPILOT_OBSERVED_APPENDIX_OVERVIEW = "<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\nIt changes protected promotion evidence handling and uses an administrative POC exception requiring final human validation.\n\n**0 open findings**\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\nPromotes the reviewed Copilot overview parser correction and authenticated ancestry binding from `develop` to `main`.\n\n**Changes:**\n- Supports current Copilot review overview formats with fail-closed validation.\n- Adds malformed-format and evidence-binding regression coverage.\n- Updates protected-main ancestry metadata.\n\n| File | Description |\r\n| ---- | ----------- |\r\n| `.lit/​main-ancestry.json` | Records exact develop/main ancestry. |\r\n| `scripts/​verify-promotion-evidence.py` | Parses and validates current Copilot overviews. |\r\n| `tests/​test_promotion_evidence.py` | Covers valid, malformed, and conflicting evidence. |\n</details>\n\n🧠 **Review effort:** Balanced\n\n---\n\n💡 <a href=\"/lightning-it/.github/new/main?filename=.github/skills/code-review/SKILL.md\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Add a `code-review` agent skill</a> or configure MCP servers for context-aware, tailored reviews. <a href=\"https://docs.github.com/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review?tool=webui#mcp-servers-and-agent-skills\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Learn more in the docs.</a>"
+
+
+def overview_with_tail(body, tail):
+    footer = "🧠 **Review effort:** Balanced\n"
+    if body.endswith(footer):
+        return body.removesuffix(footer) + tail + "\n" + footer
+    return body + tail
+
+
 CURRENT_COPILOT_OPEN_FINDING = (
     "<details open>\n"
     "<summary><strong>1 open finding</strong></summary>\n\n"
@@ -3584,7 +3594,7 @@ class PromotionEvidenceTests(unittest.TestCase):
     def test_previously_missed_body_only_findings_cannot_pass_ingress(self) -> None:
         legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
         for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
-            body = overview + COPILOT_PREVIOUSLY_MISSED_HISTORY
+            body = overview_with_tail(overview, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             for expanded in (True, False):
                 for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
                     with self.subTest(overview=overview, expanded=expanded, nodes=nodes):
@@ -3602,14 +3612,14 @@ class PromotionEvidenceTests(unittest.TestCase):
                 with self.subTest(verdict=verdict, resolved=resolved):
                     with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                         MODULE.historical_copilot_findings_count(
-                            body + resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY
+                            overview_with_tail(body, resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY)
                         )
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"
         ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
         with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
             MODULE.historical_copilot_findings_count(
-                open_body + COPILOT_PREVIOUSLY_MISSED_HISTORY
+                overview_with_tail(open_body, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             )
 
     def test_unwrapped_previously_missed_markers_cannot_pass_ingress(self) -> None:
@@ -3631,7 +3641,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                                 MODULE.EvidenceError, "producer-review-binding"
                             ):
                                 self.collect_current_copilot_evidence(
-                                    overview + marker, nodes, expanded=expanded
+                                    overview_with_tail(overview, marker), nodes, expanded=expanded
                                 )
 
     def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
@@ -3643,12 +3653,19 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "Previously missed (1) is an example documented in the change description.",
                 "1 previously missed issue was corrected.",
             ):
+                # Current native narrative belongs to an owned section, not
+                # arbitrary top-level text between its findings and footer.
+                body = (
+                    overview.replace("</details>", prose + "\n</details>", 1)
+                    if overview == CURRENT_COPILOT_OVERVIEW
+                    else overview_with_tail(overview, prose)
+                )
                 for expanded in (True, False):
                     for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
                         with self.subTest(overview=overview, prose=prose,
                                           expanded=expanded, nodes=nodes):
                             evidence = self.collect_current_copilot_evidence(
-                                overview + prose, nodes, expanded=expanded
+                                body, nodes, expanded=expanded
                             )
                             self.assertIsInstance(evidence, dict)
 
@@ -3660,7 +3677,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             ):
                 with self.subTest(verdict=verdict, history=history):
                     self.assertEqual(
-                        0, MODULE.historical_copilot_findings_count(body + history)
+                        0, MODULE.historical_copilot_findings_count(overview_with_tail(body, history))
                     )
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"
@@ -3721,24 +3738,315 @@ class PromotionEvidenceTests(unittest.TestCase):
             open_body.replace("<details open>", "<details>"),
             open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
             open_body,
-            body + COPILOT_RESOLVED_HISTORY * 2,
-            body + COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY,
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved"),
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved"),
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved"),
-            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)"),
-            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)"),
-            body + COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>"),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)"),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>"),
-            body + COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY * 2),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY)),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
                 "</details>\n</details>", "<details>\n</details>\n</details>\n</details>"
-            ),
+            )),
         ):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                     MODULE.historical_copilot_findings_count(invalid)
+
+    def test_current_copilot_overview_rejects_incomplete_native_frame(self) -> None:
+        minimal = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "**0 open findings**\n"
+        )
+        footer = "🧠 **Review effort:** Balanced\n"
+        for body in (
+            minimal,
+            minimal + footer,
+            minimal.replace("**0 open findings**", " \n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "## Assessment\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```assessment```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```\nAssessment text.\n```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "~~~\nAssessment text.\n~~~\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "    Assessment text.\n**0 open findings**") + footer,
+            minimal.replace(
+                "**0 open findings**",
+                "<details>\n<summary><strong>What changed in this PR</strong></summary>\n"
+                "Assessment inside a section is not introductory prose.\n</details>\n"
+                "**0 open findings**",
+            ) + footer,
+            CURRENT_COPILOT_OVERVIEW + "Trailing data after completion.\n",
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "```\n" + footer),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "~~~\n" + footer),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, ""),
+            CURRENT_COPILOT_OVERVIEW + footer,
+            CURRENT_COPILOT_OVERVIEW.replace("Review effort:** Balanced", "Review effort:** Unknown"),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "").replace(
+                "</details>", footer + "</details>"
+            ),
+        ):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.subTest(expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                            self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_observed_compact_native_frame(self) -> None:
+        # Native .github PR814 review5481266035 has prose and a footer but no
+        # What changed section. Requiring that section would reject real evidence.
+        body = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "The focused fail-closed correction is consistent across both parser "
+            "paths and has comprehensive regression coverage.\n\n"
+            "**0 open findings**\n\n"
+            + CURRENT_COPILOT_RESOLVED_HISTORY
+            + "\n🧠 **Review effort:** Balanced\n"
+        )
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            with self.subTest(expanded=expanded):
+                self.assertIsInstance(
+                    self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                )
+
+    def test_current_copilot_overview_rejects_heading_scoped_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for prose in (
+            "The [assessment](https://example.invalid) remains visible prose.",
+            "[Assessment](<https://example.invalid/a b>)",
+            "評価は明確です。",
+            r"\[assessment]: This escaped label is visible prose.",
+            "[Assessment](https://example.invalid)",
+            "&#65;ssessment remains visible.",
+            r"\&nbsp;",
+            "`&nbsp;`",
+            "[Assessment][reference]",
+            "[Assessment](https://example.invalid/path_(balanced) \"title) hidden\")",
+            "Visible assessment with a footnote[^assessment].",
+            "[Assessment](https://example.invalid/it's)",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
+            with self.subTest(prose=prose):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+        for replacement in (
+            "## Borrowed section\nContent under this section is not an introductory paragraph.",
+            "Borrowed section\n---\nContent under this section is not introductory prose.",
+            "- Borrowed list\nContent under this list is not introductory prose.",
+            "-\tBorrowed list\nContent under this list is not introductory prose.",
+            "*\tBorrowed list\nContent under this list is not introductory prose.",
+            "+\tBorrowed list\nContent under this list is not introductory prose.",
+            "1.\tBorrowed list\nContent under this list is not introductory prose.",
+            "1)\tBorrowed list\nContent under this list is not introductory prose.",
+            "_ _ _",
+            "___",
+            "_\t_\t_",
+            "____",
+            "[assessment]: https://example.invalid",
+            "[assessment]:",
+            "[^assessment]: This is footnote metadata.",
+            "[assessment\\]]: https://example.invalid",
+            "[assessment\nreference]: https://example.invalid",
+            "&nbsp;",
+            "&#160; &#x200b; &shy;",
+            "[](https://example.invalid)",
+            "[ ](https://example.invalid \"invisible title\")",
+            "![assessment](https://example.invalid)",
+            "![assessment][reference]",
+            "![assessment]",
+            "[ ] [reference]",
+            "[ ](https://example.invalid \"title) hidden\")",
+            r"\\&nbsp;",
+            "[^assessment]",
+            "\u3164",
+            "\u115f\u1160",
+            "\uffa0",
+            "&#x3164;",
+            "`\u3164`",
+            "[\u3164](https://example.invalid)",
+            "![hidden\nimage](https://example.invalid)",
+            "Assessment " + "[" * 4096,
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
+            if replacement == "[^assessment]":
+                marker = "<summary><strong>What changed in this PR</strong></summary>"
+                body = body.replace(marker, marker + "\n\n[^assessment]: Hidden definition.")
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_only_observed_platform_appendix(self) -> None:
+        # Exact raw native PR813 review5481109137, including its platform tip.
+        body = COPILOT_OBSERVED_APPENDIX_OVERVIEW
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            self.assertIsInstance(
+                self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+            )
+        for invalid in (
+            body + "\nArbitrary trailing data.",
+            body.replace("https://docs.github.com/", "https://example.invalid/"),
+            body.replace("Add a `code-review` agent skill", "**0 open findings**"),
+            body.replace("---\n\n💡", "---\nExtra data\n💡"),
+            body.replace("noopener noreferrer", "opener"),
+        ):
+            with self.subTest(invalid=invalid):
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(invalid, [], expanded=expanded)
+
+    def test_current_copilot_overview_rejects_unframed_content_after_findings(self) -> None:
+        positive = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for tail in (
+            "Arbitrary top-level tail.\n",
+            "## Borrowed section\nContent before the footer.\n",
+            "> Quoted top-level tail.\n",
+            "- Top-level list item.\n",
+            "<div>Unframed content.</div>\n",
+            "<!-- ccr-overview-v2 -->\n",
+            "### 🔵 Needs a closer look\n",
+            "---\n",
+        ):
+            for original in (CURRENT_COPILOT_OVERVIEW, positive):
+                body = overview_with_tail(original, tail)
+                with self.subTest(tail=tail, positive=original == positive):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        MODULE.historical_copilot_findings_count(body)
+                    if original == CURRENT_COPILOT_OVERVIEW:
+                        for expanded in (True, False):
+                            with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                                self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_footer_cannot_be_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\nQuoted section content.",
+            "~~~~text\nQuoted section content.",
+            "<!--\nHidden section content.",
+            "<!-- closed --> <!--",
+            "<!-- closed --!> <!--",
+            "<!-- first\nclosed --> <!--",
+            "```text\n<!--\nQuoted comment and section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_preserves_closed_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\n</details>\n<!-- literal comment\n```",
+            "~~~~text\n</details>\n~~~\n~~~~",
+            "<!--\n</details>\nHidden explanatory content.\n-->",
+            "<!-- inline explanatory comment -->",
+            "<!-- inline explanatory comment --!>",
+            "<!-- first --!> <!-- second -->",
+            "<!-- first --> <!-- second -->",
+            "<!-- first\nclosed --> <!-- second -->",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def test_current_copilot_overview_rejects_unknown_raw_html_blocks(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "<script>\nHidden section content.",
+            "<script><!-- closed -->\nHidden section content.",
+            "<PRE><!-- closed --!>\nHidden section content.",
+            "<?processing<!-- closed -->\nHidden section content.",
+            '<PRE class="example">\nHidden section content.',
+            "<StYlE>\nHidden section content.",
+            "<textarea>\nHidden section content.",
+            '<script\n type="text/plain">\nHidden section content.',
+            "<?processing\nHidden section content.",
+            "<![CDATA[\nHidden section content.",
+            "<!DOCTYPE\nHidden section content.",
+            "<div>\nHidden section content.",
+            "<custom-element>\nHidden section content.",
+            "</ins>\nHidden section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "```html\n<script>\n</details>\n```",
+            "Uses `<script>` as an inline literal.",
+            r"\<script> is escaped literal text.",
+            "&lt;script&gt; is an encoded literal.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def test_current_copilot_overview_rejects_table_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for content in (
+            "Assessment | Detail\n--- | ---",
+            "Assessment | Detail\n:-: | -:",
+            "Assessment | Detail\n-|-",
+            "Assessment | Detail\n--- | --- |",
+            "Assessment\n:-:",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "Assessment uses `|` and pipes | as ordinary prose.",
+            r"Assessment uses escaped \| as ordinary prose.",
+            "Assessment uses `--- | ---` as an inline literal.",
+            "Assessment uses a separator\n`--- | ---` literally.",
+            "Assessment uses a blank-separated literal.\n\n--- | ---",
+            "Assessment paragraph.\n--- | ---",
+            "Assessment |\n--- | ---",
+            r"Assessment uses escaped \|" + "\n--- | ---",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
 
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {
@@ -3784,8 +4092,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         resolved = [{"id": "PRRT_1", "isResolved": True}]
         for body, nodes, count in (
             (CURRENT_COPILOT_OVERVIEW, [], 0),
-            (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
-            (CURRENT_COPILOT_OVERVIEW + CURRENT_COPILOT_RESOLVED_HISTORY, resolved, 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, COPILOT_RESOLVED_HISTORY), resolved, 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, CURRENT_COPILOT_RESOLVED_HISTORY), resolved, 0),
             (open_body, resolved, 1),
         ):
             with self.subTest(body=body, nodes=nodes):

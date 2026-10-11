@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import html
 import json
 import os
 import re
@@ -78,6 +79,15 @@ MAX_FIRST_PARENT_MERGES = 900
 MAX_THREADS_PER_PULL = 1000
 MAX_REVIEWS_PER_PULL = 1000
 MAX_REVIEW_COMMENTS_PER_REVIEW = 1000
+MAX_ASSESSMENT_CHARACTERS = 4096
+# Unicode 17 Default_Ignorable_Code_Point; apply after entity/code normalization.
+# https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+ASSESSMENT_IGNORABLE = re.compile(
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f"
+    r"\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]"
+)
 GH_JSON_MAX_ATTEMPTS = 3
 GH_JSON_TRANSIENT_ERRORS = ("command-failed:gh:unexpected end of JSON input",)
 GITHUB_API_PROXY_PORT = 8080
@@ -334,6 +344,189 @@ def historical_copilot_findings_count(body: str) -> int:
     return count
 
 
+def assessment_visible_text(text: str, depth: int = 0) -> str:
+    """Count prose, not entity names, link targets/titles or image metadata.
+
+    This is deliberately limited to inline syntax in the admitted native
+    paragraph. Backslash escapes and code spans retain their literal text;
+    only ordinary text decodes character references. Unbalanced destinations
+    and excessive nesting cannot establish assessment evidence.
+    """
+    require(depth <= 8, "producer-review-binding")
+
+    def code_end(position: int) -> tuple[int, int]:
+        ticks = re.match(r"`+", text[position:]).group()
+        close = re.search(r"(?<!`)" + ticks + r"(?!`)", text[position + len(ticks):])
+        return len(ticks), (position + len(ticks) + close.start() if close else -1)
+
+    def balanced_end(position: int, opener: str, closer: str) -> int:
+        nesting = 1
+        cursor = position + 1
+        quoted = None
+        while cursor < len(text):
+            if text[cursor] == "\\":
+                cursor += 2
+                continue
+            if opener == "(":
+                if quoted is not None:
+                    if text[cursor] == quoted:
+                        quoted = None
+                    cursor += 1
+                    continue
+                if text[cursor] == "<" or (
+                    text[cursor] in ('"', "'") and nesting == 1
+                    and text[cursor - 1] in " \t\r\n"
+                ):
+                    quoted = ">" if text[cursor] == "<" else text[cursor]
+                    cursor += 1
+                    continue
+            if opener == "[" and text[cursor] == "`":
+                ticks, end = code_end(cursor)
+                if end >= 0:
+                    cursor = end + ticks
+                    continue
+            if text[cursor] == opener:
+                nesting += 1
+            elif text[cursor] == closer:
+                nesting -= 1
+                if nesting == 0:
+                    return cursor
+            cursor += 1
+        return -1
+
+    visible = []
+    position = 0
+    while position < len(text):
+        char = text[position]
+        if char == "\\" and position + 1 < len(text) and re.fullmatch(
+            r"[!-/:-@\[-`{-~]", text[position + 1]
+        ):
+            visible.append(text[position + 1])
+            position += 2
+            continue
+        if char == "`":
+            ticks, end = code_end(position)
+            if end >= 0:
+                visible.append(text[position + ticks:end])
+                position = end + ticks
+                continue
+        image = text.startswith("![", position)
+        label_start = position + (1 if image else 0)
+        if text[label_start] == "[":
+            end = balanced_end(label_start, "[", "]")
+            if end >= 0:
+                if text.startswith("[^", label_start):
+                    # A definition elsewhere renders only a footnote marker;
+                    # its source label is never introductory assessment prose.
+                    position = end + 1
+                    continue
+                destination = end + 1
+                if destination < len(text) and text[destination] == "(":
+                    target_end = balanced_end(destination, "(", ")")
+                    require(target_end >= 0, "producer-review-binding")
+                    if not image:
+                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
+                    position = target_end + 1
+                    continue
+                reference = destination
+                while reference < len(text) and text[reference] in " \t":
+                    reference += 1
+                if reference < len(text) and text[reference] == "[":
+                    target_end = balanced_end(reference, "[", "]")
+                    require(target_end >= 0, "producer-review-binding")
+                    if not image:
+                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
+                    position = target_end + 1
+                    continue
+                if image:
+                    # A shortcut image may resolve against definitions elsewhere
+                    # in the frame. Its alt text cannot establish visible prose.
+                    position = end + 1
+                    continue
+        if char == "&":
+            entity = re.match(r"&(?:[A-Za-z][A-Za-z0-9]{1,31}|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});", text[position:])
+            if entity:
+                visible.append(html.unescape(entity.group()))
+                position += len(entity.group())
+                continue
+        # Angle destinations have already been consumed by the link lexer.
+        # Raw HTML cannot lend its tag name to assessment prose; escapes/code
+        # and decoded character references still retain actual literal text.
+        require(char not in "<>", "producer-review-binding")
+        visible.append(char)
+        position += 1
+    return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
+
+
+def review_raw_html_block_start(line: str) -> bool:
+    """Identify raw GFM blocks while retaining inline HTML paragraph prose."""
+    raw = line.removeprefix(" " * min(len(line) - len(line.lstrip(" ")), 3))
+    if raw.startswith(("<?", "<!")) and not raw.startswith("<!--"):
+        return True
+    tag = re.match(r"</?([A-Za-z][A-Za-z0-9-]*)(?=[ \t/>]|$)", raw)
+    if tag is None:
+        return False
+    # GFM block types 1/6 can interrupt paragraphs, including partial tags.
+    # Type 7 needs a whole tag on its own line. Do not reject inline <strong>
+    # prose merely because the paragraph begins with an HTML tag.
+    block_tags = {
+        "script", "pre", "style", "textarea", "address", "article", "aside",
+        "base", "basefont", "blockquote", "body", "caption", "center", "col",
+        "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+        "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+        "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html",
+        "iframe", "legend", "li", "link", "main", "menu", "menuitem", "nav",
+        "noframes", "ol", "optgroup", "option", "p", "param", "section", "source",
+        "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr",
+        "track", "ul",
+    }
+    if tag.group(1).lower() in block_tags:
+        return True
+    quote = None
+    for position in range(tag.end(), len(raw)):
+        char = raw[position]
+        if quote is not None:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ">":
+            return not raw[position + 1:].strip()
+        elif char == "<":
+            return False
+    return False
+
+
+def assessment_table_header(previous: str, delimiter: str) -> bool:
+    """Recognize GFM table headers without changing literal paragraph prose."""
+    if not previous:
+        return False
+    cells = delimiter.strip().split("|")
+    if cells and not cells[0]:
+        cells = cells[1:]
+    if cells and not cells[-1]:
+        cells = cells[:-1]
+    if not cells or any(re.fullmatch(r":?-+:?", cell.strip()) is None for cell in cells):
+        return False
+    # GFM splits raw pipes before parsing inline code; escaped pipes alone
+    # remain cell content. Count delimiters linearly, including escape parity.
+    header = previous.strip()
+    columns = 1
+    escaped = False
+    trailing_pipe = False
+    for char in header:
+        trailing_pipe = False
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            columns += 1
+            trailing_pipe = True
+    columns -= int(header.startswith("|")) + int(trailing_pipe)
+    return columns == len(cells)
+
+
 def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # Only the two observed native CCR renderings are admitted. Counts remain
     # submission-time metadata; exact review binding and live thread coverage
@@ -369,6 +562,56 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         )
     require(
         (verdict == "### 🟡 Changes recommended") == (count > 0),
+        "producer-review-binding",
+    )
+    # Both observed current renderings include an introductory assessment and
+    # a terminal effort footer. The compact native rendering may omit What
+    # changed, so that section alone cannot prove a complete overview.
+    footer = "🧠 **Review effort:** Balanced"
+    # GitHub optionally appends this fixed informational tip to the native
+    # frame. Admit only its observed platform rendering, never arbitrary tail.
+    if len(nonempty) >= 3 and nonempty[-3:-1] == [footer, "---"]:
+        appendix = (
+            r'💡 <a href="/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/new/(?:develop|main)'
+            r'\?filename=\.github/skills/code-review/SKILL\.md" '
+            r'class="Link--inTextBlock" target="_blank" rel="noopener noreferrer">'
+            r'Add a `code-review` agent skill</a> or configure MCP servers for '
+            r'context-aware, tailored reviews\. <a href="https://docs\.github\.com/'
+            r'copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review'
+            r'\?tool=webui#mcp-servers-and-agent-skills" class="Link--inTextBlock" '
+            r'target="_blank" rel="noopener noreferrer">Learn more in the docs\.</a>'
+        )
+        require(re.fullmatch(appendix, nonempty[-1]) is not None, "producer-review-binding")
+        nonempty = nonempty[:-2]
+    require(
+        [line for line in lines if "**review effort:**" in line.lower()] == [footer]
+        and nonempty[-1] == footer,
+        "producer-review-binding",
+    )
+    field_position = nonempty.index(fields[0])
+    assessment_lines = nonempty[2:field_position - (1 if count else 0)]
+    # Keep original adjacency: GFM table delimiters transform the preceding
+    # line into a header, but a blank-separated literal is still a paragraph.
+    # Only the intro must be prose; native owned sections may contain tables.
+    assessment_source = lines[lines.index(verdict) + 1:lines.index(fields[0])]
+    require(
+        bool(assessment_lines)
+        # Bound only the intro parser, never truncate the native review/diff.
+        and sum(len(line) + 1 for line in assessment_lines) <= MAX_ASSESSMENT_CHARACTERS
+        and re.search(r"[^\W_]", assessment_visible_text("\n".join(assessment_lines)))
+        and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
+        and not any(
+            assessment_table_header(previous, line)
+            for previous, line in zip(assessment_source, assessment_source[1:])
+        )
+        and all(
+            line == line.strip()
+            and not re.fullmatch(r"[-=]+|(?:[ \t]*[-*_]){3,}[ \t]*", line)
+            and not line.startswith(("#", "**", "```", "~~~", "🧠", "|", ">"))
+            and not re.match(r"[-*+]\s", line)
+            and not re.match(r"[0-9]+[.)]\s", line)
+            for line in assessment_lines
+        ),
         "producer-review-binding",
     )
     supported_summaries = {
@@ -415,7 +658,49 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     blocks: list[JSON] = []
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
-    for line in nonempty:
+    fence: tuple[str, int] | None = None
+    comment = False
+    for position, line in enumerate(nonempty):
+        # Literal content inside an owned section cannot close that section
+        # or supply the authoritative footer. Preserve ordinary closed code
+        # examples/comments without interpreting their quoted frame markers.
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
+                fence = None
+            continue
+        child_summary = re.fullmatch(
+            r"<summary>(<picture>.*</picture>) ([^<>]+)</summary>", line
+        )
+        if not comment and review_raw_html_block_start(line):
+            # Own only exact native control tags. Check before the comment
+            # lexer: a raw block opener followed by a comment still owns every
+            # apparent closing tag/footer until its own GFM terminator.
+            require(
+                line in {"<details>", "<details open>", "</details>"}
+                or line in supported_summaries
+                or (child_summary is not None and child_summary.group(1) in supported_icons),
+                "producer-review-binding",
+            )
+        if comment or (blocks and "<!--" in line):
+            require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
+            # A closed comment may be followed by another opener on the same
+            # line. Only closers end a live comment; nested openers are literal.
+            for token in re.findall(r"<!--|--!?>", line):
+                if comment:
+                    if token in {"-->", "--!>"}:
+                        comment = False
+                elif token == "<!--":
+                    comment = True
+            continue
+        opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            continue
+        require(
+            not (not blocks and line.lstrip().startswith(("```", "~~~"))),
+            "producer-review-binding",
+        )
         marker_line = line.lower()
         if "<details" in marker_line:
             require(line in {"<details>", "<details open>"}, "producer-review-binding")
@@ -440,11 +725,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
                 )
                 seen_summaries.add(line)
             else:
-                match = re.fullmatch(
-                    r"<summary>(<picture>.*</picture>) ([^<>]+)</summary>", line
-                )
                 require(
-                    match is not None and match.group(1) in supported_icons,
+                    child_summary is not None and child_summary.group(1) in supported_icons,
                     "producer-review-binding",
                 )
                 blocks[0]["children"] += 1
@@ -458,11 +740,15 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             block = blocks.pop()
             if block["summary"] == missed_summary:
                 require(block["children"] == missed_count, "producer-review-binding")
-        elif line == "**0 open findings**":
+        elif line in {"**0 open findings**", footer}:
             require(not blocks, "producer-review-binding")
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
-    require(not blocks, "producer-review-binding")
+        else:
+            # The prefix was checked as introductory prose. After findings,
+            # only an owned native section or the terminal footer is legal.
+            require(position < field_position, "producer-review-binding")
+    require(not blocks and fence is None and not comment, "producer-review-binding")
     require(missed_count == 0, "producer-review-binding")
     return count
 
