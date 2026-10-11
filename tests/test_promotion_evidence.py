@@ -3909,6 +3909,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             "```text\nQuoted section content.",
             "~~~~text\nQuoted section content.",
             "<!--\nHidden section content.",
+            "<!-- closed --> <!--",
+            "<!-- first\nclosed --> <!--",
             "```text\n<!--\nQuoted comment and section content.",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
@@ -3926,6 +3928,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             "~~~~text\n</details>\n~~~\n~~~~",
             "<!--\n</details>\nHidden explanatory content.\n-->",
             "<!-- inline explanatory comment -->",
+            "<!-- first --> <!-- second -->",
+            "<!-- first\nclosed --> <!-- second -->",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
             with self.subTest(content=content):

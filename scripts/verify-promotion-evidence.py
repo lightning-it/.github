@@ -464,18 +464,21 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
                 fence = None
             continue
-        if comment:
-            if "-->" in line:
-                comment = False
+        if comment or (blocks and "<!--" in line):
+            require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
+            # A closed comment may be followed by another opener on the same
+            # line. Only closers end a live comment; nested openers are literal.
+            for token in re.findall(r"<!--|-->", line):
+                if comment:
+                    if token == "-->":
+                        comment = False
+                elif token == "<!--":
+                    comment = True
             continue
         opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
         if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
             require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
             fence = (opening.group(1)[0], len(opening.group(1)))
-            continue
-        if blocks and "<!--" in line:
-            require(blocks[-1]["summary"] is not None, "producer-review-binding")
-            comment = "-->" not in line.split("<!--", 1)[1]
             continue
         require(
             not (not blocks and line.lstrip().startswith(("```", "~~~"))),
