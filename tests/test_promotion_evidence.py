@@ -3821,6 +3821,17 @@ class PromotionEvidenceTests(unittest.TestCase):
             "Final confidence depends on protected live credential and GitHub inventory "
             "behavior that mocked tests cannot verify."
         )
+        for prose in (
+            "The [assessment](https://example.invalid) remains visible prose.",
+            r"\[assessment]: This escaped label is visible prose.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
+            with self.subTest(prose=prose):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
         for replacement in (
             "## Borrowed section\nContent under this section is not an introductory paragraph.",
             "Borrowed section\n---\nContent under this section is not introductory prose.",
@@ -3834,6 +3845,11 @@ class PromotionEvidenceTests(unittest.TestCase):
             "___",
             "_\t_\t_",
             "____",
+            "[assessment]: https://example.invalid",
+            "[assessment]:",
+            "[^assessment]: This is footnote metadata.",
+            "[assessment\\]]: https://example.invalid",
+            "[assessment\nreference]: https://example.invalid",
         ):
             body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
             with self.subTest(replacement=replacement):

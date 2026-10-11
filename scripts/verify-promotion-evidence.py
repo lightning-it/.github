@@ -398,7 +398,9 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     field_position = nonempty.index(fields[0])
     assessment_lines = nonempty[2:field_position - (1 if count else 0)]
     require(
-        bool(assessment_lines) and all(
+        bool(assessment_lines)
+        and not re.search(r"(?m)^\[(?:\\.|[^\[\]\\]){1,999}\]:", "\n".join(assessment_lines))
+        and all(
             line == line.strip() and re.fullmatch(r"[^<>]+", line)
             and re.search(r"[^\W_]", line)
             and not line.startswith(("#", "**", "```", "~~~", "🧠", "|", ">"))
