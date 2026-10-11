@@ -325,6 +325,315 @@ def copilot_frame_control_lines(body: str) -> tuple[list[str], bool]:
     return lines, has_fences
 
 
+def copilot_container_lines(lines: list[str]) -> list[str]:
+    """Expose block syntax inside quote/list containers, not indented code."""
+    result: list[str] = []
+    list_indent = 0
+    list_kind = ""
+    quote_depth = 0
+    paragraph = False
+    previous = ""
+    blank = True
+    for original in lines:
+        leading = re.match(r"[ \t]*", original).group()
+        line = leading.expandtabs(4) + original[len(leading):]
+        depth = 0
+        while re.match(r"^ {0,3}>", line):
+            line = re.sub(r"^ {0,3}>[ \t]?", "", line, count=1)
+            leading = re.match(r"[ \t]*", line).group()
+            line = leading.expandtabs(4) + line[len(leading):]
+            depth += 1
+        if depth > quote_depth:
+            # A new container interrupts the outer paragraph before its
+            # indentation/marker is removed from the projection.
+            result.append("")
+            paragraph = False
+        if depth:
+            quote_depth = depth
+        elif not line.strip() or copilot_paragraph_interrupts(previous, line):
+            quote_depth = 0
+        indentation = len(line) - len(line.lstrip(" "))
+        old_indent, old_kind = list_indent, list_kind
+        if list_indent and indentation >= list_indent:
+            line = line[list_indent:]
+        elif line.strip() and (blank or copilot_paragraph_interrupts(previous, line)):
+            list_indent = 0
+        item = re.match(r"^ {0,3}([-+*]|[0-9]{1,9}[.)])([ \t]+)(?=\S)", line)
+        same_list = bool(item and old_indent and indentation < old_indent
+                         and item.group(1)[-1] == old_kind)
+        if item and (not paragraph or not item.group(1)[0].isdigit()
+                     or item.group(1)[:-1] == "1" or same_list):
+            result.append("")
+            paragraph = False
+            # More than four padding spaces start indented code in a list;
+            # only the first space belongs to that container's marker.
+            width = item.end() - max(0, len(item.group(2)) - 1) if len(item.group(2)) > 4 else item.end()
+            list_indent += width
+            list_kind = item.group(1)[-1]
+            line = line[width:]
+        result.append(line)
+        blank = not line.strip()
+        paragraph = bool(line.strip()) and not copilot_paragraph_interrupts(previous, line)
+        previous = line if paragraph else ""
+    return result
+
+
+def copilot_paragraph_interrupts(previous: str, line: str) -> bool:
+    """GFM blocks that terminate inline code's paragraph context."""
+    if not line.strip():
+        return True
+    if re.match(r"^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*][ \t]+\S|1[.)][ \t]+\S)", line):
+        return True
+    if any(re.fullmatch(r" {0,3}(?:" + re.escape(char) + r"[ \t]*){3,}", line)
+           for char in "*_-"):
+        return True
+    if previous.strip() and re.fullmatch(r" {0,3}(?:=+|-+)[ \t]*", line):
+        return True
+    fence = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+    if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+        return True
+    return (review_raw_html_block_start(line, interrupt_only=True)
+            or assessment_table_header(previous, line))
+
+
+def copilot_code_span_end(source: str, position: int) -> int:
+    ticks = re.match(r"`+", source[position:]).group()
+    end = re.search(r"(?<!`)" + ticks + r"(?!`)", source[position + len(ticks):])
+    if end is None:
+        return -1
+    stop = position + len(ticks) + end.end()
+    paragraph = source[source.rfind("\n", 0, position) + 1:stop - len(ticks)].splitlines()
+    if any(copilot_paragraph_interrupts(previous, line)
+           for previous, line in zip(paragraph, paragraph[1:])):
+        return -1
+    return stop
+
+
+def copilot_reference_label_end(source: str, position: int) -> int:
+    """Definition/reference identifiers preserve escapes and entity spelling."""
+    cursor = position + 1
+    while cursor < len(source) and cursor - position <= 1000:
+        char = source[cursor]
+        if char == "\\" and cursor + 1 < len(source) and re.fullmatch(r"[!-/:-@\[-`{-~]", source[cursor + 1]):
+            cursor += 2
+            continue
+        if char == "[":
+            return -1
+        if char == "]":
+            label = source[position + 1:cursor]
+            return cursor if label.strip() and not re.search(r"\n[ \t]*\n", label) else -1
+        cursor += 1
+    return -1
+
+
+def copilot_reference_definition(source: str, position: int) -> tuple[str, int] | None:
+    end = copilot_reference_label_end(source, position)
+    if end < 0 or not source.startswith(":", end + 1):
+        return None
+    cursor = end + 2
+    while cursor < len(source) and source[cursor] in " \t":
+        cursor += 1
+    if cursor < len(source) and source[cursor] == "\n":
+        cursor += 1
+        while cursor < len(source) and source[cursor] in " \t":
+            cursor += 1
+    start = cursor
+    if cursor < len(source) and source[cursor] == "<":
+        cursor += 1
+        while cursor < len(source) and source[cursor] not in "\n<>":
+            if source[cursor] == "\\" and cursor + 1 < len(source) and source[cursor + 1] in "\\<>":
+                cursor += 1
+            cursor += 1
+        if cursor >= len(source) or source[cursor] != ">":
+            return None
+        cursor += 1
+    else:
+        nesting = 0
+        while cursor < len(source) and ord(source[cursor]) > 32 and ord(source[cursor]) != 127:
+            char = source[cursor]
+            if char == "\\" and cursor + 1 < len(source) and re.fullmatch(r"[!-/:-@\[-`{-~]", source[cursor + 1]):
+                cursor += 2
+                continue
+            if char == "(":
+                nesting += 1
+            elif char == ")":
+                nesting -= 1
+                if nesting < 0:
+                    return None
+            cursor += 1
+        if cursor == start or nesting:
+            return None
+    destination_end = cursor
+    while cursor < len(source) and source[cursor] in " \t":
+        cursor += 1
+    next_line = cursor < len(source) and source[cursor] == "\n"
+    if next_line:
+        cursor += 1
+        while cursor < len(source) and source[cursor] in " \t":
+            cursor += 1
+    if cursor < len(source) and source[cursor] in "\"'(" and cursor > destination_end:
+        closing = ")" if source[cursor] == "(" else source[cursor]
+        title = cursor + 1
+        while title < len(source):
+            if source[title] == "\\" and title + 1 < len(source) and re.fullmatch(
+                r"[!-/:-@\[-`{-~]", source[title + 1]
+            ):
+                title += 2
+                continue
+            if source[title] == closing:
+                title += 1
+                while title < len(source) and source[title] in " \t":
+                    title += 1
+                if title == len(source) or source[title] == "\n":
+                    return " ".join(source[position + 1:end].split()).casefold(), title
+                break
+            if (closing == ")" and source[title] == "(") or re.compile(r"\n[ \t]*\n").match(source, title):
+                break
+            title += 1
+    if not next_line and cursor < len(source) and source[cursor] != "\n":
+        return None
+    # An invalid title on the following line remains ordinary paragraph text;
+    # it does not invalidate the already complete destination line.
+    return " ".join(source[position + 1:end].split()).casefold(), source.find("\n", destination_end) if next_line else cursor
+
+
+def copilot_reference_text(source: str) -> str:
+    """Resolve only valid reference links before literal/HTML normalization."""
+    shadow = list(source)
+
+    def conceal(start: int, stop: int) -> None:
+        for cursor in range(start, stop):
+            if source[cursor] != "\n":
+                shadow[cursor] = "\ufffc"
+
+    position = 0
+    html_tag = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
+    while position < len(source):
+        if source[position] == "\\":
+            position += 2
+            continue
+        if source.startswith("<!--", position):
+            end = re.search(r"--!?>", source[position + 4:])
+            stop = position + 4 + end.end() if end else len(source)
+            conceal(position, stop)
+            position = stop
+            continue
+        tag = html_tag.match(source, position)
+        if tag:
+            stop = position + len(tag.group())
+            conceal(position, stop)
+            position = stop
+            continue
+        if source[position] == "`":
+            stop = copilot_code_span_end(source, position)
+            if stop >= 0:
+                conceal(position, stop)
+                position = stop
+                continue
+        position += 1
+    references: set[str] = set()
+    removed: list[tuple[int, int]] = []
+    literals: list[tuple[int, int]] = []
+    offset = 0
+    paragraph = False
+    previous = ""
+    indented = False
+    html_block: str | None = None
+    for line in source.splitlines(keepends=True):
+        raw = line.rstrip("\n")
+        projected = "".join(shadow[offset:offset + len(raw)])
+        if removed and offset < removed[-1][1]:
+            offset += len(line)
+            continue
+        if indented and raw.strip() and not raw.startswith("    "):
+            indented = False
+        if html_block is not None and html_block == "blank" and not raw.strip():
+            html_block = None
+        if html_block is None and re.match(r"^ {0,3}<!--", raw):
+            html_block = r"--!?>"
+        if html_block is None and review_raw_html_block_start(raw):
+            tag = re.match(r" {0,3}<(script|pre|style|textarea)(?=[ \t/>]|$)", raw, re.I)
+            if tag:
+                html_block = r"</" + tag.group(1) + r"[ \t]*>"
+            elif raw.lstrip().startswith("<?"):
+                html_block = r"\?>"
+            elif raw.lstrip().startswith("<![CDATA["):
+                html_block = r"\]\]>"
+            elif raw.lstrip().startswith("<!"):
+                html_block = r">"
+            elif not paragraph or review_raw_html_block_start(raw, interrupt_only=True):
+                html_block = "blank"
+        if html_block is not None:
+            conceal(offset, offset + len(raw))
+            if html_block != "blank" and re.search(html_block, raw, re.I):
+                html_block = None
+            paragraph = False
+        elif indented or (not paragraph and raw.startswith("    ")):
+            indented = True
+            literals.append((offset, offset + len(raw)))
+            conceal(offset, offset + len(raw))
+            paragraph = False
+        elif not paragraph:
+            beginning = re.match(r" {0,3}(?=\[)", projected)
+            definition = copilot_reference_definition(source, offset + beginning.end()) if beginning else None
+            if definition:
+                label, stop = definition
+                references.add(label)
+                removed.append((offset, stop))
+                conceal(offset, stop)
+            else:
+                paragraph = bool(projected.strip()) and not copilot_paragraph_interrupts(previous, projected)
+        else:
+            paragraph = bool(projected.strip()) and not copilot_paragraph_interrupts(previous, projected)
+        previous = projected if paragraph else ""
+        offset += len(line)
+    output = list(source)
+    for start, stop in removed:
+        for cursor in range(start, stop):
+            if source[cursor] != "\n":
+                output[cursor] = " "
+    for start, stop in literals:
+        for cursor in range(start, stop):
+            output[cursor] = "\ufffc"
+    source = "".join(output)
+    rendered: list[str] = []
+    position = 0
+    while position < len(source):
+        if source[position] == "\\":
+            rendered.append(source[position:position + 2])
+            position += 2
+            continue
+        image = source.startswith("![", position)
+        start = position + int(image)
+        if source[start] == "[" and shadow[start] == "[":
+            nesting, end = 1, start + 1
+            while end < len(source) and nesting:
+                if source[end] == "\\":
+                    end += 2
+                    continue
+                if shadow[end] == "[":
+                    nesting += 1
+                elif shadow[end] == "]":
+                    nesting -= 1
+                if nesting:
+                    end += 1
+            if end < len(source) and not source.startswith("(", end + 1):
+                target = end + 1
+                label_end = copilot_reference_label_end(source, target) if source.startswith("[", target) else -1
+                # Collapsed labels are explicitly empty, unlike definitions.
+                if source.startswith("[]", target):
+                    label_end = target + 1
+                label = source[target + 1:label_end] if label_end >= 0 else ""
+                label = label or source[start + 1:end]
+                if " ".join(label.split()).casefold() in references:
+                    rendered.append("\ufffc" if image else source[start + 1:end])
+                    position = label_end + 1 if label_end >= 0 else end + 1
+                    continue
+        rendered.append(source[position])
+        position += 1
+    return "".join(rendered)
+
+
 def copilot_has_missed_heading(lines: list[str]) -> bool:
     """Recognize visible actionable headings without interpreting quoted code.
 
@@ -332,7 +641,9 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
     remains literal. Keep code and escaped punctuation as non-heading content;
     comments and link destinations cannot hide or supply heading words.
     """
-    source = "\n".join(lines)
+    normalized = "\n".join(copilot_container_lines(lines))
+    projected, _ = copilot_frame_control_lines(normalized)
+    source = copilot_reference_text("\n".join(projected))
     literal = "\ufffc"
     masked: list[str] = []
     html_tag = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
@@ -362,21 +673,16 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             position += 2
             continue
         if source[position] == "`":
-            ticks = re.match(r"`+", source[position:]).group()
-            end = re.search(r"(?<!`)" + ticks + r"(?!`)", source[position + len(ticks):])
-            content = source[position + len(ticks):position + len(ticks) + end.start()] if end else ""
-            # GFM block parsing precedes code-span parsing. A delimiter in one
-            # paragraph cannot quote a later paragraph or section control.
-            block_boundary = re.search(
-                r"\n[ \t]*\n|\n {0,3}(?:#{1,6}[ \t]|>[ \t]?|[-+*][ \t]|"
-                r"[0-9]{1,9}[.)][ \t]|</?(?:summary|details|p|div|li|ul|ol|table|"
-                r"tr|td|th|blockquote|br|hr|pre|h[1-6])(?=[ \t/>]))",
-                content, re.IGNORECASE,
-            )
-            if end and not block_boundary:
+            stop = copilot_code_span_end(source, position)
+            if stop >= 0:
                 masked.append(literal)
-                position += len(ticks) + end.end()
+                position = stop
                 continue
+            # An unmatched delimiter is visible punctuation, not authority for
+            # the later inline lexer to quote across already established blocks.
+            masked.append(literal)
+            position += len(re.match(r"`+", source[position:]).group())
+            continue
         masked.append(source[position])
         position += 1
 
@@ -391,17 +697,17 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             self.code_depth = 0
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            if tag in {"code", "pre"}:
+            if tag in {"code", "pre", "script", "style"}:
                 self.code_depth += 1
                 self.parts.append(literal)
-            if tag in self.blocks:
+            if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
                 self.parts.append("\n")
 
         def handle_endtag(self, tag: str) -> None:
-            if tag in {"code", "pre"} and self.code_depth:
+            if tag in {"code", "pre", "script", "style"} and self.code_depth:
                 self.code_depth -= 1
                 self.parts.append(literal)
-            if tag in self.blocks:
+            if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
                 self.parts.append("\n")
 
         def handle_data(self, data: str) -> None:
@@ -425,12 +731,8 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
     rendered = re.sub(r"(?m)^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+[ \t]*)?$",
                       r"\1", rendered)
     rendered = rendered.replace("<", literal).replace(">", literal)
-    references = {
-        " ".join(html.unescape(label).split()).casefold()
-        for label in re.findall(r"(?m)^ {0,3}\[([^]\r\n]+)\]:[ \t]*\S+", rendered)
-    }
     rendered = assessment_visible_text(
-        rendered, strict_links=False, references=references, heading_markup=True,
+        rendered, strict_links=False, references=set(), heading_markup=True,
     )
     return re.search(
         r"(?im)^[ \t]*(?:previously\s+missed(?:\s*\([^()]*\))?"
@@ -637,10 +939,13 @@ def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = T
     return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
 
 
-def review_raw_html_block_start(line: str) -> bool:
+def review_raw_html_block_start(line: str, *, interrupt_only: bool = False) -> bool:
     """Identify raw GFM blocks while retaining inline HTML paragraph prose."""
     raw = line.removeprefix(" " * min(len(line) - len(line.lstrip(" ")), 3))
-    if raw.startswith(("<?", "<!")) and not raw.startswith("<!--"):
+    if interrupt_only:
+        if raw.startswith(("<!--", "<?", "<![CDATA[")) or re.match(r"<![A-Z]", raw):
+            return True
+    elif raw.startswith(("<?", "<!")) and not raw.startswith("<!--"):
         return True
     tag = re.match(r"</?([A-Za-z][A-Za-z0-9-]*)(?=[ \t/>]|$)", raw)
     if tag is None:
@@ -661,6 +966,8 @@ def review_raw_html_block_start(line: str) -> bool:
     }
     if tag.group(1).lower() in block_tags:
         return True
+    if interrupt_only:
+        return False
     quote = None
     for position in range(tag.end(), len(raw)):
         char = raw[position]

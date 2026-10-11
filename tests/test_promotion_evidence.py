@@ -3734,6 +3734,144 @@ class PromotionEvidenceTests(unittest.TestCase):
                         )
                         self.assertEqual(0, evidence['review']['historical_findings_count'])
 
+    def test_continued_reference_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '[Previously missed (1)][finding]\n\n[finding]:\nhttps://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<https://example.test/issue>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<issue with space>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b(c)) "title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n\t/issue\n"title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue\n"unclosed',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)][finding\nlabel]\n\n[finding\nlabel]:\n/issue',
+            '[Previously missed (1)][finding]\n\n> [finding]:\n> /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n  /issue',
+            '[Previously missed (1)][other]\n\n[first]:\n/first\n[other]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<!-- definition follows -->\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n=\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n---\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n\t/issue',
+            '[Previously missed (1)][find&amp;ing]\n\n[find&amp;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\!ing]:' + '\n/issue',
+            r'[Previously missed (1)][find\]ing]' + '\n\n' + r'[find\]ing]:' + '\n/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_invalid_reference_definitions_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        literals = (
+            '[Previously missed (1)][finding]\n\n[finding]:\n\n/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]: /issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "title" extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "unclosed',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<unclosed',
+            '[Previously missed (1)][finding]\n\n    [finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\ntext\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<div>\n[finding]:\n/issue\n</div>',
+            '[Previously missed (1)][finding]\n\n<!--\n[finding]:\n/issue\n-->',
+            '[Previously missed (1)][finding]\n\n`[finding]: /issue`',
+            '[Previously missed (1)][find&ing]\n\n[find&amp;ing]:\n/issue',
+            '[Previously missed (1)][find!ing]\n\n[find&#33;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\?ing]:' + '\n/issue',
+            '[Previously missed (1)][finding\n\nlabel]\n\n[finding\n\nlabel]:\n/issue',
+        )
+        for literal in literals:
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_paragraph_interruptions_cannot_hide_missed_headings(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('***', '_ _ _', '---', '===', '#', '<section>',
+                         '<SeCtIoN class="review">', '<!-- block -->', '<?instruction ?>',
+                         '<!DOCTYPE html>', '<![CDATA[literal]]>', '<style></style>', '<script></script>',
+                         '<textarea>'):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+        for marker in (
+            'Narrative `opening\n> Previously missed (1)\n> closing`',
+            'Narrative `opening\n- Previously missed (1)\n  closing`',
+            '1. Narrative `opening\n2. Previously missed (1)\n   closing`',
+            'Narrative `opening\n***\n**Previously missed (1)**\nclosing`',
+            'Narrative `opening\n<section>\n<em>Previously missed (1)</em>\nclosing`',
+            '| Narrative `opening | other |\n| --- | --- |\nPreviously missed (1)\nclosing`',
+            '1. Narrative `opening\n    ***\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ===\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ~~~text\n    literal\n    ~~~\n'
+            '    Previously missed (1)\n    closing`',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+
+    def test_noninterrupting_inline_code_remains_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('**', '    ***', '<x-widget>', '<span>', '<strong>',
+                         '2. Previously missed (1)', '* ', '+ ', '1. '):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + marker, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+        # Seven hashes are not a code-span boundary. Legacy verdict admission
+        # separately rejects arbitrary triple-hash text, so assert this lexical
+        # compatibility at its owning helper rather than relaxing that contract.
+        self.assertFalse(MODULE.copilot_has_missed_heading(
+            'Narrative `opening\n####### heading\nPreviously missed (1)\nclosing`'.splitlines()
+        ))
+        for literal in ('    Previously missed (1)', '\tPreviously missed (1)',
+                        '>     Previously missed (1)', '-     Previously missed (1)'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    evidence = self.collect_current_copilot_evidence(
+                        original + '\n' + literal, [], associated=associated, expanded=expanded,
+                    )
+                    self.assertEqual(0, evidence['review']['historical_findings_count'])
+        marker = ('1. Narrative `opening\n    ~~~text\n    Previously missed (1)\n'
+                  '    ~~~\n    closing`')
+        for associated in (False, True):
+            for expanded in (False, True):
+                evidence = self.collect_current_copilot_evidence(
+                    original + marker, [], associated=associated, expanded=expanded,
+                )
+                self.assertEqual(0, evidence['review']['historical_findings_count'])
+
     def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
         body = CURRENT_COPILOT_OVERVIEW.replace(
             '🔵 Needs a closer look', '🟡 Changes recommended'
