@@ -970,6 +970,100 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
     ) is not None
 
 
+def copilot_rendered_has_missed_heading(body_html: Any) -> bool:
+    """Inspect the provider's rendered review without interpreting Markdown again.
+
+    This representation must accompany the raw body in the authenticated native
+    review response. Container scopes and sanitized HTML belong to GitHub's
+    renderer; the raw frame parser remains an independent admission constraint.
+    """
+    source = text(body_html, "producer-review-rendered-body")
+    require(len(source.encode("utf-8")) <= MAX_API_BYTES,
+            "producer-review-rendered-body-too-large")
+
+    class RenderedHeadingText(HTMLParser):
+        voids = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                 "link", "meta", "param", "source", "track", "wbr"}
+        blocks = {"summary", "details", "p", "div", "li", "ul", "ol", "table",
+                  "tr", "td", "th", "blockquote", "hr", "pre",
+                  "h1", "h2", "h3", "h4", "h5", "h6"}
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+            self.stack: list[str] = []
+            self.code_depth = 0
+            self.hidden_depth = 0
+
+        def boundary(self, tag: str) -> None:
+            if not self.hidden_depth:
+                if tag == "br":
+                    self.parts.append("\n")
+                elif tag in self.blocks or review_raw_html_block_start(
+                    f"<{tag}>", interrupt_only=True,
+                ):
+                    self.parts.append("\n\ufffd\n")
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.boundary(tag)
+            if tag not in self.voids:
+                self.stack.append(tag)
+            if tag in {"code", "pre"}:
+                self.code_depth += 1
+            if tag in {"script", "style"}:
+                self.hidden_depth += 1
+            if tag == "img" and self.code_depth and not self.hidden_depth:
+                self.parts.append("\ufffc")
+
+        def handle_endtag(self, tag: str) -> None:
+            require(bool(self.stack) and self.stack[-1] == tag,
+                    "producer-review-rendered-html")
+            self.stack.pop()
+            if tag in {"code", "pre"}:
+                self.code_depth -= 1
+            if tag in {"script", "style"}:
+                self.hidden_depth -= 1
+            self.boundary(tag)
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.handle_starttag(tag, attrs)
+            if tag not in self.voids:
+                self.handle_endtag(tag)
+
+        def handle_data(self, data: str) -> None:
+            if self.hidden_depth:
+                return
+            visible = ASSESSMENT_IGNORABLE.sub("", data)
+            if self.code_depth and visible.strip():
+                self.parts.append("\ufffc")
+            else:
+                self.parts.append(visible)
+
+        def handle_decl(self, decl: str) -> None:
+            require(False, "producer-review-rendered-html")
+
+        def unknown_decl(self, data: str) -> None:
+            require(False, "producer-review-rendered-html")
+
+        def handle_pi(self, data: str) -> None:
+            require(False, "producer-review-rendered-html")
+
+    parser = RenderedHeadingText()
+    try:
+        parser.feed(source)
+        parser.close()
+    except (ValueError, AssertionError) as error:
+        if isinstance(error, EvidenceError):
+            raise
+        raise EvidenceError("producer-review-rendered-html") from error
+    require(not parser.stack and not parser.rawdata,
+            "producer-review-rendered-html")
+    return re.search(
+        r"(?im)^[^\S\r\n]*(?:previously\s+missed(?:\s*\([^()]*\))?"
+        r"|[0-9]+\s+previously\s+missed)[^\S\r\n]*$", "".join(parser.parts),
+    ) is not None
+
+
 def historical_copilot_findings_count(body: str) -> int:
     lines, has_fences = copilot_frame_control_lines(body)
     require(not copilot_has_missed_heading(lines), "producer-review-binding")
@@ -2321,6 +2415,8 @@ def validate_bound_review_identity(
                 "api",
                 "--paginate",
                 "--slurp",
+                "--header",
+                "Accept: application/vnd.github-commitcomment.full+json",
                 f"repos/{repository}/pulls/{pull_number}/reviews?per_page=100",
             ]
         ),
@@ -2420,6 +2516,8 @@ def bind_copilot_review_findings(
                         for marker in COPILOT_REVIEW_FAILURE_MARKERS),
             "producer-review-binding")
     count = historical_copilot_findings_count(body)
+    require(not copilot_rendered_has_missed_heading(review.get("body_html")),
+            "producer-review-binding")
     targets: list[int] | None = None
     if count and "## Copilot review overview" not in body.splitlines():
         lines = [line for line in body.splitlines() if line]

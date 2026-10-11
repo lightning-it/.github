@@ -10,6 +10,8 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify-promotion-evidence.py"
 WORKFLOW = (
@@ -284,6 +286,17 @@ def expanded_v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
+def rendered_review_fixture(review):
+    """Supply independent renderer output for mocked full-media native reviews."""
+    body = review.get("body")
+    return {
+        "body_html": MarkdownIt("commonmark", {"html": True}).enable(
+            ["table", "strikethrough"],
+        ).render(body) if type(body) is str else "",
+        **review,
+    }
+
+
 def evidence_api(
     run: dict[str, object],
     suite: dict[str, object] | None = None,
@@ -342,7 +355,7 @@ def evidence_api(
         if endpoint == "repos/lightning-it/example/pulls/17/reviews?per_page=100":
             return [
                 [
-                    review
+                    rendered_review_fixture(review
                     or {
                         "id": 17001,
                         "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
@@ -360,7 +373,7 @@ def evidence_api(
                             "### 🟢 Approval recommended\n\n"
                             "**Findings:** None\n"
                         ),
-                    }
+                    })
                 ]
             ]
         if endpoint == (
@@ -4578,6 +4591,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z", "body": body,
             **review_changes,
         }
+        review = rendered_review_fixture(review)
         check = check_run(
             f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}",
             expanded_v6_summary() if expanded else v6_summary(),
@@ -4605,6 +4619,138 @@ class PromotionEvidenceTests(unittest.TestCase):
             return MODULE.collect_bound_ingress_evidence(
                 repository="lightning-it/example", pull=pull,
                 pull_number=17, base_sha=BASE, head_sha=HEAD,
+            )
+
+    def test_native_rendered_scope_transitions_cannot_mask_missed_headings(self):
+        markers = (
+            '> > ```\n> Previously missed (1)\n> ```',
+            '- ```\n- Previously missed (1)\n- ```',
+            '1. ```\n2. Previously missed (1)\n3. ```',
+            '> - ```\n> - Previously missed (1)\n> - ```',
+            '> > ~~~~python\n> Previously missed (1)\n> ~~~~',
+            '> > ```\n> &nbsp;Previously missed (1)&nbsp;\n> ```',
+            '> > ```\n> &#x200a;Previously missed (1)\n> ```',
+        )
+        for count in (0, 1):
+            overview = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                body = overview_with_tail(overview, marker)
+                # The old raw projection loses container scope; native HTML
+                # must reject at the common binder even if raw count passes.
+                self.assertEqual(MODULE.historical_copilot_findings_count(body), count)
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, 'producer-review-binding',
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    body, [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_native_rendered_literal_scopes_remain_valid_ingress(self):
+        for marker in (
+            '> ```\n> Previously missed (1)\n> ```',
+            '> > `opening\n> Previously missed (1)\n> closing`',
+            '> ```\n> > Previously missed (1)\n> - <!-- literal -->\n> ```',
+            '<!-- Previously missed (1) -->',
+        ):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    '**Findings:** None\n' + marker)
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated,
+                                      expanded=expanded):
+                        self.assertIsInstance(self.collect_current_copilot_evidence(
+                            body, [], associated=associated, expanded=expanded,
+                        ), dict)
+
+    def test_native_rendered_body_is_required_and_not_markdown_reparsed(self):
+        for invalid in (None, '', False, 1, {}, [], '<div>', '<p>x</div>',
+                        '<p>literal</p></p>', '<![CDATA[hidden]]>'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(invalid=invalid, associated=associated,
+                                      expanded=expanded):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, 'producer-review-rendered',
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [], body_html=invalid,
+                                associated=associated, expanded=expanded,
+                            )
+        for literal in (
+            '<p>**Previously missed (1)**</p>',
+            '<p>&amp;#80;reviously missed (1)</p>',
+            '<p>`Previously missed (1)`</p>',
+            '<p>Previously</p><p>missed (1)</p>',
+            '<p><code>Previously missed (1)</code></p>',
+        ):
+            with self.subTest(literal=literal):
+                self.assertFalse(MODULE.copilot_rendered_has_missed_heading(literal))
+        for active in (
+            '<p>Previously<br>missed (1)</p>',
+            '<p><strong>Previously missed (1)</strong></p>',
+            '<p>Previously <code></code>missed (1)</p>',
+            '<p>Previously<code> </code>missed (1)</p>',
+            '<p>Previously m&#105;ssed (1)</p>',
+            '<p>Previously m\u200bissed (1)</p>',
+            '<p>&nbsp;Previously missed (1)&nbsp;</p>',
+        ):
+            with self.subTest(active=active):
+                self.assertTrue(MODULE.copilot_rendered_has_missed_heading(active))
+
+    def test_provider_sanitized_raw_script_does_not_mask_visible_heading(self):
+        body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                '**Findings:** None\n'
+                '> > <script>\n> Previously missed (1)\n> </script>')
+        self.assertEqual(MODULE.historical_copilot_findings_count(body), 0)
+        # Actual GitHub GFM/sanitization response: escaped script is visible,
+        # while the quote ends before the heading in the outer paragraph.
+        native_html = (
+            '<blockquote><blockquote>\n&lt;script&gt;\n</blockquote>\n'
+            '<p dir="auto">Previously missed (1)<br>\n'
+            '&lt;/script&gt;</p>\n</blockquote>'
+        )
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                'producer-review-binding'):
+                        self.collect_current_copilot_evidence(
+                            body, [], body_html=native_html,
+                            associated=associated, expanded=expanded,
+                        )
+
+    def test_native_reviews_request_full_media_on_existing_get(self):
+        review = rendered_review_fixture({
+            'id': 17001, 'node_id': 'PRR_kwDOQs6tNc8AAAABPj6qbQ',
+            'user': {'login': 'copilot-pull-request-reviewer[bot]',
+                     'id': 175728472, 'type': 'Bot'},
+            'commit_id': HEAD, 'state': 'COMMENTED',
+            'submitted_at': '2026-09-27T00:04:00Z',
+            'body': CURRENT_COPILOT_OVERVIEW,
+        })
+        with mock.patch.object(MODULE, 'gh_json', return_value=[[review]]) as api:
+            MODULE.validate_bound_review_identity(
+                repository='lightning-it/example', pull_number=17, head_sha=HEAD,
+                summary={}, check_completed_at='2026-09-27T00:04:30Z',
+            )
+        api.assert_called_once_with([
+            'api', '--paginate', '--slurp', '--header',
+            'Accept: application/vnd.github-commitcomment.full+json',
+            'repos/lightning-it/example/pulls/17/reviews?per_page=100',
+        ])
+        review.pop('body_html')
+        with self.assertRaisesRegex(MODULE.EvidenceError,
+                                    'producer-review-rendered-body-not-string'):
+            MODULE.bind_copilot_review_findings(
+                [[review]], repository='lightning-it/example',
+                pull_number=17, head_sha=HEAD,
             )
 
     def test_completed_producer_rejects_late_replacement_copilot_review(self):
