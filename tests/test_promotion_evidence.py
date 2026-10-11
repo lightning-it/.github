@@ -3967,6 +3967,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             'Previously *[missed*](x) (1)',
             'Previously *[missed*][r] (1)\n\n[r]: /url',
             'Previously [*missed][r]* (1)\n\n[r]: /url',
+            'Previously<!-- x\n\n y --> missed (1)',
         )
         for count in (0, 1):
             original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'

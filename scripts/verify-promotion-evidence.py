@@ -852,7 +852,14 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
         if source.startswith("<!--", position):
             end = re.search(r"--!?>", source[position + 4:])
             stop = position + 4 + end.end() if end else len(source)
-            masked.append(source[position:stop])
+            comment = source[position:stop]
+            prefix = source[source.rfind("\n", 0, position) + 1:position]
+            # An inline comment cannot cross a blank paragraph boundary.
+            # GitHub renders that source literally, unlike a block comment.
+            if prefix.strip() and re.search(r"\n[ \t]*\n", comment):
+                masked.append(html.escape(comment, quote=False))
+            else:
+                masked.append(comment)
             position = stop
             continue
         destination = angle_destination.match(source, position)
