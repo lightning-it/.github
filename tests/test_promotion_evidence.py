@@ -36,6 +36,15 @@ CURRENT_COPILOT_OVERVIEW = (
     "</details>\n\n"
     "🧠 **Review effort:** Balanced\n"
 )
+
+
+def overview_with_tail(body, tail):
+    footer = "🧠 **Review effort:** Balanced\n"
+    if body.endswith(footer):
+        return body.removesuffix(footer) + tail + "\n" + footer
+    return body + tail
+
+
 CURRENT_COPILOT_OPEN_FINDING = (
     "<details open>\n"
     "<summary><strong>1 open finding</strong></summary>\n\n"
@@ -3584,7 +3593,7 @@ class PromotionEvidenceTests(unittest.TestCase):
     def test_previously_missed_body_only_findings_cannot_pass_ingress(self) -> None:
         legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
         for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
-            body = overview + COPILOT_PREVIOUSLY_MISSED_HISTORY
+            body = overview_with_tail(overview, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             for expanded in (True, False):
                 for nodes in ([], [{"id": "PRRT_OLD", "isResolved": True}]):
                     with self.subTest(overview=overview, expanded=expanded, nodes=nodes):
@@ -3602,14 +3611,14 @@ class PromotionEvidenceTests(unittest.TestCase):
                 with self.subTest(verdict=verdict, resolved=resolved):
                     with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                         MODULE.historical_copilot_findings_count(
-                            body + resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY
+                            overview_with_tail(body, resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY)
                         )
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"
         ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
         with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
             MODULE.historical_copilot_findings_count(
-                open_body + COPILOT_PREVIOUSLY_MISSED_HISTORY
+                overview_with_tail(open_body, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             )
 
     def test_unwrapped_previously_missed_markers_cannot_pass_ingress(self) -> None:
@@ -3631,7 +3640,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                                 MODULE.EvidenceError, "producer-review-binding"
                             ):
                                 self.collect_current_copilot_evidence(
-                                    overview + marker, nodes, expanded=expanded
+                                    overview_with_tail(overview, marker), nodes, expanded=expanded
                                 )
 
     def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
@@ -3648,7 +3657,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         with self.subTest(overview=overview, prose=prose,
                                           expanded=expanded, nodes=nodes):
                             evidence = self.collect_current_copilot_evidence(
-                                overview + prose, nodes, expanded=expanded
+                                overview_with_tail(overview, prose), nodes, expanded=expanded
                             )
                             self.assertIsInstance(evidence, dict)
 
@@ -3660,7 +3669,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             ):
                 with self.subTest(verdict=verdict, history=history):
                     self.assertEqual(
-                        0, MODULE.historical_copilot_findings_count(body + history)
+                        0, MODULE.historical_copilot_findings_count(overview_with_tail(body, history))
                     )
         open_body = CURRENT_COPILOT_OVERVIEW.replace(
             "🔵 Needs a closer look", "🟡 Changes recommended"
@@ -3721,24 +3730,81 @@ class PromotionEvidenceTests(unittest.TestCase):
             open_body.replace("<details open>", "<details>"),
             open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
             open_body,
-            body + COPILOT_RESOLVED_HISTORY * 2,
-            body + COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY,
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved"),
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved"),
-            body + CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved"),
-            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)"),
-            body + COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)"),
-            body + COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>"),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)"),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>"),
-            body + COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY),
-            body + COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY * 2),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY)),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
                 "</details>\n</details>", "<details>\n</details>\n</details>\n</details>"
-            ),
+            )),
         ):
             with self.subTest(invalid=invalid):
                 with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                     MODULE.historical_copilot_findings_count(invalid)
+
+    def test_current_copilot_overview_rejects_incomplete_native_frame(self) -> None:
+        minimal = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "**0 open findings**\n"
+        )
+        footer = "🧠 **Review effort:** Balanced\n"
+        for body in (
+            minimal,
+            minimal + footer,
+            minimal.replace("**0 open findings**", " \n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "## Assessment\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```assessment```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```\nAssessment text.\n```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "~~~\nAssessment text.\n~~~\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "    Assessment text.\n**0 open findings**") + footer,
+            minimal.replace(
+                "**0 open findings**",
+                "<details>\n<summary><strong>What changed in this PR</strong></summary>\n"
+                "Assessment inside a section is not introductory prose.\n</details>\n"
+                "**0 open findings**",
+            ) + footer,
+            CURRENT_COPILOT_OVERVIEW + "Trailing data after completion.\n",
+            CURRENT_COPILOT_OVERVIEW.replace(footer, ""),
+            CURRENT_COPILOT_OVERVIEW + footer,
+            CURRENT_COPILOT_OVERVIEW.replace("Review effort:** Balanced", "Review effort:** Unknown"),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "").replace(
+                "</details>", footer + "</details>"
+            ),
+        ):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.subTest(expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                            self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_observed_compact_native_frame(self) -> None:
+        # Native .github PR814 review5481266035 has prose and a footer but no
+        # What changed section. Requiring that section would reject real evidence.
+        body = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "The focused fail-closed correction is consistent across both parser "
+            "paths and has comprehensive regression coverage.\n\n"
+            "**0 open findings**\n\n"
+            + CURRENT_COPILOT_RESOLVED_HISTORY
+            + "\n🧠 **Review effort:** Balanced\n"
+        )
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            with self.subTest(expanded=expanded):
+                self.assertIsInstance(
+                    self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                )
 
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {
@@ -3784,8 +3850,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         resolved = [{"id": "PRRT_1", "isResolved": True}]
         for body, nodes, count in (
             (CURRENT_COPILOT_OVERVIEW, [], 0),
-            (CURRENT_COPILOT_OVERVIEW + COPILOT_RESOLVED_HISTORY, resolved, 0),
-            (CURRENT_COPILOT_OVERVIEW + CURRENT_COPILOT_RESOLVED_HISTORY, resolved, 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, COPILOT_RESOLVED_HISTORY), resolved, 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, CURRENT_COPILOT_RESOLVED_HISTORY), resolved, 0),
             (open_body, resolved, 1),
         ):
             with self.subTest(body=body, nodes=nodes):

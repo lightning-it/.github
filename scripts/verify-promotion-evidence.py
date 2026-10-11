@@ -371,6 +371,15 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         (verdict == "### 🟡 Changes recommended") == (count > 0),
         "producer-review-binding",
     )
+    # Both observed current renderings include an introductory assessment and
+    # a terminal effort footer. The compact native rendering may omit What
+    # changed, so that section alone cannot prove a complete overview.
+    footer = "🧠 **Review effort:** Balanced"
+    require(
+        [line for line in lines if "**review effort:**" in line.lower()] == [footer]
+        and nonempty[-1] == footer,
+        "producer-review-binding",
+    )
     supported_summaries = {
         "<summary><strong>What changed in this PR</strong></summary>"
     }
@@ -415,7 +424,14 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     blocks: list[JSON] = []
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
-    for line in nonempty:
+    assessment_seen = False
+    field_position = nonempty.index(fields[0])
+    for position, line in enumerate(nonempty):
+        require(
+            not (not blocks and 2 <= position < field_position
+                 and line.lstrip().startswith(("```", "~~~"))),
+            "producer-review-binding",
+        )
         marker_line = line.lower()
         if "<details" in marker_line:
             require(line in {"<details>", "<details open>"}, "producer-review-binding")
@@ -458,11 +474,18 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             block = blocks.pop()
             if block["summary"] == missed_summary:
                 require(block["children"] == missed_count, "producer-review-binding")
-        elif line == "**0 open findings**":
+        elif line in {"**0 open findings**", footer}:
             require(not blocks, "producer-review-binding")
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
-    require(not blocks, "producer-review-binding")
+        elif (
+            2 <= position < field_position
+            and re.fullmatch(r"[^<>]+", line) and re.search(r"\w", line)
+            and line == line.lstrip()
+            and not line.lstrip().startswith(("#", "**", "```", "~~~", "🧠"))
+        ):
+            assessment_seen = True
+    require(not blocks and assessment_seen, "producer-review-binding")
     require(missed_count == 0, "producer-review-binding")
     return count
 
