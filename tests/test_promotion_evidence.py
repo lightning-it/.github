@@ -3668,6 +3668,91 @@ class PromotionEvidenceTests(unittest.TestCase):
                                     overview_with_tail(overview, marker), nodes, expanded=expanded
                                 )
 
+    def test_rendered_legacy_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '<summary><strong><em>Previously missed (1)</em></strong></summary>',
+            '<summary class="finding">Previously\nmissed\n(1)</summary>',
+            '<span>Previously missed (1)</span>',
+            '<summary>Previously m&#105;ssed (&#49;)</summary>',
+            '&#80;reviously missed (1)',
+            '<em>1 previously missed</em>',
+            '## Previously missed (1)',
+            '## Previously missed (1) ##',
+            '_Previously missed (1)_',
+            '[Previously missed (1)](https://example.test/a(b))',
+            'Previously\nmissed (1)',
+            'Previously<!-- explanatory comment --> missed (1)',
+            '> ## Previously missed (1)',
+            '- **Previously missed (1)**',
+            '1. Previously missed (1)',
+            'Narrative `opening\n\n<details>\n<summary><strong>Previously missed (1)'
+            '</strong></summary>\n</details>\n\nclosing`',
+            'Narrative `opening\n<summary>Previously missed (1)</summary>\nclosing`',
+            '[Previously missed (1)][finding]\n\n[finding]: https://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]: <https://example.test/issue>',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]: https://example.test/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]: https://example.test/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_legacy_missed_heading_literals_remain_valid_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '`Previously missed (1)`',
+            r'\*Previously missed (1)\*',
+            '<code>Previously missed (1)</code>',
+            '&lt;summary&gt;Previously missed (1)&lt;/summary&gt;',
+            '<!--\nPreviously missed (1)\n-->',
+            'Previously missed issues [have been resolved](unfinished',
+            '[Previously missed (1)][undefined-reference]',
+            '[Previously missed (1)][]',
+            '[Previously missed (1)]',
+            '[Previously missed (1)][undefined_ref]\n\n[undefinedref]: https://example.test',
+            '&ast;Previously missed (1)&ast;',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated,
+                                      expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            '🔵 Needs a closer look', '🟡 Changes recommended'
+        ).replace('**0 open findings**', CURRENT_COPILOT_OPEN_FINDING)
+        for associated in (False, True):
+            for expanded in (False, True):
+                node = native_finding_thread()
+                node['comments']['nodes'][0]['pullRequestReview']['databaseId'] = 17001.0
+                with self.assertRaisesRegex(MODULE.EvidenceError,
+                                           'finding-root-review-id-not-positive-integer'):
+                    self.collect_current_copilot_evidence(
+                        body, [node], comments=[native_finding_comment()],
+                        associated=associated, expanded=expanded,
+                    )
+                self.assertIsInstance(self.collect_current_copilot_evidence(
+                    body, [native_finding_thread()], comments=[native_finding_comment()],
+                    associated=associated, expanded=expanded,
+                ), dict)
+
     def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
         legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
         for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):

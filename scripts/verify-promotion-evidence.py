@@ -28,6 +28,7 @@ import tempfile
 import time
 import urllib.parse
 from collections.abc import Iterable
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -324,20 +325,122 @@ def copilot_frame_control_lines(body: str) -> tuple[list[str], bool]:
     return lines, has_fences
 
 
+def copilot_has_missed_heading(lines: list[str]) -> bool:
+    """Recognize visible actionable headings without interpreting quoted code.
+
+    Strip actual HTML wrappers before decoding entities, so encoded tag text
+    remains literal. Keep code and escaped punctuation as non-heading content;
+    comments and link destinations cannot hide or supply heading words.
+    """
+    source = "\n".join(lines)
+    literal = "\ufffc"
+    masked: list[str] = []
+    html_tag = re.compile(r"</?[A-Za-z](?:\"[^\"]*\"|'[^']*'|[^'\">])*>")
+    angle_destination = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\s]*|[^<>\s]+@[^<>\s]+)>")
+    position = 0
+    while position < len(source):
+        if source.startswith("<!--", position):
+            end = re.search(r"--!?>", source[position + 4:])
+            stop = position + 4 + end.end() if end else len(source)
+            masked.append(source[position:stop])
+            position = stop
+            continue
+        destination = angle_destination.match(source, position)
+        if destination:
+            masked.append(html.escape(destination.group(), quote=False))
+            position += len(destination.group())
+            continue
+        tag = html_tag.match(source, position)
+        if tag:
+            masked.append(tag.group())
+            position += len(tag.group())
+            continue
+        if source[position] == "\\" and position + 1 < len(source) and re.fullmatch(
+            r"[!-/:-@\[-`{-~]", source[position + 1]
+        ):
+            masked.append(literal)
+            position += 2
+            continue
+        if source[position] == "`":
+            ticks = re.match(r"`+", source[position:]).group()
+            end = re.search(r"(?<!`)" + ticks + r"(?!`)", source[position + len(ticks):])
+            content = source[position + len(ticks):position + len(ticks) + end.start()] if end else ""
+            # GFM block parsing precedes code-span parsing. A delimiter in one
+            # paragraph cannot quote a later paragraph or section control.
+            block_boundary = re.search(
+                r"\n[ \t]*\n|\n {0,3}(?:#{1,6}[ \t]|>[ \t]?|[-+*][ \t]|"
+                r"[0-9]{1,9}[.)][ \t]|</?(?:summary|details|p|div|li|ul|ol|table|"
+                r"tr|td|th|blockquote|br|hr|pre|h[1-6])(?=[ \t/>]))",
+                content, re.IGNORECASE,
+            )
+            if end and not block_boundary:
+                masked.append(literal)
+                position += len(ticks) + end.end()
+                continue
+        masked.append(source[position])
+        position += 1
+
+    class HeadingText(HTMLParser):
+        blocks = {"summary", "details", "p", "div", "li", "ul", "ol", "table",
+                  "tr", "td", "th", "blockquote", "br", "hr", "pre",
+                  "h1", "h2", "h3", "h4", "h5", "h6"}
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.parts: list[str] = []
+            self.code_depth = 0
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag in {"code", "pre"}:
+                self.code_depth += 1
+                self.parts.append(literal)
+            if tag in self.blocks:
+                self.parts.append("\n")
+
+        def handle_endtag(self, tag: str) -> None:
+            if tag in {"code", "pre"} and self.code_depth:
+                self.code_depth -= 1
+                self.parts.append(literal)
+            if tag in self.blocks:
+                self.parts.append("\n")
+
+        def handle_data(self, data: str) -> None:
+            if not self.code_depth:
+                self.parts.append(data)
+
+        def handle_entityref(self, name: str) -> None:
+            self.handle_data(f"&{name};")
+
+        def handle_charref(self, name: str) -> None:
+            self.handle_data(f"&#{name};")
+
+    parser = HeadingText()
+    parser.feed("".join(masked))
+    parser.close()
+    rendered = "".join(parser.parts)
+    # Raw emphasis and ATX headings are markup; entity-encoded punctuation is
+    # decoded only afterward and consequently remains literal punctuation.
+    rendered = re.sub(r"(?m)^ {0,3}(?:>[ \t]?)+", "", rendered)
+    rendered = re.sub(r"(?m)^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])[ \t]+", "", rendered)
+    rendered = re.sub(r"(?m)^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+[ \t]*)?$",
+                      r"\1", rendered)
+    rendered = rendered.replace("<", literal).replace(">", literal)
+    references = {
+        " ".join(html.unescape(label).split()).casefold()
+        for label in re.findall(r"(?m)^ {0,3}\[([^]\r\n]+)\]:[ \t]*\S+", rendered)
+    }
+    rendered = assessment_visible_text(
+        rendered, strict_links=False, references=references, heading_markup=True,
+    )
+    return re.search(
+        r"(?im)^[ \t]*(?:previously\s+missed(?:\s*\([^()]*\))?"
+        r"|[0-9]+\s+previously\s+missed)[ \t]*$", rendered,
+    ) is not None
+
+
 def historical_copilot_findings_count(body: str) -> int:
     lines, has_fences = copilot_frame_control_lines(body)
-    # A missed-finding section remains actionable without its HTML wrapper.
-    # Match a complete heading, not narrative prose beginning with these words.
-    require(
-        not any(re.fullmatch(
-            r"(?:previously\s+missed(?:\s*\([^()\r\n]*\))?"
-            r"|[0-9]+\s+previously\s+missed)",
-            re.sub(r"</?(?:summary|strong)>", "", line,
-                   flags=re.IGNORECASE).strip().strip("*").strip(),
-            re.IGNORECASE,
-        ) for line in lines),
-        "producer-review-binding",
-    )
+    require(not copilot_has_missed_heading(lines), "producer-review-binding")
     headings = [line for line in lines if "## copilot review overview" in line.lower()]
     verdicts = [line for line in lines if "### " in line]
     require(
@@ -391,7 +494,9 @@ def historical_copilot_findings_count(body: str) -> int:
     return count
 
 
-def assessment_visible_text(text: str, depth: int = 0) -> str:
+def assessment_visible_text(text: str, depth: int = 0, *, strict_links: bool = True,
+                            references: set[str] | None = None,
+                            heading_markup: bool = False) -> str:
     """Count prose, not entity names, link targets/titles or image metadata.
 
     This is deliberately limited to inline syntax in the admitted native
@@ -470,20 +575,46 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
                 destination = end + 1
                 if destination < len(text) and text[destination] == "(":
                     target_end = balanced_end(destination, "(", ")")
-                    require(target_end >= 0, "producer-review-binding")
-                    if not image:
-                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
-                    position = target_end + 1
-                    continue
+                    require(target_end >= 0 or not strict_links, "producer-review-binding")
+                    if target_end >= 0:
+                        if not image:
+                            visible.append(assessment_visible_text(
+                                text[label_start + 1:end], depth + 1,
+                                strict_links=strict_links, references=references,
+                                heading_markup=heading_markup,
+                            ))
+                        position = target_end + 1
+                        continue
                 reference = destination
                 while reference < len(text) and text[reference] in " \t":
                     reference += 1
                 if reference < len(text) and text[reference] == "[":
                     target_end = balanced_end(reference, "[", "]")
-                    require(target_end >= 0, "producer-review-binding")
+                    require(target_end >= 0 or not strict_links, "producer-review-binding")
+                    reference_label = text[reference + 1:target_end] or text[label_start + 1:end]
+                    known_reference = references is None or (
+                        " ".join(html.unescape(reference_label).split()).casefold() in references
+                    )
+                    if target_end >= 0 and known_reference:
+                        if not image:
+                            visible.append(assessment_visible_text(
+                                text[label_start + 1:end], depth + 1,
+                                strict_links=strict_links, references=references,
+                                heading_markup=heading_markup,
+                            ))
+                        position = target_end + 1
+                        continue
+                elif references is not None and (
+                    " ".join(html.unescape(text[label_start + 1:end]).split()).casefold()
+                    in references
+                ):
                     if not image:
-                        visible.append(assessment_visible_text(text[label_start + 1:end], depth + 1))
-                    position = target_end + 1
+                        visible.append(assessment_visible_text(
+                            text[label_start + 1:end], depth + 1,
+                            strict_links=strict_links, references=references,
+                            heading_markup=heading_markup,
+                        ))
+                    position = end + 1
                     continue
                 if image:
                     # A shortcut image may resolve against definitions elsewhere
@@ -500,7 +631,8 @@ def assessment_visible_text(text: str, depth: int = 0) -> str:
         # Raw HTML cannot lend its tag name to assessment prose; escapes/code
         # and decoded character references still retain actual literal text.
         require(char not in "<>", "producer-review-binding")
-        visible.append(char)
+        if not heading_markup or char not in "*_~":
+            visible.append(char)
         position += 1
     return ASSESSMENT_IGNORABLE.sub("", "".join(visible))
 
