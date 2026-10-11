@@ -3999,6 +3999,53 @@ class PromotionEvidenceTests(unittest.TestCase):
                         self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
                     )
 
+    def test_current_copilot_overview_ignores_fenced_frame_markers(self) -> None:
+        literal = (
+            "### literal example\n### 🟡 Changes recommended\n"
+            "## Copilot review overview\n**Findings:** None\n"
+            "**0 open findings**\n"
+            "<summary><strong>Previously missed (1)</strong></summary>\n"
+            "🧠 **Review effort:** Balanced\n</details>\n<!-- literal comment"
+        )
+        for opening, closing in (
+            ("```text", "```"),
+            ("`````text", "``````  "),
+            ("   ~~~~text", "   ~~~~~\t"),
+            ("~~~### literal info", "~~~"),
+            ("```text <!-- literal info", "```"),
+            ("~~~info ` <!--", "~~~"),
+        ):
+            content = f"{opening}\n{literal}\n{closing}"
+            for original in (CURRENT_COPILOT_OVERVIEW, COPILOT_OBSERVED_APPENDIX_OVERVIEW):
+                body = original.replace("</details>", content + "\n</details>", 1)
+                with self.subTest(opening=opening, appendix=original != CURRENT_COPILOT_OVERVIEW):
+                    self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                    for expanded in (True, False):
+                        self.assertIsInstance(
+                            self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                        )
+
+    def test_current_copilot_overview_fences_cannot_hide_real_verdicts(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\n### literal example",
+            "````text\n### literal example\n```",
+            "```text\n### literal example\n~~~",
+            "    ```text\n### literal example\n    ```",
+            "```invalid`info\n### literal example\n```",
+            "```text\n### literal example\n```\n### 🟢 Approval recommended",
+            "<!--\n```text\n-->\n### literal example\n```",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+            MODULE.historical_copilot_findings_count("```text\n" + CURRENT_COPILOT_OVERVIEW + "\n```")
+
     def test_current_copilot_overview_rejects_unknown_raw_html_blocks(self) -> None:
         sentence = "Enables the guarded, read-only Terraform creation preview."
         for content in (
