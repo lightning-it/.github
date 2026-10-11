@@ -695,23 +695,39 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
             super().__init__(convert_charrefs=False)
             self.parts: list[str] = []
             self.code_depth = 0
+            self.hidden_depth = 0
 
         def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-            if tag in {"code", "pre", "script", "style"}:
+            if tag in {"code", "pre"}:
                 self.code_depth += 1
+            if tag in {"script", "style"}:
+                self.hidden_depth += 1
+            if tag == "img" and self.code_depth and not self.hidden_depth:
                 self.parts.append(literal)
             if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
                 self.parts.append("\n")
 
         def handle_endtag(self, tag: str) -> None:
-            if tag in {"code", "pre", "script", "style"} and self.code_depth:
+            if tag in {"code", "pre"} and self.code_depth:
                 self.code_depth -= 1
-                self.parts.append(literal)
+            if tag in {"script", "style"} and self.hidden_depth:
+                self.hidden_depth -= 1
             if tag in self.blocks or review_raw_html_block_start(f"<{tag}>", interrupt_only=True):
                 self.parts.append("\n")
 
         def handle_data(self, data: str) -> None:
-            if not self.code_depth:
+            if self.hidden_depth:
+                return
+            if self.code_depth:
+                visible = ASSESSMENT_IGNORABLE.sub("", html.unescape(data))
+                if visible.strip():
+                    self.parts.append(literal)
+                elif visible:
+                    # Empty wrappers cannot hide a heading, while actual
+                    # whitespace still separates its rendered words. Canonical
+                    # spacing also preserves entity-encoded edge whitespace.
+                    self.parts.append(" ")
+            else:
                 self.parts.append(data)
 
         def handle_entityref(self, name: str) -> None:

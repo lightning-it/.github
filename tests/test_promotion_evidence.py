@@ -3872,6 +3872,72 @@ class PromotionEvidenceTests(unittest.TestCase):
                 )
                 self.assertEqual(0, evidence['review']['historical_findings_count'])
 
+    def test_empty_code_wrappers_cannot_hide_missed_headings_ingress(self) -> None:
+        markers = (
+            '<code></code>Previously missed (1)',
+            'Previously missed (1)<code></code>',
+            'Previously<code></code> missed (1)',
+            'Previously <code></code>missed (1)',
+            '<code><span><!-- none --></span></code>Previously missed (1)',
+            'Previously<code><code><!-- none --></code></code> missed (1)',
+            '<code> \t</code>Previously missed (1)',
+            'Previously<code> \t</code>missed (1)',
+            '<code>&nbsp;</code>Previously missed (1)',
+            'Previously<code>&nbsp;</code>missed (1)',
+            'Previously missed (1)<code>&#160;</code>',
+            'Previously<code>&#8203;</code> missed (1)',
+            '<code>\u200b</code>Previously missed (1)',
+            '<code><script>hidden</script></code>Previously missed (1)',
+            'Previously<script>hidden</script> missed (1)',
+            'Previously<style>hidden</style> missed (1)',
+            '<pre></pre>Previously missed (1)',
+            '<code></code>**Previously missed (1)**<code></code>',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_visible_code_and_hidden_headings_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '<code>Previously missed (1)</code>',
+            '<pre>Previously missed (1)</pre>',
+            'Previously<code>x</code> missed (1)',
+            'Previously<code><span>x</span></code> missed (1)',
+            'Previously<code>x<script>hidden</script></code> missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="x"></code>'
+            'Previously missed (1)',
+            'Previously<code><img src="https://example.test/icon.png" alt="x"></code>'
+            ' missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="" /></code>'
+            'Previously missed (1)',
+            '<code>&ast;</code>Previously missed (1)',
+            '<code>&lt;summary&gt;</code>Previously missed (1)',
+            '<script>Previously missed (1)</script>',
+            '<style>Previously missed (1)</style>',
+            '<code>Previously<script>hidden</script> missed (1)</code>',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
     def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
         body = CURRENT_COPILOT_OVERVIEW.replace(
             '🔵 Needs a closer look', '🟡 Changes recommended'
