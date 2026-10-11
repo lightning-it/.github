@@ -272,6 +272,18 @@ def copilot_severity_icons() -> set[str]:
 
 def historical_copilot_findings_count(body: str) -> int:
     lines = body.splitlines()
+    # A missed-finding section remains actionable without its HTML wrapper.
+    # Match a complete heading, not narrative prose beginning with these words.
+    require(
+        not any(re.fullmatch(
+            r"(?:previously\s+missed(?:\s*\([^()\r\n]*\))?"
+            r"|[0-9]+\s+previously\s+missed)",
+            re.sub(r"</?(?:summary|strong)>", "", line,
+                   flags=re.IGNORECASE).strip().strip("*").strip(),
+            re.IGNORECASE,
+        ) for line in lines),
+        "producer-review-binding",
+    )
     headings = [line for line in lines if "## copilot review overview" in line.lower()]
     verdicts = [line for line in lines if "### " in line]
     require(
@@ -366,9 +378,9 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     missed_count = 0
     if count:
         supported_summaries.add(fields[0])
-    # These sections describe earlier reviews, not open findings on this
-    # submission. Validate their count syntax and uniqueness without adding
-    # them to the current review's live-thread coverage minimum.
+    # Resolved sections are history. Previously missed entries are newly
+    # surfaced findings, even when the overview reports zero open findings.
+    # The all-PR thread inventory cannot bind body-only entries to this review.
     history_patterns = {
         "Resolved since last review": (
             r"(?:Resolved since last review \(([1-9][0-9]{0,3})\)"
@@ -451,6 +463,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
     require(not blocks, "producer-review-binding")
+    require(missed_count == 0, "producer-review-binding")
     return count
 
 
