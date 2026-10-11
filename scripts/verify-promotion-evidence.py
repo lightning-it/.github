@@ -451,7 +451,29 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     blocks: list[JSON] = []
     seen_summaries: set[str] = set()
     supported_icons = copilot_severity_icons()
+    fence: tuple[str, int] | None = None
+    comment = False
     for position, line in enumerate(nonempty):
+        # Literal content inside an owned section cannot close that section
+        # or supply the authoritative footer. Preserve ordinary closed code
+        # examples/comments without interpreting their quoted frame markers.
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + "{" + str(fence[1]) + r",}[ \t]*", line):
+                fence = None
+            continue
+        if comment:
+            if "-->" in line:
+                comment = False
+            continue
+        opening = re.fullmatch(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            require(blocks and blocks[-1]["summary"] is not None, "producer-review-binding")
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            continue
+        if blocks and "<!--" in line:
+            require(blocks[-1]["summary"] is not None, "producer-review-binding")
+            comment = "-->" not in line.split("<!--", 1)[1]
+            continue
         require(
             not (not blocks and line.lstrip().startswith(("```", "~~~"))),
             "producer-review-binding",
@@ -506,7 +528,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             # The prefix was checked as introductory prose. After findings,
             # only an owned native section or the terminal footer is legal.
             require(position < field_position, "producer-review-binding")
-    require(not blocks, "producer-review-binding")
+    require(not blocks and fence is None and not comment, "producer-review-binding")
     require(missed_count == 0, "producer-review-binding")
     return count
 

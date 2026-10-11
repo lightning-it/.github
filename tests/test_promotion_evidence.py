@@ -3878,6 +3878,38 @@ class PromotionEvidenceTests(unittest.TestCase):
                             with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
                                 self.collect_current_copilot_evidence(body, [], expanded=expanded)
 
+    def test_current_copilot_overview_footer_cannot_be_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\nQuoted section content.",
+            "~~~~text\nQuoted section content.",
+            "<!--\nHidden section content.",
+            "```text\n<!--\nQuoted comment and section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_preserves_closed_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\n</details>\n<!-- literal comment\n```",
+            "~~~~text\n</details>\n~~~\n~~~~",
+            "<!--\n</details>\nHidden explanatory content.\n-->",
+            "<!-- inline explanatory comment -->",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
     def collect_current_copilot_evidence(self, body, nodes, *, expanded=True, **review_changes):
         review = {
             "id": 17001, "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
