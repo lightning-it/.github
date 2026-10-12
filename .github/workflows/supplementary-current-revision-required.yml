@@ -5317,7 +5317,7 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
 
       - name: LI-259 receiver source ${{ github.workflow_ref }} ${{ github.workflow_sha }} PR ${{ github.event.pull_request.number }} base ${{ github.event.pull_request.base.sha }} head ${{ github.event.pull_request.head.sha }}
-        if: vars.LI259_INFRA_RETRY == 'enabled'
+        if: vars.LI259_INFRA_RETRY == 'enabled' && env.LI219_EVENT_MODE == 'enabled'
         run: |
           set -euo pipefail
           # This native successful step binds the actual immutable receiver,

@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -983,6 +985,33 @@ class NativeRetryTests(unittest.TestCase):
 
 
 class WorkflowCouplingTests(unittest.TestCase):
+    def test_receiver_source_marker_does_not_break_default_mode_rollback(self):
+        text = (ROOT / ".github/workflows/supplementary-current-revision-required.yml").read_text()
+        step = text.split("      - name: LI-259 receiver source ", 1)[1].split("\n      - name:", 1)[0]
+        condition = step.split("        if: ", 1)[1].splitlines()[0]
+        clauses = []
+        for clause in condition.split(" && "):
+            match = re.fullmatch(r"(?:vars|env)\.(LI259_INFRA_RETRY|LI219_EVENT_MODE) == '([a-z]+)'", clause)
+            self.assertIsNotNone(match, condition)
+            name, expected = match.groups()
+            clauses.append(f'[[ "${{{name}}}" == {shlex.quote(expected)} ]]')
+        program = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        # Execute the actual native step and its declared condition. The
+        # disabled-event/enabled-retry combination previously failed even
+        # on ordinary first attempts, before creating any reservation.
+        for event_mode in ("enabled", "disabled", ""):
+            for retry_mode in ("enabled", "disabled", ""):
+                with self.subTest(event=event_mode, retry=retry_mode):
+                    shell = "if " + " && ".join(clauses) + "; then\n" + program + "\nprintf 'marker-bound\\n'\nfi\n"
+                    result = subprocess.run(
+                        ["bash", "-c", shell], text=True, capture_output=True, check=False,
+                        env={**os.environ, "LI219_EVENT_MODE": event_mode,
+                             "LI259_INFRA_RETRY": retry_mode, "WORKFLOW_SHA": "a" * 40},
+                    )
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    expected = "marker-bound\n" if event_mode == retry_mode == "enabled" else ""
+                    self.assertEqual(expected, result.stdout)
+
     def test_execute_real_handoff_caller_orders_seal_claim_rebind_and_post(self):
         text = (ROOT / ".github/workflows/current-revision-rerun.yml").read_text()
         function = "rerun_protected_verifier_once() {" + text.split("          rerun_protected_verifier_once() {", 1)[1].split("\n          }\n", 1)[0] + "\n}"
