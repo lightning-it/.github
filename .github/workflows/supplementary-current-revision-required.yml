@@ -6208,15 +6208,19 @@ jobs:
               <<<"${tl}" >/dev/null; then return 0; fi
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1
             [ "${recovery_status}" -eq 0 ] || return 1
-            jq -cn --arg repository "${REPOSITORY}" --arg repository_id "${GITHUB_REPOSITORY_ID}" \
+            # API documents travel through stdin, not execve arguments. Keep all
+            # four exact JSON documents for the unchanged protected proof.
+            printf '%s\n' "${attempt_one}" "${producer}" "${attempt_one_jobs}" "${tl}" | \
+              jq -sc --arg repository "${REPOSITORY}" --arg repository_id "${GITHUB_REPOSITORY_ID}" \
               --arg author "${author}" --arg head "${EVENT_HEAD}" --arg base "${EVENT_BASE}" \
               --arg controller "${controller_sha}" --arg controller_branch "${controller_branch}" \
               --arg controller_head "${controller_head}" --arg base_ref "${base_ref}" \
               --arg review_submitted_at "${review_submitted_at}" \
               --argjson owner "${owner_pr_number}" --argjson run_id "${producer_run_id}" \
-              --argjson first "${attempt_one}" --argjson producer "${producer}" \
-              --argjson jobs "${attempt_one_jobs}" --argjson timeline "${tl}" \
-              '$ARGS.named' | run_request_proof /proof/request-origin.py
+              'if length == 4 then
+                $ARGS.named + {first: .[0], producer: .[1], jobs: .[2], timeline: .[3]}
+               else error("request-origin transport document count is invalid") end' | \
+              run_request_proof /proof/request-origin.py
           }
           verify_event_recovery() {
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
