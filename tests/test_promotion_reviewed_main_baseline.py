@@ -106,6 +106,14 @@ class ReviewedMainIngressBaselineTests(unittest.TestCase):
         ):
             self.validate()
 
+    def test_final_revalidation_rejects_ordinary_to_release_ref_mutation(self) -> None:
+        self.validate()
+        self.pull["head"]["ref"] = "backsync/release-v1.16.0-to-develop"
+        with self.assertRaisesRegex(
+            MODULE.EvidenceError, "reviewed-main-baseline-reserved-release-ref"
+        ):
+            self.validate()
+
     def test_baseline_requires_exact_main_introduction(self) -> None:
         original = self.previous
         self.previous = self.main

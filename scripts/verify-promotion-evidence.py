@@ -2346,6 +2346,12 @@ def validate_reviewed_main_ingress_baseline(
 ) -> None:
     """Bind a normally reviewed ingress that already contains current main."""
 
+    head = exact_object(pull.get("head"), "reviewed-main-baseline-head")
+    head_ref = text(head.get("ref"), "reviewed-main-baseline-ref")
+    require(
+        not head_ref.startswith("backsync/release-"),
+        "reviewed-main-baseline-reserved-release-ref",
+    )
     require(
         expected_evidence_kind(pull, repository=repository) == "copilot",
         "reviewed-main-baseline-review-kind",
