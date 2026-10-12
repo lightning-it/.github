@@ -2336,6 +2336,42 @@ def validate_reviewed_release_baseline(
     )
 
 
+def validate_reviewed_main_ingress_baseline(
+    repository_path: Path,
+    *,
+    repository: str,
+    expected_main: str,
+    merge: JSON,
+    pull: JSON,
+) -> None:
+    """Bind a normally reviewed ingress that already contains current main."""
+
+    head = exact_object(pull.get("head"), "reviewed-main-baseline-head")
+    head_ref = text(head.get("ref"), "reviewed-main-baseline-ref")
+    require(
+        not head_ref.startswith("backsync/release-"),
+        "reviewed-main-baseline-reserved-release-ref",
+    )
+    require(
+        expected_evidence_kind(pull, repository=repository) == "copilot",
+        "reviewed-main-baseline-review-kind",
+    )
+    previous = sha(merge.get("base_sha"), "reviewed-main-baseline-previous")
+    head_sha = sha(merge.get("head_sha"), "reviewed-main-baseline-head-sha")
+    merge_sha = sha(merge.get("merge_sha"), "reviewed-main-baseline-merge-sha")
+    require(
+        not is_ancestor(repository_path, expected_main, previous)
+        and is_ancestor(repository_path, expected_main, head_sha)
+        and is_ancestor(repository_path, previous, head_sha),
+        "reviewed-main-baseline-main-introduction",
+    )
+    require(
+        git(["rev-parse", f"{merge_sha}^{{tree}}"], repository_path)
+        == git(["rev-parse", f"{head_sha}^{{tree}}"], repository_path),
+        "reviewed-main-baseline-merge-tree-differs",
+    )
+
+
 def review_summary(check: JSON) -> JSON:
     output = exact_object(check.get("output"), "check-output")
     raw = text(output.get("summary"), "check-summary")
@@ -3974,9 +4010,12 @@ def verify(arguments: argparse.Namespace) -> JSON:
         )
     ]
     reviewed_release_boundary: int | None = None
+    reviewed_main_ingress_boundary: int | None = None
     if not baseline_candidates:
-        # A protected release-metadata PR can introduce main without using the
-        # ancestry-only controller. Keep its normal review and thread evidence.
+        # A fully reviewed PR can introduce current main through its head
+        # without using the ancestry-only controller. Release backsyncs retain
+        # their metadata-only contract; ordinary ingresses remain reviewed
+        # changes as well as the baseline reconciliation point.
         baseline_candidates = [
             index
             for index, (merge, _pull) in enumerate(ingress_inventory)
@@ -3984,15 +4023,30 @@ def verify(arguments: argparse.Namespace) -> JSON:
             and is_ancestor(repository_path, expected_base, merge["head_sha"])
         ]
         require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
-        reviewed_release_boundary = baseline_candidates[0]
-        release_merge, release_pull = ingress_inventory[reviewed_release_boundary]
-        validate_reviewed_release_baseline(
-            repository_path,
-            repository=arguments.repository,
-            expected_main=expected_base,
-            merge=release_merge,
-            pull=release_pull,
+        reviewed_boundary = baseline_candidates[0]
+        reviewed_merge, reviewed_pull = ingress_inventory[reviewed_boundary]
+        reviewed_head = exact_object(
+            reviewed_pull.get("head"), "reviewed-baseline-head"
         )
+        reviewed_ref = text(reviewed_head.get("ref"), "reviewed-baseline-ref")
+        if reviewed_ref.startswith("backsync/release-"):
+            reviewed_release_boundary = reviewed_boundary
+            validate_reviewed_release_baseline(
+                repository_path,
+                repository=arguments.repository,
+                expected_main=expected_base,
+                merge=reviewed_merge,
+                pull=reviewed_pull,
+            )
+        else:
+            reviewed_main_ingress_boundary = reviewed_boundary
+            validate_reviewed_main_ingress_baseline(
+                repository_path,
+                repository=arguments.repository,
+                expected_main=expected_base,
+                merge=reviewed_merge,
+                pull=reviewed_pull,
+            )
     require(len(baseline_candidates) == 1, "baseline-reconciliation-not-unique")
     baseline_boundary = baseline_candidates[0]
 
@@ -4020,7 +4074,8 @@ def verify(arguments: argparse.Namespace) -> JSON:
         structural_boundaries[index] = historical_main
     require(
         structural_boundaries.get(baseline_boundary) == expected_base
-        or reviewed_release_boundary == baseline_boundary,
+        or reviewed_release_boundary == baseline_boundary
+        or reviewed_main_ingress_boundary == baseline_boundary,
         "baseline-reconciliation-not-structural",
     )
 
@@ -4031,6 +4086,9 @@ def verify(arguments: argparse.Namespace) -> JSON:
         timestamp(merged_at, "ingress-merged-at")
         _, post_baseline = classify_ingress_position(index, baseline_boundary)
         ancestry_boundary = index in structural_boundaries
+        reviewed_change = (
+            not ancestry_boundary and index != reviewed_release_boundary
+        )
         if post_baseline:
             require(
                 is_ancestor(repository_path, expected_base, merge["head_sha"]),
@@ -4067,6 +4125,7 @@ def verify(arguments: argparse.Namespace) -> JSON:
                 "ancestry_boundary": ancestry_boundary,
                 "baseline_reconciliation": index == baseline_boundary,
                 "post_baseline": post_baseline,
+                "reviewed_change": reviewed_change,
                 "review": review,
                 "threads": threads,
             }
@@ -4074,12 +4133,10 @@ def verify(arguments: argparse.Namespace) -> JSON:
     post_baseline_count = sum(item["post_baseline"] is True for item in ingress)
     # A reviewed feature may precede the backsync that introduces main. All
     # first-parent merges here are outside main and retain their exact native
-    # acceptance evidence, regardless of position. Reconciliation alone must
-    # never qualify as a new change to promote.
-    reviewed_change_count = sum(
-        not item["ancestry_boundary"] and not item["baseline_reconciliation"]
-        for item in ingress
-    )
+    # acceptance evidence, regardless of position. Structural and metadata-only
+    # reconciliation do not qualify as new changes; an ordinary reviewed ingress
+    # that also introduces main still does.
+    reviewed_change_count = sum(item["reviewed_change"] is True for item in ingress)
     require(reviewed_change_count > 0, "no-reviewed-change-ingress")
 
     # Finish every other mutable remote read before taking the final ingress
@@ -4134,6 +4191,18 @@ def verify(arguments: argparse.Namespace) -> JSON:
             )
             if reviewed_release_boundary is not None and number == ingress[reviewed_release_boundary]["pull_request"]:
                 validate_reviewed_release_baseline(
+                    repository_path,
+                    repository=arguments.repository,
+                    expected_main=expected_base,
+                    merge=item,
+                    pull=refreshed_pull,
+                )
+            if (
+                reviewed_main_ingress_boundary is not None
+                and number
+                == ingress[reviewed_main_ingress_boundary]["pull_request"]
+            ):
+                validate_reviewed_main_ingress_baseline(
                     repository_path,
                     repository=arguments.repository,
                     expected_main=expected_base,

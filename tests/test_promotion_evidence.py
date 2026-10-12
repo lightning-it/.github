@@ -3312,6 +3312,7 @@ class PromotionEvidenceTests(unittest.TestCase):
 
         def execute(
             *, mutate_final_pull: bool, reviewed_release: bool = False,
+            reviewed_main_ingress: bool = False,
             missing_release_review: bool = False, late_baseline: bool = False,
             change_kind: str = "feature", missing_feature_review: bool = False,
             mutated_feature_review: bool = False,
@@ -3343,6 +3344,14 @@ class PromotionEvidenceTests(unittest.TestCase):
                 active_boundary["user"] = {"login": "litroc", "id": 1, "type": "User"}
                 active_boundary["title"] = "chore(release): sync v1.14.0 back to develop"
                 active_boundary["head"]["ref"] = "backsync/release-v1.14.0-to-develop"
+            if reviewed_main_ingress:
+                active_boundary["user"] = {
+                    "login": "litroc", "id": 1, "type": "User"
+                }
+                active_boundary["title"] = "fix(policy): reviewed current-main ingress"
+                active_boundary["head"]["ref"] = "fix/reviewed-current-main"
+
+            reviewed_baseline = reviewed_release or reviewed_main_ingress
 
             feature_reads = 0
 
@@ -3435,7 +3444,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         mock.patch.object(
                             MODULE,
                             "is_ancestor",
-                            side_effect=lambda _path, _ancestor, descendant: not reviewed_release
+                            side_effect=lambda _path, _ancestor, descendant: not reviewed_baseline
                             or descendant in {boundary_head, boundary_merge}
                             or (not late_baseline and descendant in {HEAD, feature_merge}),
                         ),
@@ -3443,7 +3452,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                             MODULE,
                             "has_exact_ancestry_merge_parents",
                             side_effect=lambda _repository, *, head_sha, **_kwargs: head_sha
-                            == boundary_head and not reviewed_release,
+                            == boundary_head and not reviewed_baseline,
                         ),
                         mock.patch.object(
                             MODULE,
@@ -3457,6 +3466,9 @@ class PromotionEvidenceTests(unittest.TestCase):
                         ),
                         mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
                         mock.patch.object(MODULE, "validate_reviewed_release_baseline") as release_binding,
+                        mock.patch.object(
+                            MODULE, "validate_reviewed_main_ingress_baseline"
+                        ) as main_ingress_binding,
                         mock.patch.object(MODULE, "git", return_value=BASE),
                         mock.patch.object(
                             MODULE,
@@ -3468,12 +3480,22 @@ class PromotionEvidenceTests(unittest.TestCase):
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
                     self.assertEqual(0 if late_baseline else 1, value["post_baseline_ingress_count"])
-                    self.assertEqual(1, value["reviewed_change_ingress_count"])
+                    self.assertEqual(
+                        2 if reviewed_main_ingress else 1,
+                        value["reviewed_change_ingress_count"],
+                    )
                     self.assertTrue(value["ingress"][0]["ancestry_boundary"])
                     baseline_index = 2 if late_baseline else 1
                     feature_index = 1 if late_baseline else 2
-                    self.assertEqual(not reviewed_release, value["ingress"][baseline_index]["ancestry_boundary"])
+                    self.assertEqual(
+                        not reviewed_baseline,
+                        value["ingress"][baseline_index]["ancestry_boundary"],
+                    )
                     self.assertTrue(value["ingress"][baseline_index]["baseline_reconciliation"])
+                    self.assertEqual(
+                        reviewed_main_ingress,
+                        value["ingress"][baseline_index]["reviewed_change"],
+                    )
                     self.assertFalse(value["ingress"][feature_index]["baseline_reconciliation"])
                     self.assertFalse(value["ingress"][feature_index]["ancestry_boundary"])
                     self.assertEqual(bound["review"], value["ingress"][feature_index]["review"])
@@ -3489,6 +3511,10 @@ class PromotionEvidenceTests(unittest.TestCase):
                         )
                     else:
                         release_binding.assert_not_called()
+                    if reviewed_main_ingress:
+                        self.assertEqual(2, main_ingress_binding.call_count)
+                    else:
+                        main_ingress_binding.assert_not_called()
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(
@@ -3507,6 +3533,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         os.environ["RUNNER_TEMP"] = previous
 
         execute(mutate_final_pull=False, reviewed_release=True, late_baseline=True)
+        execute(mutate_final_pull=False, reviewed_main_ingress=True)
         execute(mutate_final_pull=False)
         execute(mutate_final_pull=False, reviewed_release=True)
         for reviewed_release in (False, True):
@@ -3544,9 +3571,11 @@ class PromotionEvidenceTests(unittest.TestCase):
             "evidence_sha256": "7" * 64,
             "ingress": [
                 {"ancestry_boundary": False, "baseline_reconciliation": False,
-                 "post_baseline": False, "review": {}, "threads": {}},
+                 "post_baseline": False, "reviewed_change": True,
+                 "review": {}, "threads": {}},
                 {"ancestry_boundary": False, "baseline_reconciliation": True,
-                 "post_baseline": False, "review": {}, "threads": {}},
+                 "post_baseline": False, "reviewed_change": False,
+                 "review": {}, "threads": {}},
             ],
         }
 
@@ -3596,7 +3625,8 @@ class PromotionEvidenceTests(unittest.TestCase):
         for field, value in (
             ("ancestry_boundary", True), ("ancestry_boundary", None),
             ("baseline_reconciliation", True), ("baseline_reconciliation", None),
-            ("post_baseline", None), ("review", None), ("threads", None),
+            ("post_baseline", None), ("reviewed_change", None),
+            ("review", None), ("threads", None),
         ):
             with self.subTest(ingress_field=field, value=value):
                 invalid = json.loads(json.dumps(package))
@@ -3605,6 +3635,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         baseline_only = {**package, "ingress": package["ingress"][1:],
                          "ingress_count": 1, "reviewed_change_ingress_count": 0}
         self.assertFalse(accepted(baseline_only))
+        reviewed_main_baseline = json.loads(json.dumps(baseline_only))
+        reviewed_main_baseline["ingress"][0]["reviewed_change"] = True
+        reviewed_main_baseline["reviewed_change_ingress_count"] = 1
+        self.assertTrue(accepted(reviewed_main_baseline))
 
     def test_duplicate_checks_and_unresolved_threads_fail_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
