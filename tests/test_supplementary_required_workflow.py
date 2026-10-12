@@ -4511,7 +4511,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             job_header,
         )
         reservation = permanent.index("reservation_external_id=")
-        failure_trap = permanent.index("trap finalize_failure ERR")
+        failure_trap = permanent.index("trap finalize_failure EXIT")
         draft_rejection = permanent.index('test "${draft}" = false')
         self.assertLess(reservation, draft_rejection)
         self.assertLess(failure_trap, draft_rejection)
@@ -4530,7 +4530,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             1,
         )[1]
         reservation = permanent.index("reservation_external_id=")
-        trap = permanent.index("trap finalize_failure ERR")
+        trap = permanent.index("trap finalize_failure EXIT")
         self.assertLess(reservation, trap)
         self.assertIn(
             'test "${GITHUB_RUN_ATTEMPT}" -eq 1 || test "${GITHUB_RUN_ATTEMPT}" -eq 2',
@@ -5372,7 +5372,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertNotIn("openai/codex-action@", seed)
         self.assertNotRegex(seed, r'\[ "\$\{PR_NUMBER\}" = [0-9]+ \]')
 
-        failure_trap = workflow.index("trap finalize_failure ERR")
+        failure_trap = workflow.index("trap finalize_failure EXIT")
         controller_seed = workflow.index("controller_seed_verified=false")
         durable_bootstrap = workflow.index("bootstrap_verified=false")
         self.assertLess(failure_trap, controller_seed)
@@ -5401,7 +5401,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         ):
             self.assertNotIn(retired_binding, workflow)
 
-        failure_trap = workflow.index("trap finalize_failure ERR")
+        failure_trap = workflow.index("trap finalize_failure EXIT")
         durable_bootstrap = workflow.index("bootstrap_verified=false")
         managed_sync = workflow.index("managed_sync_verified=false")
         permanent_inventory = workflow.index(
@@ -5489,7 +5489,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow.index(
                 "output[title]=Protected current-revision evidence verified"
             ),
-            workflow.rindex("trap - ERR"),
+            workflow.rindex("trap - EXIT"),
         )
 
     def test_permanent_verifier_awaits_protected_evidence_without_a_rerun_race(

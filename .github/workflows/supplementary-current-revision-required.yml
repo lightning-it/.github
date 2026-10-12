@@ -6157,6 +6157,19 @@ jobs:
                 "${failure_stage}"
             fi
           }
+          finalize_failure() {
+            local exit_code="$?"
+            trap - EXIT
+            if [ "${exit_code}" -eq 0 ]; then return 0; fi
+            set +e
+            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=completed \
+              -f conclusion=failure \
+              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
+              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
+            printf '::error::stage=%s\n' "${failure_stage}"
+            exit "${exit_code}"
+          }
           validate_target_repository() {
             target_repository="$(gh api "repos/${REPOSITORY}")"
             jq -e \
@@ -6208,8 +6221,6 @@ jobs:
               <<<"${tl}" >/dev/null; then return 0; fi
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1
             [ "${recovery_status}" -eq 0 ] || return 1
-            # API documents travel through stdin, not execve arguments. Keep all
-            # four exact JSON documents for the unchanged protected proof.
             printf '%s\n' "${attempt_one}" "${producer}" "${attempt_one_jobs}" "${tl}" | \
               jq -sc --arg repository "${REPOSITORY}" --arg repository_id "${GITHUB_REPOSITORY_ID}" \
               --arg author "${author}" --arg head "${EVENT_HEAD}" --arg base "${EVENT_BASE}" \
@@ -6392,6 +6403,7 @@ jobs:
           # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
+          export failure_stage
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/required-init.sh"
           trap report_failure_stage EXIT
@@ -6729,18 +6741,7 @@ jobs:
               ' <<<"${reservation}" >/dev/null
           fi
 
-          finalize_failure() {
-            local exit_code="$?"
-            trap - ERR
-            set +e
-            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=completed \
-              -f conclusion=failure \
-              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
-              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
-            exit "${exit_code}"
-          }
-          trap finalize_failure ERR
+          trap finalize_failure EXIT
 
           test "${draft}" = false
           controller_seed_verified=false
@@ -6848,7 +6849,7 @@ jobs:
               -f 'output[title]=Protected main controller seed verified' \
               -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; Copilot review ${controller_seed_review_id}; protected source ${controller_seed_source_sha}; protected current-revision check ${controller_seed_check_id}; producer run ${controller_seed_producer_run_id}." \
               >/dev/null
-            trap - ERR
+            trap - EXIT
             exit 0
           fi
 
@@ -7025,7 +7026,7 @@ jobs:
               -f 'output[title]=Protected main trust-root bootstrap verified' \
               -f "output[summary]=PR #${PR_NUMBER}; base ${EVENT_BASE}; head ${EVENT_HEAD}; Copilot review ${review_id}; producer ${producer_run_url}." \
               >/dev/null
-            trap - ERR
+            trap - EXIT
             exit 0
           fi
 
@@ -7825,7 +7826,7 @@ jobs:
             echo "producer_run_url=${producer_run_url}"
             echo "reservation_id=${reservation_id}"
           } >>"${GITHUB_OUTPUT}"
-          trap - ERR
+          trap - EXIT
 
       - name: Rebind and finalize the protected result
         if: steps.protected-verifier.outputs.finalize == 'true'
@@ -7851,7 +7852,8 @@ jobs:
           [[ "${RESERVATION_ID}" =~ ^[1-9][0-9]*$ ]]
           finalize_failure() {
             local exit_code="$?"
-            trap - ERR
+            trap - EXIT
+            if [ "${exit_code}" -eq 0 ]; then return 0; fi
             set +e
             gh api --method PATCH \
               "repos/${REPOSITORY}/check-runs/${RESERVATION_ID}" \
@@ -7860,9 +7862,10 @@ jobs:
               -f 'output[title]=Protected current-revision evidence is absent or invalid' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." \
               >/dev/null
+            printf '::error::stage=%s\n' "${failure_stage}"
             exit "${exit_code}"
           }
-          trap finalize_failure ERR
+          trap finalize_failure EXIT
 
           final_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \
@@ -8380,7 +8383,7 @@ jobs:
               and .app.id == 15368
               and .app.slug == "github-actions"
             ' <<<"${finalized}" >/dev/null
-          trap - ERR
+          trap - EXIT
 
   required-current-revision-workflow:
     name: Required current-revision workflow
