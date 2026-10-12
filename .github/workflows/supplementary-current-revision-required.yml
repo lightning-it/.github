@@ -2329,6 +2329,14 @@ jobs:
                 (.ancestry_boundary | type == "boolean")
                 and (.baseline_reconciliation | type == "boolean")
                 and (.post_baseline | type == "boolean")
+                and (.reviewed_change | type == "boolean")
+                and (if .ancestry_boundary then
+                  .reviewed_change == false
+                elif .baseline_reconciliation then
+                  true
+                else
+                  .reviewed_change == true
+                end)
                 and (.ancestry_boundary or
                   ((.review | type == "object") and (.threads | type == "object"))))
               and (.ingress | to_entries as $entries
@@ -2339,7 +2347,7 @@ jobs:
               and .post_baseline_ingress_count == ([.ingress[] | select(.post_baseline)] | length)
               and (.reviewed_change_ingress_count | type == "number" and . > 0)
               and .reviewed_change_ingress_count ==
-                ([.ingress[] | select(.ancestry_boundary == false and .baseline_reconciliation == false)] | length)
+                ([.ingress[] | select(.reviewed_change)] | length)
               and (.diff.bytes | type == "number" and . > 0)
               and (.diff.sha256 | test("^[0-9a-f]{64}$"))
               and (.evidence_sha256 | test("^[0-9a-f]{64}$"))
