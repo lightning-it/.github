@@ -4761,9 +4761,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         helper = "validate_created_reservation() {" + workflow.split(
             "          validate_created_reservation() {", 1
         )[1].split("          SH\n", 1)[0]
-        creation = 'reservation="$(gh api --method POST' + workflow.split(
+        creation = "reservation_id=''\n" + workflow.split(
             "failure_stage='reservation-materialization'", 1
-        )[1].split('          else\n            reservation="$(gh api --method POST', 1)[1].split(
+        )[1].split("          else\n            reservation_id=''\n", 1)[1].split(
             '          fi\n\n          test "${draft}"', 1
         )[0]
         head, base = "a" * 40, "b" * 40
@@ -4802,6 +4802,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     failure_stage=reservation-materialization
                     reservation_name='Protected current-revision verifier'
                     reservation_external_id={check['external_id']}
+                    sleep() {{ :; }}
                     gh() {{
                       [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = POST ] || return 90
                       printf '%s\\n' POST >>"$RUNNER_TEMP/calls"
@@ -4818,6 +4819,66 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 self.assertEqual((fixture / "calls").read_text().splitlines(), ["POST", "PATCH"] if accepted else ["POST"])
+
+    def test_unknown_reservation_creation_recovers_only_one_authenticated_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "validate_created_reservation() {" + workflow.split(
+            "          validate_created_reservation() {", 1)[1].split("          SH\n", 1)[0]
+        creation = "reservation_id=''\n" + workflow.split("failure_stage='reservation-materialization'", 1)[1].split(
+            "          else\n            reservation_id=''\n", 1)[1].split('          fi\n\n          test "${draft}"', 1)[0]
+        head, base = 'a' * 40, 'b' * 40
+        check = {'id':901, 'name':'Protected current-revision verifier', 'head_sha':head,
+                 'external_id':f'rep60-required-workflow:v3:201:225:{base}:{head}',
+                 'status':'in_progress', 'conclusion':None, 'app':{'id':15368, 'slug':'github-actions'}}
+        cases = (
+            ('materialized_error', 17, check, [check], check, True),
+            ('malformed_response', 0, {}, [check], check, True),
+            ('fractional_response', 0, {**check, 'id':901.5}, [check], check, True),
+            ('absent_effect', 17, {}, [], check, False),
+            ('duplicate_effect', 17, {}, [check, {**check, 'id':902}], check, False),
+            ('terminal_duplicate', 17, {}, [check, {**check, 'id':902, 'status':'completed', 'conclusion':'failure'}], check, False),
+            ('foreign_identity', 17, {}, [{**check, 'external_id':'foreign'}], check, False),
+            ('malformed_inventory', 17, {}, [{**check, 'id':'901'}], check, False),
+            ('changed_owner', 17, {}, [check], {**check, 'external_id':'foreign'}, False),
+            ('missing_conclusion', 17, {}, [check], {k:v for k,v in check.items() if k != 'conclusion'}, False),
+        )
+        for name, post_code, response, inventory, snapshot, cleaned in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                for filename, payload in (('response', response), ('inventory', [{'total_count':len(inventory), 'check_runs':inventory}]), ('snapshot', snapshot)):
+                    (fixture / f'{filename}.json').write_text(json.dumps(payload))
+                script = textwrap.dedent(f'''\
+                    set -euo pipefail
+                    RUNNER_TEMP={shlex.quote(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={check['external_id']}
+                    failure_stage=reservation-materialization
+                    sleep() {{ :; }}
+                    gh() {{
+                      if [ "${{3:-}}" = POST ]; then
+                        echo POST >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/response.json"; return {post_code}
+                      elif [[ "$*" == *'check_name='* ]]; then
+                        echo GET-inventory >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/inventory.json"
+                      elif [ "${{2:-}}" = repos/lightning-it/example/check-runs/901 ]; then
+                        echo GET-check >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/snapshot.json"
+                      elif [ "${{3:-}}" = PATCH ]; then
+                        echo PATCH >>"$RUNNER_TEMP/calls"; printf '%s\\n' "$@" >"$RUNNER_TEMP/cleanup"
+                      else return 91; fi
+                    }}
+                    patch_reservation_with_readback() {{ return 92; }}
+                    ''') + helper + '\n' + creation
+                result = subprocess.run([self._test_tool('bash'), '-c', script], text=True, capture_output=True, check=False)
+                self.assertEqual(post_code or 4, result.returncode, result.stderr)
+                calls = (fixture / 'calls').read_text().splitlines()
+                self.assertEqual(1, calls.count('POST'))
+                self.assertLessEqual(calls.count('GET-inventory'), 5)
+                self.assertEqual(int(cleaned), calls.count('PATCH'))
+                if cleaned:
+                    self.assertIn('conclusion=failure', (fixture / 'cleanup').read_text())
 
     def test_owned_reservation_materialization_failure_is_finalized(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")

@@ -2995,11 +2995,13 @@ jobs:
                 -f "details_url=${check_url}" \
                 -f "external_id=${external_id}" \
                 -f 'output[title]=Current revision publication pending' \
+                "${publication_text_fields[@]}" \
                 -f "output[summary]=${evidence}")"
               jq -e \
                 --arg check_name "${check_name}" \
                 --arg completed_at "${completed_at}" \
                 --arg evidence "${evidence}" \
+                --arg text "${publication_text}" \
                 --arg external_id "${external_id}" \
                 --arg head "${EVENT_HEAD}" \
                 --arg url "${check_url}" \
@@ -3015,6 +3017,7 @@ jobs:
                   and .status == "completed"
                   and .conclusion == "failure"
                   and .output.summary == $evidence
+                  and ($text == "" or .output.text == $text)
                 ' <<<"${updated}" >/dev/null
               printf '%s' "${check_id}"
               return
