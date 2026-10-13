@@ -2417,15 +2417,6 @@ def validate_renovate_policy(pull: JSON, summary: JSON, *, repository: str) -> N
         == summary.get("pull_request_labels_sha256"),
         "renovate-labels-mutated",
     )
-    last_edited_at = pull.get("last_edited_at")
-    require(
-        last_edited_at is None or type(last_edited_at) is str,
-        "renovate-live-last-edited-at",
-    )
-    require(
-        last_edited_at == summary.get("pull_request_last_edited_at"),
-        "renovate-last-edited-at-mutated",
-    )
 
 
 PULL_EDIT_QUERY = """
@@ -2790,6 +2781,9 @@ def validate_producer_run(
                 "renovate-last-edited-at",
             )
             validate_renovate_policy(pull, summary, repository=repository)
+            validate_review_edit_revision(
+                summary, repository=repository, pull_number=pull_number
+            )
         elif evidence_version == "v6":
             legacy_v6_keys = {
                 "base_sha",

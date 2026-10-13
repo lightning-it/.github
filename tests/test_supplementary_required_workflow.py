@@ -37,6 +37,63 @@ TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def test_producer_poll_waits_for_critical_step_metadata_and_rejects_bad_evidence(self):
+        workflow = WORKFLOW.read_text()
+        permanent = workflow.split("failure_stage='permanent-producer-binding'", 1)[1]
+        loop = 'for producer_observation in $(seq 1 "${producer_limit}")' + permanent.split(
+            'for producer_observation in $(seq 1 "${producer_limit}")', 1
+        )[1].split('\n            fi\n            validate_recorded_ref', 1)[0]
+        policy = "Verify evidence-bound ancestry backmerge"
+        publish = "Publish bound neutral result"
+        success = [{"name": name, "status": "completed", "conclusion": "success"}
+                   for name in (policy, publish)]
+        pending = [success[0], {"name": publish, "status": "in_progress", "conclusion": None}]
+        rejected = [
+            [success[0], {"name": publish, "status": "completed", "conclusion": "failure"}],
+            [success[0], {"name": publish, "status": "completed", "conclusion": "skipped"}],
+            success + [success[0]],
+            [success[0], {"name": publish, "status": "mystery", "conclusion": None}],
+            [success[0], {"name": publish, "status": "in_progress"}],
+            [success[0], {"name": publish, "status": "in_progress", "conclusion": "success"}],
+        ]
+        cases = [("in_progress", pending, success, True, 2),
+                 ("completed", pending, success, True, 2),
+                 ("completed", [], success, True, 2),
+                 ("completed", success, success, True, 1),
+                 ("completed", pending, pending, False, 3)]
+        cases += [("completed", steps, success, False, 1) for steps in rejected]
+        for status, first, later, accepted, observations in cases:
+            with self.subTest(status=status, first=first, accepted=accepted), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "terminal-producer-inventory.jq").write_text(self._terminal_job_inventory_filter())
+                for name, steps in (("first", first), ("later", later)):
+                    job = {"id": 5, "run_id": 777, "head_sha": "a" * 40, "run_attempt": 1,
+                           "name": "Verify current revision policy", "status": status,
+                           "conclusion": "success" if status == "completed" else None, "steps": steps}
+                    (root / (name + ".json")).write_text(json.dumps([{"jobs": [job]}]))
+                (root / "count").write_text("0")
+                run = {"status": status}
+                script = '\n'.join((
+                    'set -euo pipefail',
+                    'RUNNER_TEMP=' + shlex.quote(directory),
+                    'REPOSITORY=lightning-it/.github', 'EVENT_HEAD=' + 'a' * 40,
+                    'producer_run_id=777', 'producer_run_attempt=1', 'producer_limit=3',
+                    'producer_evidence_ready=false', 'LI219_EVENT_MODE=disabled',
+                    'INLINE_POLICY_STEP=' + shlex.quote(policy), 'pr=\'{"user":{"type":"Bot"}}\'',
+                    'sleep() { :; }',
+                    'gh() { case "$*" in *jobs*)',
+                    'n=$(cat "$RUNNER_TEMP/count"); n=$((n+1)); printf "%s" "$n" > "$RUNNER_TEMP/count"',
+                    'if [ "$n" -eq 1 ]; then cat "$RUNNER_TEMP/first.json"; else cat "$RUNNER_TEMP/later.json"; fi ;;',
+                    '*) printf "%s\\n" ' + shlex.quote(json.dumps(run)) + ' ;; esac; }',
+                    loop, 'test "$producer_evidence_ready" = true',
+                ))
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(accepted, result.returncode == 0, result.stderr)
+                self.assertEqual(observations, int((root / "count").read_text()))
+                if not accepted and observations == 3:
+                    self.assertIn("Awaiting producer evidence.", result.stderr)
+
     def test_verifier_finalizes_explicit_failure_without_overwriting_success(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
         handler = 'finalize_failure() {' + workflow.split(
@@ -6409,7 +6466,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
             producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
-            producer_loop.index('if [ "${producer_status}" = completed ]'),
+            producer_loop.rindex('if [ "${producer_observation}" -eq "${producer_limit}" ]'),
         )
         self.assertIn('producer_evidence_ready=true', permanent)
         self.assertIn(
@@ -6500,7 +6557,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             producer_loop.index(
                 '[ "${producer_evidence_ready}" != true ] || break'
             ),
-            producer_loop.index('if [ "${producer_status}" = completed ]'),
+            producer_loop.rindex('if [ "${producer_observation}" -eq "${producer_limit}" ]'),
         )
         self.assertEqual(
             1,

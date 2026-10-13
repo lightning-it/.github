@@ -793,6 +793,81 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
 
+    def test_v6_renovate_rebinds_graphql_edit_revision_without_rest_field(self) -> None:
+        renovate = ingress_pull(
+            login="renovate[bot]", user_id=29139614, user_type="Bot"
+        )
+        renovate["base"]["ref"] = "develop"
+        renovate["head"]["ref"] = "renovate/dependency"
+        renovate["labels"] = [
+            {"name": "safe-automerge"},
+            {"name": "dependencies"},
+            {"name": "renovate"},
+        ]
+        self.assertNotIn("last_edited_at", renovate)
+
+        summary = json.loads(v6_summary("renovate"))
+        summary["pull_request_labels_sha256"] = hashlib.sha256(
+            b'["dependencies","renovate","safe-automerge"]'
+        ).hexdigest()
+        external_id = (
+            f"mlx90-current-revision:renovate:v6:17:88:{BASE}:{HEAD}"
+        )
+        run = producer_run(login="renovate[bot]")
+        renovate_identity = {
+            "login": "renovate[bot]",
+            "id": 29139614,
+            "type": "Bot",
+        }
+        run["actor"] = renovate_identity
+        run["triggering_actor"] = renovate_identity
+        run["head_branch"] = "renovate/dependency"
+        run["pull_requests"][0]["head"]["ref"] = "renovate/dependency"
+
+        check = check_run(
+            external_id,
+            json.dumps(summary),
+            "Current revision Renovate exemption passed",
+        )
+        bound = "2026-09-27T00:01:00Z"
+        summary["pull_request_last_edited_at"] = bound
+        original = evidence_api(run)
+        cases = [
+            ({"number": 17, "lastEditedAt": bound}, True),
+            ({"number": 17, "lastEditedAt": "2026-09-27T00:02:00Z"}, False),
+            ({"number": 17, "lastEditedAt": None}, False),
+            ({"number": 18, "lastEditedAt": bound}, False),
+            ({"number": 17}, False),
+            ({"number": 17, "lastEditedAt": "not-a-timestamp"}, False),
+            ({"number": 17, "lastEditedAt": False}, False),
+        ]
+        for live_pull, accepted in cases:
+            def api(arguments):
+                if arguments[:2] == ["api", "graphql"]:
+                    return {"data": {"repository": {"pullRequest": live_pull}}}
+                return original(arguments)
+
+            check["output"]["summary"] = json.dumps(summary)
+            with (self.subTest(live=live_pull),
+                  mock.patch.object(MODULE, "gh_json", side_effect=api) as request):
+                def validate():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check]}],
+                        repository="lightning-it/example", pull=renovate,
+                        pull_number=17, base_sha=BASE, head_sha=HEAD,
+                    )
+                if accepted:
+                    self.assertEqual("renovate", validate()["evidence_kind"])
+                    graphql = [call.args[0] for call in request.call_args_list
+                               if call.args[0][:2] == ["api", "graphql"]]
+                    self.assertEqual(1, len(graphql))
+                    self.assertIn("owner=lightning-it", graphql[0])
+                    self.assertIn("name=example", graphql[0])
+                    self.assertIn("number=17", graphql[0])
+                else:
+                    with self.assertRaises(MODULE.EvidenceError):
+                        validate()
+
     def test_v6_renovate_check_requires_the_exact_producer_title(self) -> None:
         renovate = ingress_pull(
             login="renovate[bot]", user_id=29139614, user_type="Bot"
@@ -1969,7 +2044,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.EvidenceError, "managed-sync-identity"):
             MODULE.expected_evidence_kind(managed, repository="lightning-it/example")
 
-    def test_renovate_policy_rebinds_labels_head_and_edit_time(self) -> None:
+    def test_renovate_policy_rebinds_labels_and_head(self) -> None:
         renovate = ingress_pull(
             login="renovate[bot]", user_id=29139614, user_type="Bot"
         )
