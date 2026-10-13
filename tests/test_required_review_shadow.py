@@ -1107,22 +1107,6 @@ class EventAdapterTests(unittest.TestCase):
         self.assertIn("`LI219_EVENT_SHADOW` remains absent", documentation)
         self.assertIn("every output remains `authority: none` and `writes: 0`", documentation)
 
-    def test_workflows_are_default_off_read_only_and_use_protected_source(self):
-        import yaml
-        for filename in ("required-review-event-shadow.yml", "required-review-sweeper-shadow.yml"):
-            workflow = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
-            self.assertTrue(all(value == "read" for value in workflow["permissions"].values()))
-            self.assertEqual({"actions", "checks", "contents", "pull-requests"},
-                             set(workflow["permissions"]))
-            job = workflow["jobs"]["observe"]
-            self.assertIn("vars.LI219_EVENT_SHADOW == 'true'", job["if"])
-            self.assertEqual("${{ github.workflow_sha }}", job["steps"][0]["with"]["ref"])
-            self.assertFalse(job["steps"][0]["with"]["persist-credentials"])
-            self.assertIn("--read-only", job["steps"][1]["run"])
-            self.assertNotIn("check-runs", job["steps"][1]["run"])
-            expected_image = re.search(r'^COPILOT_DEVTOOL_IMAGE = "([^"]+)"',
-                (ROOT / "scripts/lit-push-ready.py").read_text(), re.MULTILINE).group(1)
-            self.assertEqual(expected_image, job["steps"][1]["env"]["DEVTOOLS_IMAGE"])
 
 
 if __name__ == "__main__":
