@@ -44,14 +44,24 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         registration = next(line.strip() for line in workflow.splitlines()
                             if line.strip().startswith('trap finalize_failure ERR'))
         handler += '\n' + registration + '\n'
-        for command, status, mutates in (('exit 2', 2, True), ('false', 1, True),
-                                         ('exit 0', 0, False)):
+        owned = {'id':901, 'head_sha':'a'*40, 'name':'Protected current-revision verifier',
+                 'external_id':'owned', 'status':'in_progress', 'conclusion':None,
+                 'app':{'id':15368, 'slug':'github-actions'}}
+        cases = [('exit 2', 2, True, owned), ('false', 1, True, owned), ('exit 0', 0, False, owned)]
+        cases.extend(('exit 2', 2, False, changed) for changed in (
+            {**owned, 'external_id':'other-owner'}, {**owned, 'head_sha':'b'*40},
+            {**owned, 'id':902}, {**owned, 'status':'completed', 'conclusion':'success'},
+            {**owned, 'app':{'id':7, 'slug':'other'}}))
+        for command, status, mutates, snapshot in cases:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
                 calls = Path(directory) / 'calls'
                 script = ('set -euo pipefail\n'
                           'REPOSITORY=lightning-it/example\nPR_NUMBER=790\nEVENT_HEAD=' + 'a'*40 + '\n'
                           'reservation_id=901\nfailure_stage=permanent-producer-inventory\n'
-                          'gh() { printf "%s\\n" "$@" >' + shlex.quote(str(calls)) + '; }\n'
+                          "reservation_name='Protected current-revision verifier'\nreservation_external_id=owned\n"
+                          'gh() { if [ "${2:-}" = --method ]; then printf "%s\\n" "$@" >' +
+                          shlex.quote(str(calls)) + '; else printf "%s\\n" ' +
+                          shlex.quote(json.dumps(snapshot)) + '; fi; }\n'
                           + handler + '\n' + command + '\n')
                 result = subprocess.run([self._test_tool("bash"), "-c", script],
                                         text=True, capture_output=True, check=False)
@@ -4831,7 +4841,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     reservation_count={int(adopted)}
                     reservations=$(jq -s . "$RUNNER_TEMP/response.json")
                     gh() {{
-                      if [ "$3" = POST ]; then cat "$RUNNER_TEMP/response.json"; return; fi
+                      if [ "${{3:-}}" = POST ] || [ "${{2:-}}" != --method ]; then cat "$RUNNER_TEMP/response.json"; return 0; fi
                       printf '%s\\n' "$@" >>"$RUNNER_TEMP/failure"
                     }}
                     """) + materialization
@@ -4839,6 +4849,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                                         text=True, capture_output=True, check=False)
                 self.assertEqual(17, result.returncode, result.stderr)
                 self.assertEqual(["materialize"], (fixture / "calls").read_text().splitlines())
+                self.assertTrue((fixture / "failure").exists(), result.stderr + result.stdout)
                 failure = (fixture / "failure").read_text().splitlines()
                 self.assertEqual(1, failure.count("PATCH"))
                 self.assertIn("repos/lightning-it/example/check-runs/901", failure)

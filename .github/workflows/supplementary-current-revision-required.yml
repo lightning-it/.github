@@ -6484,15 +6484,27 @@ jobs:
           }
           finalize_failure() {
             local exit_code="$?"
+            local owned_reservation
             trap - ERR EXIT
             [ "${exit_code}" -ne 0 ] || return 0
             set +e
             echo "::error::stage=${failure_stage}" >&2
-            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=completed \
-              -f conclusion=failure \
-              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
-              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
+            if owned_reservation="$(gh api "repos/${REPOSITORY}/check-runs/${reservation_id}")" \
+              && jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                --arg external_id "${reservation_external_id}" --argjson id "${reservation_id}" '
+                  .id == $id and .head_sha == $head and .name == $name
+                  and .external_id == $external_id
+                  and .app.id == 15368 and .app.slug == "github-actions"
+                  and .status == "in_progress" and .conclusion == null
+                ' <<<"${owned_reservation}" >/dev/null; then
+              gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+                -f status=completed \
+                -f conclusion=failure \
+                -f 'output[title]=Protected current-revision evidence is absent or invalid' \
+                -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
+            else
+              echo 'Reservation ownership unavailable or changed; no cleanup mutation.' >&2
+            fi
             exit "${exit_code}"
           }
           SH
