@@ -6471,6 +6471,34 @@ jobs:
               sleep 2
             done
           }
+          validate_prior_reservation_owner() {
+            local prior_run_id prior_verifier_run
+            if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:([1-9][0-9]*):${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              prior_run_id="${BASH_REMATCH[1]}"
+            elif [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$ ]]; then
+              prior_run_id="${BASH_REMATCH[1]}"
+            else
+              return 1
+            fi
+            prior_verifier_run="$(gh api "repos/${REPOSITORY}/actions/runs/${prior_run_id}")" || return 1
+            jq -e --arg head "${EVENT_HEAD}" --arg repository "${REPOSITORY}" \
+              --argjson pr_number "${PR_NUMBER}" --argjson run_id "${prior_run_id}" \
+              --argjson workflow_id "${current_workflow_id}" '
+                .id == $run_id and .repository.full_name == $repository
+                and .workflow_id == $workflow_id and .event == "pull_request_target"
+                and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                and .status == "completed"
+                and (.conclusion == "success" or .conclusion == "failure")
+                and .head_sha == $head and (.run_attempt == 1 or .run_attempt == 2)
+                and (
+                  .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
+                )
+              ' <<<"${prior_verifier_run}" >/dev/null
+          }
           validate_created_reservation() {
             reservation_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<<"${reservation}")"
             jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
@@ -6491,9 +6519,11 @@ jobs:
             echo "::error::stage=${failure_stage}" >&2
             if owned_reservation="$(gh api "repos/${REPOSITORY}/check-runs/${reservation_id}")" \
               && jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
-                --arg external_id "${reservation_external_id}" --argjson id "${reservation_id}" '
+                --arg external_id "${reservation_external_id}" \
+                --arg prior "${cleanup_prior_external_id:-${reservation_external_id}}" \
+                --argjson id "${reservation_id}" '
                   .id == $id and .head_sha == $head and .name == $name
-                  and .external_id == $external_id
+                  and (.external_id == $external_id or .external_id == $prior)
                   and .app.id == 15368 and .app.slug == "github-actions"
                   and .status == "in_progress" and .conclusion == null
                 ' <<<"${owned_reservation}" >/dev/null; then
@@ -6821,38 +6851,12 @@ jobs:
           failure_stage='reservation-materialization'
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/reservation-readback.sh"
+          export cleanup_prior_external_id=''
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0 and floor == .)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
-            if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
-              :
-            else
-              [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$ ]]
-              prior_run_id="${BASH_REMATCH[1]}"
-              prior_verifier_run="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${prior_run_id}")"
-              jq -e \
-                --arg head "${EVENT_HEAD}" \
-                --argjson pr_number "${PR_NUMBER}" \
-                --argjson run_id "${prior_run_id}" \
-                --argjson workflow_id "${current_workflow_id}" '
-                  .id == $run_id
-                  and .workflow_id == $workflow_id
-                  and .event == "pull_request_target"
-                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
-                  and .status == "completed"
-                  and (.conclusion == "success" or .conclusion == "failure")
-                  and .head_sha == $head
-                  and ((.run_attempt == 1) or (.run_attempt == 2))
-                  and (
-                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
-                  )
-                ' <<<"${prior_verifier_run}" >/dev/null
-            fi
+            validate_prior_reservation_owner
+            export cleanup_prior_external_id="${prior_external_id}"
             trap finalize_failure ERR EXIT
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \

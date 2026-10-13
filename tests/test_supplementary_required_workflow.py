@@ -4607,20 +4607,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent.count('-f external_id="${reservation_external_id}"'),
             3,
         )
+        owner = workflow.split('          validate_prior_reservation_owner() {', 1)[1].split(
+            '          validate_created_reservation() {', 1)[0]
+        self.assertIn('validate_prior_reservation_owner\n', permanent)
         self.assertIn(
-            "^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
-            permanent,
+            "^rep60-required-workflow:v3:([1-9][0-9]*):${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
+            owner,
         )
         self.assertIn(
             "^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$",
-            permanent,
+            owner,
         )
-        self.assertIn('prior_verifier_run="$(gh api', permanent)
-        self.assertIn('.workflow_id == $workflow_id', permanent)
-        self.assertIn('.status == "completed"', permanent)
+        self.assertIn('prior_verifier_run="$(gh api', owner)
+        self.assertIn('.workflow_id == $workflow_id', owner)
+        self.assertIn('.status == "completed"', owner)
         self.assertIn(
             '(.conclusion == "success" or .conclusion == "failure")',
-            permanent,
+            owner,
         )
         self.assertLess(
             permanent.index('prior_external_id="$(jq -er'),
@@ -4811,8 +4814,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_owned_reservation_materialization_failure_is_finalized(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        helper = "validate_created_reservation() {" + workflow.split(
-            "          validate_created_reservation() {", 1
+        helper = "validate_prior_reservation_owner() {" + workflow.split(
+            "          validate_prior_reservation_owner() {", 1
         )[1].split("          SH\n", 1)[0]
         materialization = "failure_stage='reservation-materialization'" + workflow.split(
             "failure_stage='reservation-materialization'", 1
@@ -4822,12 +4825,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                  "head_sha": head, "status": "in_progress", "conclusion": None,
                  "external_id": f"rep60-required-workflow:v3:201:225:{base}:{head}",
                  "app": {"id": 15368, "slug": "github-actions"}}
-        for adopted in (False, True):
-            with self.subTest(adopted=adopted), tempfile.TemporaryDirectory() as directory:
+        prior = {'id':201, 'repository':{'full_name':'lightning-it/example'},
+                 'workflow_id':555, 'event':'pull_request_target', 'status':'completed',
+                 'conclusion':'failure', 'head_sha':head, 'run_attempt':1,
+                 'path':'.github/workflows/supplementary-current-revision-required.yml',
+                 'display_title':f'Protected current revision PR #225 opened {head}'}
+        current_external_id = f"rep60-required-workflow:v3:202:225:{base}:{head}"
+        for adopted, applied in ((False, False), (True, False), (True, True)):
+            with self.subTest(adopted=adopted, applied=applied), tempfile.TemporaryDirectory() as directory:
                 fixture = Path(directory)
-                (fixture / "response.json").write_text(json.dumps(check))
+                (fixture / "response.json").write_text(json.dumps(
+                    check if adopted else {**check, 'external_id':current_external_id}))
+                (fixture / "prior.json").write_text(json.dumps(prior))
                 (fixture / "reservation-readback.sh").write_text(helper + "\n" +
-                    'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; return 17; }\n')
+                    'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; '
+                    'if [ "$APPLIED" = 1 ]; then jq --arg current "$reservation_external_id" '
+                    '\'.external_id=$current\' "$RUNNER_TEMP/response.json" >"$RUNNER_TEMP/rebound.json"; '
+                    'mv "$RUNNER_TEMP/rebound.json" "$RUNNER_TEMP/response.json"; fi; return 17; }\n')
                 script = textwrap.dedent(f"""\
                     set -euo pipefail
                     RUNNER_TEMP={shlex.quote(directory)}
@@ -4837,10 +4851,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     EVENT_HEAD={head}
                     EVENT_BASE={base}
                     reservation_name='Protected current-revision verifier'
-                    reservation_external_id={check['external_id']}
+                    reservation_external_id={current_external_id}
+                    current_workflow_id=555
+                    APPLIED={int(applied)}
                     reservation_count={int(adopted)}
                     reservations=$(jq -s . "$RUNNER_TEMP/response.json")
                     gh() {{
+                      if [[ "${{2:-}}" == */actions/runs/201 ]]; then cat "$RUNNER_TEMP/prior.json"; return 0; fi
                       if [ "${{3:-}}" = POST ] || [ "${{2:-}}" != --method ]; then cat "$RUNNER_TEMP/response.json"; return 0; fi
                       printf '%s\\n' "$@" >>"$RUNNER_TEMP/failure"
                     }}
@@ -4854,6 +4871,34 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual(1, failure.count("PATCH"))
                 self.assertIn("repos/lightning-it/example/check-runs/901", failure)
                 self.assertIn("conclusion=failure", failure)
+
+    def test_cleanup_prior_owner_requires_a_completed_bound_native_run(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = 'validate_prior_reservation_owner() {' + workflow.split(
+            '          validate_prior_reservation_owner() {', 1)[1].split(
+                '          validate_created_reservation() {', 1)[0]
+        head, base = 'a'*40, 'b'*40
+        prior = {'id':201, 'repository':{'full_name':'lightning-it/example'},
+                 'workflow_id':555, 'event':'pull_request_target', 'status':'completed',
+                 'conclusion':'failure', 'head_sha':head, 'run_attempt':1,
+                 'path':'.github/workflows/supplementary-current-revision-required.yml',
+                 'display_title':f'Protected current revision PR #225 opened {head}'}
+        mutations = [{}, {'id':202}, {'workflow_id':556}, {'event':'workflow_dispatch'},
+                     {'status':'in_progress'}, {'run_attempt':3}, {'head_sha':'c'*40},
+                     {'repository':{'full_name':'lightning-it/other'}}, {'display_title':'unbound'}]
+        for version in (2, 3):
+            external = (f'rep60-required-workflow:v{version}:201:225:' +
+                        (f'{base}:' if version == 3 else '') + head)
+            for mutation in mutations:
+                with self.subTest(version=version, mutation=mutation):
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\ncurrent_workflow_id=555\n'
+                              'prior_external_id=' + shlex.quote(external) + '\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps({**prior, **mutation})) + '; }\n'
+                              + helper + '\nvalidate_prior_reservation_owner\n')
+                    result = subprocess.run([self._test_tool('bash'), '-c', script],
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(not mutation, result.returncode == 0, result.stderr)
 
     def test_existing_reservation_id_rejects_fractional_identity_before_patch(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -5333,15 +5378,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [1, 2],
         )
 
-        prior_block = workflow.split('prior_verifier_run="$(gh api', 1)[1].split(
-            '            reservation_url=', 1
-        )[0]
+        prior_block = workflow.split('          validate_prior_reservation_owner() {', 1)[1].split(
+            '          validate_created_reservation() {', 1)[0]
         prior_filter = prior_block.split(
             '--argjson workflow_id "${current_workflow_id}" \'\n', 1
-        )[1].split('\n                \' <<<"${prior_verifier_run}"', 1)[0]
+        )[1].split('\n              \' <<<"${prior_verifier_run}"', 1)[0]
         title = f"Protected current revision PR #225 opened {head}"
         protected_run = {
             "id": 201,
+            "repository": {"full_name": "lightning-it/example"},
             "workflow_id": 335,
             "event": "pull_request_target",
             "path": ".github/workflows/supplementary-current-revision-required.yml",
@@ -5352,6 +5397,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "display_title": title,
         }
         prior_args = [
+            "--arg", "repository", "lightning-it/example",
             "--arg",
             "head",
             head,
