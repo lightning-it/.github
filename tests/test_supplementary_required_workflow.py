@@ -4853,6 +4853,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     reservation_name='Protected current-revision verifier'
                     reservation_external_id={current_external_id}
                     current_workflow_id=555
+                    GITHUB_RUN_ID=202
+                    GITHUB_RUN_ATTEMPT=1
                     APPLIED={int(applied)}
                     reservation_count={int(adopted)}
                     reservations=$(jq -s . "$RUNNER_TEMP/response.json")
@@ -4893,8 +4895,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 with self.subTest(version=version, mutation=mutation):
                     script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
                               f'EVENT_BASE={base}\nEVENT_HEAD={head}\ncurrent_workflow_id=555\n'
+                              'GITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT=1\n'
                               'prior_external_id=' + shlex.quote(external) + '\n'
                               'gh() { printf "%s\\n" ' + shlex.quote(json.dumps({**prior, **mutation})) + '; }\n'
+                              + helper + '\nvalidate_prior_reservation_owner\n')
+                    result = subprocess.run([self._test_tool('bash'), '-c', script],
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(not mutation, result.returncode == 0, result.stderr)
+
+    def test_same_run_reservation_requires_the_exact_active_native_attempt(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = 'validate_prior_reservation_owner() {' + workflow.split(
+            '          validate_prior_reservation_owner() {', 1)[1].split(
+                '          validate_created_reservation() {', 1)[0]
+        head, base = 'a'*40, 'b'*40
+        current = {'id':202, 'repository':{'full_name':'lightning-it/example'},
+                   'workflow_id':555, 'event':'pull_request_target', 'status':'in_progress',
+                   'conclusion':None, 'head_sha':head,
+                   'path':'.github/workflows/supplementary-current-revision-required.yml',
+                   'display_title':f'Protected current revision PR #225 opened {head}'}
+        for attempt in (1, 2, 3, 4):
+            for mutation in ({}, {'run_attempt':attempt+1}, {'status':'completed', 'conclusion':'failure'},
+                             {'status':'queued'}, {'id':201}, {'workflow_id':556}, {'head_sha':'c'*40}):
+                with self.subTest(attempt=attempt, mutation=mutation):
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\ncurrent_workflow_id=555\n'
+                              f'GITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT={attempt}\n'
+                              f'prior_external_id=rep60-required-workflow:v3:202:225:{base}:{head}\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps(
+                                  {**current, 'run_attempt':attempt, **mutation})) + '; }\n'
                               + helper + '\nvalidate_prior_reservation_owner\n')
                     result = subprocess.run([self._test_tool('bash'), '-c', script],
                                             text=True, capture_output=True, check=False)
@@ -5398,6 +5427,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         }
         prior_args = [
             "--arg", "repository", "lightning-it/example",
+            "--argjson", "current_run", "202", "--argjson", "current_attempt", "1",
             "--arg",
             "head",
             head,

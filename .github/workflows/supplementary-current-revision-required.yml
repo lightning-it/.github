@@ -6483,13 +6483,20 @@ jobs:
             prior_verifier_run="$(gh api "repos/${REPOSITORY}/actions/runs/${prior_run_id}")" || return 1
             jq -e --arg head "${EVENT_HEAD}" --arg repository "${REPOSITORY}" \
               --argjson pr_number "${PR_NUMBER}" --argjson run_id "${prior_run_id}" \
+              --argjson current_run "${GITHUB_RUN_ID}" --argjson current_attempt "${GITHUB_RUN_ATTEMPT}" \
               --argjson workflow_id "${current_workflow_id}" '
                 .id == $run_id and .repository.full_name == $repository
                 and .workflow_id == $workflow_id and .event == "pull_request_target"
                 and .path == ".github/workflows/supplementary-current-revision-required.yml"
-                and .status == "completed"
-                and (.conclusion == "success" or .conclusion == "failure")
-                and .head_sha == $head and (.run_attempt == 1 or .run_attempt == 2)
+                and .head_sha == $head
+                and (if $run_id == $current_run then
+                  .status == "in_progress" and .conclusion == null
+                  and .run_attempt == $current_attempt
+                else
+                  .status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure")
+                  and (.run_attempt == 1 or .run_attempt == 2)
+                end)
                 and (
                   .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
                   or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
