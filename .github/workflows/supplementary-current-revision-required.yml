@@ -3547,6 +3547,47 @@ jobs:
           printf 'producer_kind=%s\nproducer_run_id=%s\n' \
             "${producer_kind}" "${producer_run_id}" >>"${GITHUB_OUTPUT}"
 
+      - name: Prepare protected Renovate metadata reader
+        if: steps.terminal-producer.outputs.producer_kind == 'renovate'
+        run: |
+          set -euo pipefail
+          umask 077
+          cat >"${RUNNER_TEMP}/renovate-metadata.sh" <<'RENOVATE_METADATA'
+          read_renovate_metadata_revision() {
+            local response query
+            cat >"${RUNNER_TEMP}/renovate-live-pr.json"
+            query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){nameWithOwner pullRequest(number:$number){number state isDraft baseRefOid headRefOid headRepository{nameWithOwner} title body lastEditedAt}}}'
+            response="$(gh api graphql -f query="${query}" \
+              -f owner="${REPOSITORY%%/*}" -f name="${REPOSITORY#*/}" \
+              -F number="${PR_NUMBER}")" || return 1
+            TZ=UTC LC_ALL=C jq -e --slurpfile pr "${RUNNER_TEMP}/renovate-live-pr.json" \
+              --arg repo "${REPOSITORY}" --arg base "${EVENT_BASE}" \
+              --arg head "${EVENT_HEAD}" --argjson number "${PR_NUMBER}" '
+              def timestamp:
+                type == "string"
+                and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+                and .[0:4] != "0000"
+                and (try (. as $original
+                  | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime | gmtime
+                  | strftime("%Y-%m-%dT%H:%M:%SZ") == $original) catch false);
+              (if has("errors") then (.errors | type == "array" and length == 0) else true end)
+              and ($pr | length == 1)
+              and ($pr[0].updated_at | timestamp)
+              and .data.repository.nameWithOwner == $repo
+              and (.data.repository.pullRequest as $live |
+                $live.number == $number and $live.state == "OPEN" and $live.isDraft == false
+                and $live.baseRefOid == $base and $live.headRefOid == $head
+                and $live.headRepository.nameWithOwner == $repo
+                and $live.title == $pr[0].title and $live.body == ($pr[0].body // "")
+                and ($live | has("lastEditedAt"))
+                and ($live.lastEditedAt == null or
+                  (($live.lastEditedAt | timestamp) and $live.lastEditedAt <= $pr[0].updated_at)))
+              ' <<<"${response}" >/dev/null || return 1
+            jq -c '.data.repository.pullRequest.lastEditedAt' <<<"${response}"
+          }
+          RENOVATE_METADATA
+          chmod 0400 "${RUNNER_TEMP}/renovate-metadata.sh"
+
       - name: Validate one deterministic Renovate producer handoff
         id: renovate-producer
         if: >-
@@ -3594,12 +3635,14 @@ jobs:
           labels_sha256="$(printf '%s' "${labels_json}" \
             | sha256sum | cut -d ' ' -f 1)"
           [[ "${labels_sha256}" =~ ^[0-9a-f]{64}$ ]]
-          last_edited_at="$(jq -r '.last_edited_at // "null"' <<<"${pr}")"
+          # shellcheck source=/dev/null
+          source "${RUNNER_TEMP}/renovate-metadata.sh"
+          last_edited_at="$(printf '%s\n' "${pr}" | read_renovate_metadata_revision)"
 
           reviews="$(gh api --paginate --slurp \
             "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100")"
           jq -e --arg head "${EVENT_HEAD}" '
-            [.[].[]? |
+            [.[][]? |
               select(.user.login == "copilot-pull-request-reviewer[bot]") |
               select(.commit_id == $head)] | length == 0
             ' <<<"${reviews}" >/dev/null
@@ -3631,6 +3674,9 @@ jobs:
               and (.output.summary | type) == "string"
             ' <<<"${check}" >/dev/null
           summary="$(jq -er '.output.summary | fromjson' <<<"${check}")"
+          title_sha256="$(jq -je '.title | select(type == "string")' <<<"${pr}" | sha256sum | cut -d ' ' -f 1)"
+          jq -e --arg text "Renovate title SHA-256: ${title_sha256}" \
+            '.output.text == $text' <<<"${check}" >/dev/null
 
           repository="$(gh api "repos/${REPOSITORY}")"
           controller_ref="$(jq -er \
@@ -3659,7 +3705,7 @@ jobs:
             --arg controller_ref "${controller_ref}" \
             --arg head "${EVENT_HEAD}" \
             --arg labels_sha256 "${labels_sha256}" \
-            --arg last_edited_at "${last_edited_at}" \
+            --argjson last_edited_at "${last_edited_at}" \
             --arg repository "${REPOSITORY}" \
             --arg run_url "${run_url}" \
             --argjson pr_number "${PR_NUMBER}" \
@@ -3679,9 +3725,7 @@ jobs:
               and .controller_ref == $controller_ref
               and .pull_request_number == $pr_number
               and .producer_run_id == $run_id
-              and .pull_request_last_edited_at == (
-                if $last_edited_at == "null"
-                then null else $last_edited_at end)
+              and .pull_request_last_edited_at == $last_edited_at
               and .pull_request_labels_sha256 == $labels_sha256
               and .review_id == null
               and .review_path
@@ -3770,6 +3814,7 @@ jobs:
             echo 'verified=true'
             echo "labels_sha256=${labels_sha256}"
             echo "last_edited_at=${last_edited_at}"
+            echo "title_sha256=${title_sha256}"
           } >>"${GITHUB_OUTPUT}"
 
       - name: Validate an Exact-Revision producer handoff
@@ -6351,11 +6396,24 @@ jobs:
           cat >"${RUNNER_TEMP}/reservation-readback.sh" <<'SH'
           patch_reservation_with_readback() {
             local reservation_attempt reservation_response reservation_snapshot live_pr
+            local reservation_field reservation_status='' reservation_conclusion=''
             local reservation_error="${RUNNER_TEMP}/reservation-api-error"
             local reservation_title='Protected verifier is evaluating the live revision'
             local reservation_summary="PR #${PR_NUMBER}; head ${EVENT_HEAD}."
             if [ "${reservation_count}" -eq 1 ]; then
               reservation_title='Protected verifier is re-evaluating the live revision'
+            fi
+            for reservation_field in "$@"; do
+              case "${reservation_field}" in
+                status=*) reservation_status="${reservation_field#status=}" ;;
+                conclusion=*) reservation_conclusion="${reservation_field#conclusion=}" ;;
+              esac
+            done
+            if [ "${reservation_status}" = completed ]; then
+              test "${reservation_conclusion}" = failure || return 1
+            else
+              test "${reservation_status}" = in_progress || return 1
+              test -z "${reservation_conclusion}" || return 1
             fi
             for reservation_attempt in 1 2 3 4 5; do
               live_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")" || return 1
@@ -6369,10 +6427,12 @@ jobs:
                 jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
                   --arg external_id "${reservation_external_id}" \
                   --arg title "${reservation_title}" --arg summary "${reservation_summary}" \
+                  --arg status "${reservation_status}" --arg conclusion "${reservation_conclusion}" \
                   --arg url "${reservation_url}" --argjson check_id "${reservation_id}" '
                     .id == $check_id and .head_sha == $head and .name == $name
                     and .external_id == $external_id and .details_url == $url
-                    and .status == "in_progress" and .conclusion == null
+                    and .status == $status
+                    and .conclusion == (if $conclusion == "" then null else $conclusion end)
                     and .output.title == $title and .output.summary == $summary
                     and .app.id == 15368 and .app.slug == "github-actions"
                   ' <<<"${reservation_response}" >/dev/null || return 1
@@ -6402,9 +6462,11 @@ jobs:
                     ' <<<"${reservation_snapshot}" >/dev/null || return 1
                   if jq -e --arg external_id "${reservation_external_id}" \
                     --arg title "${reservation_title}" --arg summary "${reservation_summary}" \
+                    --arg status "${reservation_status}" --arg conclusion "${reservation_conclusion}" \
                     --arg url "${reservation_url}" '
                       .external_id == $external_id and .details_url == $url
-                      and .status == "in_progress" and .conclusion == null
+                      and .status == $status
+                      and .conclusion == (if $conclusion == "" then null else $conclusion end)
                       and .output.title == $title and .output.summary == $summary
                     ' <<<"${reservation_snapshot}" >/dev/null; then
                     printf '%s\n' "${reservation_snapshot}"
@@ -6430,6 +6492,41 @@ jobs:
               sleep 2
             done
           }
+          validate_prior_reservation_owner() {
+            local prior_run_id prior_verifier_run
+            if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:([1-9][0-9]*):${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
+              prior_run_id="${BASH_REMATCH[1]}"
+            elif [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$ ]]; then
+              prior_run_id="${BASH_REMATCH[1]}"
+            else
+              return 1
+            fi
+            prior_verifier_run="$(gh api "repos/${REPOSITORY}/actions/runs/${prior_run_id}")" || return 1
+            jq -e --arg head "${EVENT_HEAD}" --arg repository "${REPOSITORY}" \
+              --argjson pr_number "${PR_NUMBER}" --argjson run_id "${prior_run_id}" \
+              --argjson current_run "${GITHUB_RUN_ID}" --argjson current_attempt "${GITHUB_RUN_ATTEMPT}" \
+              --argjson workflow_id "${current_workflow_id}" '
+                .id == $run_id and .repository.full_name == $repository
+                and .workflow_id == $workflow_id and .event == "pull_request_target"
+                and .path == ".github/workflows/supplementary-current-revision-required.yml"
+                and .head_sha == $head
+                and (if $run_id == $current_run then
+                  .status == "in_progress" and .conclusion == null
+                  and .run_attempt == $current_attempt
+                else
+                  .status == "completed"
+                  and (.conclusion == "success" or .conclusion == "failure")
+                  and (.run_attempt == 1 or .run_attempt == 2)
+                end)
+                and (
+                  .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
+                  or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
+                )
+              ' <<<"${prior_verifier_run}" >/dev/null
+          }
           validate_created_reservation() {
             reservation_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<<"${reservation}")"
             jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
@@ -6440,6 +6537,80 @@ jobs:
                 and .app.id == 15368 and .app.slug == "github-actions"
               ' <<<"${reservation}" >/dev/null
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
+          }
+          prepare_reservation_patch_state() {
+            jq -e '.[0] | has("conclusion") and (
+              if .status == "completed" then
+                (.conclusion | IN("success", "failure", "neutral", "cancelled",
+                  "timed_out", "action_required", "skipped", "stale"))
+              else
+                (.status | IN("queued", "in_progress", "waiting", "pending", "requested"))
+                and .conclusion == null
+              end)' <<<"${reservations}" >/dev/null || return 1
+            if jq -e '.[0].status == "completed"' <<<"${reservations}" >/dev/null; then
+              # GitHub retains a completed check's conclusion when status alone
+              # is PATCHed. Keep reevaluation failed until all native proof passes.
+              reservation_patch_state=(-f status=completed -f conclusion=failure)
+            fi
+          }
+          recover_created_reservation_identity() {
+            local pages observation
+            for observation in 1 2 3 4 5; do
+              if pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")" \
+                && reservation_id="$(jq -er --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                  --arg external "${reservation_external_id}" '
+                    select(type == "array" and length > 0
+                      and all(.[]; type == "object" and (.check_runs | type == "array")
+                        and (.total_count | type == "number" and . >= 0 and floor == .))) |
+                    [.[].check_runs[]] as $checks |
+                    select(all(.[]; .total_count == ($checks | length))
+                      and all($checks[]; type == "object" and (.id | type == "number" and . > 0 and floor == .))
+                      and ($checks | map(.id) | unique | length) == ($checks | length)) |
+                    [$checks[] | select(.head_sha == $head and .name == $name
+                      and .external_id == $external and .app.id == 15368 and .app.slug == "github-actions")] |
+                    select(length == 1) | .[0] |
+                    select(.status == "in_progress" and has("conclusion") and .conclusion == null) | .id
+                  ' <<<"${pages}")"; then
+                return 0
+              fi
+              if [ "${observation}" -lt 5 ]; then sleep 2; fi
+            done
+            return 1
+          }
+          finalize_failure() {
+            local exit_code="$?"
+            local owned_reservation
+            trap - ERR EXIT
+            [ "${exit_code}" -ne 0 ] || return 0
+            set +e
+            echo "::error::stage=${failure_stage}" >&2
+            if [ "${reservation_creation_pending:-false}" = true ]; then
+              reservation_id=''
+              if ! recover_created_reservation_identity; then
+                echo 'Unknown create outcome has no uniquely authenticated reservation; no cleanup mutation.' >&2
+                exit "${exit_code}"
+              fi
+            fi
+            if owned_reservation="$(gh api "repos/${REPOSITORY}/check-runs/${reservation_id}")" \
+              && jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                --arg external_id "${reservation_external_id}" \
+                --arg prior "${cleanup_prior_external_id:-${reservation_external_id}}" \
+                --argjson id "${reservation_id}" '
+                  .id == $id and .head_sha == $head and .name == $name
+                  and (.external_id == $external_id or .external_id == $prior)
+                  and .app.id == 15368 and .app.slug == "github-actions"
+                  and .status == "in_progress" and has("conclusion") and .conclusion == null
+                ' <<<"${owned_reservation}" >/dev/null; then
+              gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+                -f status=completed \
+                -f conclusion=failure \
+                -f 'output[title]=Protected current-revision evidence is absent or invalid' \
+                -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
+            else
+              echo 'Reservation ownership unavailable or changed; no cleanup mutation.' >&2
+            fi
+            exit "${exit_code}"
           }
           SH
           chmod 0400 "${RUNNER_TEMP}/reservation-readback.sh"
@@ -6497,6 +6668,7 @@ jobs:
           # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
+          export failure_stage
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/required-init.sh"
           trap report_failure_stage EXIT
@@ -6589,12 +6761,18 @@ jobs:
             echo "Too many foreign protected verifier reservations exist for this commit." >&2
             exit 1
           fi
+          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            test "${LI259_INFRA_RETRY:-disabled}" = enabled
+            test -f "${RUNNER_TEMP}/li259-entry-authorized"
+          fi
           current_verifier_run="$(gh api \
             "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
           current_workflow_id="$(jq -er \
             --arg action "${EVENT_ACTION}" \
             --arg head "${EVENT_HEAD}" \
             --argjson pr_number "${PR_NUMBER}" \
+            --argjson attempt "${GITHUB_RUN_ATTEMPT}" \
             --argjson run_id "${GITHUB_RUN_ID}" '
               select(
                 .id == $run_id
@@ -6603,7 +6781,7 @@ jobs:
                 and .status == "in_progress"
                 and .conclusion == null
                 and .head_sha == $head
-                and ((.run_attempt == 1) or (.run_attempt == 2))
+                and .run_attempt == $attempt
                 and .display_title == (
                   "Protected current revision PR #"
                   + ($pr_number | tostring) + " " + $action + " " + $head
@@ -6754,41 +6932,18 @@ jobs:
           failure_stage='reservation-materialization'
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/reservation-readback.sh"
+          export cleanup_prior_external_id=''
           if [ "${reservation_count}" -eq 1 ]; then
             reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0 and floor == .)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
-            if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
-              :
-            else
-              [[ "${prior_external_id}" =~ ^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$ ]]
-              prior_run_id="${BASH_REMATCH[1]}"
-              prior_verifier_run="$(gh api \
-                "repos/${REPOSITORY}/actions/runs/${prior_run_id}")"
-              jq -e \
-                --arg head "${EVENT_HEAD}" \
-                --argjson pr_number "${PR_NUMBER}" \
-                --argjson run_id "${prior_run_id}" \
-                --argjson workflow_id "${current_workflow_id}" '
-                  .id == $run_id
-                  and .workflow_id == $workflow_id
-                  and .event == "pull_request_target"
-                  and .path == ".github/workflows/supplementary-current-revision-required.yml"
-                  and .status == "completed"
-                  and (.conclusion == "success" or .conclusion == "failure")
-                  and .head_sha == $head
-                  and ((.run_attempt == 1) or (.run_attempt == 2))
-                  and (
-                    .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " opened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " synchronize " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " reopened " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " ready_for_review " + $head)
-                    or .display_title == ("Protected current revision PR #" + ($pr_number | tostring) + " edited " + $head)
-                  )
-                ' <<<"${prior_verifier_run}" >/dev/null
-            fi
+            validate_prior_reservation_owner
+            export cleanup_prior_external_id="${prior_external_id}"
+            trap finalize_failure ERR EXIT
+            reservation_patch_state=(-f status=in_progress)
+            prepare_reservation_patch_state
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=in_progress \
+              "${reservation_patch_state[@]}" \
               -f external_id="${reservation_external_id}" \
               -f "details_url=${reservation_url}" \
               -f 'output[title]=Protected verifier is re-evaluating the live revision' \
@@ -6806,6 +6961,9 @@ jobs:
                 and .app.slug == "github-actions"
               ' <<<"${reservation}" >/dev/null
           else
+            reservation_id=''
+            export reservation_creation_pending=true
+            trap finalize_failure ERR EXIT
             reservation="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
               -f name="${reservation_name}" \
               -f head_sha="${EVENT_HEAD}" \
@@ -6814,6 +6972,7 @@ jobs:
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             validate_created_reservation
+            export reservation_creation_pending=false
             reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
@@ -6834,19 +6993,6 @@ jobs:
                 and .app.slug == "github-actions"
               ' <<<"${reservation}" >/dev/null
           fi
-
-          finalize_failure() {
-            local exit_code="$?"
-            trap - ERR
-            set +e
-            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=completed \
-              -f conclusion=failure \
-              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
-              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
-            exit "${exit_code}"
-          }
-          trap finalize_failure ERR
 
           test "${draft}" = false
           controller_seed_verified=false
@@ -7944,6 +8090,8 @@ jobs:
             ${{ steps.renovate-producer.outputs.labels_sha256 }}
           RENOVATE_LAST_EDITED_AT: >-
             ${{ steps.renovate-producer.outputs.last_edited_at }}
+          RENOVATE_TITLE_SHA256: >-
+            ${{ steps.renovate-producer.outputs.title_sha256 }}
           ISSUE_564_STAGE_1_SOURCE: >-
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           ISSUE_564_PR568_SOURCE: >-
@@ -8448,8 +8596,11 @@ jobs:
                 and ([.labels[].name] | index("safe-automerge") != null)
                 and ([.labels[].name] | index("breaking-update") == null)
               ' <<<"${final_pr}" >/dev/null
-            test "$(jq -r '.last_edited_at // "null"' \
-              <<<"${final_pr}")" = "${RENOVATE_LAST_EDITED_AT}"
+            # shellcheck source=/dev/null
+            source "${RUNNER_TEMP}/renovate-metadata.sh"
+            test "$(printf '%s\n' "${final_pr}" | read_renovate_metadata_revision)" = "${RENOVATE_LAST_EDITED_AT}"
+            [[ "${RENOVATE_TITLE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            test "$(jq -je '.title | select(type == "string")' <<<"${final_pr}" | sha256sum | cut -d ' ' -f 1)" = "${RENOVATE_TITLE_SHA256}"
             final_labels="$(jq -cer \
               'if (.labels | type) == "array"
                and all(.labels[];
