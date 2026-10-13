@@ -6,6 +6,7 @@ import json
 import os
 import runpy
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -4537,7 +4538,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             source_binding,
         )
         self.assertIn(
-            'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0)\'',
+            'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0 and floor == .)\'',
             permanent,
         )
         self.assertIn(
@@ -4762,6 +4763,22 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 self.assertEqual((fixture / "calls").read_text().splitlines(), ["POST", "PATCH"] if accepted else ["POST"])
+
+    def test_existing_reservation_id_rejects_fractional_identity_before_patch(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        extraction = workflow.split("failure_stage='reservation-materialization'", 1)[1].split(
+            '            reservation_id=', 1)[1].split('\n', 1)[0]
+        for value in (901, 901.5, 0, -1, "901", None, True):
+            with self.subTest(check_id=value), tempfile.TemporaryDirectory() as directory:
+                calls = Path(directory) / 'calls'
+                script = ('set -euo pipefail\n'
+                          + 'reservations=' + shlex.quote(json.dumps([{'id': value}])) + '\n'
+                          + 'reservation_id=' + extraction + '\n'
+                          + 'printf PATCH >' + shlex.quote(str(calls)) + '\n')
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(value == 901 and type(value) is int, result.returncode == 0)
+                self.assertEqual(value == 901 and type(value) is int, calls.exists())
 
     def test_only_proven_same_workflow_foreign_reservations_are_retired(
         self,

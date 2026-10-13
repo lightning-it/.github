@@ -6755,7 +6755,7 @@ jobs:
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/reservation-readback.sh"
           if [ "${reservation_count}" -eq 1 ]; then
-            reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0)' <<<"${reservations}")"
+            reservation_id="$(jq -er '.[0].id | select(type == "number" and . > 0 and floor == .)' <<<"${reservations}")"
             prior_external_id="$(jq -er '.[0].external_id | select(type == "string")' <<<"${reservations}")"
             if [[ "${prior_external_id}" =~ ^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$ ]]; then
               :
