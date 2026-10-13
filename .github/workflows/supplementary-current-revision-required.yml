@@ -6510,6 +6510,7 @@ jobs:
           # shellcheck disable=SC2153
           set -euo pipefail
           failure_stage='initialization'
+          export failure_stage
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/required-init.sh"
           trap report_failure_stage EXIT
