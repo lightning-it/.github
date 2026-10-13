@@ -8073,6 +8073,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 inventory = json.loads(result.stdout)
                 self.assertEqual([], inventory["disallowed"])
                 self.assertFalse(inventory["dispatch_failed"])
+        for runner_id in (None, 0):
+            with self.subTest(pending_runner=runner_id):
+                pending = {**child, "status": "queued", "conclusion": None,
+                           "runner_id": runner_id, "steps": []}
+                result = evaluate([pending, parent])
+                self.assertEqual(0, result.returncode, result.stderr)
+                inventory = json.loads(result.stdout)
+                self.assertEqual([], inventory["disallowed"])
+                self.assertFalse(inventory["dispatch_failed"])
         inert = {**child, "conclusion": "skipped", "runner_id": None, "steps": []}
         result = evaluate([inert])
         self.assertEqual(0, result.returncode, result.stderr)

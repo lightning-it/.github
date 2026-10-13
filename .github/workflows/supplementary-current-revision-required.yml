@@ -5432,6 +5432,10 @@ jobs:
               then error("invalid reusable producer identity")
             elif ($children[0]|runnerless and .status=="completed"
               and .conclusion=="skipped") then .
+            elif ($children[0]|(.status|IN("queued","pending","requested","waiting"))
+              and has("conclusion") and .conclusion==null
+              and has("runner_id") and (.runner_id==null or .runner_id==0)
+              and .steps==[]) then .
             elif ($children[0]|(.runner_id|type)=="number" and .runner_id>0
               and (.runner_id|floor)==.runner_id and (.steps|type)=="array"
               and ((.status=="completed" and (.conclusion|IN("success","failure")))
