@@ -277,6 +277,25 @@ class ProducerMetadataTests(unittest.TestCase):
                 self.save()
                 self.execute('required-handoff', False)
 
+    def test_renovate_existing_check_receives_the_bound_title_hash(self):
+        for prior_text in (None, 'Renovate title SHA-256: ' + '0' * 64):
+            with self.subTest(prior_text=prior_text):
+                self.setUp()
+                self.configure_renovate()
+                self.capture()
+                self.publish()
+                if prior_text is None:
+                    del self.data['check']['output']['text']
+                else:
+                    self.data['check']['output']['text'] = prior_text
+                self.save()
+                self.publish()
+                self.assertEqual('success', self.data['check']['conclusion'])
+                self.assertEqual('Renovate title SHA-256: ' + hashlib.sha256(self.pr['title'].encode()).hexdigest(),
+                                 self.data['check']['output']['text'])
+                self.assertEqual(1, self.data['writes'].count('POST'))
+                self.assertEqual(0, self.data.get('review_queries', 0))
+
     def test_renovate_required_handoff_rejects_invalid_drifting_or_missing_metadata(self):
         for edited in ('invalid', False, {}, '2026-10-07T00:01:00Z', 'missing', '2026-10-06T23:59:30Z'):
             with self.subTest(edited=edited):

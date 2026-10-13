@@ -6553,6 +6553,31 @@ jobs:
               reservation_patch_state=(-f status=completed -f conclusion=failure)
             fi
           }
+          recover_created_reservation_identity() {
+            local pages observation
+            for observation in 1 2 3 4 5; do
+              if pages="$(gh api --paginate --slurp \
+                "repos/${REPOSITORY}/commits/${EVENT_HEAD}/check-runs?check_name=Protected%20current-revision%20verifier&filter=all&per_page=100")" \
+                && reservation_id="$(jq -er --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
+                  --arg external "${reservation_external_id}" '
+                    select(type == "array" and length > 0
+                      and all(.[]; type == "object" and (.check_runs | type == "array")
+                        and (.total_count | type == "number" and . >= 0 and floor == .))) |
+                    [.[].check_runs[]] as $checks |
+                    select(all(.[]; .total_count == ($checks | length))
+                      and all($checks[]; type == "object" and (.id | type == "number" and . > 0 and floor == .))
+                      and ($checks | map(.id) | unique | length) == ($checks | length)) |
+                    [$checks[] | select(.head_sha == $head and .name == $name
+                      and .external_id == $external and .app.id == 15368 and .app.slug == "github-actions")] |
+                    select(length == 1) | .[0] |
+                    select(.status == "in_progress" and has("conclusion") and .conclusion == null) | .id
+                  ' <<<"${pages}")"; then
+                return 0
+              fi
+              if [ "${observation}" -lt 5 ]; then sleep 2; fi
+            done
+            return 1
+          }
           finalize_failure() {
             local exit_code="$?"
             local owned_reservation
@@ -6560,6 +6585,13 @@ jobs:
             [ "${exit_code}" -ne 0 ] || return 0
             set +e
             echo "::error::stage=${failure_stage}" >&2
+            if [ "${reservation_creation_pending:-false}" = true ]; then
+              reservation_id=''
+              if ! recover_created_reservation_identity; then
+                echo 'Unknown create outcome has no uniquely authenticated reservation; no cleanup mutation.' >&2
+                exit "${exit_code}"
+              fi
+            fi
             if owned_reservation="$(gh api "repos/${REPOSITORY}/check-runs/${reservation_id}")" \
               && jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
                 --arg external_id "${reservation_external_id}" \
@@ -6929,6 +6961,9 @@ jobs:
                 and .app.slug == "github-actions"
               ' <<<"${reservation}" >/dev/null
           else
+            reservation_id=''
+            export reservation_creation_pending=true
+            trap finalize_failure ERR EXIT
             reservation="$(gh api --method POST "repos/${REPOSITORY}/check-runs" \
               -f name="${reservation_name}" \
               -f head_sha="${EVENT_HEAD}" \
@@ -6937,7 +6972,7 @@ jobs:
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
             validate_created_reservation
-            trap finalize_failure ERR EXIT
+            export reservation_creation_pending=false
             reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
