@@ -8082,7 +8082,32 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 inventory = json.loads(result.stdout)
                 self.assertEqual([], inventory["disallowed"])
                 self.assertFalse(inventory["dispatch_failed"])
+        for runner_id in (None, 0):
+            pending = {**child, "status": "queued", "conclusion": None,
+                       "runner_id": runner_id, "steps": []}
+            for conclusion in ("success", "failure"):
+                executed_parent = {**parent, "conclusion": conclusion,
+                                   "runner_id": 101,
+                                   "steps": [{"name": "unexpected effect"}]}
+                with self.subTest(pending_runner=runner_id,
+                                  executed_parent=conclusion):
+                    result = evaluate([pending, executed_parent])
+                    self.assertTrue(result.returncode != 0 or
+                                    json.loads(result.stdout)["disallowed"])
+        pending = {**child, "status": "queued", "conclusion": None,
+                   "runner_id": None, "steps": []}
+        successful_parent = {**parent, "conclusion": "success", "runner_id": 101,
+                             "steps": [{"name": "unexpected effect"}]}
+        with self.subTest(duplicate_pending_parents=True):
+            self.assertNotEqual(0, evaluate([pending, successful_parent,
+                                            {**successful_parent, "id": 10}]).returncode)
         inert = {**child, "conclusion": "skipped", "runner_id": None, "steps": []}
+        for parents in ([parent, {**parent, "id": 10}],
+                        [{**parent, "id": child["id"]}],
+                        [{**parent, "runner_id": 101, "conclusion": "success"}],
+                        [{**parent, "runner_id": 101, "conclusion": "failure"}]):
+            with self.subTest(inert_parents=parents):
+                self.assertNotEqual(0, evaluate([inert, *parents]).returncode)
         result = evaluate([inert])
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([], json.loads(result.stdout)["disallowed"])
