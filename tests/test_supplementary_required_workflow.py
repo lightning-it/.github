@@ -8013,6 +8013,51 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual([mutation], rejected["disallowed"])
                 self.assertEqual([], rejected["allowed"])
 
+    def test_terminal_inventory_normalizes_only_one_bound_reusable_helper(self) -> None:
+        repository = "lightning-it/shared-assets-lit"
+        head = "a" * 40
+        canonical = "Request protected verifier re-evaluation"
+        expanded = canonical + " / Re-run the one protected verifier attempt"
+        common = {"run_id": 123, "run_attempt": 1, "head_sha": head,
+                  "workflow_name": "Current revision review gate",
+                  "run_url": f"https://api.github.com/repos/{repository}/actions/runs/123"}
+        child = {**common, "id": 8, "name": expanded, "status": "completed",
+                 "conclusion": "failure", "runner_id": 99,
+                 "steps": [{"name": "Validate the live binding and rerun exactly once",
+                            "status": "completed", "conclusion": "failure"}]}
+        parent = {**common, "id": 9, "name": canonical, "status": "completed",
+                  "conclusion": "skipped", "runner_id": None, "steps": []}
+        def evaluate(rows):
+            return subprocess.run(
+                [self._test_tool("jq"), "-c", "--arg", "repository", repository,
+                 "--arg", "head", head, "--arg", "d", "^" + canonical + "$",
+                 "--argjson", "run_id", "123", "--argjson", "attempt", "1",
+                 self._terminal_job_inventory_filter()],
+                input=json.dumps([{"jobs": rows}]), text=True, capture_output=True,
+                check=False)
+        for rows in ([child], [child, parent]):
+            with self.subTest(rows=rows):
+                result = evaluate(rows)
+                self.assertEqual(0, result.returncode, result.stderr)
+                inventory = json.loads(result.stdout)
+                self.assertEqual([], inventory["disallowed"])
+                self.assertEqual([{**child, "name": canonical}], inventory["allowed"])
+                self.assertTrue(inventory["dispatch_failed"])
+        for field, value in (("id", 8.5), ("run_id", 124), ("run_attempt", 2),
+                             ("head_sha", "b" * 40), ("runner_id", None),
+                             ("workflow_name", "unknown"), ("run_url", "https://foreign"),
+                             ("name", canonical + " / unknown"), ("conclusion", "cancelled")):
+            with self.subTest(field=field):
+                result = evaluate([{**child, field: value}, parent])
+                self.assertTrue(result.returncode != 0 or json.loads(result.stdout)["disallowed"])
+        for rows in ([child, {**child, "id": 10}, parent],
+                     [child, parent, {**parent, "id": 10}],
+                     [child, {**parent, "id": child["id"]}],
+                     [child, {**parent, "runner_id": 99}],
+                     [child, {**parent, "steps": [{"name": "unexpected effect"}]}]):
+            with self.subTest(rows=rows):
+                self.assertNotEqual(0, evaluate(rows).returncode)
+
     def test_bootstrap_controller_asset_predicate_accepts_live_file_shape(
         self,
     ) -> None:
