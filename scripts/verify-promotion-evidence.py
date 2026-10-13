@@ -3520,7 +3520,9 @@ def validate_pr724_historical_admission(
         (38336320280, 1, "pull_request", ".github/workflows/repository-quality.yml",
          "Repository Quality", branch),
     ):
-        run = exact_object(gh_json(["api", f"{prefix}/actions/runs/{run_id}"]), "pr724-run")
+        run = exact_object(gh_json([
+            "api", f"{prefix}/actions/runs/{run_id}/attempts/{attempt}"
+        ]), "pr724-run")
         run_repo = exact_object(run.get("repository"), "pr724-run-repository")
         require(
             integer(run.get("id"), "pr724-run-id") == run_id
