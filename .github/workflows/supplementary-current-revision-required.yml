@@ -6431,7 +6431,7 @@ jobs:
             done
           }
           validate_created_reservation() {
-            reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
+            reservation_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<<"${reservation}")"
             jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
               --arg external_id "${reservation_external_id}" '
                 .head_sha == $head and .name == $name

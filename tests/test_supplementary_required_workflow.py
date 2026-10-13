@@ -4541,7 +4541,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent,
         )
         self.assertIn(
-            'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
+            'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0 and floor == .)\'',
             source_binding,
         )
         self.assertIn("            validate_created_reservation\n", permanent)
@@ -4724,6 +4724,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             (check, False, True),
             (check, True, False),
             ({**check, "id": "901"}, False, False),
+            ({**check, "id": 901.5}, False, False),
+            ({**check, "id": 0}, False, False),
+            ({**check, "id": -1}, False, False),
             ({**check, "head_sha": "c" * 40}, False, False),
             ({**check, "name": "other"}, False, False),
             ({**check, "external_id": "foreign"}, False, False),
