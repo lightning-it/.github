@@ -4744,7 +4744,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         creation = 'reservation="$(gh api --method POST' + workflow.split(
             "failure_stage='reservation-materialization'", 1
         )[1].split('          else\n            reservation="$(gh api --method POST', 1)[1].split(
-            "          fi\n\n          trap finalize_failure", 1
+            '          fi\n\n          test "${draft}"', 1
         )[0]
         head, base = "a" * 40, "b" * 40
         check = {
@@ -4779,6 +4779,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     GITHUB_SERVER_URL=https://github.com
                     PR_NUMBER=225
                     EVENT_HEAD={head}
+                    failure_stage=reservation-materialization
                     reservation_name='Protected current-revision verifier'
                     reservation_external_id={check['external_id']}
                     gh() {{
@@ -4797,6 +4798,51 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 self.assertEqual((fixture / "calls").read_text().splitlines(), ["POST", "PATCH"] if accepted else ["POST"])
+
+    def test_owned_reservation_materialization_failure_is_finalized(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "validate_created_reservation() {" + workflow.split(
+            "          validate_created_reservation() {", 1
+        )[1].split("          SH\n", 1)[0]
+        materialization = "failure_stage='reservation-materialization'" + workflow.split(
+            "failure_stage='reservation-materialization'", 1
+        )[1].split('          test "${draft}"', 1)[0]
+        head, base = "a" * 40, "b" * 40
+        check = {"id": 901, "name": "Protected current-revision verifier",
+                 "head_sha": head, "status": "in_progress", "conclusion": None,
+                 "external_id": f"rep60-required-workflow:v3:201:225:{base}:{head}",
+                 "app": {"id": 15368, "slug": "github-actions"}}
+        for adopted in (False, True):
+            with self.subTest(adopted=adopted), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                (fixture / "response.json").write_text(json.dumps(check))
+                (fixture / "reservation-readback.sh").write_text(helper + "\n" +
+                    'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; return 17; }\n')
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    RUNNER_TEMP={shlex.quote(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    EVENT_BASE={base}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={check['external_id']}
+                    reservation_count={int(adopted)}
+                    reservations=$(jq -s . "$RUNNER_TEMP/response.json")
+                    gh() {{
+                      if [ "$3" = POST ]; then cat "$RUNNER_TEMP/response.json"; return; fi
+                      printf '%s\\n' "$@" >>"$RUNNER_TEMP/failure"
+                    }}
+                    """) + materialization
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(17, result.returncode, result.stderr)
+                self.assertEqual(["materialize"], (fixture / "calls").read_text().splitlines())
+                failure = (fixture / "failure").read_text().splitlines()
+                self.assertEqual(1, failure.count("PATCH"))
+                self.assertIn("repos/lightning-it/example/check-runs/901", failure)
+                self.assertIn("conclusion=failure", failure)
 
     def test_existing_reservation_id_rejects_fractional_identity_before_patch(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -9464,9 +9510,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             if value != "0" * 40
         ]
-        self.assertEqual(
-            ["043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"], one_off_shas
-        )
+        self.assertEqual(1, len(one_off_shas))
+        self.assertIn(f"actions/upload-artifact@{one_off_shas[0]}", s0)
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",

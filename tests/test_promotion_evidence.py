@@ -5664,7 +5664,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertIn("scripts/verify-promotion-evidence.py", workflow)
         self.assertIn("ee-wunder-devtools-ubi9:v1.16.1@sha256:", promotion_job)
         self.assertIn("docker run --rm", promotion_job)
-        self.assertIn("actions/upload-artifact@043fb46d", promotion_job)
+        self.assertRegex(promotion_job, r"actions/upload-artifact@[0-9a-f]{40}(?![0-9a-f])")
         self.assertIn("Persisted archive SHA-256", promotion_job)
         self.assertIn('test "${EVENT_ACTION}" = opened', promotion_job)
         self.assertIn("lit-promotion-dispatch-pending", promotion_job)
