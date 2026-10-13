@@ -4685,6 +4685,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ("missing_conclusion", {"snapshot": {key: value for key, value in check.items() if key != "conclusion"}}, False, 1),
             ("missing_url", {"snapshot": {key: value for key, value in check.items() if key != "details_url"}}, False, 1),
             ("valid_terminal_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "status": "completed", "conclusion": "failure"}}, True, 2),
+            ("native_retained_terminal_conclusion", {"reservation_count": 1, "response": {**check, "status": "completed", "conclusion": "failure", "output": {**check["output"], "title": "Protected verifier is re-evaluating the live revision"}}}, False, 1),
+            ("completed_fail_closed_rebind", {"reservation_count": 1, "completed_rebind": True}, True, 1),
+            ("completed_rebind_rejects_success", {"reservation_count": 1, "completed_rebind": True,
+              "snapshot": {**check, "status": "completed", "conclusion": "success", "output": {**check["output"], "title": "Protected verifier is re-evaluating the live revision"}}, "retain_snapshot": True}, False, 5),
         )
         for name, changes, accepted, patches in scenarios:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -4692,6 +4696,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 expected = copy.deepcopy(check)
                 if changes.get("reservation_count") == 1:
                     expected["output"]["title"] = "Protected verifier is re-evaluating the live revision"
+                if changes.get("completed_rebind"):
+                    expected.update(status="completed", conclusion="failure")
                 payload = {"response": expected, "snapshot": expected, "live_pr": live_pr, **changes}
                 for key in ("response", "snapshot", "live_pr"):
                     (fixture / f"{key}.json").write_text(json.dumps(payload[key]), encoding="utf-8")
@@ -4739,7 +4745,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                         cat "$RUNNER_TEMP/response.json"
                       fi
                     }}
-                    """) + helper + '\npatch_reservation_with_readback --method PATCH repos/lightning-it/example/check-runs/901\n'
+                    """) + helper + '\npatch_reservation_with_readback --method PATCH repos/lightning-it/example/check-runs/901 ' + (
+                        '-f status=completed -f conclusion=failure' if changes.get('completed_rebind') else '-f status=in_progress') + '\n'
                 result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
                 count_file = fixture / "patches"
@@ -4831,16 +4838,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                  'path':'.github/workflows/supplementary-current-revision-required.yml',
                  'display_title':f'Protected current revision PR #225 opened {head}'}
         current_external_id = f"rep60-required-workflow:v3:202:225:{base}:{head}"
-        for adopted, applied in ((False, False), (True, False), (True, True)):
-            with self.subTest(adopted=adopted, applied=applied), tempfile.TemporaryDirectory() as directory:
+        for adopted, applied, terminal in ((False, False, False), (True, False, False), (True, True, False), (True, True, True)):
+            with self.subTest(adopted=adopted, applied=applied, terminal=terminal), tempfile.TemporaryDirectory() as directory:
                 fixture = Path(directory)
-                (fixture / "response.json").write_text(json.dumps(
-                    check if adopted else {**check, 'external_id':current_external_id}))
+                selected = check if adopted else {**check, 'external_id':current_external_id}
+                if terminal:
+                    selected = {**selected, 'status':'completed', 'conclusion':'success'}
+                (fixture / "response.json").write_text(json.dumps(selected))
                 (fixture / "prior.json").write_text(json.dumps(prior))
                 (fixture / "reservation-readback.sh").write_text(helper + "\n" +
                     'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; '
+                    'printf "%s\\n" "$@" >"$RUNNER_TEMP/patch-args"; '
                     'if [ "$APPLIED" = 1 ]; then jq --arg current "$reservation_external_id" '
-                    '\'.external_id=$current\' "$RUNNER_TEMP/response.json" >"$RUNNER_TEMP/rebound.json"; '
+                    '--argjson terminal "$TERMINAL" \' .external_id=$current | if $terminal then .status="completed" | .conclusion="failure" else . end\' '
+                    '"$RUNNER_TEMP/response.json" >"$RUNNER_TEMP/rebound.json"; '
                     'mv "$RUNNER_TEMP/rebound.json" "$RUNNER_TEMP/response.json"; fi; return 17; }\n')
                 script = textwrap.dedent(f"""\
                     set -euo pipefail
@@ -4856,6 +4867,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     GITHUB_RUN_ID=202
                     GITHUB_RUN_ATTEMPT=1
                     APPLIED={int(applied)}
+                    TERMINAL={str(terminal).lower()}
                     reservation_count={int(adopted)}
                     reservations=$(jq -s . "$RUNNER_TEMP/response.json")
                     gh() {{
@@ -4868,11 +4880,16 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                                         text=True, capture_output=True, check=False)
                 self.assertEqual(17, result.returncode, result.stderr)
                 self.assertEqual(["materialize"], (fixture / "calls").read_text().splitlines())
-                self.assertTrue((fixture / "failure").exists(), result.stderr + result.stdout)
-                failure = (fixture / "failure").read_text().splitlines()
-                self.assertEqual(1, failure.count("PATCH"))
-                self.assertIn("repos/lightning-it/example/check-runs/901", failure)
-                self.assertIn("conclusion=failure", failure)
+                if terminal:
+                    self.assertFalse((fixture / "failure").exists(), result.stderr)
+                    self.assertIn('conclusion=failure', (fixture / 'patch-args').read_text())
+                    self.assertEqual('failure', json.loads((fixture / 'response.json').read_text())['conclusion'])
+                else:
+                    self.assertTrue((fixture / "failure").exists(), result.stderr + result.stdout)
+                    failure = (fixture / "failure").read_text().splitlines()
+                    self.assertEqual(1, failure.count("PATCH"))
+                    self.assertIn("repos/lightning-it/example/check-runs/901", failure)
+                    self.assertIn("conclusion=failure", failure)
 
     def test_cleanup_prior_owner_requires_a_completed_bound_native_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
