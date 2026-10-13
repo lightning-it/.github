@@ -299,7 +299,7 @@ class EventAdapterTests(unittest.TestCase):
                 with self.assertRaisesRegex(EVENTS.ShadowRejected, "^" + reason + "$"):
                     EVENTS.observe(api, self.policy, 200, 7, self.now)
 
-    def test_neutral_summary_requires_exact_legacy_v6_key_set(self):
+    def test_neutral_summary_rejects_unknown_or_partial_expanded_v6_key_sets(self):
         path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
         summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
         for key in summary:
@@ -315,6 +315,45 @@ class EventAdapterTests(unittest.TestCase):
         for value in (None, [], 4, "summary"):
             with self.subTest(shape=value):
                 self.assert_summary_rejected(value, "neutral-summary-shape")
+
+    def test_metadata_bound_summary_accepts_null_and_detects_edit_revert_on_both_reads(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        summary["pull_request_last_edited_at"] = None
+        self.responses[path]["check_runs"][1]["output"]["summary"] = json.dumps(summary)
+        EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
+        for selected in (1, 2):
+            api = self.api()
+            def drift(endpoint, value, occurrence):
+                if endpoint == "graphql" and occurrence == selected:
+                    value["data"]["repository"]["pullRequest"]["lastEditedAt"] = "2026-10-02T00:00:09Z"
+                return value
+            api.transform = drift
+            with self.subTest(read=selected), self.assertRaisesRegex(EVENTS.ShadowRejected, "neutral-metadata-revision"):
+                EVENTS.observe(api, self.policy, 200, 7, self.now)
+        for edited, accepted in (("2026-10-02T00:00:09Z", True), ("2026-10-02T00:00:10Z", False)):
+            summary["pull_request_last_edited_at"] = edited
+            self.responses[path]["check_runs"][1]["output"]["summary"] = json.dumps(summary)
+            self.responses["graphql"]["data"]["repository"]["pullRequest"]["lastEditedAt"] = edited
+            if accepted:
+                EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
+            else:
+                with self.assertRaisesRegex(EVENTS.ShadowRejected, "neutral-metadata-chronology"):
+                    EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
+
+    def test_metadata_bound_summary_rejects_malformed_graphql_errors(self):
+        path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"
+        summary = json.loads(self.responses[path]["check_runs"][1]["output"]["summary"])
+        summary["pull_request_last_edited_at"] = None
+        self.responses[path]["check_runs"][1]["output"]["summary"] = json.dumps(summary)
+        for errors in (None, {}, "", False, 0, [{"message": "partial"}], []):
+            self.responses["graphql"]["errors"] = errors
+            with self.subTest(errors=errors):
+                if type(errors) is list and not errors:
+                    EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
+                else:
+                    with self.assertRaisesRegex(EVENTS.ShadowRejected, "threads-api-errors"):
+                        EVENTS.observe(self.api(), self.policy, 200, 7, self.now)
 
     def test_neutral_summary_integer_types_and_values_are_strict(self):
         path = f"{self.prefix}/commits/{self.head}/check-runs?filter=all&per_page=100&page=1"

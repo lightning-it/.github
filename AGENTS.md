@@ -26,13 +26,44 @@
 - Local validation is deterministic only. It must never invoke Codex, GitHub
   Copilot, another model, or an external AI endpoint. Authoritative AI review
   runs only in the protected GitHub pipeline and binds the exact PR head.
-- Lightning IT automation may request and fund one GitHub Copilot review only
-  when the exact PR author is `litroc`, and only at the finalization boundary;
+- By default, Lightning IT automation may request and fund one GitHub Copilot
+  review only when the exact PR author is `litroc`, at the finalization boundary;
   intermediate `synchronize` pushes must not trigger AI review. Any finding
-  requires correction and a final current-head re-review. The request is
-  consumed once per head; unavailable or quota-blocked reviews fail closed
-  without an automatic retry. Organization-funded Codex remediation and its
-  single re-review are likewise restricted to `litroc`.
+  requires correction and a final current-head re-review. An unavailable or
+  quota-blocked review never authorizes an automatic retry. Organization-funded
+  Codex remediation and its single re-review are likewise restricted to `litroc`.
+- The owner-approved LI-216 / LI-219 amendment dated 2026-10-05 is a scoped
+  exception: only `lightning-it/.github`, `lightning-it/shared-assets-lit` and
+  `lightning-it/ansible-collection-supplementary`, with `LI219_EVENT_MODE=enabled`,
+  may request review on `synchronize` for a genuinely new head of a ready,
+  same-repository PR authored and updated by `litroc`. The protected source and
+  actor guards remain mandatory. Consume at most one AI request per repository
+  ID / PR / head through Git CAS before its effect; base drift or a new producer
+  run does not grant another request. Attempt 2 must never request AI review.
+  Keep native Required-Workflow authority and one fully bound event-authorized
+  verifier reevaluation. Non-pilots and disabled/default mode retain their wait
+  paths without CAS mutation, but must persist and confirm the exact-head
+  UNCERTAIN reservation before the request POST. An interruption after that
+  reservation consumes the slot even if delivery never occurred.
+- The owner-authorized LI-259 follow-up separates that single event entitlement
+  from technical recovery. Only the wired supplementary verifier, with both
+  `LI219_EVENT_MODE` and `LI259_INFRA_RETRY` enabled, may consume native attempts
+  3 and 4 after the exact GitHub-hosted runner-acquisition failure is proven.
+  Seal its unchanged review, repository, PR, base, head, controller, policy and
+  input contract before attempt 2. Use separate durable CAS slots, 20/40-minute
+  cooldowns and a 180-minute total budget; retain 60 minutes before every start.
+  Both receiver entry and final acceptance authenticate the consumed slot and
+  unchanged contract. Uncertain effects are GET-only, deterministic failures and
+  drift are terminal, and older unsealed runs gain no authority. Retry only the
+  verifier job and its deterministic dependent gate. Producer, review-request,
+  AI and unadapted cross-controller paths keep their existing limits. See
+  `docs/adr/li259-native-verifier-retry.md`; historical evidence is unchanged.
+- This exception implements REP-40 page 2878440201 version 12 and REP-60 page
+  2887909377 version 13, amendment added 2026-10-05. Scoped owner-authorized
+  project-rule overrides are permitted for this bounded completion; they do
+  not supersede global policy or authorize bypasses, weaker required checks,
+  additional AI requests. The later size-policy amendment below governs
+  review sizing independently.
 - Every other human or external contributor supplies any required current-head
   Copilot review under their own entitlement and cost. Lightning IT verifies
   valid evidence but never requests or funds that review, and personal tokens or
@@ -134,3 +165,73 @@ model/reasoning choice, rationale, and a concrete escalation condition.
   remaining risks; preserve durable decisions in Confluence, Jira, or GitHub.
 
 <!-- LIT AI task governance: end -->
+
+<!-- LIT review sizing governance: start -->
+
+## Review size and model budgets
+
+- The owner-authorized 2026-10-05 size-policy amendment replaces blanket KB
+  gates for normal Copilot pull requests and cumulative promotions. Complete
+  local deterministic checks run independently of diff size. An optional
+  planning notice starts at 500000 bytes; it never blocks or automatically
+  divides a PR, skips checks, truncates review input, or requests another AI
+  review. Existing actor, exact-head, source, and request-count guards remain.
+- Version 2 push-ready configurations migrate from `review.max_diff_bytes` to
+  `review.warn_diff_bytes`. The legacy positive integer remains readable but
+  has no blocking effect and does not set the advisory threshold. The default
+  advisory is 500000 bytes; an explicit null disables it. Promotion version 2
+  likewise accepts its legacy review shape without enforcing a diff ceiling.
+- For model calls we control, Source/Governance must budget the complete model
+  input: system and developer instructions, repository policy, prompt, schemas,
+  full diff, tool framing and results, plus an explicit output/reasoning reserve.
+  Bind the model, tokenizer/version, context capacity, all input hashes and
+  reserved output in a versioned contract; fail closed on unknown capacity or
+  an exceeded token budget. KB size is not a substitute for token accounting.
+- Preserve real parser, transport, file-read, metadata, timeout and inventory
+  resource limits. Historical Own-MLX receipt versions and the inactive bounded
+  feature-main-prestage authorization are separate contracts. Their limits
+  must not be silently reinterpreted as token budgets or globally removed;
+  Source/Governance coordinates a new producer/consumer version before cutover.
+
+
+### Protected SINGLE controller host exception (2026-10-06)
+
+The owner-authorized exception to the Devtools execution boundary applies only
+in the protected Exact-Revision SINGLE workflow. Its immutable controller may
+use host Python for tuple-bound materialization and regeneration, host/cgroup
+resource admission, root-owned `/run` bootstrap and loopback supervision, and
+the authenticated receipt lifecycle. Controller and imported runtime assets
+must remain bound to the protected workflow/base Git blobs; candidate code is
+review data and must never be imported or executed.
+
+These narrowly admitted controller checks are not generic host acceptance
+evidence or native review acceptance. Lint, test, build, package and unrelated
+validators remain in pinned Devtools. The deterministic receipt collector must
+start before `drop-sudo`, with the original runner UID/GID, read-only inputs and
+no network or service-socket mount. Its existing protected supervisor may
+publish only the successful collector's bounded output. No sudo/Docker access
+is restored after privilege removal. This exception grants no extra inference,
+request, retry, replay, funding or promotion authority; Devtools still never
+runs a model invocation.
+
+<!-- LIT review sizing governance: end -->
+
+<!-- LIT at-most-once review funding: start -->
+
+## At-most-once review funding
+
+The owner-authorized 2026-10-06 amendment requires a durable, exact-head
+reservation before the one review-request POST. Enabled pilot requests confirm
+the protected Git CAS claim before the effect; disabled/default and non-pilot
+requests confirm the durable UNCERTAIN comment reservation without CAS.
+Reservation proves consumption only, never delivery, review quality, or acceptance.
+After an unknown POST outcome, observe review delivery only through GET reads;
+do not repeat the same-head AI request. Base drift, a new run, or missing pending
+state never restores that consumed opportunity. Every completed same-head review
+from the trusted Copilot bot consumes the funding opportunity, including failed,
+quota-blocked, changes-requested, and dismissed reviews, regardless of body or
+inline content. The separate policy/evidence gate must still reject unusable
+content and unresolved findings. This amendment grants no bypass or weaker
+platform, protected-source, actor, Required-Workflow, or merge authority.
+
+<!-- LIT at-most-once review funding: end -->

@@ -241,10 +241,10 @@ def snapshot(api, policy, run_id, number):
             and neutral["app"].get("slug") == "github-actions"
             and neutral.get("head_sha") == head, "neutral-provenance")
     summary = parsed(neutral["output"]["summary"])
-    require(type(summary) is dict and set(summary) == {
-        "schema", "base_sha", "head_sha", "controller_sha", "pull_request_number",
-        "producer_run_id", "review_path", "run_url",
-    }, "neutral-summary-shape")
+    legacy_keys = {"schema", "base_sha", "head_sha", "controller_sha", "pull_request_number",
+                   "producer_run_id", "review_path", "run_url"}
+    require(type(summary) is dict and set(summary) in (
+        legacy_keys, legacy_keys | {"pull_request_last_edited_at"}), "neutral-summary-shape")
     require(type(summary["schema"]) is int and summary["schema"] == 4, "neutral-summary-schema")
     require(all(STATE.positive(summary[key]) for key in ("producer_run_id", "pull_request_number")),
             "neutral-summary-integer")
@@ -304,10 +304,17 @@ def snapshot(api, policy, run_id, number):
         require(requested <= epoch(review["submitted_at"]), "request-review-chronology")
     owner, name = repo.split("/")
     threads = api.read("graphql", {"owner": owner, "name": name, "number": number})
-    require(not threads.get("errors"), "threads-api-errors")
+    require("errors" not in threads or type(threads["errors"]) is list
+            and not threads["errors"], "threads-api-errors")
     graph = threads["data"]["repository"]["pullRequest"]
     require(id_matches(graph.get("number"), number) and graph.get("headRefOid") == head
             and graph.get("baseRefOid") == base and "lastEditedAt" in graph, "thread-pull-drift")
+    if "pull_request_last_edited_at" in summary:
+        require(summary["pull_request_last_edited_at"] == graph["lastEditedAt"],
+                "neutral-metadata-revision")
+        require(graph["lastEditedAt"] is None
+                or epoch(graph["lastEditedAt"]) < epoch(review["submitted_at"]),
+                "neutral-metadata-chronology")
     graph_reviews = graph["reviews"]
     require(type(graph_reviews.get("totalCount")) is int
             and type(graph_reviews.get("nodes")) is list and len(graph_reviews["nodes"]) <= 100

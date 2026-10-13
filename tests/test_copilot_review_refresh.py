@@ -33,21 +33,41 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def _run_bash(self, script, env):
         return subprocess.run([self._test_tool("bash"), "-c", script],
             text=True, capture_output=True, check=False,
-            env={"PATH": TEST_TOOL_PATH, **env})
+            env={"PATH": TEST_TOOL_PATH, "HEAD_REPOSITORY": env.get("REPOSITORY", "lightning-it/.github"),
+                 "EVENT_HEAD_REPOSITORY": env.get("REPOSITORY", "lightning-it/.github"),
+                 "hr": env.get("REPOSITORY", "lightning-it/.github"), **env})
     def test_serialization(self):
-        group = "current-revision-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}"
+        group = (
+            "current-revision-${{ github.repository_id }}-head-"
+            "${{ github.event.pull_request.head.sha }}-"
+            "check-current-revision-review"
+        )
         block = f"group: {group}\n  cancel-in-progress: false\n  queue: max"
-        self.assertIn(block, COPILOT_WORKFLOW.read_text(encoding="utf-8"))
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(block, workflow)
         refresh = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         expression = refresh.split("group: >-", 1)[1].split("cancel-in-progress", 1)[0]
-        for value in ("format('current-revision-{0}-pr-{1}'", "format('current-revision-quarantine-{0}'", "github.run_id", "cancel-in-progress: false", "queue: max"):
+        for value in (
+            "format('current-revision-{0}-head-{1}-check-current-revision-review'",
+            "github.event.pull_request.head.sha",
+            "format('current-revision-quarantine-{0}'",
+            "github.run_id",
+            "cancel-in-progress: false",
+            "queue: max",
+        ):
             self.assertIn(value, expression if value.startswith(("format", "github")) else refresh)
         def lane(event, actor, login, association="NONE", sender=None, action="edited", run=1):
             trusted = event in ("pull_request_review", "pull_request_review_comment") and ((actor in ("Copilot", "copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]") and login == "copilot-pull-request-reviewer[bot]") or actor == login == "litroc" or (association in ("COLLABORATOR", "MEMBER", "OWNER") and (sender or actor) == actor and (action in ("dismissed", "deleted") or login == actor)))
-            return "current-revision-1-pr-737" if trusted else f"current-revision-quarantine-{run}"
+            return ("current-revision-1-head-" + "c" * 40
+                    + "-check-current-revision-review" if trusted
+                    else f"current-revision-quarantine-{run}")
         for event in ("pull_request_review", "pull_request_review_comment"):
             for args in (("Copilot", "copilot-pull-request-reviewer[bot]"), ("litroc", "litroc"), ("maintainer", "maintainer", "MEMBER", "maintainer")):
-                self.assertEqual("current-revision-1-pr-737", lane(event, *args))
+                self.assertEqual(
+                    "current-revision-1-head-" + "c" * 40
+                    + "-check-current-revision-review",
+                    lane(event, *args),
+                )
             self.assertNotEqual(lane(event, "mallory", "other", run=8), lane(event, "mallory", "other", run=9))
     @staticmethod
     def _guards():
@@ -77,7 +97,7 @@ class CopilotReviewRefreshTests(unittest.TestCase):
     def _run_guard(self, *, runs, jobs, guard=None, first_jobs=None,
         event_ref="feature/li179", fpulls=None, branch_pulls=None,
         runs2=None, cond=False, mode="copilot",
-        event_base=None, live_base=None,
+        event_base=None, live_base=None, event_base_ref="develop", head_repository="lightning-it/shared-assets-lit",
         add_req=True):
         njobs, ojobs = {}, {}
         for run_id, records in jobs.items():
@@ -116,7 +136,7 @@ gh() {
     [[ " $* " == *" state=open "* ]] || return 96
     jq -c '[.[] | map(select(.state == "open"))]' <<<"${BRANCH_PULL_PAGES}"
   elif [[ "${endpoint}" =~ /pulls/([0-9]+)$ ]]; then
-    case "${BASH_REMATCH[1]}" in __PULL_CASES__ *) return 94;; esac
+    case "${BASH_REMATCH[1]}" in __PULL_CASES__ 2334) printf %s "${CURRENT_PULL}";; *) return 94;; esac
   else return 93; fi
 }
 '''.replace("__JOB_CASES__", job_cases).replace("__PULL_CASES__", pull_cases)
@@ -128,19 +148,21 @@ gh() {
         )
         with tempfile.TemporaryDirectory() as tmp:
             current_pull = {
-                "number": 2334, "state": "open",
-                "base": {"sha": "b" * 40,
+                "number": 2334, "state": "open", "draft": False, "user": {"type": "User"},
+                "base": {"sha": "b" * 40, "ref": event_base_ref,
                          "repo": {"full_name": "lightning-it/shared-assets-lit"}},
                 "head": {"ref": event_ref, "sha": "c" * 40,
-                         "repo": {"full_name": "lightning-it/shared-assets-lit"}},
+                         "repo": {"full_name": head_repository}},
             }
             env = {
                 "PATH": str(Path(jq).parent) + ":" + TEST_TOOL_PATH,
-                "REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
+                "REPOSITORY": "lightning-it/shared-assets-lit", "head_repository": "lightning-it/shared-assets-lit", "HEAD_REPOSITORY": "lightning-it/shared-assets-lit", "EVENT_HEAD_REPOSITORY": "lightning-it/shared-assets-lit", "PR_NUMBER": "2334",
                 "EVENT_BASE": event_base or "b" * 40,
+                "EVENT_BASE_REF": event_base_ref,
                 "LIVE_BASE": live_base or "b" * 40,
                 "EVENT_HEAD": "c" * 40,
                 "EVENT_HEAD_REF": event_ref, "PRODUCER_OWNER_MODE": mode,
+                "EVENT_HEAD_REPOSITORY": head_repository, "CURRENT_PULL": json.dumps(current_pull),
                 "COUNTER_FILE": str(Path(tmp) / "reads"),
                 "RUN_PAGES": json.dumps([{"workflow_runs": runs}]),
                 "RUN_PAGES_SECOND": json.dumps([{"workflow_runs": runs2 or runs}]),
@@ -173,8 +195,8 @@ gh() {
             "status": "in_progress", "conclusion": None,
             "head_branch": "feature/li179", "head_sha": "c" * 40,
             "repository": {"full_name": repo}, "head_repository": {"full_name": repo},
-            "pull_requests": [{"number": 2334, "base": {"sha": "b" * 40},
-                "head": {"sha": "c" * 40, "ref": "feature/li179"}}]}
+            "pull_requests": [{"number": 2334, "base": {"ref": "develop", "sha": "b" * 40, "repo": {"url": "https://api.github.com/repos/" + repo}},
+                "head": {"sha": "c" * 40, "ref": "feature/li179", "repo": {"url": "https://api.github.com/repos/" + repo}}}]}
     @staticmethod
     def _job(run_id, attempt=1, *, status="in_progress", conclusion=None):
         return {"id": run_id * 10, "name": "Verify current revision policy",
@@ -189,6 +211,65 @@ gh() {
             "name": "Request Copilot review for current revision",
             "run_id": run_id, "run_attempt": attempt, "head_sha": "c" * 40,
             "status": status, "conclusion": conclusion}
+    def test_owner_election_binds_authenticated_fork_and_recorded_urls(self):
+        fork = "contributor/core"
+        native = self._run(101)
+        native["head_repository"]["full_name"] = fork
+        native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + fork
+        for guard in self._guards():
+            result = self._run_guard(runs=[native], jobs={101: [self._job(101)]},
+                                     head_repository=fork, mode="verification", add_req=False, guard=guard)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("101", result.stdout)
+            for wrong in ("head_repository", "recorded_repository"):
+                changed = json.loads(json.dumps(native))
+                if wrong == "head_repository":
+                    changed["head_repository"]["full_name"] = "other/core"
+                else:
+                    changed["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/other/core"
+                result = self._run_guard(runs=[changed], jobs={101: [self._job(101)]},
+                                         head_repository=fork, mode="verification", add_req=False, guard=guard)
+                self.assertNotEqual(0, result.returncode)
+
+    def test_owner_election_rejects_same_sha_cross_base_ref(self):
+        for branch in ("develop", "main"):
+            for repository in ("lightning-it/shared-assets-lit", "contributor/core"):
+                native = self._run(101)
+                native["head_repository"]["full_name"] = repository
+                native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + repository
+                native["pull_requests"][0]["base"]["ref"] = branch
+                for guard in self._guards():
+                    args = dict(runs=[native], jobs={101: [self._job(101)]},
+                                event_base_ref=branch, head_repository=repository,
+                                mode="verification", add_req=False, guard=guard)
+                    result = self._run_guard(**args)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    wrong = json.loads(json.dumps(native))
+                    wrong["pull_requests"][0]["base"]["ref"] = "main" if branch == "develop" else "develop"
+                    result = self._run_guard(**{**args, "runs": [wrong]})
+                    self.assertNotEqual(0, result.returncode)
+
+    def test_repository_components_reject_dot_traversal_in_owner_and_rerun_guards(self):
+        for malformed in ("../repo", "owner/.."):
+            native = self._run(101)
+            native["head_repository"]["full_name"] = malformed
+            native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/" + malformed
+            for guard in self._guards():
+                result = self._run_guard(runs=[native], jobs={101: [self._job(101)]},
+                                         head_repository=malformed, mode="verification", add_req=False, guard=guard)
+                self.assertNotEqual(0, result.returncode)
+        workflow = RERUN_WORKFLOW.read_text()
+        marker = "          authenticated_head_repository() {\n"
+        start = workflow.index(marker)
+        end = workflow.index("\n          }\n", start) + len("\n          }\n")
+        function = textwrap.dedent(workflow[start:end])
+        for repository in ("lightning-it/.github", "contributor/core", "../repo", "owner/.."):
+            with self.subTest(repository=repository):
+                result = self._run_bash(function + '\nauthenticated_head_repository "${PR}"',
+                                        {"REPOSITORY": "lightning-it/.github",
+                                         "PR": json.dumps({"user": {"type": "User"}, "head": {"repo": {"full_name": repository}}})})
+                self.assertEqual(repository not in ("../repo", "owner/.."), result.returncode == 0, result.stderr)
+
     def test_owner_first(self):
         self._owner("101", runs=[self._run(101), self._run(102)],
                            jobs={101: [self._job(101)], 102: [self._job(102)]})
@@ -198,6 +279,264 @@ gh() {
         self.assertIn("if: steps.producer-owner.outputs.owner == 'true'", publish)
         self.assertIn("needs['verify-current-revision-policy'].outputs.producer_owner "
                       "== 'true'", dispatch)
+        self.assertIn("needs['verify-current-revision-policy'].outputs.owns_result "
+                      "== 'true'", dispatch)
+
+    def test_publisher_retains_permanent_foreign_owner_read_only(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        policy = workflow.split("\n  verify-current-revision-policy:", 1)[1].split(
+            "\n  request-protected-verifier-reevaluation:", 1
+        )[0]
+        publisher = policy.split("      - name: Publish bound neutral result\n", 1)[1]
+        reuse = publisher.split("            reuse_permanent_owner() {\n", 1)[1].split(
+            "\n            }\n            named=", 1
+        )[0]
+        self.assertIn("outputs.owns_result", workflow)
+        self.assertIn("owner_snapshot=", reuse)
+        self.assertIn("attempts/${owner_attempt}/jobs?filter=all&per_page=100", reuse)
+        self.assertIn(".run_attempt == $owner_attempt", reuse)
+        self.assertIn(".pull_requests[0].number == $owner_pr", reuse)
+        self.assertIn("$actual.pull_request_number == $owner_pr", reuse)
+        self.assertIn(".status == \"completed\" and .conclusion == \"success\"", reuse)
+        self.assertIn("(.steps | type == \"array\")", reuse)
+        self.assertIn("map(.id) | unique | length", reuse)
+        self.assertIn("verify-current-copilot-review.sh", reuse)
+        self.assertIn("$check.output.title == $title", reuse)
+        self.assertIn("ro || return 1", reuse)
+        self.assertIn("read_named_checks", reuse)
+        self.assertNotIn("--method POST", reuse)
+        self.assertNotIn("api_patch_bound", reuse)
+        self.assertIn("printf 'reused:%s'", reuse)
+        self.assertIn("echo 'owns_result=false'", publisher)
+        self.assertIn("echo 'owns_result=true'", publisher)
+
+    def test_permanent_owner_branch_executes_read_only_and_records_loser(self):
+        base, head, owner, current = "b" * 40, "c" * 40, 100, 200
+        repository = "lightning-it/.github"
+        server = "https://github.example"
+        owner_evidence = {
+            "schema": 4,
+            "base_sha": base,
+            "head_sha": head,
+            "controller_sha": "d" * 40,
+            "pull_request_number": 779,
+            "producer_run_id": owner,
+            "review_path": "applicable Copilot or governed automation exemption",
+            "run_url": f"{server}/{repository}/actions/runs/{owner}",
+        }
+        current_evidence = {
+            **owner_evidence,
+            "pull_request_number": 780,
+            "producer_run_id": current,
+            "run_url": f"{server}/{repository}/actions/runs/{current}",
+        }
+        check = {
+            "id": 42,
+            "name": "Current revision review",
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "external_id": (
+                f"mlx90-current-revision:copilot:v6:779:{owner}:{base}:{head}"
+            ),
+            "details_url": f"{server}/{repository}/runs/42",
+            "output": {
+                "title": "Current revision review passed",
+                "summary": json.dumps(owner_evidence, separators=(",", ":")),
+            },
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        owner_run = {
+            "id": owner,
+            "run_attempt": 1,
+            "event": "pull_request_target",
+            "path": ".github/workflows/copilot-review.yml",
+            "name": "Current revision review gate",
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+            "head_sha": head,
+            "head_branch": "fix/permanent-owner",
+            "status": "completed",
+            "conclusion": "success",
+            "pull_requests": [{
+                "number": 779,
+                "base": {"ref": "develop", "sha": base, "repo": {
+                    "url": f"https://api.github.com/repos/{repository}"}},
+                "head": {"sha": head, "ref": "fix/permanent-owner", "repo": {
+                    "url": f"https://api.github.com/repos/{repository}"}},
+            }],
+        }
+        request_job = {
+            "id": 1001,
+            "name": "Request Copilot review for current revision",
+            "run_id": owner,
+            "run_attempt": 1,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [{"name": "Request review", "status": "completed",
+                       "conclusion": "success"}],
+        }
+        policy_job = {
+            "id": 1002,
+            "name": "Verify current revision policy",
+            "run_id": owner,
+            "run_attempt": 1,
+            "runner_id": 7,
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "steps": [
+                {"name": "Verify current Copilot review and resolved findings",
+                 "status": "completed", "conclusion": "success"},
+                {"name": "Publish bound neutral result",
+                 "status": "completed", "conclusion": "success"},
+            ],
+        }
+        good_pages = [{"total_count": 1, "check_runs": [check]}]
+        good_jobs = [{"total_count": 2, "jobs": [request_job, policy_job]}]
+        functions = self._pub_nested("read_named_checks") + self._pub_nested(
+            "reuse_permanent_owner"
+        ) + self._pub("record_publication_ownership")
+
+        def execute(*, first=good_pages, second=good_pages,
+                    run=owner_run, jobs=good_jobs):
+            with tempfile.TemporaryDirectory() as tmp:
+                verification = Path(tmp) / "verify-current-copilot-review.sh"
+                verification.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                output = Path(tmp) / "output"
+                mutation = Path(tmp) / "mutation"
+                counter = Path(tmp) / "checks"
+                script = r'''set -euo pipefail
+api_read() {
+  local endpoint="${*: -1}" reads=0
+  case "${endpoint}" in
+    *'/check-runs?'*)
+      [ ! -f "${CHECK_COUNTER}" ] || reads="$(cat "${CHECK_COUNTER}")"
+      printf %s "$((reads + 1))" >"${CHECK_COUNTER}"
+      [ "${reads}" -eq 0 ] && printf %s "${CHECKS_FIRST}" || printf %s "${CHECKS_SECOND}"
+      ;;
+    */attempts/1/jobs*|*/attempts/2/jobs*) printf %s "${OWNER_JOBS}" ;;
+    */actions/runs/*) printf %s "${OWNER_RUN}" ;;
+    *) return 92 ;;
+  esac
+}
+ro() { :; }
+gh() { printf mutation >"${MUTATION}"; return 99; }
+''' + functions + r'''
+named="$(read_named_checks)"
+result="$(reuse_permanent_owner)"
+record_publication_ownership "${result}"
+printf %s "${result}"
+'''
+                result = self._run_bash(script, {
+                    "CHECK_COUNTER": str(counter),
+                    "CHECKS_FIRST": json.dumps(first, separators=(",", ":")),
+                    "CHECKS_SECOND": json.dumps(second, separators=(",", ":")),
+                    "EVENT_BASE": base,
+                    "EVENT_BASE_REF": "develop",
+                    "EVENT_HEAD": head,
+                    "EVENT_HEAD_REF": "fix/permanent-owner",
+                    "GITHUB_API_URL": "https://api.github.com",
+                    "GITHUB_OUTPUT": str(output),
+                    "GITHUB_RUN_ID": str(current),
+                    "GITHUB_SERVER_URL": server,
+                    "MUTATION": str(mutation),
+                    "OWNER_JOBS": json.dumps(jobs, separators=(",", ":")),
+                    "OWNER_RUN": json.dumps(run, separators=(",", ":")),
+                    "PR_NUMBER": "780",
+                    "REPOSITORY": repository, "hr": repository, "HEAD_REPOSITORY": repository, "EVENT_HEAD_REPOSITORY": repository,
+                    "RUNNER_TEMP": tmp,
+                    "TRUSTED_KIND": "none",
+                    "check_name": "Current revision review",
+                    "evidence": json.dumps(current_evidence, separators=(",", ":")),
+                    "named": json.dumps([check], separators=(",", ":")),
+                    "result_title": "Current revision review passed",
+                })
+                return (
+                    result,
+                    output.read_text(encoding="utf-8") if output.exists() else "",
+                    mutation.exists(),
+                )
+
+        accepted, ownership, mutated = execute()
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertEqual("reused:42", accepted.stdout)
+        self.assertEqual("owns_result=false\n", ownership)
+        self.assertFalse(mutated)
+
+        owner_run_attempt2 = json.loads(json.dumps(owner_run))
+        owner_run_attempt2["run_attempt"] = 2
+        good_jobs_attempt2 = json.loads(json.dumps(good_jobs))
+        for job in good_jobs_attempt2[0]["jobs"]:
+            job["run_attempt"] = 2
+        accepted, ownership, mutated = execute(
+            run=owner_run_attempt2, jobs=good_jobs_attempt2
+        )
+        self.assertEqual(0, accepted.returncode, accepted.stderr)
+        self.assertEqual("reused:42", accepted.stdout)
+        self.assertEqual("owns_result=false\n", ownership)
+        self.assertFalse(mutated)
+
+        drifted = json.loads(json.dumps(good_pages))
+        drifted[0]["check_runs"][0]["output"]["title"] = "drifted"
+        malformed_jobs = json.loads(json.dumps(good_jobs))
+        del malformed_jobs[0]["jobs"][1]["steps"]
+        mismatched_jobs = json.loads(json.dumps(good_jobs))
+        mismatched_jobs[0]["jobs"][1]["run_attempt"] = 2
+        wrong_owner_pr = json.loads(json.dumps(owner_run))
+        wrong_owner_pr["pull_requests"][0]["number"] = 780
+        wrong_external_id = json.loads(json.dumps(good_pages))
+        wrong_external_id[0]["check_runs"][0]["external_id"] = (
+            f"mlx90-current-revision:copilot:v6:780:{owner}:{base}:{head}"
+        )
+        bad_title = json.loads(json.dumps(good_pages))
+        bad_title[0]["check_runs"][0]["output"]["title"] = "wrong"
+        for kwargs in (
+            {"second": drifted},
+            {"jobs": malformed_jobs},
+            {"jobs": mismatched_jobs},
+            {"run": wrong_owner_pr},
+            {"first": wrong_external_id, "second": wrong_external_id},
+            {"first": bad_title, "second": bad_title},
+        ):
+            with self.subTest(kwargs=tuple(kwargs)):
+                rejected, ownership, mutated = execute(**kwargs)
+                self.assertNotEqual(0, rejected.returncode)
+                self.assertEqual("", ownership)
+                self.assertFalse(mutated)
+
+        for invalid_attempt in (None, "2", 0, 1.5, 3):
+            malformed_run = {**owner_run, "run_attempt": invalid_attempt}
+            with self.subTest(invalid_attempt=invalid_attempt):
+                rejected, ownership, mutated = execute(run=malformed_run)
+                self.assertNotEqual(0, rejected.returncode)
+                self.assertEqual("", ownership)
+                self.assertFalse(mutated)
+
+        wrong_base_ref = json.loads(json.dumps(owner_run))
+        wrong_base_ref["pull_requests"][0]["base"]["ref"] = "main"
+        result, output, mutated = execute(run=wrong_base_ref)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(mutated)
+
+    def test_publisher_rechecks_complete_zero_inventory_before_create(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publisher = workflow.split("      - name: Publish bound neutral result\n", 1)[1]
+        create = publisher.index(
+            'if ! created="$(gh api --method POST "repos/${REPOSITORY}/check-runs"'
+        )
+        before_create = publisher[:create]
+        after_create = publisher[create:]
+        self.assertIn("total_count == ($inventory | length)", publisher)
+        self.assertIn("map(.id) | unique | length", publisher)
+        self.assertGreaterEqual(before_create.count("read_named_checks"), 4)
+        self.assertIn('owner_snapshot="$(read_named_checks)"', before_create)
+        self.assertIn('named="$(read_named_checks)"', before_create)
+        self.assertIn('test "$(jq -cS . <<<"${named}")" =', before_create)
+        self.assertIn('named="$(read_named_checks)"', after_create)
+        self.assertIn('test "$(jq \'length\' <<<"${named}")" -eq 1', after_create)
+        self.assertIn('test "$(jq -er \'.[0].external_id\'', after_create)
     def test_owner_queued(self):
         owner = self._run(101)
         queued = self._run(102)
@@ -389,7 +728,7 @@ gh() {
         repo = "lightning-it/shared-assets-lit"
         current_pull = {
             "number": 2334, "state": "open",
-            "base": {"sha": "b" * 40, "repo": {"full_name": repo}},
+            "base": {"ref": "develop", "sha": "b" * 40, "repo": {"full_name": repo}},
             "head": {"ref": "feature/li179", "sha": "c" * 40,
                      "repo": {"full_name": repo}},
         }
@@ -420,6 +759,8 @@ gh() {
                         jobs={101: [self._job(101)]},
                         branch_pulls=[closed_pull, current_pull], cond=True)
             for branch_pulls in ([], [current_pull, current_pull],
+                                 [{**current_pull, "base": {**current_pull["base"], "ref": "main"}}],
+                                 [{**current_pull, "base": {key: value for key, value in current_pull["base"].items() if key != "ref"}}],
                                  [{**current_pull, "number": 999}],
                                  [{**current_pull, "head": {
                                      **current_pull["head"], "sha": "d" * 40}}]):
@@ -621,12 +962,54 @@ gh() {
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
         return textwrap.dedent(workflow[start:end])
     @staticmethod
+    def _pub_nested(name):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        publish = workflow.index("      - name: Publish bound neutral result\n")
+        marker = f"            {name}() {{\n"
+        start = workflow.index(marker, publish)
+        end = workflow.index("\n            }\n", start) + len("\n            }\n")
+        return textwrap.dedent(workflow[start:end])
+    @staticmethod
     def _rfn(name):
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
         marker = f"          {name}() {{\n"
         start = workflow.index(marker)
         end = workflow.index("\n          }\n", start) + len("\n          }\n")
-        return textwrap.dedent(workflow[start:end])
+        function = textwrap.dedent(workflow[start:end])
+        if name != "va":
+            return function
+        fixture = r'''
+read_evidence_owner_pr() {
+  if [ -n "${OWNER_PR:-}" ]; then printf '%s\n' "${OWNER_PR}"; return; fi
+  jq -cn --arg author "${PR_AUTHOR}" --arg base "${BASE_SHA}" \
+    --arg base_ref "${BASE_REF:-develop}" --arg head "${HEAD_SHA}" \
+    --arg head_ref "${HEAD_REF:-fix/final}" \
+    --arg repository "${REPOSITORY:-lightning-it/.github}" \
+    --argjson number "${PR_NUMBER:-123}" \
+    '{number:$number,state:"open",draft:false,merged_at:null,
+      user:{login:$author},base:{ref:$base_ref,sha:$base,
+      repo:{full_name:$repository}},head:{ref:$head_ref,sha:$head,
+      repo:{full_name:$repository}}}'
+}
+'''
+        function = function.replace("va() {", "workflow_va() {", 1)
+        wrapper = r'''
+va() {
+  local payload="${1}"
+  : "${BASE_REF:=develop}" "${HEAD_REF:=fix/final}"
+  : "${PR_NUMBER:=123}" "${REPOSITORY:=lightning-it/.github}"
+  if ! jq -e '.[0].output.summary | strings | fromjson? | type=="object"' \
+      <<<"${payload}" >/dev/null; then
+    payload="$(jq -c --arg base "${BASE_SHA}" --arg head "${HEAD_SHA}" \
+      --argjson owner "${owner_run_id}" --argjson pr "${PR_NUMBER:-123}" \
+      '.[0].output.summary=({schema:4,base_sha:$base,head_sha:$head,
+        pull_request_number:$pr,producer_run_id:$owner}|tojson)' \
+      <<<"${payload}")"
+  fi
+  workflow_va "${payload}"
+}
+'''
+        return textwrap.dedent(fixture) + function + textwrap.dedent(wrapper)
     @staticmethod
     def _review_script():
         workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
@@ -637,6 +1020,79 @@ gh() {
         start = workflow.index(marker) + len(marker)
         end = workflow.index("\n          VERIFY_COPILOT_REVIEW", start)
         return textwrap.dedent(workflow[start:end])
+    def test_any_files_negation_in_actual_policy_and_refresh_callers(self):
+        workflow = COPILOT_WORKFLOW.read_text(encoding="utf-8")
+        start = workflow.index('          review_comments_clean() {\n')
+        end = workflow.index('\n          }\n', start) + len('\n          }\n')
+        policy = textwrap.dedent(workflow[start:end])
+        start = workflow.index('          review_exists_for_head() {\n')
+        end = workflow.index('\n          }\n', start) + len('\n          }\n')
+        request_dedupe = textwrap.dedent(workflow[start:end])
+        positives = ('Copilot was able to review this pull request.', 'able to review this pull request',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("I can't review this pull request.", "I can’t review this pull request.",
+                     "I can't review any files.", "I can’t review any files.",
+                     "Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                     "Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     "Copilot isn't able to review any files.",
+                     "Copilot isn’t able to review any files.",
+                     "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                     "The bots aren't able to review any files.",
+                     "The bots weren’t able to review any files.",
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, usable in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    review = {'id': 17, 'commit_id': 'b' * 40, 'state': 'COMMENTED',
+                              'user': {'login': 'copilot-pull-request-reviewer[bot]'},
+                              'body': 'Review complete.' if inline else text}
+                    comments = [{'body': text}] if inline else []
+                    graphql = {'data': {'node': {'body': review['body'],
+                        'commit': {'oid': 'b' * 40}, 'pullRequest': {'headRefOid': 'b' * 40},
+                        'comments': {'nodes': comments, 'pageInfo': {'hasNextPage': False}}}}}
+                    env = {'PATH': TEST_TOOL_PATH, 'HEAD_SHA': 'b' * 40,
+                           'EXPECTED_HEAD': 'b' * 40, 'reviewer': 'copilot-pull-request-reviewer[bot]',
+                           'REPOSITORY': 'lightning-it/.github', 'PR_NUMBER': '23',
+                           'current_external_kind': 'copilot', 'REVIEW': json.dumps(review),
+                           'COMMENTS': json.dumps([comments]), 'PAGE': json.dumps(graphql),
+                           'review_comments_query': 'transport fixture',
+                           'UNABLE_REVIEW_MARKER': 'unable to review this pull request',
+                           'NO_FILES_REVIEW_MARKER': 'was not able to review any files',
+                           'QUOTA_EXHAUSTED_MARKER': 'quota exhausted',
+                           'QUOTA_EXCEEDED_MARKER': 'quota exceeded',
+                           'SUPPRESSED_COMMENTS_MARKER': 'suppressed comments'}
+                    shell = r'''set -euo pipefail
+graphql() { printf '%s' "${PAGE}"; }
+gh() { oa "$@"; }
+oa() {
+  case "${*: -1}" in
+    */reviews?per_page=100) printf '[[%s]]' "${REVIEW}";;
+    */reviews/17) printf '%s' "${REVIEW}";;
+    */reviews/17/comments?per_page=100) printf '%s' "${COMMENTS}";;
+    *) return 91;;
+  esac
+}
+'''
+                    for name, runtime in (
+                        ('policy', policy + '\nreview_comments_clean 17 "${HEAD_SHA}"\n'),
+                        ('refresh', self._rfn('usable_current_review') + '\nusable_current_review\n')) + (
+                            (('request dedupe', request_dedupe + '\nreview_exists_for_head\n'),) if not inline else ()):
+                        with self.subTest(text=text, inline=inline, caller=name):
+                            result = self._run_bash(shell + runtime, env)
+                            self.assertEqual(0 if usable or name == "request dedupe" else 1, result.returncode, result.stderr)
+
     def test_successor_head(self):
         bhead = "b" * 40
         def evaluate(lhead):
@@ -644,7 +1100,8 @@ gh() {
                      "nodes": []}
             review = {"id": "REVIEW_1",
                       "author": {"login": "copilot-pull-request-reviewer"},
-                      "commit": {"oid": lhead}, "state": "COMMENTED"}
+                      "commit": {"oid": lhead}, "state": "COMMENTED",
+                      "submittedAt": "2026-10-07T00:00:00Z"}
             pages = (
                 {"errors": [], "data": {"repository": {"pullRequest": {
                     "headRefOid": lhead, "reviews": {
@@ -657,6 +1114,16 @@ gh() {
                     "headRefOid": lhead, "reviewThreads": empty}}}},
             )
             with tempfile.TemporaryDirectory() as tmp:
+                # This test isolates head supersession; the metadata guard's
+                # real API binding is exercised in test_copilot_metadata_binding.
+                (Path(tmp) / "copilot-input-metadata.sh").write_text(
+                    "assert_copilot_metadata_revision() { :; }\n", encoding="utf-8")
+                (Path(tmp) / "copilot-input-metadata.json").write_text("null\n", encoding="utf-8")
+                timestamp_policy = COPILOT_WORKFLOW.read_text().split(
+                    "<<'COPILOT_TIMESTAMP_POLICY'\n", 1)[1].split(
+                    "          COPILOT_TIMESTAMP_POLICY", 1)[0]
+                (Path(tmp) / "copilot-timestamp.jq").write_text(
+                    textwrap.dedent(timestamp_policy), encoding="utf-8")
                 script = r'''set -euo pipefail
 sleep() { :; }
 gh() {
@@ -666,14 +1133,14 @@ gh() {
   case "${calls}" in 0) printf %s "${PAGE_0}";; 1) printf %s "${PAGE_1}";; 2) printf %s "${PAGE_2}";; *) return 91;; esac
 }
 ''' + self._review_script()
-                env = {"PATH": TEST_TOOL_PATH,
+                env = {"PATH": TEST_TOOL_PATH, "RUNNER_TEMP": tmp,
                        "CALL_COUNTER": str(Path(tmp) / "calls"),
                        "COPILOT_REVIEWER_LOGIN": "copilot-pull-request-reviewer",
                        "EVENT_HEAD": bhead,
                        "NO_FILES_REVIEW_MARKER": "was not able to review any files",
                        "PR_NUMBER": "123", "QUOTA_EXCEEDED_MARKER": "quota exceeded",
                        "QUOTA_EXHAUSTED_MARKER": "quota exhausted",
-                       "REPOSITORY": "lightning-it/.github",
+                       "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                        "SUPPRESSED_COMMENTS_MARKER": "suppressed comments",
                        "UNABLE_REVIEW_MARKER": "unable to review this pull request"}
                 env.update({f"PAGE_{index}": json.dumps(page)
@@ -791,7 +1258,7 @@ jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
                     "GITHUB_SERVER_URL": "https://github.example",
                     "LOG": str(log), "PR_AUTHOR": "litroc", "PR_NUMBER": "2334",
                     "MODE": mode, "OWNER_DRIFT": str(owner_drift).lower(),
-                    "READS": str(reads), "REPOSITORY": "lightning-it/.github",
+                    "READS": str(reads), "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                     "STATE": str(state),
                     "current_external_id": binding, "current_external_kind": "copilot",
                     "owner_run_id": str(owner)})
@@ -841,17 +1308,21 @@ jq -e 'length == 2 and all(.[]; .conclusion == "failure")' "${STATE}" >/dev/null
             with tempfile.TemporaryDirectory() as tmp:
                 lfile = Path(tmp) / "log"
                 script = r'''set -euo pipefail
+claim_review_operation() { :; }
+usable_current_review() { :; }
 revalidate_refresh_state() { printf S >>"${LOG_FILE}"; }
 validate_refresh_owner_run() { printf O >>"${LOG_FILE}"; }
 read_refresh_review_state() { printf V >>"${LOG_FILE}"; printf %s "${STATE}"; }
 gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; printf '{}'; else printf G >>"${LOG_FILE}"; printf %s "${RUN}"; fi; }
 ''' + functions + "\nrerun_owner_if_review_current\n"
                 env = {"PATH": TEST_TOOL_PATH, "LOG_FILE": str(lfile),
-                       "REPOSITORY": "lightning-it/.github",
+                       "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                        "RUN": json.dumps({"id": 77, "status": "completed",
                                           "conclusion": "failure", "run_attempt": 1}),
                        "STATE": json.dumps(state, separators=(",", ":")),
-                       "owner_run_id": "77", "refresh_expected_count": "0",
+                       "owner_run_id": "77", "PR_NUMBER": "123",
+                       "HEAD_SHA": "b" * 40, "BASE_SHA": "a" * 40,
+                       "refresh_expected_count": "0",
                        "refresh_expected_snapshot": "null"}
                 res = self._run_bash(script, env)
                 return res.returncode, lfile.read_text() if lfile.exists() else ""
@@ -860,7 +1331,7 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
         superseded = {**resolved, "event_current": False}
         for name, state, want_log in (
             ("producer timeout before resolution", unresolved, "SGOV"),
-            ("resolution before lane acquire", resolved, "SGOVSGP"),
+            ("resolution before lane acquire", resolved, "SGOVSGSSP"),
             ("stale event superseded", superseded, "SGOV"),
         ):
             with self.subTest(name=name):
@@ -869,7 +1340,7 @@ gh() { if [[ " $* " == *" --method POST "* ]]; then printf P >>"${LOG_FILE}"; pr
                 self.assertEqual(want_log, log)
         # Only the later resolved lane turn may consume attempt two.
         self.assertEqual((0, "SGOV"), execute(unresolved))
-        self.assertEqual((0, "SGOVSGP"), execute(resolved))
+        self.assertEqual((0, "SGOVSGSSP"), execute(resolved))
     def test_superseded_event(self):
         function = self._rfn("invalidate_refresh_check")
         def execute(state, reason):
@@ -1021,7 +1492,7 @@ oa() { local n=0; [ ! -f "${PC}" ] || n="$(cat "${PC}")"; printf %s "$((n + 1))"
                     "HEAD_REF": "feature/renamed",
                     "HEAD_SHA": "c" * 40,
                     "PR_NUMBER": "2334",
-                    "REPOSITORY": "lightning-it/shared-assets-lit",
+                    "REPOSITORY": "lightning-it/shared-assets-lit", "head_repository": "lightning-it/shared-assets-lit", "HEAD_REPOSITORY": "lightning-it/shared-assets-lit", "EVENT_HEAD_REPOSITORY": "lightning-it/shared-assets-lit",
                     "RUN": json.dumps(candidate),
                     "owner_run_id": "77"})
             return res.returncode
@@ -1062,7 +1533,7 @@ ro() { :; }
                        "EVENT_BASE": base, "EVENT_HEAD": head,
                        "EXTERNAL_ID": binding, "OWNER_RUN_ID": str(owner),
                        "READ_COUNTER": str(path / "reads"),
-                       "REPOSITORY": "lightning-it/.github", "RUNNER_TEMP": tmp,
+                       "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github", "RUNNER_TEMP": tmp,
                        "SNAPSHOT": compact(snapshot),
                        "SNAPSHOT_AFTER": compact(after or snapshot),
                        "VERIFY_EXIT": str(vexit), "VERIFY_LOG": str(log),
@@ -1125,6 +1596,7 @@ ro() { :; }
             dispatch,
         )
         self.assertIn('test "${GITHUB_REF_PROTECTED}" = true', dispatch)
+        self.assertIn('test "${GITHUB_SHA}" = "${EXPECTED_BASE}"', dispatch)
         self.assertIn('-f "ref=${BASE_REF}"', dispatch)
         self.assertIn('-f "inputs[base_ref]=${BASE_REF}"', dispatch)
         self.assertIn(
@@ -1165,7 +1637,7 @@ ro() { :; }
     @staticmethod
     def _refresh_event_authorization_filter() -> str:
         workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
-        marker = '            --arg repository "${REPOSITORY}" \'\n'
+        marker = '            --arg repository "${REPOSITORY}" --arg head_repository "${HEAD_REPOSITORY}" \'\n'
         start = workflow.index(marker) + len(marker)
         end = workflow.index(
             '\n            \' "${GITHUB_EVENT_PATH}" >/dev/null', start
@@ -1175,11 +1647,17 @@ ro() { :; }
     @staticmethod
     def _rerun_summary_filter() -> str:
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
-        summary = workflow.index('          neutral_summary="$(jq -cer \\\n')
+        summary = workflow.index("          validate_evidence_owner() {\n")
         marker = '            --argjson run_id "${producer_id}" \'\n'
         start = workflow.index(marker, summary) + len(marker)
-        end = workflow.index('\n            \' <<<"${neutral_summary}"', start)
+        end = workflow.index('\n              \' <<<"${neutral_summary}"', start)
         return workflow[start:end]
+
+    @staticmethod
+    def _rerun_owner_binding_guard() -> str:
+        return CopilotReviewRefreshTests._rerun_shell_function(
+            "validate_evidence_owner"
+        )
 
     @staticmethod
     def _rerun_list_summary_parsing() -> str:
@@ -1249,7 +1727,8 @@ ro() { :; }
         workflow = RERUN_WORKFLOW.read_text(encoding="utf-8")
         start = workflow.index(
             '            jq -e \\\n'
-            '              --arg actor "${author}" \\\n'
+            '              --arg actor "${author}" --arg repository "${REPOSITORY}" \\\n'
+            '              --arg hr "${hr}" --arg base_sha "${EXPECTED_BASE}" --arg base_ref "${base_ref}" \\\n'
             '              --arg head_sha "${EXPECTED_HEAD}" \\\n'
             '              --argjson attempt "${producer_attempt}" \\\n'
         )
@@ -1317,7 +1796,7 @@ ro() { :; }
         if trigger is None:
             trigger = actor if attempt == 1 else "github-actions[bot]"
         return {
-            "id": run_id,
+            "id": run_id, "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
             "created_at": created_at,
             "event": "pull_request_target",
             "path": path,
@@ -1371,7 +1850,7 @@ ro() { :; }
         actor = "litroc"
         run_id = 900
         return {
-            "id": run_id,
+            "id": run_id, "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
             "event": "pull_request_target",
             "path": (
                 ".github/workflows/"
@@ -1483,7 +1962,7 @@ ro() { :; }
                 "b" * 40,
                 "--arg",
                 "repository",
-                repository,
+                repository, "--arg", "hr", repository,
                 "--arg",
                 "server_url",
                 "https://github.example",
@@ -1528,7 +2007,7 @@ jq -ce \
   --arg base_sha "${EXPECTED_BASE}" \
   --arg head_ref "${head_ref}" \
   --arg head_sha "${EXPECTED_HEAD}" \
-  --arg repository "${REPOSITORY}" \
+  --arg repository "${REPOSITORY}" --arg hr "${hr}" \
   --arg server_url "${GITHUB_SERVER_URL}" \
   --argjson pr_number "${PR_NUMBER}" \
   "${CROSS_INVENTORY_FILTER}" <<<"${cross_pages}" >/dev/null
@@ -1548,7 +2027,7 @@ printf 'POST_AUTHORIZED\n'
                 ),
                 "GITHUB_API_URL": "https://api.github.example",
                 "GITHUB_SERVER_URL": "https://github.example",
-                "REPOSITORY": "lightning-it/.github",
+                "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                 "PR_NUMBER": "554",
                 "EXPECTED_BASE": "a" * 40,
                 "EXPECTED_HEAD": "b" * 40,
@@ -1577,6 +2056,8 @@ printf 'POST_AUTHORIZED\n'
         protected_jobs: dict[str, object] | None = None,
         protected_sequence: list[dict[str, object]] | None = None,
         protected_jobs_sequence: list[dict[str, object]] | None = None,
+        head_repository: str = "lightning-it/.github",
+        base_ref: str = "develop",
     ) -> subprocess.CompletedProcess[str]:
         frozen_neutral = expected_neutral or neutral
         frozen_reservation = expected_reservation or reservation
@@ -1635,6 +2116,7 @@ printf 'POST_AUTHORIZED\n'
                 self._rerun_shell_function(
                     "authorize_cross_rerun_transaction"
                 ),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_cross_job_once"),
                 FAKE_TIMEOUT_PASSTHROUGH,
                 r'''revalidate_neutral_authorization() {
@@ -1713,12 +2195,12 @@ sleep() { printf 'ORDER:sleep:%s\n' "${1}" >&2; }''',
                     "PATH": TEST_TOOL_PATH,
                     "GITHUB_API_URL": "https://api.github.example",
                     "GITHUB_SERVER_URL": "https://github.example",
-                    "REPOSITORY": "lightning-it/.github",
+                    "REPOSITORY": "lightning-it/.github", "hr": head_repository, "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                     "PR_NUMBER": "554",
                     "EXPECTED_BASE": "a" * 40,
                     "EXPECTED_HEAD": "b" * 40,
                     "author": "litroc",
-                    "base_ref": "develop",
+                    "base_ref": base_ref,
                     "head_ref": "fix/final",
                     "run_id": "900",
                     "verifier_run_url": (
@@ -1823,6 +2305,7 @@ sleep() { printf 'ORDER:sleep:%s\n' "${1}" >&2; }''',
                 self._rerun_shell_function(
                     "authorize_protected_rerun_transaction"
                 ),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function(
                     "rerun_protected_verifier_once"
                 ),
@@ -1885,7 +2368,7 @@ gh() {
                 "PATH": TEST_TOOL_PATH,
                 "GITHUB_API_URL": "https://api.github.example",
                 "GITHUB_SERVER_URL": "https://github.example",
-                "REPOSITORY": "lightning-it/.github",
+                "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                 "PR_NUMBER": "554",
                 "EXPECTED_BASE": "a" * 40,
                 "EXPECTED_HEAD": "b" * 40,
@@ -1929,6 +2412,7 @@ gh() {
         author: str,
         external_id: str,
         pull_request_number: int | None,
+        owner_pr_number: int = 123,
         repository: str = "lightning-it/.github",
         review_path: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -1963,17 +2447,28 @@ gh() {
                     "base",
                     base,
                     "--arg",
+                    "current_kind",
+                    ("renovate" if author == "renovate[bot]" else
+                     "ancestry-backmerge" if "ancestry-backmerge" in external_id else
+                     "managed-sync" if "managed-sync" in external_id else "copilot"),
+                    "--arg",
                     "head",
                     head,
                     "--arg",
                     "pr",
                     "123",
                     "--arg",
+                    "owner_pr",
+                    str(owner_pr_number),
+                    "--arg",
                     "repository",
-                    repository,
+                    repository, "--arg", "head_repository", repository,
                     "--argjson",
                     "pr_number",
                     "123",
+                    "--argjson",
+                    "owner_pr_number",
+                    str(owner_pr_number),
                     "--arg",
                     "owner_run_id",
                     "77",
@@ -2005,36 +2500,36 @@ gh() {
         self.assertIn("' \"${GITHUB_EVENT_PATH}\" >/dev/null", workflow)
 
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event_name == 'pull_request_review' &&"),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event_name == 'pull_request_review_comment' &&"
             ),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event.review.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count(
                 "github.event.comment.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
-        self.assertEqual(2, workflow.count("github.actor == 'litroc'"))
+        self.assertEqual(4, workflow.count("github.actor == 'litroc'"))
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event.review.user.login == 'litroc'"),
         )
         self.assertEqual(
-            1,
+            2,
             workflow.count("github.event.comment.user.login == 'litroc'"),
         )
 
@@ -2063,7 +2558,7 @@ gh() {
             payload: dict[str, object] = {
                 "action": action,
                 "pull_request": {
-                    "draft": draft,
+                    "draft": draft, "base": {"repo": {"full_name": repository}},
                     "head": {"repo": {"full_name": head_repository}},
                 },
                 "sender": {"login": sender_login or actor},
@@ -2084,7 +2579,7 @@ gh() {
                     event,
                     "--arg",
                     "repository",
-                    repository,
+                    repository, "--arg", "head_repository", repository,
                     self._refresh_event_authorization_filter(),
                 ],
                 input=json.dumps(payload),
@@ -2311,7 +2806,7 @@ gh() {
 
         def validate(repository: str, workflow_url: str) -> int:
             run = {
-                "id": 42,
+                "id": 42, "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
                 "event": "pull_request_target",
                 "path": ".github/workflows/supplementary-current-revision-required.yml",
                 "workflow_id": 337993808,
@@ -2369,7 +2864,7 @@ gh() {
                     "b" * 40,
                     "--arg",
                     "repository",
-                    repository,
+                    repository, "--arg", "hr", repository,
                     "--arg",
                     "run_url",
                     f"https://github.example/{repository}/actions/runs/42",
@@ -2454,9 +2949,16 @@ gh() {
                 "set -euo pipefail",
                 self._rerun_shell_function("require_deadline"),
                 self._rerun_shell_function("bounded_gh_api"),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_protected_verifier_once"),
+                "claim_review_operation() { :; }",
                 self._rerun_shell_function("rerun_cross_job_once"),
-                r'''authorize_protected_rerun_transaction() { :; }
+                r'''claim_review_operation() { :; }
+EXPECTED_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+EXPECTED_BASE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+PR_NUMBER=123
+cross_run_id=901
+authorize_protected_rerun_transaction() { :; }
 authorize_cross_rerun_transaction() { :; }
 wait_for_protected_attempt_two_success() { printf 'POLL\n' >&2; }
 wait_for_cross_attempt_two_success() { printf 'POLL\n' >&2; }
@@ -3055,6 +3557,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         identity_filter = self._canonical_producer_identity_filter()
         head = "b" * 40
         producer = {
+            "repository": {"full_name": "lightning-it/.github"},
+            "head_repository": {"full_name": "lightning-it/.github"},
             "event": "pull_request_target",
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate",
@@ -3063,7 +3567,10 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             "html_url": "https://github.example/actions/runs/77",
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "github-actions[bot]"},
-            "pull_requests": [{"head": {"ref": "fix/final"}}],
+            "pull_requests": [
+                {"number": 123, "head": {"ref": "fix/final", "repo": {"url": "https://api.github.com/repos/lightning-it/.github"}},
+                 "base": {"ref": "develop", "sha": "a" * 40, "repo": {"url": "https://api.github.com/repos/lightning-it/.github"}}}
+            ],
         }
 
         def evaluate_identity(
@@ -3085,10 +3592,15 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                     "--argjson",
                     "attempt",
                     str(attempt),
+                    "--argjson",
+                    "owner_pr",
+                    "123",
                     "--arg",
                     "run_url",
                     "https://github.example/actions/runs/77",
-                    identity_filter,
+                    "--arg", "repository", "lightning-it/.github",
+                    "--arg", "hr", "lightning-it/.github",
+                    "--arg", "base_sha", "a" * 40, "--arg", "base_ref", "develop", identity_filter,
                 ],
                 input=json.dumps(payload),
                 text=True,
@@ -3099,6 +3611,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
 
         accepted = evaluate_identity(producer, 2)
         self.assertEqual(0, accepted.returncode, accepted.stderr)
+        wrong_base_ref = json.loads(json.dumps(producer))
+        wrong_base_ref["pull_requests"][0]["base"]["ref"] = "main"
+        self.assertNotEqual(0, evaluate_identity(wrong_base_ref, 2).returncode)
         for field, value in (
             ("triggering_actor", {"login": "litroc"}),
             ("triggering_actor", {"login": "mallory"}),
@@ -3212,6 +3727,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             "head_branch": "fix/final",
             "head_sha": head,
             "html_url": "https://github.example/actions/runs/77",
+            "repository": {"full_name": "lightning-it/.github"},
+            "head_repository": {"full_name": "lightning-it/.github"},
             "workflow_id": 616,
             "workflow_url": "https://api.github.example/workflows/616",
             "run_attempt": 2,
@@ -3538,8 +4055,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         stderr_lines = accepted.stderr.splitlines()
         observed_order = [stderr_lines.index(item) for item in ordered_reads]
         self.assertEqual(sorted(observed_order), observed_order)
-        self.assertEqual(3, stderr_lines.count("ORDER:protected_detail"))
-        self.assertEqual(3, stderr_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(6, stderr_lines.count("ORDER:protected_detail"))
+        self.assertEqual(6, stderr_lines.count("ORDER:protected_jobs"))
         self.assertGreater(
             len(stderr_lines)
             - 1
@@ -3587,7 +4104,7 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
         self.assertEqual(0, converged.returncode, converged.stderr)
         self.assertIn("ORDER:POST", converged.stderr)
         self.assertEqual(
-            4, converged.stderr.splitlines().count("ORDER:protected_detail")
+            7, converged.stderr.splitlines().count("ORDER:protected_detail")
         )
 
         def reverse_key_order(value: object) -> object:
@@ -3616,9 +4133,9 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             0, key_order_converged.returncode, key_order_converged.stderr
         )
         key_order_lines = key_order_converged.stderr.splitlines()
-        self.assertEqual(3, key_order_lines.count("ORDER:protected_detail"))
-        self.assertEqual(3, key_order_lines.count("ORDER:protected_jobs"))
-        self.assertEqual(1, key_order_lines.count("ORDER:sleep:2"))
+        self.assertEqual(6, key_order_lines.count("ORDER:protected_detail"))
+        self.assertEqual(6, key_order_lines.count("ORDER:protected_jobs"))
+        self.assertEqual(2, key_order_lines.count("ORDER:sleep:2"))
         self.assertEqual(1, key_order_lines.count("ORDER:POST"))
         self.assertIn("jq -Scn", RERUN_WORKFLOW.read_text(encoding="utf-8"))
 
@@ -3648,8 +4165,8 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
             for index, line in enumerate(snapshot_lines)
             if line == "ORDER:sleep:2"
         ]
-        self.assertEqual(5, len(job_reads))
-        self.assertEqual(3, len(sleeps))
+        self.assertEqual(8, len(job_reads))
+        self.assertEqual(4, len(sleeps))
         self.assertLess(job_reads[0], sleeps[0])
         self.assertLess(sleeps[0], job_reads[1])
         self.assertLess(job_reads[1], sleeps[1])
@@ -3921,6 +4438,36 @@ read_run_with_retry 202 | jq -e '.id == 202' >/dev/null
                 self.assertNotIn("POST_AUTHORIZED", result.stdout)
                 self.assertNotIn("ORDER:POST", result.stderr)
 
+        for branch in ("develop", "main"):
+            fork = "contributor/core"
+            fork_pr = json.loads(json.dumps(live_pr))
+            fork_pr["head"]["repo"]["full_name"] = fork
+            fork_pr["base"]["ref"] = branch
+            fork_cross = self._cross_run(901, "2026-09-05T10:00:00Z", conclusion="failure")
+            fork_protected = self._protected_run(conclusion="success")
+            for native in (fork_cross, fork_protected):
+                native["head_repository"]["full_name"] = fork
+                native["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.example/repos/" + fork
+                native["pull_requests"][0]["base"]["ref"] = branch
+            args = dict(cross=fork_cross, inventory=[fork_cross], live_pr=fork_pr,
+                        neutral=neutral, neutral_summary_raw=neutral_summary_raw,
+                        reservation=reservation, protected=fork_protected,
+                        head_repository=fork, base_ref=branch)
+            with self.subTest(fork=fork, branch=branch):
+                result = self._run_cross_rerun_authorization(**args)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(1, result.stderr.count("ORDER:POST\n"))
+                wrong_pr = json.loads(json.dumps(fork_pr))
+                wrong_pr["head"]["repo"]["full_name"] = "other/core"
+                result = self._run_cross_rerun_authorization(**{**args, "live_pr": wrong_pr})
+                self.assertNotEqual(0, result.returncode)
+                self.assertNotIn("ORDER:POST", result.stderr)
+                wrong_run = json.loads(json.dumps(fork_cross))
+                wrong_run["head_repository"]["full_name"] = "other/core"
+                result = self._run_cross_rerun_authorization(**{**args, "cross": wrong_run, "inventory": [wrong_run]})
+                self.assertNotEqual(0, result.returncode)
+                self.assertNotIn("ORDER:POST", result.stderr)
+
     def test_protected_pre_post_transaction_executes_all_guards(self) -> None:
         base = "a" * 40
         head = "b" * 40
@@ -4108,7 +4655,7 @@ sleep() { :; }''',
                         ),
                         "GITHUB_API_URL": "https://api.github.example",
                         "GITHUB_SERVER_URL": "https://github.example",
-                        "REPOSITORY": "lightning-it/.github",
+                        "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                         "PR_NUMBER": "554",
                         "EXPECTED_BASE": "a" * 40,
                         "EXPECTED_HEAD": "b" * 40,
@@ -4622,7 +5169,7 @@ sleep() { :; }''',
                         ),
                         "GITHUB_API_URL": "https://api.github.example",
                         "GITHUB_SERVER_URL": "https://github.example",
-                        "REPOSITORY": "lightning-it/.github",
+                        "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
                         "PR_NUMBER": "554",
                         "EXPECTED_BASE": "a" * 40,
                         "EXPECTED_HEAD": "b" * 40,
@@ -4702,6 +5249,7 @@ sleep() { :; }''',
             }
 
         producer = {
+            "repository": {"full_name": repository}, "head_repository": {"full_name": repository},
             "id": 77,
             "event": "pull_request_target",
             "path": ".github/workflows/copilot-review.yml",
@@ -4741,6 +5289,8 @@ sleep() { :; }''',
             "head_branch": "fix/final",
             "head_sha": head,
             "html_url": producer_url,
+            "repository": {"full_name": "lightning-it/.github"},
+            "head_repository": {"full_name": "lightning-it/.github"},
             "workflow_id": 616,
             "workflow_url": (
                 f"https://api.github.example/repos/{repository}/"
@@ -4849,7 +5399,7 @@ sleep() { :; }''',
                         "GH_STATE_FILE": str(state_file),
                         "GITHUB_API_URL": "https://api.github.example",
                         "GITHUB_SERVER_URL": "https://github.example",
-                        "REPOSITORY": repository,
+                        "REPOSITORY": repository, "hr": repository, "HEAD_REPOSITORY": repository, "EVENT_HEAD_REPOSITORY": repository,
                         "PR_NUMBER": "554",
                         "EXPECTED_BASE": base,
                         "EXPECTED_HEAD": head,
@@ -5147,7 +5697,7 @@ sleep() { :; }''',
                         "CHECK": json.dumps([{"external_id": external_id}]),
                         "HEAD_SHA": head,
                         "PATCH_FILE": str(patch_file),
-                        "PR_AUTHOR": "renovate[bot]",
+                        "PR_AUTHOR": "renovate[bot]", "HEAD_REPOSITORY": "lightning-it/.github",
                         "current_external_id": current,
                         "current_external_kind": "renovate",
                         "owner_run_id": owner,
@@ -5177,7 +5727,7 @@ sleep() { :; }''',
                 [bash, "-c", guard],
                 env={
                     "PATH": TEST_TOOL_PATH,
-                    "REPOSITORY": repository,
+                    "REPOSITORY": repository, "hr": repository, "HEAD_REPOSITORY": repository, "EVENT_HEAD_REPOSITORY": repository,
                     "author": author,
                     "base_ref": base_ref,
                     "external_kind": "managed-sync",
@@ -5305,7 +5855,7 @@ sleep() { :; }''',
             '--arg author "${author}" --arg base_ref "${base_ref}" '
             '--arg base_sha "${EXPECTED_BASE}" --arg head_ref "${head_ref}" '
             '--arg head_sha "${EXPECTED_HEAD}" --arg repository "${REPOSITORY}" '
-            '--arg server_url "${GITHUB_SERVER_URL}" '
+            '--arg hr "${hr}" --arg server_url "${GITHUB_SERVER_URL}" '
             '--argjson pr_number "${PR_NUMBER}" "${CROSS_FILTER}" '
             '<<<"${PAGES}" >/dev/null',
             'validate_protected_run_binding "${PROTECTED}"',
@@ -5315,7 +5865,7 @@ sleep() { :; }''',
             "PATH": TEST_TOOL_PATH,
             "GITHUB_API_URL": "https://api.github.example",
             "GITHUB_SERVER_URL": "https://github.example",
-            "REPOSITORY": "lightning-it/.github",
+            "REPOSITORY": "lightning-it/.github", "hr": "lightning-it/.github", "HEAD_REPOSITORY": "lightning-it/.github", "EVENT_HEAD_REPOSITORY": "lightning-it/.github",
             "PR_NUMBER": "554",
             "EXPECTED_BASE": "a" * 40,
             "EXPECTED_HEAD": "b" * 40,
