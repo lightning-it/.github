@@ -4,11 +4,15 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+
+from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "verify-promotion-evidence.py"
@@ -24,6 +28,85 @@ BASE = "1" * 40
 HEAD = "2" * 40
 MERGE = "3" * 40
 INPUT = "4" * 64
+CURRENT_COPILOT_OVERVIEW = (
+    "<!-- ccr-overview-v2 -->\n\n"
+    "### 🔵 Needs a closer look\n\n"
+    "Final confidence depends on protected live credential and GitHub inventory "
+    "behavior that mocked tests cannot verify.\n\n"
+    "**0 open findings**\n\n"
+    "<details>\n"
+    "<summary><strong>What changed in this PR</strong></summary>\n\n"
+    "Enables the guarded, read-only Terraform creation preview.\n"
+    "</details>\n\n"
+    "🧠 **Review effort:** Balanced\n"
+)
+COPILOT_OBSERVED_APPENDIX_OVERVIEW = "<!-- ccr-overview-v2 -->\n\n### 🔵 Needs a closer look\n\nIt changes protected promotion evidence handling and uses an administrative POC exception requiring final human validation.\n\n**0 open findings**\n\n<details>\n<summary><strong>What changed in this PR</strong></summary>\n\nPromotes the reviewed Copilot overview parser correction and authenticated ancestry binding from `develop` to `main`.\n\n**Changes:**\n- Supports current Copilot review overview formats with fail-closed validation.\n- Adds malformed-format and evidence-binding regression coverage.\n- Updates protected-main ancestry metadata.\n\n| File | Description |\r\n| ---- | ----------- |\r\n| `.lit/​main-ancestry.json` | Records exact develop/main ancestry. |\r\n| `scripts/​verify-promotion-evidence.py` | Parses and validates current Copilot overviews. |\r\n| `tests/​test_promotion_evidence.py` | Covers valid, malformed, and conflicting evidence. |\n</details>\n\n🧠 **Review effort:** Balanced\n\n---\n\n💡 <a href=\"/lightning-it/.github/new/main?filename=.github/skills/code-review/SKILL.md\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Add a `code-review` agent skill</a> or configure MCP servers for context-aware, tailored reviews. <a href=\"https://docs.github.com/copilot/how-tos/use-copilot-agents/request-a-code-review/use-code-review?tool=webui#mcp-servers-and-agent-skills\" class=\"Link--inTextBlock\" target=\"_blank\" rel=\"noopener noreferrer\">Learn more in the docs.</a>"
+
+
+def overview_with_tail(body, tail):
+    footer = "🧠 **Review effort:** Balanced\n"
+    if body.endswith(footer):
+        return body.removesuffix(footer) + tail + "\n" + footer
+    return body + tail
+
+
+def native_finding_comment(comment_id=10001, review_id=17001):
+    return {
+        "id": comment_id, "node_id": f"PRRC_native_{comment_id}",
+        "pull_request_review_id": review_id, "original_commit_id": HEAD,
+        "body": "Native inline finding.",
+    }
+
+
+def native_finding_thread(comment_id=10001, *, review_id=17001,
+                          review_node_id="PRR_kwDOQs6tNc8AAAABPj6qbQ",
+                          resolved=True, thread_id="PRRT_1"):
+    return {
+        "id": thread_id, "isResolved": resolved,
+        "comments": {"nodes": [{
+            "id": f"PRRC_native_{comment_id}", "databaseId": comment_id,
+            "pullRequestReview": {"id": review_node_id, "databaseId": review_id},
+        }]},
+    }
+
+
+CURRENT_COPILOT_OPEN_FINDING = (
+    "<details open>\n"
+    "<summary><strong>1 open finding</strong></summary>\n\n"
+    "- Finding recorded in its native review thread.\n"
+    "</details>"
+)
+COPILOT_RESOLVED_HISTORY = (
+    "<details>\n"
+    "<summary><strong>Resolved since last review (1)</strong></summary>\n\n"
+    "- Finding from the earlier review.\n"
+    "</details>\n"
+)
+CURRENT_COPILOT_RESOLVED_HISTORY = COPILOT_RESOLVED_HISTORY.replace(
+    "Resolved since last review (1)", "1 resolved since last review"
+)
+COPILOT_MEDIUM_ICON = (
+    '<picture><source media="(prefers-color-scheme: dark)" '
+    'srcset="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-dark.svg">'
+    '<source media="(prefers-color-scheme: light)" '
+    'srcset="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-light.svg">'
+    '<img src="https://github.githubassets.com/static/images/icons/'
+    'copilot-code-review/medium-v2-light.png" alt="Medium severity" '
+    'width="62" height="18" align="texttop"></picture>'
+)
+# Native Management #728, review 5480298386, nests individually titled findings
+# only inside its Previously missed history section.
+COPILOT_PREVIOUSLY_MISSED_HISTORY = (
+    "<details>\n"
+    "<summary><strong>Previously missed (1)</strong></summary>\n\n"
+    "In code that hasn't changed since last review\n\n"
+    "<details>\n"
+    f"<summary>{COPILOT_MEDIUM_ICON} Add subprocess coverage for import paths</summary>\n\n"
+    "The existing-resource import paths need regression coverage.\n"
+    "</details>\n</details>\n"
+)
 
 
 def promotion() -> dict[str, object]:
@@ -205,6 +288,17 @@ def expanded_v6_summary(kind: str = "copilot") -> str:
     return json.dumps(evidence)
 
 
+def rendered_review_fixture(review):
+    """Supply independent renderer output for mocked full-media native reviews."""
+    body = review.get("body")
+    return {
+        "body_html": MarkdownIt("commonmark", {"html": True}).enable(
+            ["table", "strikethrough"],
+        ).render(body) if type(body) is str else "",
+        **review,
+    }
+
+
 def evidence_api(
     run: dict[str, object],
     suite: dict[str, object] | None = None,
@@ -263,7 +357,7 @@ def evidence_api(
         if endpoint == "repos/lightning-it/example/pulls/17/reviews?per_page=100":
             return [
                 [
-                    review
+                    rendered_review_fixture(review
                     or {
                         "id": 17001,
                         "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
@@ -277,23 +371,115 @@ def evidence_api(
                         "submitted_at": "2026-09-27T00:04:00Z",
                         "body": (
                             "<!-- ccr-overview-v2 -->\n\n"
+                            "## Copilot review overview\n\n"
                             "### 🟢 Approval recommended\n\n"
                             "**Findings:** None\n"
                         ),
-                    }
+                    })
                 ]
             ]
         if endpoint == (
             "repos/lightning-it/example/pulls/17/reviews/17001/"
             "comments?per_page=100"
         ):
-            return [[review_comment] if review_comment is not None else []]
+            return [review_comment if type(review_comment) is list else
+                    [review_comment] if review_comment is not None else []]
         raise AssertionError(endpoint)
 
     return dispatch
 
 
 class PromotionEvidenceTests(unittest.TestCase):
+    def test_reviewed_release_successor_proves_real_metadata_only_ancestry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            environment = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+            for name in ("GIT_COMMON_DIR", "GIT_DIR", "GIT_WORK_TREE"):
+                environment.pop(name, None)
+
+            def git(*arguments: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-C", str(repository), "-c", "user.name=test",
+                     "-c", "user.email=test@example.test", *arguments],
+                    env=environment, text=True, stderr=subprocess.DEVNULL,
+                ).strip()
+
+            git("init", "--quiet")
+            (repository / "galaxy.yml").write_text("namespace: lit\nversion: 1.15.0\n", encoding="utf-8")
+            (repository / "runtime").write_text("original\n", encoding="utf-8")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "original")
+            original = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "released")
+            (repository / "galaxy.yml").write_text("namespace: lit\nversion: 1.16.0\n", encoding="utf-8")
+            git("commit", "--quiet", "-am", "published version metadata")
+            released = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "develop", original)
+            (repository / "runtime").write_text("reviewed feature\n", encoding="utf-8")
+            git("commit", "--quiet", "-am", "reviewed develop")
+            previous = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "-c", "successor")
+            git("merge", "--quiet", "--no-ff", "released", "-m", "preserve main ancestry")
+            head = git("rev-parse", "HEAD")
+            git("switch", "--quiet", "develop")
+            git("merge", "--quiet", "--no-ff", "successor", "-m", "protected merge")
+            merge = {"base_sha": previous, "head_sha": head, "merge_sha": git("rev-parse", "HEAD")}
+            pull = ingress_pull()
+            pull["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+            pull["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+            with mock.patch.dict(os.environ, environment, clear=True):
+                MODULE.validate_reviewed_release_baseline(
+                    repository, repository="lightning-it/example",
+                    expected_main=released, merge=merge, pull=pull,
+                )
+                # The naming compatibility must never admit runtime edits.
+                git("switch", "--quiet", "successor")
+                (repository / "runtime").write_text("unreviewed runtime alteration\n", encoding="utf-8")
+                git("commit", "--quiet", "-am", "forbidden runtime change")
+                altered = git("rev-parse", "HEAD")
+                with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-content-scope"):
+                    MODULE.validate_reviewed_release_baseline(
+                        repository, repository="lightning-it/example",
+                        expected_main=released,
+                        merge={"base_sha": previous, "head_sha": altered, "merge_sha": altered},
+                        pull=pull,
+                    )
+
+    def test_reviewed_release_successor_still_requires_main_introduction(self) -> None:
+        pull = ingress_pull()
+        pull["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+        pull["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+        merge = {"base_sha": BASE, "head_sha": HEAD, "merge_sha": MERGE}
+        with mock.patch.object(MODULE, "is_ancestor", return_value=False):
+            with self.assertRaisesRegex(MODULE.EvidenceError, "release-baseline-main-introduction"):
+                MODULE.validate_reviewed_release_baseline(
+                    Path("unused"), repository="lightning-it/example",
+                    expected_main="5" * 40, merge=merge, pull=pull,
+                )
+
+    def test_reviewed_release_successor_identity_fails_closed(self) -> None:
+        original = ingress_pull()
+        original["head"]["ref"] = "backsync/release-v1.16.0-li139-current-base"
+        original["title"] = "chore: preserve v1.16.0 release ancestry on current develop"
+        merge = {"base_sha": BASE, "head_sha": HEAD, "merge_sha": MERGE}
+        for reference, title, user in (
+            ("backsync/release-v1.16.0-li139-current-base", "arbitrary", original["user"]),
+            ("backsync/release-v1.16.0-li139-current-base", "chore: preserve v1.16.1 release ancestry on current develop", original["user"]),
+            ("backsync/release-v1.16.0-arbitrary", original["title"], original["user"]),
+            ("backsync/release-v01.16.0-li139-current-base", original["title"], original["user"]),
+            ("backsync/release-v1.16.0-li139-current-base", original["title"], {
+                "login": "lightning-it-release-automation[bot]", "id": 307565056, "type": "Bot"}),
+        ):
+            pull = json.loads(json.dumps(original))
+            pull["head"]["ref"], pull["title"], pull["user"] = reference, title, user
+            with self.subTest(reference=reference, title=title, user=user), mock.patch.object(MODULE, "is_ancestor") as ancestry:
+                with self.assertRaises(MODULE.EvidenceError):
+                    MODULE.validate_reviewed_release_baseline(
+                        Path("unused"), repository="lightning-it/example",
+                        expected_main="5" * 40, merge=merge, pull=pull,
+                    )
+                ancestry.assert_not_called()
+
     def test_github_api_proxy_accepts_only_exact_connect_target(self) -> None:
         accepted = (
             b"CONNECT api.github.com:443 HTTP/1.1\r\n"
@@ -938,6 +1124,21 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        late_success_check = check_run(external_id, v6_summary())
+        late_success_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(run)):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [late_success_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull(),
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
         early_check = check_run(external_id, v6_summary())
         early_check["completed_at"] = "2026-09-27T00:03:00Z"
         with mock.patch.object(
@@ -990,6 +1191,7 @@ class PromotionEvidenceTests(unittest.TestCase):
         run["pull_requests"] = []
         valid_review = {
             "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
             "user": {
                 "login": "copilot-pull-request-reviewer[bot]",
                 "id": 175728472,
@@ -1000,6 +1202,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** None\n"
             ),
@@ -1122,6 +1325,47 @@ class PromotionEvidenceTests(unittest.TestCase):
                 head_sha=HEAD,
             )
         self.assertEqual(88, evidence["producer_run_id"])
+
+        # Exercise the actual promotion evidence reader, including inline text.
+        positives = ('Copilot was able to review this pull request.', 'able to review this pull request',
+                     'COPILOT WAS\u00a0ABLE\u2003TO REVIEW THIS PULL REQUEST',
+                     'The bot was able to review any files.', 'able to review any files',
+                     'THE BOT WAS\u00a0ABLE\u2003TO REVIEW ANY FILES')
+        negatives = ("Copilot wasn't able to review this pull request.",
+                     'Copilot wasn’t able to review this pull request.',
+                     'Copilot was not able to review this pull request.',
+                     'Copilot is not able to review this pull request.',
+                     "Copilot isn't able to review this pull request.",
+                     'Copilot isn’t able to review this pull request.',
+                     'COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW THIS PULL REQUEST.',
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW THIS PULL REQUEST',
+                     "Copilot wasn't able to review any files.",
+                     'Copilot wasn’t able to review any files.',
+                     "Copilot isn't able to review any files.",
+                     "Copilot isn’t able to review any files.",
+                     "COPILOT ISN’T ABLE\u2003TO\u00a0REVIEW\u202fANY\u2009FILES.",
+                     "The bots aren't able to review any files.",
+                     "The bots weren’t able to review any files.",
+                     'COPILOT\u00a0WASN’T\u2003ABLE\tTO REVIEW ANY FILES',
+                     'Copilot is not able to review any files.',
+                     'Copilot is unable to review any files.')
+        for messages, usable in ((positives, True), (negatives, False)):
+            for text in messages:
+                for inline in (False, True):
+                    review = valid_review if inline else valid_review | {'body': valid_review['body'] + '\n' + text}
+                    extra = {'review_comment': {'id': 18001, 'body': text}} if inline else {}
+                    with self.subTest(text=text, inline=inline), mock.patch.object(
+                        MODULE, 'gh_json', side_effect=evidence_api(run, review=review, **extra)
+                    ):
+                        def verify():
+                            return MODULE.bound_review_check(
+                                [{'check_runs': [check]}], repository='lightning-it/example',
+                                pull=ingress_pull(), pull_number=17, base_sha=BASE, head_sha=HEAD)
+                        if usable:
+                            self.assertEqual(88, verify()['producer_run_id'])
+                        else:
+                            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                                verify()
 
         for marker in (
             "Unable to review this pull request",
@@ -1932,6 +2176,67 @@ class PromotionEvidenceTests(unittest.TestCase):
                         head_sha=HEAD,
                     )
 
+    def test_metadata_v6_accepts_exact_shape_and_rejects_every_partial_expansion(self) -> None:
+        import itertools
+        summary = json.loads(v6_summary())
+        summary["pull_request_last_edited_at"] = None
+        external = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        def validate(value):
+            return MODULE.bound_review_check(
+                [{"check_runs": [check_run(external, json.dumps(value))]}],
+                repository="lightning-it/example", pull=ingress_pull(),
+                pull_number=17, base_sha=BASE, head_sha=HEAD)
+        with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(producer_run())):
+            actual = validate(summary)
+            self.assertEqual(MODULE.digest(summary), actual["summary_sha256"])
+            self.assertEqual(0, actual["historical_findings_count"])
+            extra = json.loads(expanded_v6_summary())
+            additions = sorted(set(extra) - set(summary))
+            for count in (1, 2, 3):
+                for keys in itertools.combinations(additions, count):
+                    with self.subTest(hybrid=keys), self.assertRaisesRegex(MODULE.EvidenceError, "review-summary-schema"):
+                        validate({**summary, **{key: extra[key] for key in keys}})
+            for key in set(summary) - {"pull_request_last_edited_at"}:
+                with self.subTest(missing=key), self.assertRaises(MODULE.EvidenceError):
+                    validate({k: v for k, v in summary.items() if k != key})
+
+    def test_metadata_v6_rebinds_revision_and_strict_review_chronology(self) -> None:
+        external = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        for associated in (True, False):
+            native_run = producer_run()
+            if not associated:
+                native_run["pull_requests"] = []
+            original = evidence_api(native_run)
+            cases = [
+                (None, None, True), (None, "2026-09-27T00:03:00Z", False),
+                ("2026-09-27T00:03:00Z", "2026-09-27T00:03:00Z", True),
+                ("2026-09-27T00:04:00Z", "2026-09-27T00:04:00Z", False),
+                ("2026-09-27T00:05:00Z", "2026-09-27T00:05:00Z", False),
+            ]
+            cases.extend((value, value, False) for value in (
+                False, 0, [], {}, "invalid", "2026-00-01T00:00:00Z",
+                "2026-04-31T00:00:00Z", "2025-02-29T00:00:00Z",
+                "2026-09-27T24:00:00Z", "2026-09-27T00:60:00Z"))
+            for bound, live, accepted in cases:
+                def api(args):
+                    value = original(args)
+                    if args[:2] == ["api", "graphql"]:
+                        value["data"]["repository"]["pullRequest"]["lastEditedAt"] = live
+                    return value
+                summary = {**json.loads(v6_summary()), "pull_request_last_edited_at": bound}
+                with (self.subTest(associated=associated, bound=bound, live=live),
+                      mock.patch.object(MODULE, "gh_json", side_effect=api)):
+                    def validate():
+                        return MODULE.bound_review_check(
+                            [{"check_runs": [check_run(external, json.dumps(summary))]}],
+                            repository="lightning-it/example", pull=ingress_pull(),
+                            pull_number=17, base_sha=BASE, head_sha=HEAD)
+                    if accepted:
+                        self.assertEqual(MODULE.digest(summary), validate()["summary_sha256"])
+                    else:
+                        with self.assertRaises(MODULE.EvidenceError):
+                            validate()
+
     def test_v6_rejects_schema_drift_and_failed_producer_run(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
         schema_drift = json.loads(v6_summary())
@@ -1984,6 +2289,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": "Verify current revision policy",
                 "status": "completed",
                 "conclusion": "success",
+                "started_at": "2026-09-27T00:04:20Z",
+                "completed_at": "2026-09-27T00:04:29Z",
             },
             {
                 "id": 3,
@@ -2033,6 +2340,197 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # Real native helper name, projected onto this fixture's bound run.
+        native = json.loads((ROOT / "tests/fixtures/native-inactive-producer-job.json").read_text())
+        native.update(id=6, run_id=88, head_sha=HEAD,
+                      run_url="https://api.github.com/repos/lightning-it/example/actions/runs/88")
+        for changes, accepted in (({}, True), ({"runner_id": 7}, False),
+                                  ({"steps": [{"name": "effect"}]}, False),
+                                  ({"run_attempt": 2}, False), ({"head_sha": BASE}, False),
+                                  ({"workflow_name": "unknown"}, False),
+                                  ({"name": native["name"] + " unexpected"}, False)):
+            with self.subTest(native_helper=changes), mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run, jobs=[*exact_jobs, {**native, **changes}])
+            ):
+                def verify():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example", pull=ingress_pull(),
+                        pull_number=17, base_sha=BASE, head_sha=HEAD)
+                if accepted:
+                    self.assertEqual(88, verify()["producer_run_id"])
+                else:
+                    with self.assertRaises(MODULE.EvidenceError):
+                        verify()
+
+        # The successful policy job can publish its bound check before the
+        # job itself reaches its terminal success, and the protected handoff
+        # can then publish the same semantic evidence again. Both native
+        # records must validate; only an exact semantic replica is reconciled.
+        policy_check = check_run(external_id, v6_summary())
+        policy_check.update(
+            {
+                "id": 98,
+                "completed_at": "2026-09-27T00:04:25Z",
+                "details_url": "https://github.com/lightning-it/example/runs/98",
+            }
+        )
+        protected_check = check_run(external_id, v6_summary())
+        protected_check.update(
+            {"id": 99, "completed_at": "2026-09-27T00:04:41Z"}
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, jobs=exact_jobs),
+        ):
+            reconciled = MODULE.bound_review_check(
+                [{"check_runs": [protected_check, policy_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(99, reconciled["check_id"])
+
+        distinct_check = check_run(
+            external_id,
+            expanded_v6_summary(),
+        )
+        distinct_check["id"] = 100
+        distinct_check["details_url"] = (
+            "https://github.com/lightning-it/example/runs/100"
+        )
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(run, jobs=exact_jobs),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError,
+                "bound-current-revision-check-not-unique",
+            ):
+                MODULE.bound_review_check(
+                    [{"check_runs": [protected_check, distinct_check]}],
+                    repository="lightning-it/example",
+                    pull=ingress_pull() | {"labels": []},
+                    pull_number=17,
+                    base_sha=BASE,
+                    head_sha=HEAD,
+                )
+
+        # GitHub may publish the neutral check after the failed handoff and
+        # even after the producer run closes. The verified policy job, rather
+        # than the asynchronous check publication, orders the handoff.
+        delayed_check = check_run(external_id, v6_summary())
+        delayed_check["completed_at"] = "2026-09-27T00:05:01Z"
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+        ):
+            delayed = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed["producer_run_id"])
+
+        empty_association_run = dict(run)
+        empty_association_run["pull_requests"] = []
+        with mock.patch.object(
+            MODULE,
+            "gh_json",
+            side_effect=evidence_api(empty_association_run, jobs=exact_jobs),
+        ):
+            delayed_without_association = MODULE.bound_review_check(
+                [{"check_runs": [delayed_check]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, delayed_without_association["producer_run_id"])
+
+        # GitHub may return a terminal run snapshot whose updated_at still
+        # predates the already completed handoff job. Two identical later
+        # reads of the same run may establish convergence without rerunning it.
+        stale_run = dict(run, updated_at="2026-09-27T00:04:35Z")
+
+        def convergence_api(*snapshots: dict[str, object]):
+            remaining = iter(snapshots)
+            ordinary = evidence_api(run, jobs=exact_jobs)
+
+            def dispatch(arguments: list[str]) -> dict[str, object]:
+                if arguments[-1] == "repos/lightning-it/example/actions/runs/88":
+                    return next(remaining)
+                return ordinary(arguments)
+
+            return dispatch
+
+        with mock.patch.object(
+            MODULE, "gh_json", side_effect=convergence_api(stale_run, run, run)
+        ):
+            converged = MODULE.bound_review_check(
+                [{"check_runs": [check_run(external_id, v6_summary())]}],
+                repository="lightning-it/example",
+                pull=ingress_pull(),
+                pull_number=17,
+                base_sha=BASE,
+                head_sha=HEAD,
+            )
+        self.assertEqual(88, converged["producer_run_id"])
+
+        for snapshots, reason in (
+            ((stale_run, dict(run, head_sha="9" * 40), run), "producer-run-convergence-identity"),
+            ((stale_run, dict(run, run_attempt=True), run), "producer-run-convergence-identity"),
+            (
+                (stale_run, run, dict(run, updated_at="2026-09-27T00:05:01Z")),
+                "producer-run-convergence-unstable",
+            ),
+            (
+                (stale_run, dict(run, updated_at="2026-09-27T00:04:34Z"), run),
+                "producer-run-convergence-rollback",
+            ),
+        ):
+            with self.subTest(reason=reason), mock.patch.object(
+                MODULE, "gh_json", side_effect=convergence_api(*snapshots)
+            ):
+                with self.assertRaisesRegex(MODULE.EvidenceError, reason):
+                    MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example",
+                        pull=ingress_pull(),
+                        pull_number=17,
+                        base_sha=BASE,
+                        head_sha=HEAD,
+                    )
+
+        for completed_at in (
+            "2026-09-27T00:04:19Z",
+            "2026-09-27T00:06:01Z",
+        ):
+            invalid_check = check_run(external_id, v6_summary())
+            invalid_check["completed_at"] = completed_at
+            with self.subTest(completed_at=completed_at):
+                with mock.patch.object(
+                    MODULE, "gh_json", side_effect=evidence_api(run, jobs=exact_jobs)
+                ):
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-post-evidence-failure-order"
+                    ):
+                        MODULE.bound_review_check(
+                            [{"check_runs": [invalid_check]}],
+                            repository="lightning-it/example",
+                            pull=ingress_pull(),
+                            pull_number=17,
+                            base_sha=BASE,
+                            head_sha=HEAD,
+                        )
+
         for mutate, reason in (
             (
                 lambda candidate: candidate[1].update({"conclusion": "failure"}),
@@ -2051,8 +2549,8 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "producer-run-job-binding",
             ),
             (
-                lambda candidate: candidate[3].update(
-                    {"started_at": "2026-09-27T00:04:29Z"}
+                lambda candidate: candidate[1].update(
+                    {"completed_at": "2026-09-27T00:04:32Z"}
                 ),
                 "producer-post-evidence-failure-order",
             ),
@@ -2123,8 +2621,16 @@ class PromotionEvidenceTests(unittest.TestCase):
                 "name": name,
                 "status": "completed",
                 "conclusion": conclusion,
-                "started_at": "2026-09-27T00:04:31Z",
-                "completed_at": "2026-09-27T00:04:40Z",
+                "started_at": (
+                    "2026-09-27T00:04:20Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:31Z"
+                ),
+                "completed_at": (
+                    "2026-09-27T00:04:29Z"
+                    if name == "Verify current revision policy"
+                    else "2026-09-27T00:04:40Z"
+                ),
             }
             for index, (name, conclusion) in enumerate(outcomes, start=1)
         ]
@@ -2146,6 +2652,10 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("managed-sync", evidence["evidence_kind"])
         self.assertEqual(88, evidence["producer_run_id"])
 
+        check["completed_at"] = "2026-09-27T00:05:01Z"
+        self.assertEqual(88, verify(exact_jobs)["producer_run_id"])
+        check["completed_at"] = "2026-09-27T00:04:30Z"
+
         for index, field, value, reason in (
             (0, "conclusion", "success", "producer-run-job-binding"),
             (1, "conclusion", "failure", "producer-run-job-binding"),
@@ -2159,9 +2669,9 @@ class PromotionEvidenceTests(unittest.TestCase):
             (4, "name", "Unexpected job", "producer-run-job-binding"),
             (4, "name", outcomes[0][0], "producer-run-job-binding"),
             (
-                3,
-                "started_at",
-                "2026-09-27T00:04:29Z",
+                1,
+                "completed_at",
+                "2026-09-27T00:04:32Z",
                 "producer-post-evidence-failure-order",
             ),
         ):
@@ -2434,11 +2944,8 @@ class PromotionEvidenceTests(unittest.TestCase):
 
             return dispatch
 
-        cases = (
-            (
-                {"errors": [{"message": "partial"}], "data": {}},
-                "review-summary-edit-response-errors",
-            ),
+        cases = tuple(({"errors": errors, "data": {}}, "review-summary-edit-response-errors")
+                      for errors in (None, {}, "", False, 0, [{"message": "partial"}])) + (
             (
                 {
                     "data": {
@@ -2549,6 +3056,7 @@ class PromotionEvidenceTests(unittest.TestCase):
             "submitted_at": "2026-09-27T00:04:00Z",
             "body": (
                 "<!-- ccr-overview-v2 -->\n\n"
+                "## Copilot review overview\n\n"
                 "### 🟢 Approval recommended\n\n"
                 "**Findings:** 1\n\n"
                 "<details open><summary><strong>Open (1)</strong></summary>"
@@ -2580,6 +3088,83 @@ class PromotionEvidenceTests(unittest.TestCase):
         self.assertEqual("v6", evidence["evidence_version"])
         self.assertEqual("copilot", evidence["evidence_kind"])
         self.assertEqual(0, comment_calls)
+
+    def test_expanded_positive_findings_require_native_thread_coverage(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, expanded_v6_summary())
+        run = producer_run()
+        run["pull_requests"] = []
+        pull = ingress_pull()
+        pull["labels"] = []
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        delegate = evidence_api(run, review=review, review_comment=native_finding_comment())
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return delegate(arguments)
+
+        for nodes in ([], [native_finding_thread()]):
+            with (
+                self.subTest(nodes=nodes),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": nodes, "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if nodes:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=pull, pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        1, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=pull, pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+
+        review["body"] += "\nEncountered an error"
+        delegate = evidence_api(run, review=review, review_comment=native_finding_comment())
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [native_finding_thread()],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+            self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-binding"
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=pull, pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
 
     def test_ingress_pull_must_have_same_repository_head(self) -> None:
         candidate = {
@@ -2726,20 +3311,60 @@ class PromotionEvidenceTests(unittest.TestCase):
         }
 
         def execute(
-            *, mutate_final_pull: bool, reviewed_release: bool = False, missing_release_review: bool = False
+            *, mutate_final_pull: bool, reviewed_release: bool = False,
+            reviewed_main_ingress: bool = False,
+            missing_release_review: bool = False, late_baseline: bool = False,
+            change_kind: str = "feature", missing_feature_review: bool = False,
+            mutated_feature_review: bool = False,
         ) -> dict[str, object]:
             current = promotion()
             pull_reads = 0
             api_calls: list[str] = []
             active_boundary = json.loads(json.dumps(boundary))
+            active_feature = json.loads(json.dumps(feature))
+            active_merges = json.loads(json.dumps(merges))
+            if change_kind == "structural":
+                active_feature["user"] = pre_boundary["user"]
+                active_feature["title"] = pre_boundary["title"]
+                active_feature["head"]["ref"] = (
+                    f"backmerge/example-{historical_main[:12]}-"
+                    f"{boundary_merge[:12]}-main"
+                )
+            if late_baseline:
+                active_merges = [active_merges[0], active_merges[2], active_merges[1]]
+                active_merges[1]["base_sha"] = pre_boundary_merge
+                active_merges[2]["base_sha"] = feature_merge
+                active_boundary["head"]["ref"] = (
+                    f"backmerge/example-{BASE[:12]}-{feature_merge[:12]}-main"
+                )
+                active_feature["merged_at"] = "2026-09-26T23:30:00Z"
+            if change_kind == "absent":
+                active_merges = json.loads(json.dumps(merges[:2]))
             if reviewed_release:
                 active_boundary["user"] = {"login": "litroc", "id": 1, "type": "User"}
                 active_boundary["title"] = "chore(release): sync v1.14.0 back to develop"
                 active_boundary["head"]["ref"] = "backsync/release-v1.14.0-to-develop"
+            if reviewed_main_ingress:
+                active_boundary["user"] = {
+                    "login": "litroc", "id": 1, "type": "User"
+                }
+                active_boundary["title"] = "fix(policy): reviewed current-main ingress"
+                active_boundary["head"]["ref"] = "fix/reviewed-current-main"
+
+            reviewed_baseline = reviewed_release or reviewed_main_ingress
+
+            feature_reads = 0
 
             def collect(**kwargs: object) -> dict[str, object]:
+                nonlocal feature_reads
                 if missing_release_review and kwargs["pull_number"] == 10:
                     raise MODULE.EvidenceError("no-current-head-review")
+                if kwargs["pull_number"] == 17:
+                    feature_reads += 1
+                    if missing_feature_review:
+                        raise MODULE.EvidenceError("no-current-head-review")
+                    if mutated_feature_review and feature_reads == 2:
+                        return {**bound, "review": {"check_id": 100}}
                 return bound
 
             def api(arguments: list[str]) -> object:
@@ -2767,13 +3392,13 @@ class PromotionEvidenceTests(unittest.TestCase):
                 ):
                     return [[pre_boundary]]
                 if endpoint.endswith(f"commits/{feature_merge}/pulls?per_page=100"):
-                    return [[feature]]
+                    return [[active_feature]]
                 if endpoint == "repos/lightning-it/example/pulls/10":
                     return active_boundary
                 if endpoint == "repos/lightning-it/example/pulls/16":
                     return pre_boundary
                 if endpoint == "repos/lightning-it/example/pulls/17":
-                    return feature
+                    return active_feature
                 if endpoint == "repos/lightning-it/example/branches/main":
                     return {"name": "main", "protected": True, "commit": {"sha": BASE}}
                 if endpoint == "repos/lightning-it/example/branches/develop":
@@ -2809,7 +3434,7 @@ class PromotionEvidenceTests(unittest.TestCase):
                         mock.patch.object(
                             MODULE,
                             "first_parent_merges",
-                            return_value=("a" * 40, "b" * 40, merges),
+                            return_value=("a" * 40, "b" * 40, active_merges),
                         ),
                         mock.patch.object(
                             MODULE,
@@ -2819,14 +3444,15 @@ class PromotionEvidenceTests(unittest.TestCase):
                         mock.patch.object(
                             MODULE,
                             "is_ancestor",
-                            side_effect=lambda _path, _ancestor, descendant: not reviewed_release
-                            or descendant in {boundary_head, boundary_merge, HEAD, feature_merge},
+                            side_effect=lambda _path, _ancestor, descendant: not reviewed_baseline
+                            or descendant in {boundary_head, boundary_merge}
+                            or (not late_baseline and descendant in {HEAD, feature_merge}),
                         ),
                         mock.patch.object(
                             MODULE,
                             "has_exact_ancestry_merge_parents",
                             side_effect=lambda _repository, *, head_sha, **_kwargs: head_sha
-                            == boundary_head and not reviewed_release,
+                            == boundary_head and not reviewed_baseline,
                         ),
                         mock.patch.object(
                             MODULE,
@@ -2834,11 +3460,15 @@ class PromotionEvidenceTests(unittest.TestCase):
                             side_effect=lambda _repository, *, head_sha, **_kwargs: (
                                 historical_main
                                 if head_sha == pre_boundary_head
+                                or (head_sha == HEAD and change_kind == "structural")
                                 else BASE if head_sha == boundary_head else None
                             ),
                         ),
                         mock.patch.object(MODULE, "validate_ancestry_boundary_content"),
                         mock.patch.object(MODULE, "validate_reviewed_release_baseline") as release_binding,
+                        mock.patch.object(
+                            MODULE, "validate_reviewed_main_ingress_baseline"
+                        ) as main_ingress_binding,
                         mock.patch.object(MODULE, "git", return_value=BASE),
                         mock.patch.object(
                             MODULE,
@@ -2849,14 +3479,31 @@ class PromotionEvidenceTests(unittest.TestCase):
                         value = MODULE.verify(arguments)
                         MODULE.write_output(output, value)
                     self.assertEqual(3, value["ingress_count"])
-                    self.assertEqual(1, value["post_baseline_ingress_count"])
+                    self.assertEqual(0 if late_baseline else 1, value["post_baseline_ingress_count"])
+                    self.assertEqual(
+                        2 if reviewed_main_ingress else 1,
+                        value["reviewed_change_ingress_count"],
+                    )
                     self.assertTrue(value["ingress"][0]["ancestry_boundary"])
-                    self.assertEqual(not reviewed_release, value["ingress"][1]["ancestry_boundary"])
-                    self.assertFalse(value["ingress"][2]["ancestry_boundary"])
+                    baseline_index = 2 if late_baseline else 1
+                    feature_index = 1 if late_baseline else 2
+                    self.assertEqual(
+                        not reviewed_baseline,
+                        value["ingress"][baseline_index]["ancestry_boundary"],
+                    )
+                    self.assertTrue(value["ingress"][baseline_index]["baseline_reconciliation"])
+                    self.assertEqual(
+                        reviewed_main_ingress,
+                        value["ingress"][baseline_index]["reviewed_change"],
+                    )
+                    self.assertFalse(value["ingress"][feature_index]["baseline_reconciliation"])
+                    self.assertFalse(value["ingress"][feature_index]["ancestry_boundary"])
+                    self.assertEqual(bound["review"], value["ingress"][feature_index]["review"])
+                    self.assertEqual(2, feature_reads)
                     self.assertIsNone(value["ingress"][0]["review"])
                     if reviewed_release:
-                        self.assertEqual(bound["review"], value["ingress"][1]["review"])
-                        self.assertEqual(bound["threads"], value["ingress"][1]["threads"])
+                        self.assertEqual(bound["review"], value["ingress"][baseline_index]["review"])
+                        self.assertEqual(bound["threads"], value["ingress"][baseline_index]["threads"])
                         self.assertEqual(2, release_binding.call_count)
                         self.assertEqual(
                             2,
@@ -2864,13 +3511,17 @@ class PromotionEvidenceTests(unittest.TestCase):
                         )
                     else:
                         release_binding.assert_not_called()
+                    if reviewed_main_ingress:
+                        self.assertEqual(2, main_ingress_binding.call_count)
+                    else:
+                        main_ingress_binding.assert_not_called()
                     self.assertNotIn("promotion_review", value)
                     self.assertEqual(value, json.loads(output.read_text()))
                     self.assertEqual(
                         [
                             "repos/lightning-it/example/pulls/16",
-                            "repos/lightning-it/example/pulls/10",
-                            "repos/lightning-it/example/pulls/17",
+                            f"repos/lightning-it/example/pulls/{17 if late_baseline else 10}",
+                            f"repos/lightning-it/example/pulls/{10 if late_baseline else 17}",
                         ],
                         api_calls[-3:],
                     )
@@ -2881,14 +3532,113 @@ class PromotionEvidenceTests(unittest.TestCase):
                     else:
                         os.environ["RUNNER_TEMP"] = previous
 
+        execute(mutate_final_pull=False, reviewed_release=True, late_baseline=True)
+        execute(mutate_final_pull=False, reviewed_main_ingress=True)
         execute(mutate_final_pull=False)
         execute(mutate_final_pull=False, reviewed_release=True)
+        for reviewed_release in (False, True):
+            with self.subTest(reviewed_release=reviewed_release):
+                execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True)
+                for change_kind in ("absent", "structural"):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "no-reviewed-change-ingress"):
+                        execute(mutate_final_pull=False, reviewed_release=reviewed_release, change_kind=change_kind)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-17:no-current-head-review"):
+                    execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True, missing_feature_review=True)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-17:ingress-evidence-mutated"):
+                    execute(mutate_final_pull=False, reviewed_release=reviewed_release, late_baseline=True, mutated_feature_review=True)
+                with self.assertRaisesRegex(MODULE.EvidenceError, "promotion-event-body-mismatch"):
+                    execute(mutate_final_pull=True, reviewed_release=reviewed_release, late_baseline=True)
         with self.assertRaisesRegex(MODULE.EvidenceError, "ingress-pr-10:no-current-head-review"):
             execute(mutate_final_pull=False, reviewed_release=True, missing_release_review=True)
         with self.assertRaisesRegex(
             MODULE.EvidenceError, "promotion-event-body-mismatch"
         ):
             execute(mutate_final_pull=True)
+
+    def test_workflow_package_gate_accepts_reviewed_prebaseline_changes_only(self) -> None:
+        aggregate = WORKFLOW.read_text().split(
+            "      - name: Aggregate exact protected ingress evidence\n", 1
+        )[1].split("      - name: Persist exact promotion evidence package\n", 1)[0]
+        predicate = aggregate.split(
+            '--argjson pull_request "${PR_NUMBER}" \'', 1
+        )[1].split('\' "${output}" >/dev/null', 1)[0]
+        package = {
+            "schema_version": 1, "repository": "lightning-it/example",
+            "pull_request": 41, "base_sha": BASE, "head_sha": HEAD,
+            "controller_sha": "5" * 40, "ingress_count": 2,
+            "post_baseline_ingress_count": 0, "reviewed_change_ingress_count": 1,
+            "diff": {"bytes": 100, "sha256": "6" * 64},
+            "evidence_sha256": "7" * 64,
+            "ingress": [
+                {"ancestry_boundary": False, "baseline_reconciliation": False,
+                 "post_baseline": False, "reviewed_change": True,
+                 "review": {}, "threads": {}},
+                {"ancestry_boundary": False, "baseline_reconciliation": True,
+                 "post_baseline": False, "reviewed_change": False,
+                 "review": {}, "threads": {}},
+            ],
+        }
+
+        def accepted(value: dict[str, object]) -> bool:
+            result = subprocess.run(
+                ["jq", "-e", "--arg", "base", BASE, "--arg", "head", HEAD,
+                 "--arg", "controller", "5" * 40, "--arg", "repository",
+                 "lightning-it/example", "--argjson", "pull_request", "41", predicate],
+                input=json.dumps(value), text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(3, result.returncode, result.stderr)
+            return result.returncode == 0
+
+        self.assertTrue(accepted(package))
+        post_baseline = json.loads(json.dumps(package))
+        post_baseline["ingress"].reverse()
+        post_baseline["ingress"][1]["post_baseline"] = True
+        post_baseline["post_baseline_ingress_count"] = 1
+        self.assertTrue(accepted(post_baseline))
+        swapped_marker = json.loads(json.dumps(package))
+        swapped_marker["ingress"][0]["baseline_reconciliation"] = True
+        swapped_marker["ingress"][1]["baseline_reconciliation"] = False
+        self.assertFalse(accepted(swapped_marker))
+        for template, index, flag, count in (
+            (package, 0, True, 1),  # A pre-baseline change cannot be post-baseline.
+            (package, 1, True, 1),  # The baseline itself cannot be post-baseline.
+            (post_baseline, 1, False, 0),  # Later entries must be post-baseline.
+        ):
+            with self.subTest(position=index, post_baseline=flag):
+                inconsistent = json.loads(json.dumps(template))
+                inconsistent["ingress"][index]["post_baseline"] = flag
+                inconsistent["post_baseline_ingress_count"] = count
+                self.assertFalse(accepted(inconsistent))
+        for markers in ((False, False), (True, True)):
+            inconsistent = json.loads(json.dumps(package))
+            for item, marker in zip(inconsistent["ingress"], markers):
+                item["baseline_reconciliation"] = marker
+            self.assertFalse(accepted(inconsistent))
+        for field, values in (
+            ("post_baseline_ingress_count", (-1, 1, None, "0")),
+            ("reviewed_change_ingress_count", (0, 2, None, "1")),
+            ("ingress_count", (0, 1, None, "2")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(accepted({**package, field: value}))
+        for field, value in (
+            ("ancestry_boundary", True), ("ancestry_boundary", None),
+            ("baseline_reconciliation", True), ("baseline_reconciliation", None),
+            ("post_baseline", None), ("reviewed_change", None),
+            ("review", None), ("threads", None),
+        ):
+            with self.subTest(ingress_field=field, value=value):
+                invalid = json.loads(json.dumps(package))
+                invalid["ingress"][0][field] = value
+                self.assertFalse(accepted(invalid))
+        baseline_only = {**package, "ingress": package["ingress"][1:],
+                         "ingress_count": 1, "reviewed_change_ingress_count": 0}
+        self.assertFalse(accepted(baseline_only))
+        reviewed_main_baseline = json.loads(json.dumps(baseline_only))
+        reviewed_main_baseline["ingress"][0]["reviewed_change"] = True
+        reviewed_main_baseline["reviewed_change_ingress_count"] = 1
+        self.assertTrue(accepted(reviewed_main_baseline))
 
     def test_duplicate_checks_and_unresolved_threads_fail_closed(self) -> None:
         external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
@@ -2912,12 +3662,1891 @@ class PromotionEvidenceTests(unittest.TestCase):
                 }
             )
 
+    def test_previously_missed_body_only_findings_cannot_pass_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            body = overview_with_tail(overview, COPILOT_PREVIOUSLY_MISSED_HISTORY)
+            for expanded in (True, False):
+                for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
+                    with self.subTest(overview=overview, expanded=expanded, nodes=nodes):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, "producer-review-binding"
+                        ):
+                            self.collect_current_copilot_evidence(
+                                body, nodes, expanded=expanded
+                            )
+
+    def test_current_copilot_overview_rejects_previously_missed_findings(self) -> None:
+        for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
+            body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
+            for resolved in ("", COPILOT_RESOLVED_HISTORY, CURRENT_COPILOT_RESOLVED_HISTORY):
+                with self.subTest(verdict=verdict, resolved=resolved):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        MODULE.historical_copilot_findings_count(
+                            overview_with_tail(body, resolved + COPILOT_PREVIOUSLY_MISSED_HISTORY)
+                        )
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+            MODULE.historical_copilot_findings_count(
+                overview_with_tail(open_body, COPILOT_PREVIOUSLY_MISSED_HISTORY)
+            )
+
+    def test_unwrapped_previously_missed_markers_cannot_pass_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            for marker in (
+                "<strong>Previously missed (1)</strong>",
+                "**Previously missed (1)**",
+                "Previously missed (1)",
+                "<strong>1 previously missed</strong>",
+                "**1 previously missed**",
+                "1 previously missed",
+            ):
+                for expanded in (True, False):
+                    for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
+                        with self.subTest(overview=overview, marker=marker,
+                                          expanded=expanded, nodes=nodes):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, "producer-review-binding"
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    overview_with_tail(overview, marker), nodes, expanded=expanded
+                                )
+
+    def test_rendered_legacy_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '<summary><strong><em>Previously missed (1)</em></strong></summary>',
+            '<summary class="finding">Previously\nmissed\n(1)</summary>',
+            '<span>Previously missed (1)</span>',
+            '<summary>Previously m&#105;ssed (&#49;)</summary>',
+            '&#80;reviously missed (1)',
+            '<em>1 previously missed</em>',
+            '## Previously missed (1)',
+            '## Previously missed (1) ##',
+            '_Previously missed (1)_',
+            '[Previously missed (1)](https://example.test/a(b))',
+            'Previously\nmissed (1)',
+            'Previously<!-- explanatory comment --> missed (1)',
+            '> ## Previously missed (1)',
+            '- **Previously missed (1)**',
+            '1. Previously missed (1)',
+            'Narrative `opening\n\n<details>\n<summary><strong>Previously missed (1)'
+            '</strong></summary>\n</details>\n\nclosing`',
+            'Narrative `opening\n<summary>Previously missed (1)</summary>\nclosing`',
+            '[Previously missed (1)][finding]\n\n[finding]: https://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]: <https://example.test/issue>',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]: https://example.test/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]: https://example.test/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_legacy_missed_heading_literals_remain_valid_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '`Previously missed (1)`',
+            r'\*Previously missed (1)\*',
+            '<code>Previously missed (1)</code>',
+            '&lt;summary&gt;Previously missed (1)&lt;/summary&gt;',
+            '<!--\nPreviously missed (1)\n-->',
+            'Previously missed issues [have been resolved](unfinished',
+            '[Previously missed (1)][undefined-reference]',
+            '[Previously missed (1)][]',
+            '[Previously missed (1)]',
+            '[Previously missed (1)][undefined_ref]\n\n[undefinedref]: https://example.test',
+            '&ast;Previously missed (1)&ast;',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated,
+                                      expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_continued_reference_missed_headings_cannot_pass_ingress(self) -> None:
+        markers = (
+            '[Previously missed (1)][finding]\n\n[finding]:\nhttps://example.test/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<https://example.test/issue>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<issue with space>',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b(c)) "title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n\t/issue\n"title"',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue\n"unclosed',
+            '[Previously missed (1)][]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)]\n\n[Previously missed (1)]:\n/issue',
+            '[Previously missed (1)][finding\nlabel]\n\n[finding\nlabel]:\n/issue',
+            '[Previously missed (1)][finding]\n\n> [finding]:\n> /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n  /issue',
+            '[Previously missed (1)][other]\n\n[first]:\n/first\n[other]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<!-- definition follows -->\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n=\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\nordinary heading\n---\n[finding]: /issue',
+            '[Previously missed (1)][finding]\n\n- [finding]:\n\t/issue',
+            '[Previously missed (1)][find&amp;ing]\n\n[find&amp;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\!ing]:' + '\n/issue',
+            r'[Previously missed (1)][find\]ing]' + '\n\n' + r'[find\]ing]:' + '\n/issue',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_invalid_reference_definitions_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        literals = (
+            '[Previously missed (1)][finding]\n\n[finding]:\n\n/issue',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]: /issue extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "title" extra',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/issue "unclosed',
+            '[Previously missed (1)][finding]\n\n[finding]:\n/a(b',
+            '[Previously missed (1)][finding]\n\n[finding]:\n<unclosed',
+            '[Previously missed (1)][finding]\n\n    [finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\ntext\n[finding]:\n/issue',
+            '[Previously missed (1)][finding]\n\n<div>\n[finding]:\n/issue\n</div>',
+            '[Previously missed (1)][finding]\n\n<!--\n[finding]:\n/issue\n-->',
+            '[Previously missed (1)][finding]\n\n`[finding]: /issue`',
+            '[Previously missed (1)][find&ing]\n\n[find&amp;ing]:\n/issue',
+            '[Previously missed (1)][find!ing]\n\n[find&#33;ing]:\n/issue',
+            r'[Previously missed (1)][find\!ing]' + '\n\n' + r'[find\?ing]:' + '\n/issue',
+            '[Previously missed (1)][finding\n\nlabel]\n\n[finding\n\nlabel]:\n/issue',
+        )
+        for literal in literals:
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_paragraph_interruptions_cannot_hide_missed_headings(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('***', '_ _ _', '---', '===', '#', '<section>',
+                         '<SeCtIoN class="review">', '<!-- block -->', '<?instruction ?>',
+                         '<!DOCTYPE html>', '<![CDATA[literal]]>', '<style></style>', '<script></script>',
+                         '<textarea>'):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+        for marker in (
+            'Narrative `opening\n> Previously missed (1)\n> closing`',
+            'Narrative `opening\n- Previously missed (1)\n  closing`',
+            '1. Narrative `opening\n2. Previously missed (1)\n   closing`',
+            'Narrative `opening\n***\n**Previously missed (1)**\nclosing`',
+            'Narrative `opening\n<section>\n<em>Previously missed (1)</em>\nclosing`',
+            '| Narrative `opening | other |\n| --- | --- |\nPreviously missed (1)\nclosing`',
+            '1. Narrative `opening\n    ***\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ===\n    Previously missed (1)\n    closing`',
+            '1. Narrative `opening\n    ~~~text\n    literal\n    ~~~\n'
+            '    Previously missed (1)\n    closing`',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated, expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                            self.collect_current_copilot_evidence(
+                                original + marker, [], associated=associated, expanded=expanded,
+                            )
+
+    def test_noninterrupting_inline_code_remains_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for boundary in ('**', '    ***', '<x-widget>', '<span>', '<strong>',
+                         '2. Previously missed (1)', '* ', '+ ', '1. '):
+            marker = 'Narrative `opening\n' + boundary + '\nPreviously missed (1)\nclosing`'
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(boundary=boundary, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + marker, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+        # Seven hashes are not a code-span boundary. Legacy verdict admission
+        # separately rejects arbitrary triple-hash text, so assert this lexical
+        # compatibility at its owning helper rather than relaxing that contract.
+        self.assertFalse(MODULE.copilot_has_missed_heading(
+            'Narrative `opening\n####### heading\nPreviously missed (1)\nclosing`'.splitlines()
+        ))
+        for literal in ('    Previously missed (1)', '\tPreviously missed (1)',
+                        '>     Previously missed (1)', '-     Previously missed (1)'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    evidence = self.collect_current_copilot_evidence(
+                        original + '\n' + literal, [], associated=associated, expanded=expanded,
+                    )
+                    self.assertEqual(0, evidence['review']['historical_findings_count'])
+        marker = ('1. Narrative `opening\n    ~~~text\n    Previously missed (1)\n'
+                  '    ~~~\n    closing`')
+        for associated in (False, True):
+            for expanded in (False, True):
+                evidence = self.collect_current_copilot_evidence(
+                    original + marker, [], associated=associated, expanded=expanded,
+                )
+                self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_empty_code_wrappers_cannot_hide_missed_headings_ingress(self) -> None:
+        markers = (
+            '<code></code>Previously missed (1)',
+            'Previously missed (1)<code></code>',
+            'Previously<code></code> missed (1)',
+            'Previously <code></code>missed (1)',
+            '<code><span><!-- none --></span></code>Previously missed (1)',
+            'Previously<code><code><!-- none --></code></code> missed (1)',
+            '<code> \t</code>Previously missed (1)',
+            'Previously<code> \t</code>missed (1)',
+            '<code>&nbsp;</code>Previously missed (1)',
+            'Previously<code>&nbsp;</code>missed (1)',
+            'Previously missed (1)<code>&#160;</code>',
+            'Previously<code>&#8203;</code> missed (1)',
+            '<code>\u200b</code>Previously missed (1)',
+            '<code><script>hidden</script></code>Previously missed (1)',
+            'Previously<script>hidden</script> missed (1)',
+            'Previously<style>hidden</style> missed (1)',
+            '<pre></pre>Previously missed (1)',
+            '<code></code>**Previously missed (1)**<code></code>',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_visible_code_and_hidden_headings_remain_literal_ingress(self) -> None:
+        original = '<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n'
+        for literal in (
+            '<code>Previously missed (1)</code>',
+            '<pre>Previously missed (1)</pre>',
+            'Previously<code>x</code> missed (1)',
+            'Previously<code><span>x</span></code> missed (1)',
+            'Previously<code>x<script>hidden</script></code> missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="x"></code>'
+            'Previously missed (1)',
+            'Previously<code><img src="https://example.test/icon.png" alt="x"></code>'
+            ' missed (1)',
+            '<code><img src="https://example.test/icon.png" alt="" /></code>'
+            'Previously missed (1)',
+            '<code>&ast;</code>Previously missed (1)',
+            '<code>&lt;summary&gt;</code>Previously missed (1)',
+            '<script>Previously missed (1)</script>',
+            '<style>Previously missed (1)</style>',
+            '<code>Previously<script>hidden</script> missed (1)</code>',
+        ):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(literal=literal, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            original + literal, [], associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(0, evidence['review']['historical_findings_count'])
+
+    def test_separate_blocks_and_inactive_punctuation_remain_valid_ingress(self) -> None:
+        literals = (
+            'Previously\n\nmissed (1)',
+            '<p>Previously</p><p>missed (1)</p>',
+            '<div>Previously</div><div>missed (1)</div>',
+            '<h2>Previously</h2><h2>missed (1)</h2>',
+            '<li>Previously</li><li>missed (1)</li>',
+            '<td>Previously</td><td>missed (1)</td>',
+            '## Previously\n## missed (1)',
+            '- Previously\n- missed (1)',
+            '> Previously\n>\n> missed (1)',
+            '- Previously\n\n  missed (1)',
+            'Previously *missed (1)',
+            'Previously _missed (1)',
+            'Previously * missed* (1)',
+            'Previously *missed * (1)',
+            'Previously **missed* (1)',
+            'Previously *missed** (1)',
+            'Previously *missed_* (1)',
+            'Previously _missed*_ (1)',
+            'Previously **mi*ss**ed* (1)',
+            'Previously *mi**ss*ed** (1)',
+            'Previously ~~~missed~~~ (1)',
+            '<p>Previously *missed* (1)</p>',
+            '<summary>Previously **missed** (1)</summary>',
+            '<p>Previously\n\nmissed (1)</p>',
+            'Previously *[missed*](x) (1)',
+            'Previously *[missed*][r] (1)\n\n[r]: /url',
+            'Previously [*missed][r]* (1)\n\n[r]: /url',
+            'Previously<!-- x\n\n y --> missed (1)',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for literal in literals:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, literal=literal, associated=associated,
+                                          expanded=expanded):
+                            evidence = self.collect_current_copilot_evidence(
+                                original + literal,
+                                [native_finding_thread()] if count else [],
+                                comments=[native_finding_comment()] if count else [],
+                                associated=associated, expanded=expanded,
+                            )
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_same_block_active_gfm_markers_cannot_pass_ingress(self) -> None:
+        markers = (
+            'Previously\nmissed (1)',
+            '<p>Previously<br>missed (1)</p>',
+            '- Previously\n  missed (1)',
+            '> Previously\n> missed (1)',
+            'Previously *missed* (1)',
+            'Previously _missed_ (1)',
+            'Previously ***missed*** (1)',
+            'Previously *mi**ss**ed* (1)',
+            'Previously **mi*ss*ed** (1)',
+            'Previously ***mi**ss*ed (1)',
+            'Previously *mi**ss***ed (1)',
+            'Previously ~missed~ (1)',
+            'Previously ~~missed~~ (1)',
+            'Previously&nbsp;missed (1)',
+            '<strong>Previously *missed* (1)</strong>',
+            '<div>\n\nPreviously *missed* (1)\n</div>',
+            'Previously *[missed](x) (1)*',
+            'Previously [*missed*][r] (1)\n\n[r]: /url',
+        )
+        for count in (0, 1):
+            original = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker, associated=associated,
+                                          expanded=expanded):
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    original + marker,
+                                    [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_quote_projection_preserves_tabs_and_indented_literals(self) -> None:
+        for source, projected in (
+            ('>\t> ordinary text', ['', 'ordinary text']),
+            ('> \t> ordinary text', ['', '    > ordinary text']),
+            ('\t> ordinary text', ['    > ordinary text']),
+            ('   >\t > ordinary text', ['', 'ordinary text']),
+            ('>\t\tcode', ['', '    code']),
+            ('> - item', ['', '', 'item']),
+            ('>   > text', ['', 'text']),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(projected, MODULE.copilot_container_lines([source]))
+        self.assertEqual(['', '', 'item', 'continuation', '', 'outside'],
+                         MODULE.copilot_container_lines(
+                             ['> - item', '>   continuation', '', 'outside']))
+
+    def test_quote_projection_scan_and_suffix_copy_work_is_bounded(self) -> None:
+        # Python events catch repeated scans; substitution input lengths also
+        # catch copies performed in C, invisible to the Python trace hook.
+        substitute = re.sub
+        for count in (128, 1024):
+            for prefix in ('>', '> ', '>\t', '   > ', ' >\t'):
+                for suffix in ('ordinary text', 'ordinary ' + 'x' * 4096):
+                    source = prefix * count + suffix
+                    copied = 0
+                    events = 0
+                    budget = 32 * len(source) + 1024
+
+                    class MeteredText(str):
+                        def __getitem__(self, key):
+                            nonlocal copied
+                            value = super().__getitem__(key)
+                            if isinstance(key, slice):
+                                copied += len(value)
+                            return value
+
+                    def metered_sub(pattern, replacement, text, *args, **kwargs):
+                        nonlocal copied
+                        if pattern == r'^ {0,3}>[ \t]?':
+                            copied += len(text)
+                        return substitute(pattern, replacement, text, *args, **kwargs)
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('quote projection exceeded linear scan budget')
+                        return trace
+
+                    with self.subTest(count=count, prefix=prefix, suffix=len(suffix)):
+                        previous = sys.gettrace()
+                        try:
+                            with mock.patch.object(MODULE.re, 'sub', side_effect=metered_sub):
+                                sys.settrace(trace)
+                                projected = MODULE.copilot_container_lines([MeteredText(source)])
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(['', suffix], projected)
+                        self.assertLessEqual(events, budget)
+                        self.assertLessEqual(copied, 4 * len(source))
+
+    def test_deep_quotes_preserve_native_ingress_and_marker_rejection(self) -> None:
+        for prefix in ('>', '> ', '>\t', '   > '):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(prefix=prefix, count=count, associated=associated,
+                                          expanded=expanded):
+                            arguments = {
+                                'comments': [native_finding_comment()] if count else [],
+                                'associated': associated, 'expanded': expanded,
+                            }
+                            threads = [native_finding_thread()] if count else []
+                            evidence = self.collect_current_copilot_evidence(
+                                body + prefix * 128 + 'ordinary text\n', threads, **arguments)
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+                            with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                       'producer-review-binding'):
+                                self.collect_current_copilot_evidence(
+                                    body + prefix * 128 + 'Previously missed (1)\n',
+                                    threads, **arguments)
+
+    def test_link_matching_work_is_bounded(self) -> None:
+        functions = (
+            MODULE.copilot_reference_text, MODULE.copilot_inline_emphasis,
+            lambda text: MODULE.assessment_visible_text(text, strict_links=False, references=set()),
+            MODULE.copilot_has_missed_heading,
+        )
+        for count in (128, 1024):
+            for source in ('[' * count, '[a](' * count, '[' * count + ']' * count,
+                           '[' + '`' * count):
+                for function in functions:
+                    events = 0
+                    budget = 512 * len(source) + 8192
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code.co_filename != str(SCRIPT):
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('link parsing exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, source=source[:12], function=function):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = function(source)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(False if function is MODULE.copilot_has_missed_heading
+                                         else source, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_link_indexes_preserve_literal_and_quote_policies(self) -> None:
+        # Parenthesis scans start independently even inside an earlier failed
+        # destination's quoted region. Quotes at nested depth differ by caller.
+        def previous_end(text, start, any_depth):
+            nesting, cursor, quoted = 1, start + 1, None
+            while cursor < len(text):
+                char = text[cursor]
+                if char == '\\':
+                    cursor += 2
+                    continue
+                if quoted is not None:
+                    if char == quoted:
+                        quoted = None
+                elif char == '<' or (char in '\"\'' and (
+                        text[cursor - 1].isspace() if any_depth
+                        else nesting == 1 and text[cursor - 1] in ' \t\r\n')):
+                    quoted = '>' if char == '<' else char
+                elif char == '(':
+                    nesting += 1
+                elif char == ')':
+                    nesting -= 1
+                    if not nesting:
+                        return cursor
+                cursor += 1
+            return -1
+
+        for text in ('(url "title)")', '(url <target)> tail)', '(outer (x "t)") end)',
+                     '(url "failed [x](ok)', '(url <failed [x](ok)', '(a\\)b)',
+                     '(url\u00a0"title)")', '(outer (x\u00a0\'t)\') end)',
+                     '[x](u "t\\\")") [y](v)', '(' * 64 + ')' * 64):
+            for any_depth in (False, True):
+                ends = MODULE.copilot_parenthesis_ends(text, title_at_any_depth=any_depth)
+                for start, char in enumerate(text):
+                    if char == '(':
+                        with self.subTest(text=text, any_depth=any_depth, start=start):
+                            self.assertEqual(previous_end(text, start, any_depth), ends[start + 1])
+        text = '[a `]` b](u)'
+        self.assertEqual('[a `]` b](u)', MODULE.copilot_inline_emphasis(text))
+        self.assertEqual('a ] b', MODULE.assessment_visible_text(text))
+        self.assertEqual('[x\\[y]', MODULE.copilot_reference_text('[x\\[y]'))
+        self.assertEqual('[outer[inner]]()', MODULE.copilot_reference_text(
+            '[outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        self.assertEqual('\ufffc', MODULE.copilot_reference_text(
+            '![outer[inner]][r]\n\n[r]: /x').splitlines()[0])
+        spaced = 'a' + ' ' * 2000 + 'b'
+        self.assertEqual('[' + spaced + ']()', MODULE.copilot_reference_text(
+            '[' + spaced + ']\n\n[a b]: /x').splitlines()[0])
+
+    def test_nested_unknown_reference_normalization_is_bounded(self) -> None:
+        source = '[' * 1024 + ']' * 1024
+        for function in (lambda text: MODULE.copilot_reference_text(text + '\n\n[r]: /x'),
+                         lambda text: MODULE.assessment_visible_text(
+                             text, strict_links=False, references={'r'})):
+            with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+                function(source)
+        # Ordinary reference lookups, including long whitespace, remain valid.
+        self.assertEqual('a' + ' ' * 2000 + 'b', MODULE.assessment_visible_text(
+            '[a' + ' ' * 2000 + 'b]', references={'a b'}))
+
+    def test_code_run_index_preserves_each_independent_start(self) -> None:
+        for text in ('`a`', '```unmatched', '```a``b`', '`a``b`c``',
+                     '``a\\`b``', '`a\n\nb`', '`a\n- b`', '`a\n  b`'):
+            index = MODULE.copilot_code_span_index(text)
+            for position, char in enumerate(text):
+                if char != '`':
+                    continue
+                ticks = re.match(r'`+', text[position:]).group()
+                close = re.search(
+                    r'(?<!`)' + ticks + r'(?!`)', text[position + len(ticks):])
+                closing = position + len(ticks) + close.start() if close else -1
+                with self.subTest(text=text, position=position):
+                    self.assertEqual(len(ticks), index[0][position])
+                    self.assertEqual(closing, index[1][position])
+        for text, expected in (('`a\n\nb`', -1), ('`a\n- b`', -1),
+                               ('`a\n  b`', len('`a\n  b`'))):
+            self.assertEqual(expected, MODULE.copilot_code_span_end(text, 0))
+        text = '`a\n\nb`'
+        with self.assertRaisesRegex(MODULE.EvidenceError, 'producer-review-binding'):
+            MODULE.copilot_code_span_end(text, 0, MODULE.copilot_code_span_index(text), [0])
+        # Many ordinary spans on a single line do not repeatedly copy its prefix.
+        text = ' '.join(['`x`'] * 128)
+        self.assertEqual(text, MODULE.copilot_reference_text(text))
+        self.assertEqual(text, MODULE.copilot_inline_emphasis(text))
+        self.assertEqual(' '.join(['x'] * 128), MODULE.assessment_visible_text(text))
+
+    def test_unmatched_links_remain_valid_ingress(self) -> None:
+        for source in ('[' * 128, '[a](' * 128, '[' + '`' * 128):
+            for count in (0, 1):
+                body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n{source}\n')
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(source=source[:12], count=count,
+                                          associated=associated, expanded=expanded):
+                            evidence = self.collect_current_copilot_evidence(
+                                body, [native_finding_thread()] if count else [],
+                                comments=[native_finding_comment()] if count else [],
+                                associated=associated, expanded=expanded,
+                            )
+                            self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_delimiter_matching_work_is_bounded(self) -> None:
+        # Count executed matcher lines rather than relying on machine speed.
+        # Cross-character and rule-of-three mismatches must not rescan all
+        # previously unmatched openers, including inside a visible link label.
+        for count in (64, 512):
+            for source, expected in (
+                (('*a ' * count) + ('a_ ' * count),
+                 ('*a ' * count) + ('a_ ' * count)),
+                (('_a ' * count) + ('a* ' * count),
+                 ('_a ' * count) + ('a* ' * count)),
+                (('*a ' * count) + ('a**b ' * count),
+                 ('*a ' * count) + ('ab ' * count)),
+            ):
+                for linked in (False, True):
+                    text = f'[{source}](x)' if linked else source
+                    events = 0
+                    budget = (640 if linked else 320) * count + 2048
+
+                    def trace(frame, event, arg):
+                        nonlocal events
+                        if frame.f_code is not MODULE.copilot_inline_emphasis.__code__:
+                            return None
+                        if event == 'line':
+                            events += 1
+                            if events > budget:
+                                raise AssertionError('delimiter matching exceeded linear work budget')
+                        return trace
+
+                    with self.subTest(count=count, linked=linked, source=source[:12]):
+                        previous = sys.gettrace()
+                        try:
+                            sys.settrace(trace)
+                            result = MODULE.copilot_inline_emphasis(text)
+                        finally:
+                            sys.settrace(previous)
+                        self.assertEqual(f'[{expected}](x)' if linked else expected, result)
+                        self.assertLessEqual(events, budget)
+
+    def test_delimiter_index_preserves_partial_and_intervening_runs(self) -> None:
+        for source, expected in (
+            ('*a _b c* d_', 'a _b c d_'),
+            ('*a **b* c**', 'a b c'),
+            ('***a** b*', 'a b'),
+            ('a*b c**', 'a*b c**'),
+            ('~~a ~b c~~ d~', 'a ~b c d~'),
+            ('*a _b c_ d*', 'a b c d'),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(expected, MODULE.copilot_inline_emphasis(source))
+
+    def test_long_unmatched_delimiters_remain_valid_ingress(self) -> None:
+        source = ('*a ' * 512) + ('a_ ' * 512)
+        for count in (0, 1):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    f'**Findings:** {"1" if count else "None"}\n'
+                    f'[{source}](x)\n')
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(count=count, associated=associated, expanded=expanded):
+                        evidence = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()] if count else [],
+                            comments=[native_finding_comment()] if count else [],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(count, evidence['review']['historical_findings_count'])
+
+    def test_current_finding_float_review_owner_cannot_pass_final_ingress(self) -> None:
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            '🔵 Needs a closer look', '🟡 Changes recommended'
+        ).replace('**0 open findings**', CURRENT_COPILOT_OPEN_FINDING)
+        for associated in (False, True):
+            for expanded in (False, True):
+                node = native_finding_thread()
+                node['comments']['nodes'][0]['pullRequestReview']['databaseId'] = 17001.0
+                with self.assertRaisesRegex(MODULE.EvidenceError,
+                                           'finding-root-review-id-not-positive-integer'):
+                    self.collect_current_copilot_evidence(
+                        body, [node], comments=[native_finding_comment()],
+                        associated=associated, expanded=expanded,
+                    )
+                self.assertIsInstance(self.collect_current_copilot_evidence(
+                    body, [native_finding_thread()], comments=[native_finding_comment()],
+                    associated=associated, expanded=expanded,
+                ), dict)
+
+    def test_previously_missed_narrative_prose_remains_valid_ingress(self) -> None:
+        legacy_body = "<!-- ccr-overview-v2 -->\n## Copilot review overview\n**Findings:** None\n"
+        for overview in (CURRENT_COPILOT_OVERVIEW, legacy_body):
+            for prose in (
+                "Previously missed issues have now been resolved.",
+                "<strong>Previously missed issues have now been resolved.</strong>",
+                "Previously missed (1) is an example documented in the change description.",
+                "1 previously missed issue was corrected.",
+            ):
+                # Current native narrative belongs to an owned section, not
+                # arbitrary top-level text between its findings and footer.
+                body = (
+                    overview.replace("</details>", prose + "\n</details>", 1)
+                    if overview == CURRENT_COPILOT_OVERVIEW
+                    else overview_with_tail(overview, prose)
+                )
+                for expanded in (True, False):
+                    for nodes in ([], [native_finding_thread(9001, review_id=16001,
+                            review_node_id="PRR_older_review", thread_id="PRRT_OLD")]):
+                        with self.subTest(overview=overview, prose=prose,
+                                          expanded=expanded, nodes=nodes):
+                            evidence = self.collect_current_copilot_evidence(
+                                body, nodes, expanded=expanded
+                            )
+                            self.assertIsInstance(evidence, dict)
+
+    def test_current_copilot_overview_counts_only_submission_findings(self) -> None:
+        for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
+            body = CURRENT_COPILOT_OVERVIEW.replace("🔵 Needs a closer look", verdict)
+            for history in (
+                "", COPILOT_RESOLVED_HISTORY, CURRENT_COPILOT_RESOLVED_HISTORY,
+            ):
+                with self.subTest(verdict=verdict, history=history):
+                    self.assertEqual(
+                        0, MODULE.historical_copilot_findings_count(overview_with_tail(body, history))
+                    )
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for count in (1, 2):
+            body = open_body.replace(
+                "1 open finding</strong>",
+                f"{count} open {'finding' if count == 1 else 'findings'}</strong>",
+            )
+            with self.subTest(count=count):
+                self.assertEqual(count, MODULE.historical_copilot_findings_count(body))
+
+    def test_current_copilot_overview_rejects_unknown_or_conflicting_fields(self) -> None:
+        body = CURRENT_COPILOT_OVERVIEW
+        open_body = body.replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for invalid in (
+            body.replace("<!-- ccr-overview-v2 -->", "<!-- ccr-overview-v3 -->"),
+            body.replace("🔵 Needs a closer look", "Unknown verdict"),
+            body.replace("🔵 Needs a closer look", "🟡 Changes recommended"),
+            body.replace("### 🔵", "prefix ### 🔵"),
+            body + "\n### 🟢 Approval recommended",
+            body + "\n### 🔵 Needs a closer look",
+            body + "\nprefix ### 🟢 Approval recommended",
+            body + "\n## Copilot review overview",
+            body + "\n**Findings:** None",
+            body + "\n**FINDINGS:** 1",
+            body + "\n**0 open findings**",
+            body + "\n" + CURRENT_COPILOT_OPEN_FINDING,
+            body + "\n" + CURRENT_COPILOT_OPEN_FINDING.upper(),
+            body.replace("**0 open findings**", "**0 open finding**"),
+            body.replace("**0 open findings**", "**2 open findings**"),
+            body.replace("**0 open findings**", "**unknown open findings**"),
+            body.replace("**0 open findings**", "prefix **0 open findings**"),
+            body.replace("**0 open findings**", "**0 open findings** extra"),
+            body.replace("**0 open findings**", ""),
+            body.replace("</details>", ""),
+            body + "\n</details>",
+            body.replace("What changed in this PR", "Unknown findings (1)"),
+            body + "\n<summary><strong>What changed in this PR</strong></summary>",
+            body.replace("**0 open findings**", "<details>\n**0 open findings**\n</details>"),
+            body + "\n<details>\n</details>",
+            body + "\n<details>\n<summary>Unknown section</summary>\n</details>",
+            body + "\n<DETAILS>\n<SUMMARY>Unknown section</SUMMARY>\n</DETAILS>",
+            body + "\n<DeTaIlS>\n<SuMmArY>Unknown section</SuMmArY>\n</DeTaIlS>",
+            body + "\n" + COPILOT_RESOLVED_HISTORY.upper(),
+            body + "\n<details>\nbody without summary\n</details>",
+            body.replace("</details>", "</details invalid>\n</details>"),
+            body.replace("</details>", "<details>\n</details>\n</details>"),
+            body.replace("</details>", COPILOT_RESOLVED_HISTORY + "</details>"),
+            body.replace("</details>", "<summary>Unknown</summary>\n</details>"),
+            open_body.replace("1 open finding", "0 open findings"),
+            open_body.replace("1 open finding", "01 open finding"),
+            open_body.replace("1 open finding", "-1 open finding"),
+            open_body.replace("1 open finding", "1 open findings"),
+            open_body.replace("1 open finding", "2 open finding"),
+            open_body.replace("1 open finding", "1001 open findings"),
+            open_body.replace("1 open finding", "unknown open finding"),
+            open_body.replace("<details open>", "<details>"),
+            open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
+            open_body,
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY * 2),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "unknown resolved")),
+            overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "01 resolved")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(unknown)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("(1)", "(0)")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("<details>", "<details open>")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("(1)", "(2)")),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(COPILOT_MEDIUM_ICON, "<picture>unknown</picture>")),
+            overview_with_tail(body, COPILOT_RESOLVED_HISTORY.replace("- Finding from the earlier review.", COPILOT_PREVIOUSLY_MISSED_HISTORY)),
+            overview_with_tail(body, COPILOT_PREVIOUSLY_MISSED_HISTORY.replace(
+                "</details>\n</details>", "<details>\n</details>\n</details>\n</details>"
+            )),
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(invalid)
+
+    def test_current_copilot_overview_rejects_incomplete_native_frame(self) -> None:
+        minimal = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "**0 open findings**\n"
+        )
+        footer = "🧠 **Review effort:** Balanced\n"
+        for body in (
+            minimal,
+            minimal + footer,
+            minimal.replace("**0 open findings**", " \n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "## Assessment\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```assessment```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "```\nAssessment text.\n```\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "~~~\nAssessment text.\n~~~\n**0 open findings**") + footer,
+            minimal.replace("**0 open findings**", "    Assessment text.\n**0 open findings**") + footer,
+            minimal.replace(
+                "**0 open findings**",
+                "<details>\n<summary><strong>What changed in this PR</strong></summary>\n"
+                "Assessment inside a section is not introductory prose.\n</details>\n"
+                "**0 open findings**",
+            ) + footer,
+            CURRENT_COPILOT_OVERVIEW + "Trailing data after completion.\n",
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "```\n" + footer),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "~~~\n" + footer),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, ""),
+            CURRENT_COPILOT_OVERVIEW + footer,
+            CURRENT_COPILOT_OVERVIEW.replace("Review effort:** Balanced", "Review effort:** Unknown"),
+            CURRENT_COPILOT_OVERVIEW.replace(footer, "").replace(
+                "</details>", footer + "</details>"
+            ),
+        ):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.subTest(expanded=expanded):
+                        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                            self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_observed_compact_native_frame(self) -> None:
+        # Native .github PR814 review5481266035 has prose and a footer but no
+        # What changed section. Requiring that section would reject real evidence.
+        body = (
+            "<!-- ccr-overview-v2 -->\n\n"
+            "### 🟢 Approval recommended\n\n"
+            "The focused fail-closed correction is consistent across both parser "
+            "paths and has comprehensive regression coverage.\n\n"
+            "**0 open findings**\n\n"
+            + CURRENT_COPILOT_RESOLVED_HISTORY
+            + "\n🧠 **Review effort:** Balanced\n"
+        )
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            with self.subTest(expanded=expanded):
+                self.assertIsInstance(
+                    self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                )
+
+    def test_current_copilot_overview_rejects_heading_scoped_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for prose in (
+            "The [assessment](https://example.invalid) remains visible prose.",
+            "[Assessment](<https://example.invalid/a b>)",
+            "評価は明確です。",
+            r"\[assessment]: This escaped label is visible prose.",
+            "[Assessment](https://example.invalid)",
+            "&#65;ssessment remains visible.",
+            r"\&nbsp;",
+            "`&nbsp;`",
+            "[Assessment][reference]",
+            "[Assessment](https://example.invalid/path_(balanced) \"title) hidden\")",
+            "Visible assessment with a footnote[^assessment].",
+            "[Assessment](https://example.invalid/it's)",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, prose)
+            with self.subTest(prose=prose):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+        for replacement in (
+            "## Borrowed section\nContent under this section is not an introductory paragraph.",
+            "Borrowed section\n---\nContent under this section is not introductory prose.",
+            "- Borrowed list\nContent under this list is not introductory prose.",
+            "-\tBorrowed list\nContent under this list is not introductory prose.",
+            "*\tBorrowed list\nContent under this list is not introductory prose.",
+            "+\tBorrowed list\nContent under this list is not introductory prose.",
+            "1.\tBorrowed list\nContent under this list is not introductory prose.",
+            "1)\tBorrowed list\nContent under this list is not introductory prose.",
+            "_ _ _",
+            "___",
+            "_\t_\t_",
+            "____",
+            "[assessment]: https://example.invalid",
+            "[assessment]:",
+            "[^assessment]: This is footnote metadata.",
+            "[assessment\\]]: https://example.invalid",
+            "[assessment\nreference]: https://example.invalid",
+            "&nbsp;",
+            "&#160; &#x200b; &shy;",
+            "[](https://example.invalid)",
+            "[ ](https://example.invalid \"invisible title\")",
+            "![assessment](https://example.invalid)",
+            "![assessment][reference]",
+            "![assessment]",
+            "[ ] [reference]",
+            "[ ](https://example.invalid \"title) hidden\")",
+            r"\\&nbsp;",
+            "[^assessment]",
+            "\u3164",
+            "\u115f\u1160",
+            "\uffa0",
+            "&#x3164;",
+            "`\u3164`",
+            "[\u3164](https://example.invalid)",
+            "![hidden\nimage](https://example.invalid)",
+            "Assessment " + "[" * 4096,
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, replacement)
+            if replacement == "[^assessment]":
+                marker = "<summary><strong>What changed in this PR</strong></summary>"
+                body = body.replace(marker, marker + "\n\n[^assessment]: Hidden definition.")
+            with self.subTest(replacement=replacement):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_accepts_only_observed_platform_appendix(self) -> None:
+        # Exact raw native PR813 review5481109137, including its platform tip.
+        body = COPILOT_OBSERVED_APPENDIX_OVERVIEW
+        self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+        for expanded in (True, False):
+            self.assertIsInstance(
+                self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+            )
+        for invalid in (
+            body + "\nArbitrary trailing data.",
+            body.replace("https://docs.github.com/", "https://example.invalid/"),
+            body.replace("Add a `code-review` agent skill", "**0 open findings**"),
+            body.replace("---\n\n💡", "---\nExtra data\n💡"),
+            body.replace("noopener noreferrer", "opener"),
+        ):
+            with self.subTest(invalid=invalid):
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(invalid, [], expanded=expanded)
+
+    def test_current_copilot_overview_rejects_unframed_content_after_findings(self) -> None:
+        positive = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        for tail in (
+            "Arbitrary top-level tail.\n",
+            "## Borrowed section\nContent before the footer.\n",
+            "> Quoted top-level tail.\n",
+            "- Top-level list item.\n",
+            "<div>Unframed content.</div>\n",
+            "<!-- ccr-overview-v2 -->\n",
+            "### 🔵 Needs a closer look\n",
+            "---\n",
+        ):
+            for original in (CURRENT_COPILOT_OVERVIEW, positive):
+                body = overview_with_tail(original, tail)
+                with self.subTest(tail=tail, positive=original == positive):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        MODULE.historical_copilot_findings_count(body)
+                    if original == CURRENT_COPILOT_OVERVIEW:
+                        for expanded in (True, False):
+                            with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                                self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_footer_cannot_be_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\nQuoted section content.",
+            "~~~~text\nQuoted section content.",
+            "<!--\nHidden section content.",
+            "<!-- closed --> <!--",
+            "<!-- closed --!> <!--",
+            "<!-- first\nclosed --> <!--",
+            "```text\n<!--\nQuoted comment and section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+
+    def test_current_copilot_overview_preserves_closed_literal_section_content(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\n</details>\n<!-- literal comment\n```",
+            "~~~~text\n</details>\n~~~\n~~~~",
+            "<!--\n</details>\nHidden explanatory content.\n-->",
+            "<!-- inline explanatory comment -->",
+            "<!-- inline explanatory comment --!>",
+            "<!-- first --!> <!-- second -->",
+            "<!-- first --> <!-- second -->",
+            "<!-- first\nclosed --> <!-- second -->",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                for expanded in (True, False):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def test_current_copilot_overview_ignores_fenced_frame_markers(self) -> None:
+        literal = (
+            "### literal example\n### 🟡 Changes recommended\n"
+            "## Copilot review overview\n**Findings:** None\n"
+            "**0 open findings**\n"
+            "<summary><strong>Previously missed (1)</strong></summary>\n"
+            "🧠 **Review effort:** Balanced\n</details>\n<!-- literal comment"
+        )
+        for opening, closing in (
+            ("```text", "```"),
+            ("`````text", "``````  "),
+            ("   ~~~~text", "   ~~~~~\t"),
+            ("~~~### literal info", "~~~"),
+            ("```text <!-- literal info", "```"),
+            ("~~~info ` <!--", "~~~"),
+        ):
+            content = f"{opening}\n{literal}\n{closing}"
+            for original in (CURRENT_COPILOT_OVERVIEW, COPILOT_OBSERVED_APPENDIX_OVERVIEW):
+                body = original.replace("</details>", content + "\n</details>", 1)
+                with self.subTest(opening=opening, appendix=original != CURRENT_COPILOT_OVERVIEW):
+                    self.assertEqual(0, MODULE.historical_copilot_findings_count(body))
+                    for expanded in (True, False):
+                        self.assertIsInstance(
+                            self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                        )
+
+    def test_current_copilot_overview_fences_cannot_hide_real_verdicts(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "```text\n### literal example",
+            "````text\n### literal example\n```",
+            "```text\n### literal example\n~~~",
+            "    ```text\n### literal example\n    ```",
+            "```invalid`info\n### literal example\n```",
+            "```text\n### literal example\n```\n### 🟢 Approval recommended",
+            "<!--\n```text\n-->\n### literal example\n```",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+            MODULE.historical_copilot_findings_count("```text\n" + CURRENT_COPILOT_OVERVIEW + "\n```")
+
+    def test_legacy_copilot_overview_rejects_unowned_fences(self) -> None:
+        for count in (0, 1):
+            findings = "None" if count == 0 else "1"
+            original = (
+                "<!-- ccr-overview-v2 -->\n## Copilot review overview\n"
+                f"**Findings:** {findings}\n"
+            )
+            comments = [native_finding_comment()] if count else []
+            nodes = [native_finding_thread()] if count else []
+            for opening, closing in (
+                ("```text", "```"),
+                ("`````text", "``````  "),
+                ("   ~~~~text", "   ~~~~~\t"),
+                ("~~~### literal info", "~~~"),
+                ("```text <!-- literal info", "```"),
+                ("~~~info ` <!--", "~~~"),
+            ):
+                fence = f"{opening}\n**Previously missed (1)**\n{closing}\n"
+                bodies = (
+                    original.replace("## Copilot review overview", fence + "## Copilot review overview"),
+                    original.replace("**Findings:**", fence + "**Findings:**"),
+                    original + fence,
+                    original + "<details><summary>Example</summary>\n"
+                    + fence + "</details>\n",
+                )
+                for body in bodies:
+                    for associated in (False, True):
+                        for expanded in (False, True):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, "producer-review-binding"
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    body, nodes, comments=comments,
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_legacy_copilot_overview_rejects_fenced_controls_and_empty_fences(self) -> None:
+        original = "## Copilot review overview\n**Findings:** None\n"
+        for payload in (
+            "", "**Findings:** 1", "## Copilot review overview",
+            "**0 open findings**", "### Unsupported verdict",
+            "<summary><strong>Previously missed (1)</strong></summary>",
+            "1 previously missed",
+        ):
+            for opening, closing in (("```", "```"), ("~~~~text", "~~~~~")):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(
+                        original + f"{opening}\n{payload}\n{closing}\n"
+                    )
+
+    def test_legacy_copilot_overview_preserves_nonfence_literals(self) -> None:
+        for count in (0, 1):
+            findings = "None" if count == 0 else "1"
+            original = (
+                "<!-- ccr-overview-v2 -->\n## Copilot review overview\n"
+                f"**Findings:** {findings}\n"
+            )
+            for literal in (
+                "<!--\n```\n-->", "<!--\n~~~\n--!>",
+                "Inline ``` delimiter prose", "    ```text\n    ```",
+                "```invalid`info", "ordinary narrative tail",
+            ):
+                body = original + literal
+                self.assertEqual(count, MODULE.historical_copilot_findings_count(body))
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        result = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()] if count else [],
+                            comments=[native_finding_comment()] if count else [],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual(count, result["review"]["historical_findings_count"])
+
+    def test_current_copilot_overview_rejects_unknown_raw_html_blocks(self) -> None:
+        sentence = "Enables the guarded, read-only Terraform creation preview."
+        for content in (
+            "<script>\nHidden section content.",
+            "<script><!-- closed -->\nHidden section content.",
+            "<PRE><!-- closed --!>\nHidden section content.",
+            "<?processing<!-- closed -->\nHidden section content.",
+            '<PRE class="example">\nHidden section content.',
+            "<StYlE>\nHidden section content.",
+            "<textarea>\nHidden section content.",
+            '<script\n type="text/plain">\nHidden section content.',
+            "<?processing\nHidden section content.",
+            "<![CDATA[\nHidden section content.",
+            "<!DOCTYPE\nHidden section content.",
+            "<div>\nHidden section content.",
+            "<custom-element>\nHidden section content.",
+            "</ins>\nHidden section content.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "```html\n<script>\n</details>\n```",
+            "Uses `<script>` as an inline literal.",
+            r"\<script> is escaped literal text.",
+            "&lt;script&gt; is an encoded literal.",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(sentence, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def test_current_copilot_overview_rejects_table_assessment(self) -> None:
+        assessment = (
+            "Final confidence depends on protected live credential and GitHub inventory "
+            "behavior that mocked tests cannot verify."
+        )
+        for content in (
+            "Assessment | Detail\n--- | ---",
+            "Assessment | Detail\n:-: | -:",
+            "Assessment | Detail\n-|-",
+            "Assessment | Detail\n--- | --- |",
+            "Assessment\n:-:",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+                for expanded in (True, False):
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded)
+        for content in (
+            "Assessment uses `|` and pipes | as ordinary prose.",
+            r"Assessment uses escaped \| as ordinary prose.",
+            "Assessment uses `--- | ---` as an inline literal.",
+            "Assessment uses a separator\n`--- | ---` literally.",
+            "Assessment uses a blank-separated literal.\n\n--- | ---",
+            "Assessment paragraph.\n--- | ---",
+            "Assessment |\n--- | ---",
+            r"Assessment uses escaped \|" + "\n--- | ---",
+        ):
+            body = CURRENT_COPILOT_OVERVIEW.replace(assessment, content)
+            for expanded in (True, False):
+                with self.subTest(content=content, expanded=expanded):
+                    self.assertIsInstance(
+                        self.collect_current_copilot_evidence(body, [], expanded=expanded), dict
+                    )
+
+    def collect_current_copilot_evidence(self, body, nodes, *, expanded=True,
+                                       comments=None, associated=False,
+                                       prior_reviews=(), **review_changes):
+        review = {
+            "id": 17001, "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z", "body": body,
+            **review_changes,
+        }
+        review = rendered_review_fixture(review)
+        check = check_run(
+            f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}",
+            expanded_v6_summary() if expanded else v6_summary(),
+        )
+        pull = ingress_pull()
+        pull["labels"] = []
+        run = producer_run()
+        if not associated:
+            run["pull_requests"] = []
+        remote = evidence_api(run, review=review, review_comment=comments)
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            if arguments[-1].endswith("/reviews?per_page=100") and prior_reviews:
+                return [[*prior_reviews, review]]
+            return remote(arguments)
+
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(MODULE, "collect_review_threads", return_value={
+                "nodes": nodes, "pageInfo": {"hasNextPage": False},
+            }),
+        ):
+            return MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example", pull=pull,
+                pull_number=17, base_sha=BASE, head_sha=HEAD,
+            )
+
+    def test_native_rendered_scope_transitions_cannot_mask_missed_headings(self):
+        markers = (
+            '> > ```\n> Previously missed (1)\n> ```',
+            '- ```\n- Previously missed (1)\n- ```',
+            '1. ```\n2. Previously missed (1)\n3. ```',
+            '> - ```\n> - Previously missed (1)\n> - ```',
+            '> > ~~~~python\n> Previously missed (1)\n> ~~~~',
+            '> > ```\n> &nbsp;Previously missed (1)&nbsp;\n> ```',
+            '> > ```\n> &#x200a;Previously missed (1)\n> ```',
+        )
+        for count in (0, 1):
+            overview = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                        f'**Findings:** {"1" if count else "None"}\n')
+            for marker in markers:
+                body = overview_with_tail(overview, marker)
+                # The old raw projection loses container scope; native HTML
+                # must reject at the common binder even if raw count passes.
+                self.assertEqual(MODULE.historical_copilot_findings_count(body), count)
+                for associated in (False, True):
+                    for expanded in (False, True):
+                        with self.subTest(count=count, marker=marker,
+                                          associated=associated, expanded=expanded):
+                            with self.assertRaisesRegex(
+                                MODULE.EvidenceError, 'producer-review-binding',
+                            ):
+                                self.collect_current_copilot_evidence(
+                                    body, [native_finding_thread()] if count else [],
+                                    comments=[native_finding_comment()] if count else [],
+                                    associated=associated, expanded=expanded,
+                                )
+
+    def test_native_rendered_literal_scopes_remain_valid_ingress(self):
+        for marker in (
+            '> ```\n> Previously missed (1)\n> ```',
+            '> > `opening\n> Previously missed (1)\n> closing`',
+            '> ```\n> > Previously missed (1)\n> - <!-- literal -->\n> ```',
+            '<!-- Previously missed (1) -->',
+        ):
+            body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                    '**Findings:** None\n' + marker)
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(marker=marker, associated=associated,
+                                      expanded=expanded):
+                        self.assertIsInstance(self.collect_current_copilot_evidence(
+                            body, [], associated=associated, expanded=expanded,
+                        ), dict)
+
+    def test_native_rendered_body_is_required_and_not_markdown_reparsed(self):
+        for invalid in (None, '', False, 1, {}, [], '<div>', '<p>x</div>',
+                        '<p>literal</p></p>', '<![CDATA[hidden]]>'):
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(invalid=invalid, associated=associated,
+                                      expanded=expanded):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, 'producer-review-rendered',
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [], body_html=invalid,
+                                associated=associated, expanded=expanded,
+                            )
+        for literal in (
+            '<p>**Previously missed (1)**</p>',
+            '<p>&amp;#80;reviously missed (1)</p>',
+            '<p>`Previously missed (1)`</p>',
+            '<p>Previously</p><p>missed (1)</p>',
+            '<p><code>Previously missed (1)</code></p>',
+        ):
+            with self.subTest(literal=literal):
+                self.assertFalse(MODULE.copilot_rendered_has_missed_heading(literal))
+        for active in (
+            '<p>Previously<br>missed (1)</p>',
+            '<p><strong>Previously missed (1)</strong></p>',
+            '<p>Previously <code></code>missed (1)</p>',
+            '<p>Previously<code> </code>missed (1)</p>',
+            '<p>Previously m&#105;ssed (1)</p>',
+            '<p>Previously m\u200bissed (1)</p>',
+            '<p>&nbsp;Previously missed (1)&nbsp;</p>',
+        ):
+            with self.subTest(active=active):
+                self.assertTrue(MODULE.copilot_rendered_has_missed_heading(active))
+
+    def test_provider_sanitized_raw_script_does_not_mask_visible_heading(self):
+        body = ('<!-- ccr-overview-v2 -->\n## Copilot review overview\n'
+                '**Findings:** None\n'
+                '> > <script>\n> Previously missed (1)\n> </script>')
+        self.assertEqual(MODULE.historical_copilot_findings_count(body), 0)
+        # Actual GitHub GFM/sanitization response: escaped script is visible,
+        # while the quote ends before the heading in the outer paragraph.
+        native_html = (
+            '<blockquote><blockquote>\n&lt;script&gt;\n</blockquote>\n'
+            '<p dir="auto">Previously missed (1)<br>\n'
+            '&lt;/script&gt;</p>\n</blockquote>'
+        )
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    with self.assertRaisesRegex(MODULE.EvidenceError,
+                                                'producer-review-binding'):
+                        self.collect_current_copilot_evidence(
+                            body, [], body_html=native_html,
+                            associated=associated, expanded=expanded,
+                        )
+
+    def test_native_reviews_request_full_media_on_existing_get(self):
+        review = rendered_review_fixture({
+            'id': 17001, 'node_id': 'PRR_kwDOQs6tNc8AAAABPj6qbQ',
+            'user': {'login': 'copilot-pull-request-reviewer[bot]',
+                     'id': 175728472, 'type': 'Bot'},
+            'commit_id': HEAD, 'state': 'COMMENTED',
+            'submitted_at': '2026-09-27T00:04:00Z',
+            'body': CURRENT_COPILOT_OVERVIEW,
+        })
+        with mock.patch.object(MODULE, 'gh_json', return_value=[[review]]) as api:
+            MODULE.validate_bound_review_identity(
+                repository='lightning-it/example', pull_number=17, head_sha=HEAD,
+                summary={}, check_completed_at='2026-09-27T00:04:30Z',
+            )
+        api.assert_called_once_with([
+            'api', '--paginate', '--slurp', '--header',
+            'Accept: application/vnd.github-commitcomment.full+json',
+            'repos/lightning-it/example/pulls/17/reviews?per_page=100',
+        ])
+        review.pop('body_html')
+        with self.assertRaisesRegex(MODULE.EvidenceError,
+                                    'producer-review-rendered-body-not-string'):
+            MODULE.bind_copilot_review_findings(
+                [[review]], repository='lightning-it/example',
+                pull_number=17, head_sha=HEAD,
+            )
+
+    def test_completed_producer_rejects_late_replacement_copilot_review(self):
+        dismissed = {
+            "id": 16001, "node_id": "PRR_dismissed_review",
+            "commit_id": HEAD, "state": "DISMISSED",
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": CURRENT_COPILOT_OVERVIEW,
+            "user": {"id": 175728472, "type": "Bot",
+                     "login": "copilot-pull-request-reviewer[bot]"},
+        }
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-27T00:04:31Z",
+                                  "2026-09-27T02:04:31+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        with self.assertRaisesRegex(
+                            MODULE.EvidenceError, "producer-review-binding"
+                        ):
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                prior_reviews=[dismissed], submitted_at=submitted,
+                            )
+
+    def test_completed_producer_preserves_earlier_and_equal_review_submission(self):
+        for associated in (False, True):
+            for expanded in (False, True):
+                for submitted in ("2026-09-26T23:59:00Z",
+                                  "2026-09-27T00:04:30Z",
+                                  "2026-09-27T02:04:30+02:00"):
+                    with self.subTest(associated=associated, expanded=expanded,
+                                      submitted=submitted):
+                        self.assertIsInstance(
+                            self.collect_current_copilot_evidence(
+                                CURRENT_COPILOT_OVERVIEW, [],
+                                associated=associated, expanded=expanded,
+                                submitted_at=submitted,
+                            ), dict,
+                        )
+
+    def test_current_findings_cannot_be_masked_by_older_resolved_thread(self):
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING)
+        older = native_finding_thread(
+            9001, review_id=16001, review_node_id="PRR_older_review"
+        )
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        self.collect_current_copilot_evidence(
+                            body, [older], comments=[native_finding_comment()],
+                            expanded=expanded, associated=associated,
+                        )
+
+    def linked_copilot_overview(self, ids):
+        count = len(ids)
+        rows = "\n".join(
+            f"- {COPILOT_MEDIUM_ICON} [Finding {value}]"
+            f"(https://github.com/lightning-it/example/pull/17#discussion_r{value})"
+            for value in ids
+        )
+        return CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", "<details open>\n"
+                  f"<summary><strong>{count} open {'finding' if count == 1 else 'findings'}</strong></summary>\n\n"
+                  + rows + "\n</details>")
+
+    def test_current_review_covers_linked_carried_native_findings(self):
+        old_review = {
+            "id": 16001, "node_id": "PRR_older_review",
+            "commit_id": BASE, "state": "COMMENTED",
+            "submitted_at": "2026-09-26T00:04:00Z",
+            "user": {"id": 175728472, "type": "Bot",
+                     "login": "copilot-pull-request-reviewer[bot]"},
+        }
+        body = self.linked_copilot_overview([10001, 9001])
+        roots = [native_finding_thread(), native_finding_thread(
+            9001, review_id=16001, review_node_id="PRR_older_review",
+            thread_id="PRRT_OLD",
+        )]
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    result = self.collect_current_copilot_evidence(
+                        body, roots, comments=[native_finding_comment()],
+                        prior_reviews=[old_review], associated=associated,
+                        expanded=expanded,
+                    )
+                    self.assertEqual(2, result["review"]["historical_findings_count"])
+                    bound = result["threads"]["copilot_finding_binding"]
+                    self.assertEqual([9001, 10001], bound["finding_comment_ids"])
+                    self.assertEqual([10001], bound["current_comment_ids"])
+                    self.assertEqual(BASE, bound["resolved_roots"][0]["review_head_sha"])
+                    self.assertEqual(HEAD, bound["resolved_roots"][1]["review_head_sha"])
+                    self.assertEqual(2, len(bound["resolved_roots"]))
+        for change in (
+            {"user": {"id": 1, "type": "User", "login": "litroc"}},
+            {"state": "DISMISSED"},
+            {"submitted_at": "2026-09-28T00:04:00Z"},
+            {"user": {"id": 175728472.0, "type": "Bot",
+                      "login": "copilot-pull-request-reviewer[bot]"}},
+        ):
+            with self.subTest(change=change):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        body, roots, comments=[native_finding_comment()],
+                        prior_reviews=[old_review | change],
+                    )
+
+    def test_counted_links_require_unique_same_pull_live_roots(self):
+        body = self.linked_copilot_overview([10001])
+        for invalid_body, roots in (
+            (body, []),
+            (body, [native_finding_thread(9999)]),
+            (body, [native_finding_thread() | {"comments": {"nodes": []}}]),
+            (body, [native_finding_thread() | {"comments": {"nodes": [{
+                "id": "PRRC_native_10001", "databaseId": 10001,
+                "pullRequestReview": {"id": "PRR_older_review", "databaseId": 16001},
+            }]}}]),
+            (body.replace("lightning-it/example/pull/17", "attacker/example/pull/17"),
+             [native_finding_thread()]),
+            (body.replace("/pull/17#", "/pull/18#"), [native_finding_thread()]),
+            (self.linked_copilot_overview([10001, 10001]), [native_finding_thread()]),
+            (body, [native_finding_thread(), native_finding_thread(thread_id="PRRT_DUP")]),
+        ):
+            with self.subTest(body=invalid_body, roots=roots):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        invalid_body, roots, comments=[native_finding_comment()],
+                    )
+
+    def test_native_finding_link_titles_preserve_markdown_brackets(self):
+        for title in ("[P1] Bound the copied finding", "Keep `items[0]` valid",
+                      r"Keep escaped \[items\] valid"):
+            body = self.linked_copilot_overview([10001]).replace("Finding 10001", title)
+            for associated in (False, True):
+                for expanded in (False, True):
+                    with self.subTest(title=title, associated=associated, expanded=expanded):
+                        result = self.collect_current_copilot_evidence(
+                            body, [native_finding_thread()],
+                            comments=[native_finding_comment()],
+                            associated=associated, expanded=expanded,
+                        )
+                        self.assertEqual([10001], result["threads"]["copilot_finding_binding"]["finding_comment_ids"])
+
+    def test_current_inline_findings_survive_even_with_zero_overview_count(self):
+        for associated in (False, True):
+            for expanded in (False, True):
+                with self.subTest(associated=associated, expanded=expanded):
+                    result = self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                        comments=[native_finding_comment()], expanded=expanded,
+                        associated=associated,
+                    )
+                    self.assertEqual([10001], result["threads"]["copilot_finding_binding"]["current_comment_ids"])
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+                        self.collect_current_copilot_evidence(
+                            CURRENT_COPILOT_OVERVIEW, [],
+                            comments=[native_finding_comment()], expanded=expanded,
+                            associated=associated,
+                        )
+        for invalid_comment in (
+            native_finding_comment(review_id=16001),
+            native_finding_comment() | {"node_id": "PRRC_other"},
+            native_finding_comment() | {"original_commit_id": BASE},
+        ):
+            with self.subTest(comment=invalid_comment):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                        comments=[invalid_comment],
+                    )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+            self.collect_current_copilot_evidence(
+                CURRENT_COPILOT_OVERVIEW, [native_finding_thread()],
+                comments=[native_finding_comment(), native_finding_comment()],
+            )
+
+    def test_current_copilot_overview_requires_live_thread_evidence(self) -> None:
+        open_body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace(
+            "**0 open findings**", CURRENT_COPILOT_OPEN_FINDING
+        )
+        resolved = [native_finding_thread()]
+        for body, nodes, count in (
+            (CURRENT_COPILOT_OVERVIEW, [], 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, COPILOT_RESOLVED_HISTORY), resolved, 0),
+            (overview_with_tail(CURRENT_COPILOT_OVERVIEW, CURRENT_COPILOT_RESOLVED_HISTORY), resolved, 0),
+            (open_body, resolved, 1),
+        ):
+            with self.subTest(body=body, nodes=nodes):
+                result = self.collect_current_copilot_evidence(
+                    body, nodes, comments=[native_finding_comment()] if count else None
+                )
+                self.assertEqual(count, result["review"]["historical_findings_count"])
+                self.assertEqual(88, result["review"]["producer_run_id"])
+        result = self.collect_current_copilot_evidence(
+            CURRENT_COPILOT_OVERVIEW, [], expanded=False
+        )
+        self.assertEqual(0, result["review"]["historical_findings_count"])
+        for body in (CURRENT_COPILOT_OVERVIEW, open_body):
+            with self.subTest(body=body):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "unresolved-review-thread"):
+                    self.collect_current_copilot_evidence(
+                        body, [{"id": "PRRT_1", "isResolved": False}]
+                    )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-thread-coverage"):
+            self.collect_current_copilot_evidence(open_body, [])
+        for body, nodes in (
+            (CURRENT_COPILOT_OVERVIEW.replace(
+                "🔵 Needs a closer look", "🟡 Changes recommended"
+            ), []),
+            (open_body.replace("🟡 Changes recommended", "🔵 Needs a closer look"), resolved),
+            (CURRENT_COPILOT_OVERVIEW + "\n<details>\n</details>", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n<details>\n<summary>Unknown</summary>\n</details>", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n**FINDINGS:** 1", []),
+            (CURRENT_COPILOT_OVERVIEW + "\n<DETAILS>\n<SUMMARY>Unknown</SUMMARY>\n</DETAILS>", []),
+        ):
+            with self.subTest(conflicting_body=body, nodes=nodes):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    self.collect_current_copilot_evidence(body, nodes)
+
+    def test_current_copilot_overview_preserves_review_bindings(self) -> None:
+        for changes in (
+            {"commit_id": BASE},
+            {"user": {"login": "copilot-pull-request-reviewer[bot]",
+                      "id": 1, "type": "Bot"}},
+            {"node_id": "PRR_wrong"},
+            {"state": "CHANGES_REQUESTED"},
+            {"submitted_at": "2026-09-27T00:05:00Z"},
+        ):
+            with self.subTest(changes=changes):
+                with self.assertRaises(MODULE.EvidenceError):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW, [], **changes
+                    )
+        for marker in MODULE.COPILOT_REVIEW_FAILURE_MARKERS:
+            with self.subTest(marker=marker):
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    self.collect_current_copilot_evidence(
+                        CURRENT_COPILOT_OVERVIEW + "\n" + marker, []
+                    )
+
+    def test_historical_copilot_overview_uses_live_thread_resolution(self) -> None:
+        external_id = f"mlx90-current-revision:copilot:v6:17:88:{BASE}:{HEAD}"
+        check = check_run(external_id, v6_summary())
+        review = {
+            "id": 17001,
+            "node_id": "PRR_kwDOQs6tNc8AAAABPj6qbQ",
+            "user": {"login": "copilot-pull-request-reviewer[bot]",
+                     "id": 175728472, "type": "Bot"},
+            "state": "COMMENTED", "commit_id": HEAD,
+            "submitted_at": "2026-09-27T00:04:00Z",
+            "body": ("<!-- ccr-overview-v2 -->\n"
+                     "## Copilot review overview\n"
+                     "### 🔵 Needs a closer look\n"
+                     "**Findings:** 1\n"
+                     "<strong>Open (1)</strong>"),
+        }
+        run = producer_run()
+        run["pull_requests"] = []
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
+
+        def api(arguments):
+            if "check-runs?check_name=" in arguments[-1]:
+                return [{"check_runs": [check]}]
+            return remote(arguments)
+
+        for resolved in (True, False):
+            with (
+                self.subTest(resolved=resolved),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [native_finding_thread(resolved=resolved)],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if resolved:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(["PRRT_1"],
+                                     result["threads"]["resolved_thread_ids"])
+                    self.assertEqual(88, result["review"]["producer_run_id"])
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "unresolved-review-thread"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+
+        valid_body = review["body"]
+        review["body"] = valid_body.replace(
+            "**Findings:** 1",
+            '**Findings:** 1 <picture><source media="(prefers-color-scheme: dark)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-dark.svg">'
+            '<source media="(prefers-color-scheme: light)" '
+            'srcset="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.svg">'
+            '<img src="https://github.githubassets.com/static/images/icons/'
+            'copilot-code-review/high-v2-light.png" alt="High severity" '
+            'width="62" height="18" align="texttop"></picture>',
+        )
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [native_finding_thread()],
+                    "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+        high_icon = review["body"].split("**Findings:** 1 ", 1)[1].split("\n", 1)[0]
+        medium_icon = high_icon.replace("high-v2", "medium-v2").replace(
+            "High severity", "Medium severity"
+        )
+        mixed_body = valid_body.replace(
+            "**Findings:** 1",
+            f"**Findings:** 2 {high_icon} · 1 {medium_icon}",
+        )
+        review["body"] = mixed_body
+        remote = evidence_api(run, review=review, review_comment=[
+            native_finding_comment(10001 + index) for index in range(3)
+        ])
+        for thread_count in (3, 2):
+            with (
+                self.subTest(thread_count=thread_count),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [
+                            native_finding_thread(10001 + index, thread_id=f"PRRT_{index}")
+                            for index in range(thread_count)
+                        ],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                if thread_count == 3:
+                    result = MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+                    self.assertEqual(
+                        3, result["review"]["historical_findings_count"]
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        MODULE.EvidenceError, "producer-review-thread-coverage"
+                    ):
+                        MODULE.collect_bound_ingress_evidence(
+                            repository="lightning-it/example",
+                            pull=ingress_pull(), pull_number=17,
+                            base_sha=BASE, head_sha=HEAD,
+                        )
+        for invalid_body in (
+            valid_body.replace("**Findings:** 1", "**Findings:**"),
+            valid_body.replace("**Findings:** 1", "**Findings:** arbitrary"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 0"),
+            valid_body.replace("**Findings:** 1", "**Findings:** 1 extra"),
+            valid_body.replace(
+                "**Findings:** 1",
+                '**Findings:** 1 <picture><source x><source y><img z></picture>',
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1 {high_icon}",
+            ),
+            valid_body.replace(
+                "**Findings:** 1",
+                f"**Findings:** 2 {high_icon} · 1",
+            ),
+            valid_body + "\n**Findings:** None",
+            valid_body + "\n**FINDINGS:** None",
+            valid_body + "\n" + CURRENT_COPILOT_OPEN_FINDING.upper(),
+            valid_body + "\nprefix **Findings:** None",
+            valid_body + "\nprefix ## Copilot review overview",
+            valid_body.replace("## Copilot review overview", "prefix ## Copilot review overview"),
+        ):
+            with (
+                self.subTest(invalid_body=invalid_body),
+                mock.patch.object(MODULE, "gh_json", side_effect=api),
+                mock.patch.object(
+                    MODULE, "collect_review_threads",
+                    return_value={
+                        "nodes": [native_finding_thread()],
+                        "pageInfo": {"hasNextPage": False},
+                    },
+                ),
+            ):
+                review["body"] = invalid_body
+                remote = evidence_api(run, review=review, review_comment=native_finding_comment())
+                with self.assertRaisesRegex(
+                    MODULE.EvidenceError, "producer-review-binding"
+                ):
+                    MODULE.collect_bound_ingress_evidence(
+                        repository="lightning-it/example",
+                        pull=ingress_pull(), pull_number=17,
+                        base_sha=BASE, head_sha=HEAD,
+                    )
+
+        review["body"] = valid_body
+        remote = evidence_api(run, review=review, review_comment=native_finding_comment())
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            with self.assertRaisesRegex(
+                MODULE.EvidenceError, "producer-review-thread-coverage"
+            ):
+                MODULE.collect_bound_ingress_evidence(
+                    repository="lightning-it/example",
+                    pull=ingress_pull(), pull_number=17,
+                    base_sha=BASE, head_sha=HEAD,
+                )
+
+        review["body"] = valid_body.replace(
+            "**Findings:** 1", "**Findings:** None"
+        ).replace("<strong>Open (1)</strong>", "")
+        remote = evidence_api(run, review=review)
+        with (
+            mock.patch.object(MODULE, "gh_json", side_effect=api),
+            mock.patch.object(
+                MODULE, "collect_review_threads",
+                return_value={
+                    "nodes": [], "pageInfo": {"hasNextPage": False},
+                },
+            ),
+        ):
+            result = MODULE.collect_bound_ingress_evidence(
+                repository="lightning-it/example",
+                pull=ingress_pull(), pull_number=17,
+                base_sha=BASE, head_sha=HEAD,
+            )
+            self.assertEqual(0, result["review"]["historical_findings_count"])
+
     def test_review_thread_evidence_binds_stable_unique_ids(self) -> None:
         accepted = MODULE.validate_review_threads(
             {
                 "nodes": [
                     {"id": "PRRT_2", "isResolved": True},
-                    {"id": "PRRT_1", "isResolved": True},
+                    native_finding_thread(),
                 ],
                 "pageInfo": {"hasNextPage": False},
             }
@@ -2927,8 +5556,8 @@ class PromotionEvidenceTests(unittest.TestCase):
             MODULE.validate_review_threads(
                 {
                     "nodes": [
-                        {"id": "PRRT_1", "isResolved": True},
-                        {"id": "PRRT_1", "isResolved": True},
+                        native_finding_thread(),
+                        native_finding_thread(),
                     ],
                     "pageInfo": {"hasNextPage": False},
                 }

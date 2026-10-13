@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import os
+import runpy
 import re
 import shutil
 import subprocess
@@ -13,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVTOOLS_IMAGE = runpy.run_path(str(ROOT / 'scripts/lit-push-ready.py'))['COPILOT_DEVTOOL_IMAGE']
 AGENTS = ROOT / "AGENTS.md"
 WORKFLOW = (
     ROOT / ".github" / "workflows" / "supplementary-current-revision-required.yml"
@@ -1148,6 +1152,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )[1].split(
             "      - name: Rebind and finalize the protected result\n", 1
         )[0]
+        self.assertLess(permanent.index('source "${RUNNER_TEMP}/required-init.sh"'),
+                        permanent.index('          validate_target_repository'))
+        initialization = workflow.split("<<'INITIALIZATION'\n", 1)[1].split("\n          INITIALIZATION", 1)[0]
+        validation = initialization.split('          validate_target_repository() {\n', 1)[1].split('\n          }', 1)[0]
+        permanent = permanent.replace('          validate_target_repository', validation, 1)
         assignment = 'target_repository="$(gh api "repos/${REPOSITORY}")"'
         self.assertEqual(1, permanent.count(assignment))
         assignment_offset = permanent.index(assignment)
@@ -2576,7 +2585,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            "mlx90-current-revision:copilot:v6:([1-9][0-9]*):([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
+            workflow,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:${PR_NUMBER}:([1-9][0-9]*):${EVENT_BASE}:${EVENT_HEAD}",
             workflow,
         )
         self.assertIn(
@@ -3099,6 +3112,10 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(1, workflow.count(late_authorization_marker))
         late = workflow.split(late_authorization_marker, 1)[1]
+        # Ignore layout only; preserve every quoted JQ string verbatim.
+        def jq_tokens(value):
+            return ''.join(re.findall(r'"(?:\\.|[^"\\])*"|[^\s]', value))
+        late_tokens = jq_tokens(late)
 
         self.assertIn(
             '.path == ".github/workflows/copilot-review-refresh.yml"',
@@ -3106,17 +3123,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('.event == "pull_request_review"', late)
         self.assertIn(
-            'pulls/${PR_NUMBER}/reviews?per_page=100',
+            'pulls/${owner_pr_number}/reviews?per_page=100',
             late,
         )
         self.assertIn(
-            '.user.login == "copilot-pull-request-reviewer[bot]"',
-            late,
+            jq_tokens('.user.login == "copilot-pull-request-reviewer[bot]"'),
+            late_tokens,
         )
         self.assertIn(
-            'select((.submitted_at | fromdateiso8601?)\n'
-            '                      >= ($producer_created_at | fromdateiso8601))',
-            late,
+            jq_tokens('select((.submitted_at | fromdateiso8601?) '
+                      '>= ($producer_created_at | fromdateiso8601))'),
+            late_tokens,
         )
         self.assertIn(
             'actions/runs?event=pull_request_review&head_sha=${EVENT_HEAD}',
@@ -3129,9 +3146,17 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             '(.created_at | fromdateiso8601?)\n'
-            '                      > ($first_verifier_completed_at | fromdateiso8601)',
+            '                      >= ($first_verifier_completed_at | fromdateiso8601)',
             late,
         )
+        self.assertIn('and $step_started > $failed', workflow)
+        self.assertIn('and $step_started <= $producer_started', workflow)
+        self.assertIn(
+            'actions/runs/${refresh_run_id}/attempts/1/jobs?per_page=100', late
+        )
+        self.assertIn('and .run_id == $refresh.id and .run_attempt == 1', workflow)
+        self.assertIn('-f "${RUNNER_TEMP}/native-recovery-ordering.jq"', late)
+        self.assertIn('select(.run_id == $run_id and .head_sha == $head)', late)
         self.assertIn('select((.created_at | type) == "string")', late)
         self.assertIn('select((.updated_at | type) == "string")', late)
         self.assertIn(
@@ -3151,22 +3176,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '.name == "Request Copilot review for current revision"',
             late,
         )
-        self.assertIn(
-            '.requested_reviewer.login=="Copilot"',
-            late,
-        )
-        self.assertIn(
-            '--arg start "$(jq -er \'.created_at | strings\'',
-            late,
-        )
-        self.assertIn(
-            '.created_at>=$start',
-            late,
-        )
-        self.assertIn(
-            '.created_at<=$end',
-            late,
-        )
+        self.assertIn('verify_request_origin "${tl}"', late)
+        origin = workflow.split('          verify_request_origin() {\n', 1)[1].split(
+            '          verify_event_recovery() {', 1
+        )[0]
+        self.assertIn('.requested_reviewer.login=="Copilot"', origin)
+        self.assertIn('.actor.login == $actor', origin)
+        self.assertIn('.created_at>=$start', origin)
+        self.assertIn('.created_at<=$submitted', origin)
+        self.assertIn('| length == 1', origin)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1', origin)
+        self.assertIn('[ "${recovery_status}" -eq 0 ] || return 1', origin)
+        self.assertIn('run_request_proof /proof/request-origin.py', origin)
+        launcher = workflow.split('          run_request_proof() {\n', 1)[1].split('          validate_recorded_ref() {', 1)[0]
+        self.assertIn('docker run --rm -i --read-only --cap-drop=ALL', launcher)
+        self.assertEqual(2, launcher.count(',readonly'))
+        self.assertNotIn('/var/run/docker.sock', launcher)
+        self.assertIn(DEVTOOLS_IMAGE, launcher)
         self.assertIn('| length == 1', late)
         self.assertIn('.run_attempt == 2', late)
         self.assertIn('.triggering_actor.login == $refresh_actor', late)
@@ -3177,11 +3203,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         late = workflow.split(
             '              test "${producer_kind}" = copilot\n', 1
         )[1]
-        review_command = late.split('              reviews="$(jq -c \\\n', 1)[1]
-        review_command = review_command.split(
-            '\n                \' <<<"${review_pages}")"', 1
-        )[0]
-        review_filter = review_command.rsplit(" '\n", 1)[1]
+        review_match = re.search(
+            r'reviews="\$\(jq -c\b.*?--arg head "\$\{EVENT_HEAD\}"\s*'
+            r"'(?P<filter>.*?)'\s*<<<\"\$\{review_pages\}\"\)\"",
+            late, re.S,
+        )
+        self.assertIsNotNone(review_match, "actual bound review jq command")
+        review_filter = review_match['filter']
         refresh_command = late.split('              refresh_runs="$(jq -c \\\n', 1)[1]
         refresh_command = refresh_command.split(
             '\n                \' <<<"${refresh_pages}")"', 1
@@ -3194,7 +3222,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         repository = "lightning-it/.github"
         api_url = "https://api.github.com"
         author = "litroc"
-        head_ref = "fix/li-218-late-review-refresh-binding"
+        head_ref = "fix/original"
+        live_head_ref = "fix/renamed"
         producer_created_at = "2026-09-27T23:42:20Z"
         verifier_completed_at = "2026-09-27T23:45:00Z"
         review_submitted_at = "2026-09-27T23:45:56Z"
@@ -3250,6 +3279,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         valid_refresh = {
+            "id": 37071643656,
             "actor": {"login": author},
             "conclusion": "success",
             "created_at": "2026-09-27T23:46:00Z",
@@ -3293,7 +3323,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             base,
             "--arg",
             "head_ref",
-            head_ref,
+            live_head_ref,
             "--arg",
             "head_sha",
             head,
@@ -3326,6 +3356,23 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             return json.loads(result.stdout)
 
         self.assertEqual([valid_refresh], selected_refreshes([valid_refresh]))
+        # Native run creation and the failed verifier may share one second.
+        # Selection alone never authorizes this candidate: the bound native
+        # refresh job/step must independently establish strict execution order.
+        collision = {**valid_refresh, "created_at": review_submitted_at}
+        collision_args = list(refresh_args)
+        collision_args[collision_args.index("first_verifier_completed_at") + 1] = (
+            review_submitted_at
+        )
+        collision_result = subprocess.run(
+            [jq, "-c", *collision_args, refresh_filter],
+            input=json.dumps([{"workflow_runs": [collision]}]),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, collision_result.returncode, collision_result.stderr)
+        self.assertEqual([collision], json.loads(collision_result.stdout))
         for copilot_actor in (
             "Copilot",
             "copilot-pull-request-reviewer",
@@ -3356,7 +3403,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         missing_updated = {
             key: value for key, value in valid_refresh.items() if key != "updated_at"
         }
+        malformed_equal_refs = []
+        for value in (None, "", 7):
+            candidate = copy.deepcopy(valid_refresh)
+            candidate["head_branch"] = value
+            candidate["pull_requests"][0]["head"]["ref"] = value
+            malformed_equal_refs.append(candidate)
         rejected_refreshes = (
+            {**valid_refresh, "id": 0},
+            {**valid_refresh, "id": "37071643656"},
+            {**valid_refresh, "id": 0.5},
+            {**valid_refresh, "event": "workflow_dispatch"},
+            {**valid_refresh, "run_attempt": 2},
+            {**valid_refresh, "path": ".github/workflows/forged.yml"},
+            {**valid_refresh, "conclusion": "failure"},
+            {**valid_refresh, "actor": {"login": "other"}},
             {**valid_refresh, "created_at": None},
             missing_created,
             {**valid_refresh, "created_at": "not-a-date"},
@@ -3367,16 +3428,164 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {**valid_refresh, "created_at": "2026-09-27T23:45:55Z"},
             {**valid_refresh, "updated_at": "2026-09-27T23:46:31Z"},
             {**valid_refresh, "head_sha": "c" * 40},
+            {
+                **valid_refresh,
+                "pull_requests": [{
+                    **valid_refresh["pull_requests"][0],
+                    "head": {
+                        **valid_refresh["pull_requests"][0]["head"],
+                        "ref": "fix/other",
+                    },
+                }],
+            },
+            *malformed_equal_refs,
             {**valid_refresh, "triggering_actor": {"login": "other"}},
             {**valid_refresh, "pull_requests": []},
         )
         for candidate in rejected_refreshes:
             with self.subTest(refresh=candidate):
                 self.assertEqual([], selected_refreshes([candidate]))
+        for side in ("base", "head"):
+            for field, value in (
+                ("sha", "c" * 40),
+                ("ref", "other"),
+                ("repo", {"url": f"{api_url}/repos/foreign/repository"}),
+            ):
+                candidate = copy.deepcopy(valid_refresh)
+                candidate["pull_requests"][0][side][field] = value
+                with self.subTest(side=side, field=field):
+                    self.assertEqual([], selected_refreshes([candidate]))
+        candidate = copy.deepcopy(valid_refresh)
+        candidate["pull_requests"][0]["number"] = 626
+        self.assertEqual([], selected_refreshes([candidate]))
         self.assertEqual(
             [valid_refresh, valid_refresh],
             selected_refreshes([valid_refresh, valid_refresh]),
         )
+
+    def test_native_recovery_ordering_rejects_replay_forgery_and_collision(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        ordering_filter = workflow.split(
+            'cat >"${ordering}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
+        jq = self._test_tool("jq")
+        head = "a" * 40
+        refresh = {
+            "id": 37071643656,
+            "created_at": "2026-10-02T22:17:03Z",
+            "updated_at": "2026-10-02T22:17:10Z",
+        }
+        step = {
+            "name": "Rerun the canonical protected gate when needed",
+            "number": 2,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-02T22:17:06Z",
+            "completed_at": "2026-10-02T22:17:08Z",
+        }
+        job = {
+            "id": 111052218155,
+            "run_id": refresh["id"],
+            "run_attempt": 1,
+            "head_sha": head,
+            "name": "Refresh canonical Copilot review gate",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-10-02T22:17:06Z",
+            "completed_at": "2026-10-02T22:17:09Z",
+            "steps": [step],
+        }
+        valid = [{"total_count": 1, "jobs": [job]}]
+
+        def job_pages(candidate: dict[str, object]) -> list[dict[str, object]]:
+            return [{"total_count": 1, "jobs": [candidate]}]
+
+        def step_pages(candidate: dict[str, object]) -> list[dict[str, object]]:
+            return job_pages({**job, "steps": [candidate]})
+
+        def accepted(
+            pages: object = valid,
+            run: object = refresh,
+            failed: str = "2026-10-02T22:17:03Z",
+            started: str = "2026-10-02T22:17:08Z",
+        ) -> bool:
+            result = subprocess.run(
+                [
+                    jq, "-e", "--arg", "head", head,
+                    "--arg", "failed_at", failed,
+                    "--arg", "producer_started_at", started,
+                    "--argjson", "refresh", json.dumps(run),
+                    "--argjson", "event_claim", "false", ordering_filter,
+                ],
+                input=json.dumps(pages), text=True, capture_output=True, check=False,
+            )
+            return result.returncode == 0
+
+        # Real collision: run creation ties the failure, but native execution
+        # starts three seconds later and precedes attempt two. Cross-second
+        # creation follows the exact same proof, not a weaker legacy path.
+        self.assertTrue(accepted())
+        self.assertTrue(accepted(run={
+            **refresh, "created_at": "2026-10-02T22:17:04Z",
+        }))
+        self.assertFalse(accepted(started="2026-10-02T22:17:05Z"))
+        self.assertFalse(accepted(failed="2026-10-02T22:17:06Z"))
+        self.assertFalse(accepted(run={**refresh, "id": 37071643657}))
+
+        for field, values in {
+            "id": (0, -1, 0.5, "111052218155", None),
+            "run_id": (37071643657, "37071643656", None),
+            "run_attempt": (2, "1", None),
+            "head_sha": ("b" * 40, None),
+            "name": ("forged", None),
+            "status": ("in_progress", None),
+            "conclusion": ("skipped", "failure", None),
+            "steps": ([], [step, step], None),
+            "started_at": ("2026-10-02T22:17:07Z",),
+            "completed_at": ("2026-10-02T22:17:07Z",),
+        }.items():
+            for value in values:
+                with self.subTest(job_field=field, value=value):
+                    self.assertFalse(accepted(job_pages({**job, field: value})))
+        for field, values in {
+            "name": ("forged", None),
+            "number": (1, "2", None),
+            "status": ("in_progress", None),
+            "conclusion": ("skipped", "failure", None),
+            "started_at": ("2026-10-02T22:17:03Z", "2026-10-02T22:17:09Z"),
+            "completed_at": ("2026-10-02T22:17:05Z", "2026-10-02T22:17:10Z"),
+        }.items():
+            for value in values:
+                with self.subTest(step_field=field, value=value):
+                    self.assertFalse(accepted(step_pages({**step, field: value})))
+        for pages in (
+            [], {}, [None], [valid[0], valid[0]],
+            [{"total_count": 1, "jobs": []}],
+            [{"total_count": 1, "jobs": [job, job]}],
+            [{"total_count": 2, "jobs": [job]}],
+            [{"jobs": [job]}],
+        ):
+            with self.subTest(pages=pages):
+                self.assertFalse(accepted(pages))
+        for field in ("created_at", "updated_at"):
+            for value in (None, "invalid", "2026-02-30T22:17:03Z"):
+                with self.subTest(run_timestamp=field, value=value):
+                    self.assertFalse(accepted(run={**refresh, field: value}))
+        for field in ("started_at", "completed_at"):
+            for value in (None, "invalid", "2026-02-30T22:17:03Z"):
+                with self.subTest(job_timestamp=field, value=value):
+                    self.assertFalse(accepted(job_pages({**job, field: value})))
+                with self.subTest(step_timestamp=field, value=value):
+                    self.assertFalse(accepted(step_pages({**step, field: value})))
+        self.assertFalse(accepted(failed="invalid"))
+        self.assertFalse(accepted(started="invalid"))
+        for field, value in (
+            ("created_at", "2026-10-02T22:17:02Z"),
+            ("created_at", "2026-10-02T22:17:07Z"),
+            ("updated_at", "2026-10-02T22:17:08Z"),
+        ):
+            with self.subTest(timestamp=field, value=value):
+                self.assertFalse(accepted(run={**refresh, field: value}))
 
     def test_head_repository_is_explicit_and_release_app_is_same_repo(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -4202,11 +4411,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '[[ "${controller_head}" =~ ^[0-9a-f]{40}$ ]]', human_path
         )
         self.assertIn("compare/${controller_sha}...${controller_head}", human_path)
-        self.assertIn('--arg head_ref "${head_ref}"', human_path)
+        self.assertIn('validate_recorded_ref "${producer}"', human_path)
+        self.assertIn('validate_recorded_ref "${attempt_one}"', human_path)
+        final_ref_check = human_path.index(
+            'validate_recorded_ref "${producer}"'
+        )
+        self.assertLess(
+            human_path.rindex("              done", 0, final_ref_check),
+            final_ref_check,
+        )
+        self.assertLess(
+            final_ref_check,
+            human_path.index(
+                'if [ "${producer_run_attempt}" -eq 1 ]',
+                final_ref_check,
+            ),
+        )
         self.assertIn('--arg head_sha "${EVENT_HEAD}"', human_path)
-        self.assertIn(".head_branch == $head_ref", human_path)
         self.assertIn(".head_sha == $head_sha", human_path)
-        self.assertIn("and .controller_sha == $controller", human_path)
+        summary_filter = workflow.split(
+            '          cat >"${summary_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
+        self.assertIn("and .controller_sha==$controller", summary_filter)
         self.assertIn(".base.ref == $base_ref", human_path)
         self.assertNotIn(".head_branch == $controller_branch", human_path)
         self.assertNotIn(".head_sha == $controller_sha", human_path)
@@ -5274,7 +5500,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "failure_stage='permanent-producer-inventory'", 1
         )[1].split("failure_stage='permanent-finalization'", 1)[0]
 
-        self.assertIn("for evidence_observation in $(seq 1 450)", permanent)
+        self.assertIn("evidence_limit=450", permanent)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" != enabled ] || evidence_limit=1', permanent)
         self.assertIn("sleep 2", permanent)
         self.assertIn('current_pr="$(gh api', permanent)
         for binding in (
@@ -5295,7 +5522,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn('^(queued|in_progress)$', permanent)
         self.assertIn(
-            "The protected current-revision result did not become successful in time.",
+            "Protected producer evidence unavailable; merge remains blocked.",
             permanent,
         )
 
@@ -5337,7 +5564,11 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             nonterminal_handoff,
         )
         self.assertIn(
-            "mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge|renovate):v6:",
+            "mlx90-current-revision:copilot:v6:",
+            terminal_wait,
+        )
+        self.assertIn(
+            "mlx90-current-revision:(managed-sync|ancestry-backmerge|renovate):v6:",
             terminal_wait,
         )
         self.assertIn(
@@ -5385,13 +5616,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             ),
         )
         self.assertIn('"${producer_kind}" = copilot', permanent)
-        self.assertIn("for producer_observation in $(seq 1 60)", permanent)
+        self.assertIn("producer_limit=60", permanent)
+        self.assertIn('[ "${LI219_EVENT_MODE:-disabled}" != enabled ] || producer_limit=1', permanent)
 
         self.assertIn('if [ "${producer_status}" = queued ]', permanent)
         self.assertIn(
-            "The protected producer run did not start in time.", permanent
+            "Awaiting producer event.", permanent
         )
-        self.assertIn("continue", permanent)
+        self.assertIn("sleep 1", permanent)
         self.assertIn(
             '^(requested|waiting|pending|in_progress|completed)$', permanent
         )
@@ -5479,7 +5711,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(
             "{disallowed:[$terminal[]|select(allowed|not)]", classifier
         )
-        self.assertIn("allowed:[$terminal[]|select(allowed)]}", classifier)
+        self.assertIn("allowed:[$terminal[]|select(allowed)],", classifier)
         self.assertIn(
             'disallowed_terminal_jobs="$(jq -c .disallowed', permanent
         )
@@ -5487,14 +5719,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'allowed_skipped_terminal_jobs="$(jq -c .allowed', permanent
         )
         self.assertIn("jq -e 'length == 0 or error(tojson)'", permanent)
-        self.assertIn("length<=5", permanent)
+        self.assertIn("length<=(5+$inactive)", permanent)
         self.assertIn("(map(.name)|unique|length)==length", permanent)
         self.assertIn(
             "([.[].name|select(test($d))]|length)<=1",
             permanent,
         )
         helper_guard_match = re.search(
-            r'''jq -e --arg d "\$\{d\}" '([^']+)' '''
+            r'''jq -e --argjson inactive .*? --arg d "\$\{d\}" '([^']+)' '''
             r'''<<<"\$\{allowed_skipped_terminal_jobs\}" >/dev/null''',
             permanent,
         )
@@ -5507,7 +5739,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         def evaluate_helper_guard(names: list[str]) -> int:
             result = subprocess.run(
-                [jq, "-e", "--arg", "d", helper_pattern, helper_guard],
+                [jq, "-e", "--argjson", "inactive", "0", "--arg", "d", helper_pattern, helper_guard],
                 input=json.dumps([{"name": name} for name in names]),
                 text=True,
                 capture_output=True,
@@ -5697,7 +5929,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
         )
         producer_loop = permanent.split(
-            "for producer_observation in $(seq 1 60)", 1
+            'for producer_observation in $(seq 1 "${producer_limit}")', 1
         )[1].split("if [ \"${producer_run_attempt}\" -eq 1 ]; then", 1)[0]
         self.assertLess(
             producer_loop.index('disallowed_terminal_jobs="$(jq -c'),
@@ -5718,7 +5950,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self.assertIn(producer_attempt_guard, permanent)
         self.assertLess(
             permanent.index(producer_attempt_guard),
-            permanent.index("for producer_observation in $(seq 1 60)"),
+            permanent.index('for producer_observation in $(seq 1 "${producer_limit}")'),
         )
         self.assertNotIn(
             '&& [ "${producer_kind}" = copilot ]; then', permanent
@@ -5779,7 +6011,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 )
                 self.assertNotEqual(0, result.returncode)
         self.assertLess(
-            permanent.index("for evidence_observation in $(seq 1 450)"),
+            permanent.index('for evidence_observation in $(seq 1 "${evidence_limit}")'),
             permanent.index("producer_evidence_ready=false"),
         )
         self.assertLess(
@@ -5818,6 +6050,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             '\n                \' <<<"${producer}" >/dev/null',
             1,
         )[0]
+        owner_run_filter = workflow.split(
+            '          cat >"${owner_run_filter}" <<\'JQ\'\n', 1
+        )[1].split("\n          JQ\n", 1)[0]
         jq = self._test_tool("jq")
         head = "a" * 40
         payload = {
@@ -5825,10 +6060,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "run_attempt": 1,
             "path": ".github/workflows/copilot-review.yml",
             "name": "Current revision review gate",
-            "head_branch": "feature/li139",
+            "head_branch": "feature/original",
             "head_sha": head,
             "actor": {"login": "litroc"},
             "triggering_actor": {"login": "litroc"},
+            "pull_requests": [
+                {"number": 1502, "head": {"ref": "feature/original"}}
+            ],
         }
 
         def accepts(
@@ -5837,36 +6075,41 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             *,
             evidence_ready: bool,
             include_conclusion: bool = True,
+            nested_ref: str = "feature/original",
         ) -> bool:
-            candidate = dict(payload)
+            candidate = copy.deepcopy(payload)
+            candidate["pull_requests"][0]["head"]["ref"] = nested_ref
             candidate.update(status=status, conclusion=conclusion)
             if not include_conclusion:
                 candidate.pop("conclusion")
+            script = "\n".join((
+                "set -euo pipefail",
+                'jq -e --argjson owner 1502 "${OWNER_RUN_FILTER}" '
+                '<<<"${CANDIDATE}" >/dev/null',
+                'jq -e '
+                    + " ".join([
+                    "--arg",
+                    "actor", "litroc",
+                    "--arg",
+                    "head_sha", '"${HEAD}"',
+                    "--argjson",
+                    "evidence_ready", str(evidence_ready).lower(),
+                    "--argjson",
+                    "recovery_dispatch_failed", "false",
+                ]) + ' "${FILTER}" <<<"${CANDIDATE}"',
+            ))
             result = subprocess.run(
-                [
-                    jq,
-                    "-e",
-                    "--arg",
-                    "actor",
-                    "litroc",
-                    "--arg",
-                    "head_ref",
-                    "feature/li139",
-                    "--arg",
-                    "head_sha",
-                    head,
-                    "--argjson",
-                    "evidence_ready",
-                    str(evidence_ready).lower(),
-                    "--argjson",
-                    "recovery_dispatch_failed",
-                    "false",
-                    producer_filter,
-                ],
-                input=json.dumps(candidate),
+                [self._test_tool("bash"), "-c", script],
                 text=True,
                 capture_output=True,
                 check=False,
+                env={
+                    "PATH": TEST_TOOL_PATH,
+                    "CANDIDATE": json.dumps(candidate),
+                    "FILTER": producer_filter,
+                    "HEAD": head,
+                    "OWNER_RUN_FILTER": owner_run_filter,
+                },
             )
             return result.returncode == 0
 
@@ -5898,6 +6141,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertFalse(
             accepts("completed", "success", evidence_ready=False)
+        )
+        self.assertFalse(
+            accepts(
+                "completed",
+                "success",
+                evidence_ready=True,
+                nested_ref="feature/other",
+            )
         )
 
     def test_release_app_producer_breaks_only_the_verified_helper_deadlock(
@@ -6453,29 +6704,13 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         self,
     ) -> None:
         def normalized_payload(workflow_path: Path, step_name: str) -> str:
-            workflow = workflow_path.read_text(encoding="utf-8")
-            step = workflow.split(f"      - name: {step_name}\n", 1)[1]
-            script = step.split("        run: |\n", 1)[1]
-            script = script.split("\n      - name:", 1)[0]
-            script_lines = script.splitlines()
-            first_script_line = next(
-                line for line in script_lines if line.strip()
-            )
-            indentation_width = len(first_script_line) - len(
-                first_script_line.lstrip(" ")
-            )
-            self.assertGreater(indentation_width, 0)
-            indentation = " " * indentation_width
-            self.assertTrue(
-                all(
-                    not line.strip() or line.startswith(indentation)
-                    for line in script_lines
-                )
-            )
-            return "\n".join(
-                line[len(indentation) :] if line.startswith(indentation) else ""
-                for line in script_lines
-            ) + "\n"
+            import yaml
+            workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+            scripts = [step["run"] for job in workflow["jobs"].values()
+                       for step in job.get("steps", []) if step.get("name") == step_name]
+            self.assertTrue(scripts)
+            self.assertEqual(1, len(set(scripts)))
+            return scripts[0]
 
         for step_name in (
             "Bind the protected Required Workflow source",
@@ -6592,7 +6827,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
 
         quality = REPOSITORY_QUALITY_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("    timeout-minutes: 10\n", quality)
+        self.assertIn("    timeout-minutes: 20\n", quality)
 
     def test_terminal_wait_extracts_only_one_exact_producer_run(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -6660,6 +6895,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "mlx90-current-revision:managed-sync:v6:"
                 f"{pr_number}:789:{base}:{head}"
             ): "789",
+            f"mlx90-current-revision:copilot:v6:1498:790:{base}:{head}": "790",
             (
                 "mlx90-current-revision:renovate:v6:"
                 f"{pr_number}:901:{base}:{head}"
@@ -6672,7 +6908,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual(run_id, result.stdout)
 
         rejected = (
-            [f"mlx90-current-revision:copilot:v6:99:789:{base}:{head}"],
+            [f"mlx90-current-revision:managed-sync:v6:99:789:{base}:{head}"],
             [f"mlx90-current-revision:copilot:v5:789:{head}:{base}"],
             [
                 "mlx90-current-revision:renovate:v6:99:789:"
@@ -7145,6 +7381,43 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     json.dumps(failing, separators=(",", ":")),
                     failure.stderr,
                 )
+
+    def test_inactive_pilot_handoffs_use_the_actual_bound_classifier_call(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        command = workflow.split('                terminal_job_inventory="$(jq -c \\\n', 1)[1].split(
+            '                disallowed_terminal_jobs=', 1
+        )[0]
+        shell = ('set -euo pipefail\nterminal_job_inventory="$(jq -c \\\n' + textwrap.dedent(command)
+                 + "\njq -e '.disallowed | length == 0' <<<\"${terminal_job_inventory}\"\n")
+        cases = {
+            "lightning-it/shared-assets-lit": ["Inactive legacy handoff"],
+            "lightning-it/ansible-collection-supplementary": [
+                "Inactive legacy develop handoff", "Inactive legacy main pin", "Inactive legacy main handoff"],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "terminal-producer-inventory.jq").write_text(self._terminal_job_inventory_filter())
+            for repository, names in cases.items():
+                jobs = [{"id": i + 1, "name": name, "run_id": 77, "run_attempt": 1,
+                         "head_sha": "b" * 40, "status": "completed", "conclusion": "skipped",
+                         "runner_id": None, "steps": []} for i, name in enumerate(names)]
+                def evaluate(rows, **changes):
+                    env = {**os.environ, "RUNNER_TEMP": tmp, "REPOSITORY": repository,
+                           "LI219_EVENT_MODE": "enabled", "pr": '{"user":{"type":"User"}}',
+                           "d": "^Request protected verifier re-evaluation$", "EVENT_HEAD": "b" * 40,
+                           "producer_run_attempt": "1", "producer_run_id": "77",
+                           "producer_jobs_pages": json.dumps([{"total_count": len(rows), "jobs": rows}]), **changes}
+                    return subprocess.run(["bash", "-c", shell], env=env, capture_output=True, text=True, check=False)
+                result = evaluate(jobs)
+                self.assertEqual(0, result.returncode, result.stderr)
+                for changes in ({"LI219_EVENT_MODE": "disabled"}, {"REPOSITORY": "lightning-it/.github"},
+                                {"REPOSITORY": "lightning-it/foreign"}, {"pr": '{"user":{"type":"Bot"}}'}):
+                    self.assertNotEqual(0, evaluate(jobs, **changes).returncode)
+                for field, value in (("run_id", 78), ("run_attempt", 2), ("head_sha", "a" * 40),
+                                     ("runner_id", 42), ("steps", [{"name": "effect"}]),
+                                     ("name", "Inactive legacy unknown"), ("conclusion", "failure")):
+                    changed = copy.deepcopy(jobs)
+                    changed[0][field] = value
+                    self.assertNotEqual(0, evaluate(changed).returncode)
 
     def test_permanent_verifier_accepts_only_exact_bound_dispatch_failure(
         self,

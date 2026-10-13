@@ -44,21 +44,31 @@ permissions:
 
 concurrency:
   group: >-
-    protected-current-revision-rerun-${{ inputs.pr_number }}-${{ inputs.expected_head }}
+    ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
+      format('current-revision-{0}-head-{1}-check-current-revision-review', github.repository_id, inputs.expected_head) ||
+      format('protected-current-revision-rerun-{0}-{1}', inputs.pr_number, inputs.expected_head) }}
   cancel-in-progress: false
+  queue: max
+
+env:
+  LI259_INFRA_RETRY: ${{ vars.LI259_INFRA_RETRY }}
+  LI219_EVENT_MODE: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'enabled' || 'disabled' }}
 
 jobs:
   rerun-protected-verifier:
-    name: Re-run the one protected verifier attempt
+    name: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'Re-run the one protected verifier attempt' || 'Inactive event writer' }}
+    if: >-
+      (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
+      github.event_name == 'workflow_dispatch' && github.ref_protected && github.actor == 'github-actions[bot]'
     permissions:
       actions: write
-      checks: read
-      contents: read
+      checks: write
+      contents: write
       pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    steps:
+    steps: &rerun_steps
       - name: Materialize the terminal reservation-producer guard
         run: |
           set -euo pipefail
@@ -78,6 +88,14 @@ jobs:
             live_base="$(bounded_gh_api \
               "repos/${REPOSITORY}/branches/${BASE_REF}" --jq .commit.sha)"
             test "${live_base}" = "${EXPECTED_BASE}"
+          }
+          authenticated_head_repository() {
+            jq -er --arg repository "${REPOSITORY}" '
+              select(.head.repo.full_name == $repository or .user.type == "User")
+              | .head.repo.full_name | strings
+              | select(test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+              | select(split("/") | all(. != "." and . != ".."))
+              ' <<<"${1}"
           }
           validate_producer_attempt_binding() {
             test "${producer_attempt}" = "${PRODUCER_RUN_ATTEMPT}"
@@ -234,6 +252,228 @@ jobs:
             echo 'The reservation producer did not stabilize at success.' >&2
             return 1
           }
+          validate_evidence_owner() {
+            evidence_version=''
+            external_kind=''
+            expected_review_path=''
+            controller_sha=''
+            producer_job_head_sha=''
+            producer_job_name=''
+            v4_input_sha256=''
+            v4_workflow_sha=''
+            owner_pr_number="${PR_NUMBER}"
+            if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:([0-9a-f]{64})$ ]]; then
+              evidence_version=v4
+              v4_input_sha256="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:copilot:v6:([1-9][0-9]*):${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v6
+              external_kind=copilot
+              owner_pr_number="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v6
+              external_kind="${BASH_REMATCH[1]}"
+            elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
+              evidence_version=v5
+              external_kind="${BASH_REMATCH[1]}"
+            else
+              echo "Neutral evidence does not match a supported protected producer binding." >&2
+              return 1
+            fi
+            jq -e --arg base "${EXPECTED_BASE}" \
+              --arg evidence_version "${evidence_version}" \
+              --arg head "${EXPECTED_HEAD}" --arg run_url "${producer_url}" \
+              --argjson pr_number "${owner_pr_number:-${PR_NUMBER}}" \
+              --argjson run_id "${producer_id}" '
+                .schema == 4 and .base_sha == $base and .head_sha == $head
+                and .producer_run_id == $run_id and .run_url == $run_url
+                and (if $evidence_version == "v6" then
+                  .pull_request_number == $pr_number else
+                  ((has("pull_request_number") | not)
+                    or .pull_request_number == $pr_number) end)
+              ' <<<"${neutral_summary}" >/dev/null || return 1
+            owner_pr="${pr}"
+            if [ "${owner_pr_number}" != "${PR_NUMBER}" ]; then
+              test "${evidence_version}" = v6 || return 1
+              test "${external_kind}" = copilot || return 1
+              owner_pr="$(bounded_gh_api \
+                "repos/${REPOSITORY}/pulls/${owner_pr_number}")" || return 1
+            fi
+            jq -e --arg author "${author}" --arg base "${EXPECTED_BASE}" \
+              --arg base_ref "${base_ref}" --arg head "${EXPECTED_HEAD}" \
+              --arg head_ref "${head_ref}" --arg repository "${REPOSITORY}" --arg hr "${hr}" \
+              --argjson current_pr "${PR_NUMBER}" \
+              --argjson owner_pr "${owner_pr_number}" '
+                .number == $owner_pr and .draft == false
+                and .user.login == $author and .base.ref == $base_ref
+                and .base.sha == $base and .base.repo.full_name == $repository
+                and .head.ref == $head_ref and .head.sha == $head
+                and .head.repo.full_name == $hr
+                and (if $owner_pr == $current_pr then .state == "open"
+                  else .state == "closed" and .merged_at == null end)
+              ' <<<"${owner_pr}" >/dev/null
+          }
+          claim_review_operation() {
+            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 0
+            # The data ref is the CAS authority; Check inventory is never a lock.
+            local target="$1" head="$2" base="$3" pr="$4"
+            local key path action target_run created now prior snapshot record payload response committed marker rows attempt
+            [[ "${target}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${pr}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${head}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "${base}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "${GITHUB_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [[ "${GITHUB_RUN_ID}" =~ ^[1-9][0-9]*$ ]] || return 1
+            [ "${GITHUB_RUN_ATTEMPT}" = 1 ] || return 1
+            action="${5:-rerun}"
+            case "${action}" in
+              rerun) [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ] || return 1 ;;
+              request) [ "${GITHUB_EVENT_NAME}" = pull_request_target ] || return 1 ;;
+              *) return 1 ;;
+            esac
+            [ "${GITHUB_REF_PROTECTED}" = true ] || return 1
+            [[ "${GITHUB_REF}" =~ ^refs/heads/(develop|main)$ ]] || return 1
+            [[ "${WORKFLOW_SHA}" =~ ^[0-9a-f]{40}$ ]] || return 1
+            operation_api() {
+              if declare -F bounded_gh_api >/dev/null; then
+                bounded_gh_api "$@"
+              else
+                timeout --foreground --signal=TERM --kill-after=2s 30s gh api "$@"
+              fi
+            }
+            operation_ref() {
+              local result
+              result="$(operation_api "repos/${REPOSITORY}/git/ref/heads/lit-review-operations")" || return 1
+              jq -er 'select(.ref == "refs/heads/lit-review-operations" and .object.type == "commit")
+                | .object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${result}"
+            }
+            operation_snapshot() {
+              # Source commit, manifest and operation are one immutable snapshot. Never
+              # combine a mutable ref read with a separately resolved branch:path read.
+              local oid="$1" result
+              result="$(operation_api graphql -f query='query($owner:String!,$name:String!,$oid:String!,$manifest:String!,$record:String!){
+                repository(owner:$owner,name:$name){nameWithOwner
+                  source:object(expression:$oid){__typename oid}
+                  manifest:object(expression:$manifest){__typename ... on Blob{isTruncated byteSize text}}
+                  record:object(expression:$record){__typename ... on Blob{isTruncated byteSize text}}
+                }}' -f "owner=${REPOSITORY%%/*}" -f "name=${REPOSITORY#*/}" \
+                -f "oid=${oid}" -f "manifest=${oid}:manifest.json" -f "record=${oid}:${path}")" || return 1
+              jq -ce --arg oid "${oid}" --arg repo "${REPOSITORY}" --arg repo_id "${GITHUB_REPOSITORY_ID}" '
+                select(has("errors") | not) | .data.repository
+                | select(.nameWithOwner == $repo and .source.__typename == "Commit" and .source.oid == $oid)
+                | select(.manifest.__typename == "Blob" and .manifest.isTruncated == false
+                    and (.manifest.byteSize | type) == "number" and .manifest.byteSize > 0 and .manifest.byteSize <= 4096)
+                | select((.manifest.text | fromjson) == {schema:1,repository:$repo,repository_id:$repo_id,ref:"refs/heads/lit-review-operations"})
+                | select(has("record"))
+                | if .record == null then {present:false} else
+                    .record | select(.__typename == "Blob" and .isTruncated == false
+                      and (.byteSize | type) == "number" and .byteSize > 0 and .byteSize <= 4096)
+                    | {present:true,record:(.text | fromjson)} end
+                ' <<<"${result}"
+            }
+            target_run="$(operation_api "repos/${REPOSITORY}/actions/runs/${target}")" || return 1
+            created="$(jq -er --argjson id "${target}" '
+              select(.id == $id and .run_attempt == 1) | .created_at | fromdateiso8601
+              ' <<<"${target_run}")" || return 1
+            now="$(date +%s)"
+            if [ "$((now - created))" -gt 604800 ] || [ "${created}" -gt "${now}" ]; then
+              echo 'Verifier event reservation expired; merge remains blocked.' >&2
+              return 1
+            fi
+            key="li219-verifier-operation:v1:${pr}:${base}:${head}:${target}"
+            if [ "${action}" = request ]; then
+              # Base changes and fresh producer run IDs cannot buy another AI call.
+              key="li219-review-request:v1:${GITHUB_REPOSITORY_ID}:${pr}:${head}"
+            fi
+            path="operations/$(printf '%s' "${key}" | sha256sum | cut -d ' ' -f 1).json"
+            prior="$(operation_ref)" || return 1
+            snapshot="$(operation_snapshot "${prior}")" || return 1
+            if [ "$(jq -r .present <<<"${snapshot}")" != false ]; then
+              echo 'Verifier operation already consumed; only native-state reconciliation is allowed.' >&2
+              return 1
+            fi
+            record="$(jq -cn --arg key "${key}" --arg repo "${REPOSITORY}" --arg run "${GITHUB_RUN_ID}" \
+              --arg source "${WORKFLOW_SHA}" --arg repo_id "${GITHUB_REPOSITORY_ID}" --arg action "${action}" '{schema:1,repository:$repo,repository_id:$repo_id,action:$action,operation:$key,claim_run:$run,claim_attempt:"1",source_sha:$source}')" || return 1
+            payload="$(jq -cn --arg repo "${REPOSITORY}" --arg prior "${prior}" --arg path "${path}" \
+              --arg content "$(printf '%s' "${record}" | base64 -w 0)" '{
+                query:"mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid parents(first:2){nodes{oid}}}}}",
+                variables:{input:{branch:{repositoryNameWithOwner:$repo,branchName:"lit-review-operations"},
+                  expectedHeadOid:$prior,message:{headline:"Consume LI-219 verifier operation"},
+                  fileChanges:{additions:[{path:$path,contents:$content}]}}}}')" || return 1
+            # Exactly one CAS attempt. A lost response or conflict is NOT permission to
+            # retry a mutation, even if readback finds our record. Only confirmed winners
+            # may reach the single rerun POST in this invocation.
+            committed=''
+            if response="$(operation_api graphql --input - <<<"${payload}")"; then
+              committed="$(jq -er --arg prior "${prior}" '
+                select(has("errors") | not) | .data.createCommitOnBranch.commit
+                | select(.parents.nodes == [{oid:$prior}])
+                | .oid | strings | select(test("^[0-9a-f]{40}$") and . != $prior)
+                ' <<<"${response}")" || committed=''
+            fi
+            if [ -z "${committed}" ]; then
+              for attempt in 1 2 3; do
+                if prior="$(operation_ref)" && snapshot="$(operation_snapshot "${prior}")" \
+                    && [ "$(jq -r .present <<<"${snapshot}")" = true ]; then break; fi
+                [ "${attempt}" -eq 3 ] || sleep 2
+              done
+              echo 'CAS conflict or uncertain claim response; reconciliation only, no rerun sent.' >&2
+              return 1
+            fi
+            snapshot="$(operation_snapshot "${committed}")" || return 1
+            jq -e --argjson record "${record}" '.present == true and .record == $record' \
+              <<<"${snapshot}" >/dev/null || return 1
+            if [ "${action}" = request ]; then
+              CLAIM_COMMIT="${committed}"
+              return 0
+            fi
+            marker="$(jq -cn --arg key "${key}" --arg run "${GITHUB_RUN_ID}" \
+              --arg commit "${committed}" '{operation:$key,claim_run:$run,claim_attempt:"1",journal_commit:$commit}')" || return 1
+            operation_api --method POST "repos/${REPOSITORY}/check-runs" \
+              -f 'name=Review event operation' -f "head_sha=${head}" -f "external_id=${key}" \
+              -f status=completed -f conclusion=neutral -f 'output[title]=Verifier mutation consumed' \
+              -f "output[summary]=${marker}" >/dev/null || true
+            for attempt in 1 2 3; do
+              if rows="$(operation_api --paginate --slurp \
+                  "repos/${REPOSITORY}/commits/${head}/check-runs?check_name=Review%20event%20operation&filter=all&per_page=100")" \
+                && jq -e --arg marker "${marker}" --arg key "${key}" --arg head "${head}" '
+                  select(type == "array" and length > 0 and length <= 10)
+                  | select(all(.[]; (.check_runs | type) == "array"))
+                  | [.[].check_runs[] | select(.external_id == $key)]
+                  | length == 1 and .[0].output.summary == $marker
+                    and .[0].name == "Review event operation" and .[0].head_sha == $head
+                    and .[0].app.id == 15368 and .[0].app.slug == "github-actions"
+                    and .[0].status == "completed" and .[0].conclusion == "neutral"
+                    and .[0].output.title == "Verifier mutation consumed"
+                  ' <<<"${rows}" >/dev/null; then return 0; fi
+              [ "${attempt}" -eq 3 ] || sleep 2
+            done
+            echo 'Consumed operation receipt not visible; no rerun sent.' >&2
+            return 1
+          }
+
+          rerun_protected_verifier_once() {
+            authorize_protected_rerun_transaction || return 10
+            require_deadline || return 10
+            if [ "${LI259_INFRA_RETRY:-disabled}" = enabled ]; then
+              # Prospective binding only. This does not consume another event or
+              # authorize any effect; the existing LI-219 CAS still owns attempt 2.
+              local launcher="${RUNNER_TEMP}/li259-launcher.sh"
+              bounded_gh_api "repos/${REPOSITORY}/contents/scripts/run-native-verifier-retry.sh?ref=${WORKFLOW_SHA}" \
+                --jq '.content' | base64 --decode >"${launcher}" || return 10
+              bash "${launcher}" seal "${PR_NUMBER}" "${run_id}" || return 10
+            fi
+            claim_review_operation "${run_id}" "${EXPECTED_HEAD}" "${EXPECTED_BASE}" "${PR_NUMBER}" || return 20
+            authorize_protected_rerun_transaction || return 10
+            if [ "${LI259_INFRA_RETRY:-disabled}" = enabled ]; then
+              bash "${RUNNER_TEMP}/li259-launcher.sh" seal "${PR_NUMBER}" "${run_id}" || return 10
+            fi
+            bounded_gh_api --method POST \
+              "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null \
+              && return 0
+            [ "${bounded_gh_api_invoked}" = true ] && return 20
+            return 10
+          }
+
           GUARD
           test -s "${guard}" && test ! -L "${guard}"
 
@@ -242,6 +482,7 @@ jobs:
           BASE_REF: ${{ inputs.base_ref }}
           EXPECTED_BASE: ${{ inputs.expected_base }}
           EXPECTED_HEAD: ${{ inputs.expected_head }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
@@ -280,18 +521,19 @@ jobs:
           source "${RUNNER_TEMP}/current-revision-rerun-guard.sh"
           validate_handoff_binding
           pr="$(bounded_gh_api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+          hr="$(authenticated_head_repository "${pr}")"
           jq -e \
             --arg base "${EXPECTED_BASE}" \
             --arg base_ref "${BASE_REF}" \
             --arg head "${EXPECTED_HEAD}" \
-            --arg repository "${REPOSITORY}" '
+            --arg repository "${REPOSITORY}" --arg hr "${hr}" '
               .state == "open"
               and .draft == false
               and .base.sha == $base
               and .base.ref == $base_ref
               and .head.sha == $head
               and .base.repo.full_name == $repository
-              and .head.repo.full_name == $repository
+              and .head.repo.full_name == $hr
             ' <<<"${pr}" >/dev/null
           neutral_pages="$(bounded_gh_api --paginate --slurp \
             "repos/${REPOSITORY}/commits/${EXPECTED_HEAD}/check-runs?check_name=Current%20revision%20review&filter=all&per_page=100")"
@@ -324,48 +566,10 @@ jobs:
           author="$(jq -er '.user.login | select(type == "string" and length > 0)' <<<"${pr}")"
           base_ref="$(jq -er '.base.ref | select(. == "develop" or . == "main")' <<<"${pr}")"
           head_ref="$(jq -er '.head.ref | select(type == "string" and length > 0)' <<<"${pr}")"
-          evidence_version=''
-          external_kind=''
-          expected_review_path=''
-          controller_sha=''
-          producer_job_head_sha=''
-          producer_job_name=''
-          v4_input_sha256=''
-          v4_workflow_sha=''
-          if [[ "${neutral_external_id}" =~ ^mlx90-current-revision:v4:${producer_id}:([0-9a-f]{64})$ ]]; then
-            evidence_version=v4
-            v4_input_sha256="${BASH_REMATCH[1]}"
-          elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|managed-sync|ancestry-backmerge):v6:${PR_NUMBER}:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
-            evidence_version=v6
-            external_kind="${BASH_REMATCH[1]}"
-          elif [[ "${neutral_external_id}" =~ ^mlx90-current-revision:(copilot|ancestry-backmerge):v5:${producer_id}:${EXPECTED_BASE}:${EXPECTED_HEAD}$ ]]; then
-            evidence_version=v5
-            external_kind="${BASH_REMATCH[1]}"
-          else
-            echo "Neutral evidence does not match a supported protected producer binding." >&2
-            exit 1
+          validate_evidence_owner
+          if [ "${external_kind}" != copilot ] || [ "${evidence_version}" = v4 ]; then
+            test "${hr}" = "${REPOSITORY}"
           fi
-          jq -e \
-            --arg base "${EXPECTED_BASE}" \
-            --arg evidence_version "${evidence_version}" \
-            --arg head "${EXPECTED_HEAD}" \
-            --arg run_url "${producer_url}" \
-            --argjson pr_number "${PR_NUMBER}" \
-            --argjson run_id "${producer_id}" '
-              .schema == 4
-              and .base_sha == $base
-              and .head_sha == $head
-              and .producer_run_id == $run_id
-              and .run_url == $run_url
-              and (
-                if $evidence_version == "v6" then
-                  .pull_request_number == $pr_number
-                else
-                  ((has("pull_request_number") | not)
-                    or .pull_request_number == $pr_number)
-                end
-              )
-            ' <<<"${neutral_summary}" >/dev/null
           if [ "${evidence_version}" = v4 ]; then
             v4_workflow_sha="$(jq -er \
               '.workflow_sha | select(type == "string" and test("^[0-9a-f]{40}$"))' \
@@ -448,19 +652,20 @@ jobs:
                     and .merge_base_commit.sha == $controller)
               ' <<<"${controller_ancestry}" >/dev/null
             jq -e \
-              --arg actor "${author}" \
-              --arg head_ref "${head_ref}" \
+              --arg actor "${author}" --arg repository "${REPOSITORY}" \
+              --arg hr "${hr}" --arg base_sha "${EXPECTED_BASE}" --arg base_ref "${base_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
               --argjson attempt "${producer_attempt}" \
+              --argjson owner_pr "${owner_pr_number:-${PR_NUMBER}}" \
               --arg run_url "${producer_url}" '
-                .event == "pull_request_target"
-                and .path == ".github/workflows/copilot-review.yml"
-                and .name == "Current revision review gate"
-                and .head_branch == $head_ref
-                and .head_sha == $head_sha
-                and .html_url == $run_url
-                and .actor.login == $actor
-                and .triggering_actor.login == (
+                .event == "pull_request_target" and .path == ".github/workflows/copilot-review.yml" and .name == "Current revision review gate"
+                and (.pull_requests | type) == "array" and (.pull_requests | length) == 1 and .pull_requests[0].number == $owner_pr
+                and ((.head_branch|strings) as $ref | ($ref|length)>0
+                  and $ref==(.pull_requests[0].head.ref|strings))
+                and .head_sha == $head_sha and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
+                and .pull_requests[0].base.sha == $base_sha and .pull_requests[0].base.ref == $base_ref and [.pull_requests[0].base.repo.url,.pull_requests[0].head.repo.url]
+                  == [("https://api.github.com/repos/" + $repository),("https://api.github.com/repos/" + $hr)]
+                and .html_url == $run_url and .actor.login == $actor and .triggering_actor.login == (
                   if $attempt == 1 then $actor else "github-actions[bot]" end)
               ' <<<"${producer}" >/dev/null
           fi
@@ -515,7 +720,7 @@ jobs:
           producer_job_id="$(jq -er \
             '.id | select(type == "number" and . > 0)' <<<"${producer_job}")"
           producer_binding="$(jq -c '
-            {id,event,path,name,display_title,head_branch,head_sha,html_url,
+            {id,event,path,name,display_title,head_branch,head_sha,html_url,repository,head_repository,
              workflow_id,workflow_url,run_attempt,status,conclusion,
              actor:.actor.login,triggering_actor:.triggering_actor.login,
              pull_requests}
@@ -582,8 +787,6 @@ jobs:
             if [ "${v3_count}" -eq 1 ] && [ "${v2_count}" -eq 0 ]; then
               reservations="${v3_reservations}"
             elif [ "${v3_count}" -eq 0 ] && [ "${v2_count}" -eq 1 ]; then
-              # Bounded cutover compatibility: v2 lacks the base in external_id,
-              # so the protected run payload below must bind the exact live base.
               reservations="${v2_reservations}"
             elif [ "${v3_count}" -eq 0 ] && [ "${v2_count}" -eq 0 ]; then
               reservations='[]'
@@ -633,7 +836,6 @@ jobs:
             run_id="${BASH_REMATCH[1]}"
           fi
           verifier_run_url="${GITHUB_SERVER_URL}/${REPOSITORY}/actions/runs/${run_id}"
-
           load_cross_inventory() {
             local cross_pages cross_runs
             cross_pages="$(bounded_gh_api --paginate --slurp \
@@ -678,13 +880,14 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg server_url "${GITHUB_SERVER_URL}" \
               --argjson pr_number "${PR_NUMBER}" '
                 [.[].workflow_runs[] |
                   select(.event == "pull_request_target") |
                   select(.path == ".github/workflows/dot-github-current-revision-required.yml") |
-                  select(.head_branch == $head_ref and .head_sha == $head_sha) |
+                  select(.head_sha == $head_sha) |
+                  select([.repository.full_name,.head_repository.full_name] == [$repository,$hr]) |
                   select((.pull_requests | length) == 1) |
                   select(.pull_requests[0].number == $pr_number) |
                   select(.pull_requests[0].url == ($api_url + "/repos/" + $repository
@@ -692,9 +895,11 @@ jobs:
                   select(.pull_requests[0].base.ref == $base_ref) |
                   select(.pull_requests[0].base.sha == $base_sha) |
                   select(.pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)) |
-                  select(.pull_requests[0].head.ref == $head_ref) |
+                  select((.head_branch|strings) as $r |
+                    ($r|length)>0
+                    and $r==(.pull_requests[0].head.ref|strings)) |
                   select(.pull_requests[0].head.sha == $head_sha) |
-                  select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)) |
+                  select(.pull_requests[0].head.repo.url == ($api_url + "/repos/" + $hr)) |
                   select(.workflow_url == ($api_url + "/repos/" + $repository
                     + "/actions/required_workflows/" + (.workflow_id | tostring))) |
                   select(.html_url == ($server_url + "/" + $repository
@@ -892,7 +1097,7 @@ jobs:
               --arg base_ref "${base_ref}" \
               --arg head "${EXPECTED_HEAD}" \
               --arg head_ref "${head_ref}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --argjson number "${PR_NUMBER}" '
                 .number == $number
                 and .state == "open"
@@ -903,7 +1108,7 @@ jobs:
                 and .head.ref == $head_ref
                 and .head.sha == $head
                 and .base.repo.full_name == $repository
-                and .head.repo.full_name == $repository
+                and .head.repo.full_name == $hr
               ' <<<"${1}" >/dev/null
           }
 
@@ -990,7 +1195,7 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg run_url "${verifier_run_url}" \
               --argjson id "${run_id}" \
               --argjson pr_number "${PR_NUMBER}" '
@@ -1008,8 +1213,11 @@ jobs:
                       + "/actions/required_workflows/"
                       + (.workflow_id | tostring)
                   end)
-                and .head_branch == $head_ref
+                and ((.head_branch|strings) as $r |
+                  ($r|length)>0
+                  and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
+                and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
                 and .html_url == $run_url
                 and .actor.login == $author
                 and .triggering_actor.login == (
@@ -1023,10 +1231,9 @@ jobs:
                 and .pull_requests[0].base.sha == $base_sha
                 and .pull_requests[0].base.repo.url
                   == ($api_url + "/repos/" + $repository)
-                and .pull_requests[0].head.ref == $head_ref
                 and .pull_requests[0].head.sha == $head_sha
                 and .pull_requests[0].head.repo.url
-                  == ($api_url + "/repos/" + $repository)
+                  == ($api_url + "/repos/" + $hr)
                 and (
                   if .status == "completed" then
                     (.conclusion == "success" or .conclusion == "failure"
@@ -1067,7 +1274,7 @@ jobs:
               --arg evidence_version "${evidence_version}" \
               --arg head "${EXPECTED_HEAD}" \
               --arg run_url "${producer_url}" \
-              --argjson pr_number "${PR_NUMBER}" \
+              --argjson pr_number "${owner_pr_number:-${PR_NUMBER}}" \
               --argjson run_id "${producer_id}" '
                 .schema == 4
                 and .base_sha == $base
@@ -1144,7 +1351,7 @@ jobs:
             local jobs="${2}" payload="${1}"
             local bound_job current_job_binding current_jobs_binding
             test "$(jq -c '
-              {id,event,path,name,display_title,head_branch,head_sha,html_url,
+              {id,event,path,name,display_title,head_branch,head_sha,html_url,repository,head_repository,
                workflow_id,workflow_url,run_attempt,status,conclusion,
                actor:.actor.login,triggering_actor:.triggering_actor.login,
                pull_requests}
@@ -1296,7 +1503,7 @@ jobs:
               --arg base_sha "${EXPECTED_BASE}" \
               --arg head_ref "${head_ref}" \
               --arg head_sha "${EXPECTED_HEAD}" \
-              --arg repository "${REPOSITORY}" \
+              --arg repository "${REPOSITORY}" --arg hr "${hr}" \
               --arg server_url "${GITHUB_SERVER_URL}" \
               --argjson id "${expected_id}" \
               --argjson pr_number "${PR_NUMBER}" '
@@ -1316,8 +1523,11 @@ jobs:
                       == $created_at
                     ) catch false)
                 and (.run_attempt == 1 or .run_attempt == 2)
-                and .head_branch == $head_ref
+                and ((.head_branch|strings) as $r |
+                  ($r|length)>0
+                  and $r==(.pull_requests[0].head.ref|strings))
                 and .head_sha == $head_sha
+                and [.repository.full_name,.head_repository.full_name] == [$repository,$hr]
                 and (.workflow_id | type) == "number" and .workflow_id > 0
                 and .workflow_url == ($api_url + "/repos/" + $repository
                   + "/actions/required_workflows/" + (.workflow_id | tostring))
@@ -1337,9 +1547,8 @@ jobs:
                 and .pull_requests[0].base.ref == $base_ref
                 and .pull_requests[0].base.sha == $base_sha
                 and .pull_requests[0].base.repo.url == ($api_url + "/repos/" + $repository)
-                and .pull_requests[0].head.ref == $head_ref
                 and .pull_requests[0].head.sha == $head_sha
-                and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $repository)
+                and .pull_requests[0].head.repo.url == ($api_url + "/repos/" + $hr)
                 and (
                   .display_title == ("Cross-protect .github PR #" + ($pr_number | tostring)
                     + " opened " + $head_sha)
@@ -1487,19 +1696,11 @@ jobs:
             test "${producer_rebind}" = "${reservation_run}"
           }
 
-          rerun_protected_verifier_once() {
-            authorize_protected_rerun_transaction || return 10
-            require_deadline || return 10
-            bounded_gh_api --method POST \
-              "repos/${REPOSITORY}/actions/runs/${run_id}/rerun" >/dev/null \
-              && return 0
-            [ "${bounded_gh_api_invoked}" = true ] && return 20
-            return 10
-          }
-
           rerun_cross_job_once() {
             authorize_cross_rerun_transaction || return 10
             require_deadline || return 10
+            claim_review_operation "${cross_run_id}" "${EXPECTED_HEAD}" "${EXPECTED_BASE}" "${PR_NUMBER}" || return 20
+            authorize_cross_rerun_transaction || return 10
             bounded_gh_api --method POST \
               "repos/${REPOSITORY}/actions/jobs/${cross_job_id}/rerun" \
               >/dev/null && return 0
@@ -1946,3 +2147,16 @@ jobs:
 
           wait_for_cross_attempt_two_success
           echo 'Independent dot-github cross-verifier rerun completed successfully.'
+
+  legacy-rerun:
+    name: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'Inactive legacy writer' || 'Re-run the one protected verifier attempt' }}
+    if: >-
+      !(vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository))
+    permissions:
+      actions: write
+      checks: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps: *rerun_steps
