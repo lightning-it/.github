@@ -6441,6 +6441,19 @@ jobs:
               ' <<<"${reservation}" >/dev/null
             reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
           }
+          finalize_failure() {
+            local exit_code="$?"
+            trap - ERR EXIT
+            [ "${exit_code}" -ne 0 ] || return 0
+            set +e
+            echo "::error::stage=${failure_stage}" >&2
+            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
+              -f status=completed \
+              -f conclusion=failure \
+              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
+              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
+            exit "${exit_code}"
+          }
           SH
           chmod 0400 "${RUNNER_TEMP}/reservation-readback.sh"
 
@@ -6835,18 +6848,7 @@ jobs:
               ' <<<"${reservation}" >/dev/null
           fi
 
-          finalize_failure() {
-            local exit_code="$?"
-            trap - ERR
-            set +e
-            gh api --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
-              -f status=completed \
-              -f conclusion=failure \
-              -f 'output[title]=Protected current-revision evidence is absent or invalid' \
-              -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}; stage ${failure_stage}; fail-closed." >/dev/null
-            exit "${exit_code}"
-          }
-          trap finalize_failure ERR
+          trap finalize_failure ERR EXIT
 
           test "${draft}" = false
           controller_seed_verified=false

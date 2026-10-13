@@ -37,6 +37,34 @@ TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def test_verifier_finalizes_explicit_failure_without_overwriting_success(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        handler = 'finalize_failure() {' + workflow.split(
+            '          finalize_failure() {', 1)[1].split('          SH\n', 1)[0]
+        registration = next(line.strip() for line in workflow.splitlines()
+                            if line.strip().startswith('trap finalize_failure ERR'))
+        handler += '\n' + registration + '\n'
+        for command, status, mutates in (('exit 2', 2, True), ('false', 1, True),
+                                         ('exit 0', 0, False)):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                calls = Path(directory) / 'calls'
+                script = ('set -euo pipefail\n'
+                          'REPOSITORY=lightning-it/example\nPR_NUMBER=790\nEVENT_HEAD=' + 'a'*40 + '\n'
+                          'reservation_id=901\nfailure_stage=permanent-producer-inventory\n'
+                          'gh() { printf "%s\\n" "$@" >' + shlex.quote(str(calls)) + '; }\n'
+                          + handler + '\n' + command + '\n')
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(status, result.returncode, result.stderr)
+                self.assertEqual(mutates, calls.exists())
+                if mutates:
+                    arguments = calls.read_text().splitlines()
+                    self.assertIn('repos/lightning-it/example/check-runs/901', arguments)
+                    self.assertIn('status=completed', arguments)
+                    self.assertIn('conclusion=failure', arguments)
+                    self.assertIn('stage permanent-producer-inventory; fail-closed.',
+                                  '\n'.join(arguments))
+
     def _test_tool(self, name: str) -> str:
         executable = shutil.which(name, path=TEST_TOOL_PATH)
         if executable is None:
@@ -4716,7 +4744,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         creation = 'reservation="$(gh api --method POST' + workflow.split(
             "failure_stage='reservation-materialization'", 1
         )[1].split('          else\n            reservation="$(gh api --method POST', 1)[1].split(
-            "          fi\n\n          finalize_failure()", 1
+            "          fi\n\n          trap finalize_failure", 1
         )[0]
         head, base = "a" * 40, "b" * 40
         check = {
