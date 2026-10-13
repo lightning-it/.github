@@ -4097,6 +4097,49 @@ jobs:
           }
           trap report_source_failure EXIT
 
+          # pr831-protected-default-source: start
+          pr831_protected_default_source() {
+            test "${REPOSITORY}" = lightning-it/.github || return 1
+            test "${PR_NUMBER}" = 831 || return 1
+            test "${EVENT_BASE}" = 8bbbbeaa5bec36034fceebc029ec6c327d87bd5c || return 1
+            test "${EVENT_HEAD}" = 13fe6c651c2c8ef807c196755915de8331d26f3a || return 1
+            test "${EVENT_SENDER_LOGIN}" = litroc || return 1
+            test "${EVENT_SENDER_ID}" = 76040632 || return 1
+            test "${EVENT_SENDER_TYPE}" = User || return 1
+            test "${WORKFLOW_REF}" = 'lightning-it/.github/.github/workflows/supplementary-current-revision-required.yml@refs/heads/develop' || return 1
+            local source_repository source_develop source_main source_pr source_ancestry
+            source_repository="$(gh api repos/lightning-it/.github)" || return 1
+            jq -e '.full_name == "lightning-it/.github" and .default_branch == "develop"
+              and .archived == false and .disabled == false' <<<"${source_repository}" >/dev/null || return 1
+            source_develop="$(gh api repos/lightning-it/.github/branches/develop)" || return 1
+            jq -e --arg workflow "${WORKFLOW_SHA}" '.name == "develop"
+              and .protected == true and .commit.sha == $workflow' <<<"${source_develop}" >/dev/null || return 1
+            source_main="$(gh api repos/lightning-it/.github/branches/main)" || return 1
+            jq -e --arg base "${EVENT_BASE}" '.name == "main"
+              and .protected == true and .commit.sha == $base' <<<"${source_main}" >/dev/null || return 1
+            source_pr="$(gh api repos/lightning-it/.github/pulls/831)" || return 1
+            jq -e --arg base "${EVENT_BASE}" --arg head "${EVENT_HEAD}" '
+              .number == 831 and .state == "open" and .draft == false
+              and .user.login == "litroc" and .user.id == 76040632 and .user.type == "User"
+              and .base.ref == "main" and .base.sha == $base
+              and .base.repo.full_name == "lightning-it/.github"
+              and .head.ref == "fix/promotion-pr724-receipt" and .head.sha == $head
+              and .head.repo.full_name == "lightning-it/.github"
+              and .changed_files == 4 and .commits == 1
+              ' <<<"${source_pr}" >/dev/null || return 1
+            source_ancestry="$(gh api "repos/lightning-it/.github/compare/18f65689d3b6ea6ad8f1da72b662d2f212fc0411...${WORKFLOW_SHA}?per_page=100")" || return 1
+            jq -e --arg workflow "${WORKFLOW_SHA}" '
+              .base_commit.sha == "18f65689d3b6ea6ad8f1da72b662d2f212fc0411"
+              and .merge_base_commit.sha == "18f65689d3b6ea6ad8f1da72b662d2f212fc0411"
+              and .behind_by == 0 and .status == "ahead"
+              and (.total_commits | type == "number" and . > 0 and . <= 100 and floor == .)
+              and .ahead_by == .total_commits
+              and (.commits | type == "array") and (.commits | length) == .total_commits
+              and .commits[-1].sha == $workflow
+              ' <<<"${source_ancestry}" >/dev/null || return 1
+          }
+          # pr831-protected-default-source: end
+
           issue_564_stage_1_source_tuple() {
             [ "${REPOSITORY}" = 'lightning-it/.github' ] \
               && [ "${PR_NUMBER}" = 565 ] \
@@ -4194,6 +4237,11 @@ jobs:
                     and .commit.sha == $base
                   ' <<<"${protected_develop}" >/dev/null
                 source_sha="${EVENT_BASE}"
+              elif pr831_protected_default_source; then
+                source_sha="${WORKFLOW_SHA}"
+                umask 077
+                declare -f pr831_protected_default_source >"${RUNNER_TEMP}/pr831-protected-default-source.sh"
+                echo 'pr831_main_repair=true' >>"${GITHUB_OUTPUT}"
               elif issue_564_stage_1_source_tuple; then
                 expected_source_anchor='2bcc17358989f49df2dcc5e138c72e7eaf41decf'
                 expected_base_tree='747f551ebe3c88820ca144afd47347f8227ba245'
@@ -8083,6 +8131,11 @@ jobs:
         if: steps.protected-verifier.outputs.finalize == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR831_MAIN_REPAIR_SOURCE: >-
+            ${{ steps.protected-source.outputs.pr831_main_repair }}
+          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
+          EVENT_SENDER_TYPE: ${{ github.event.sender.type }}
           PRODUCER_KIND: ${{ steps.protected-verifier.outputs.producer_kind }}
           PRODUCER_RUN_URL: >-
             ${{ steps.protected-verifier.outputs.producer_run_url }}
@@ -8117,6 +8170,13 @@ jobs:
             exit "${exit_code}"
           }
           trap finalize_failure ERR
+
+          if [ "${PR831_MAIN_REPAIR_SOURCE}" = true ]; then
+            failure_stage='pr831-protected-default-source-final-rebind'
+            # shellcheck source=/dev/null
+            source "${RUNNER_TEMP}/pr831-protected-default-source.sh"
+            pr831_protected_default_source
+          fi
 
           final_pr="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
           jq -e \

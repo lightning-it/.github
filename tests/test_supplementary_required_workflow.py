@@ -4521,6 +4521,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "permanent-producer-inventory",
             "permanent-producer-binding",
             "renovate-final-rebind",
+            "pr831-protected-default-source-final-rebind",
             "issue-564-stage-1-final-rebind",
             "issue-564-pr568-final-rebind",
             "issue-564-pr568-recovery-evidence",
