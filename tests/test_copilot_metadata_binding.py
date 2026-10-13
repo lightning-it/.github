@@ -30,6 +30,7 @@ if route == 'graphql':
             d['metadata']['lastEditedAt'] = '2026-10-07T00:01:00Z'
         result = {'data': {'repository': {'nameWithOwner': d['repo'], 'pullRequest': d['metadata']}}}
     elif 'reviews(last:' in query:
+        d['review_queries'] = d.get('review_queries', 0) + 1
         result = {'data': {'repository': {'pullRequest': {'headRefOid': d['head'], 'reviews': {
             'nodes': [{'id':'R17','author':{'login':'copilot-pull-request-reviewer'},
                       'commit':{'oid':d['head']},'state':'APPROVED','submittedAt':d['submitted']}],
@@ -77,7 +78,7 @@ elif '/attempts/1/jobs?' in route:
           {'name':'Publish bound neutral result','status':'completed','conclusion':d.get('previous_publish','failure')}]}]}]
 elif '/actions/runs/' in route:
     result = {'event':'pull_request_target','name':'Current revision review gate',
-        'path':'.github/workflows/copilot-review.yml','head_branch':'fix/test','head_sha':d['head'],
+        'path':'.github/workflows/copilot-review.yml','head_branch':d['pr']['head']['ref'],'head_sha':d['head'],
         'repository':{'full_name':d['repo']},'head_repository':{'full_name':d['repo']}}
 elif '/pulls/' in route:
     result = d['pr']
@@ -154,6 +155,64 @@ class ProducerMetadataTests(unittest.TestCase):
 
     def capture(self, succeeds=True):
         return self.execute('Bind Copilot input metadata revision', succeeds)
+
+    def configure_renovate(self, edited=None):
+        self.pr['user']['login'] = 'renovate[bot]'
+        self.pr['head']['ref'] = 'renovate/github-actions'
+        self.pr['labels'] = [{'name': name} for name in
+                             ('dependencies', 'renovate', 'safe-automerge')]
+        self.data['metadata']['lastEditedAt'] = edited
+        self.env.update(TRUSTED_KIND='renovate', EVENT_HEAD_REF='renovate/github-actions',
+                        LI219_EVENT_MODE='disabled')
+        Path(self.env['GITHUB_EVENT_PATH']).write_text(json.dumps(
+            {'number':23, 'repository':{'full_name':self.repo}, 'pull_request':self.pr}))
+        self.save()
+
+    def test_renovate_publishes_graphql_revision_without_a_rest_edit_field(self):
+        for edited in (None, '2026-10-06T23:59:00Z'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.configure_renovate(edited)
+                self.assertNotIn('last_edited_at', self.pr)
+                self.capture()
+                self.publish()
+                summary = json.loads(self.data['check']['output']['summary'])
+                self.assertEqual(13, len(summary))
+                self.assertEqual(edited, summary['pull_request_last_edited_at'])
+                self.assertEqual('deterministic policy-bound Renovate exemption',
+                                 summary['review_path'])
+                self.assertIsNone(summary['review_id'])
+                self.assertEqual('success', self.data['check']['conclusion'])
+                self.assertGreaterEqual(self.data['metadata_reads'], 3)
+                self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def test_renovate_rejects_invalid_or_missing_graphql_revision(self):
+        for edited in ('invalid', False, [], {}, '2026-10-07T00:01:00Z', 'missing'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.configure_renovate(edited)
+                if edited == 'missing':
+                    del self.data['metadata']['lastEditedAt']
+                    self.save()
+                self.capture(False)
+                self.assertEqual([], self.data['writes'])
+
+    def test_renovate_metadata_drift_rejects_or_revokes_publication(self):
+        for phase in ('before', 'after_post', 'after_promotion'):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.configure_renovate()
+                self.capture()
+                if phase == 'before':
+                    self.data['metadata']['lastEditedAt'] = '2026-10-07T00:01:00Z'
+                else:
+                    self.data['drift_' + phase] = True
+                self.save()
+                self.publish(False)
+                if phase == 'before':
+                    self.assertEqual([], self.data['writes'])
+                else:
+                    self.assertEqual('failure', self.data['check']['conclusion'])
 
     def verify(self, succeeds=True):
         return self.execute('Verify current Copilot review and resolved findings', succeeds)

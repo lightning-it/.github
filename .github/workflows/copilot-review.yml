@@ -1897,7 +1897,8 @@ jobs:
       - name: Bind Copilot input metadata revision
         if: >-
           steps.producer-owner.outputs.owner == 'true' &&
-          steps.trusted-automation.outputs.trusted != 'true' &&
+          (steps.trusted-automation.outputs.trusted != 'true' ||
+           steps.trusted-automation.outputs.kind == 'renovate') &&
           github.event.pull_request.user.login != 'lightning-it-release-automation[bot]'
         env:
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
@@ -2421,7 +2422,7 @@ jobs:
         run: |
           set -euo pipefail
           assert_copilot_metadata_current() {
-            [ "${TRUSTED_KIND}" = none ] || return 0
+            [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ] || return 0
             test -f "${RUNNER_TEMP}/copilot-input-metadata.sh" || return 1
             test ! -L "${RUNNER_TEMP}/copilot-input-metadata.sh" || return 1
             # shellcheck source=/dev/null
@@ -2694,7 +2695,7 @@ jobs:
           fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           last_edited_at=null
-          if [ "${TRUSTED_KIND}" = none ]; then
+          if [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ]; then
             assert_copilot_metadata_current
             last_edited_at="$(cat "${RUNNER_TEMP}/copilot-input-metadata.json")"
           fi
@@ -2709,8 +2710,6 @@ jobs:
             renovate_labels_sha256="$(printf '%s' "${renovate_labels_json}" \
               | sha256sum | cut -d ' ' -f 1)"
             [[ "${renovate_labels_sha256}" =~ ^[0-9a-f]{64}$ ]]
-            renovate_last_edited_at="$(jq -r '.last_edited_at // "null"' \
-              <<<"${pr}")"
             renovate_head_repository="$(jq -er \
               '.head.repo.full_name | select(type == "string" and length > 0)' \
               <<<"${pr}")"
@@ -2722,7 +2721,7 @@ jobs:
               --arg head "${EVENT_HEAD}" \
               --arg head_repository "${renovate_head_repository}" \
               --arg labels_sha256 "${renovate_labels_sha256}" \
-              --arg last_edited_at "${renovate_last_edited_at}" \
+              --argjson last_edited_at "${last_edited_at}" \
               --arg review_path "${review_path}" \
               --argjson pr_number "${PR_NUMBER}" \
               --argjson run_id "${GITHUB_RUN_ID}" \
@@ -2731,8 +2730,7 @@ jobs:
                 controller_sha:$controller,head_repository:$head_repository,
                 head_sha:$head,producer_run_id:$run_id,
                 pull_request_labels_sha256:$labels_sha256,
-                pull_request_last_edited_at:(if $last_edited_at == "null"
-                  then null else $last_edited_at end),
+                pull_request_last_edited_at:$last_edited_at,
                 pull_request_number:$pr_number,review_id:null,
                 review_path:$review_path,run_url:$run_url}')"
           else

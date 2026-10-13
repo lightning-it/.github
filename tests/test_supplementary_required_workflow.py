@@ -949,22 +949,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'renovate_labels_json="$(jq -cer',
             'error("malformed Renovate pull-request labels")',
             'renovate_labels_sha256="$(printf',
-            'renovate_last_edited_at="$(jq -r',
             'renovate_head_repository="$(jq -er',
             'test "${renovate_head_repository}" = "${REPOSITORY}"',
             '--arg controller_ref "${DEFAULT_BRANCH}"',
             '--arg head_repository "${renovate_head_repository}"',
             '--arg labels_sha256 "${renovate_labels_sha256}"',
-            '--arg last_edited_at "${renovate_last_edited_at}"',
+            '--argjson last_edited_at "${last_edited_at}"',
             'controller_ref:$controller_ref',
             'head_repository:$head_repository',
             'pull_request_labels_sha256:$labels_sha256',
-            'pull_request_last_edited_at:(if $last_edited_at == "null"',
+            'pull_request_last_edited_at:$last_edited_at',
             'pull_request_number:$pr_number,review_id:null',
             'review_path:$review_path,run_url:$run_url',
         ):
             with self.subTest(binding=binding):
                 self.assertIn(binding, renovate_evidence)
+        self.assertNotIn('.last_edited_at', renovate_evidence)
+        self.assertIn(
+            'if [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ]; then\n'
+            '            assert_copilot_metadata_current\n'
+            '            last_edited_at="$(cat "${RUNNER_TEMP}/copilot-input-metadata.json")"',
+            publish,
+        )
 
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
