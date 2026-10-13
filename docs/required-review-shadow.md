@@ -1,4 +1,17 @@
-# Read-only event adapter and bounded shadow sweeper
+# Historical read-only event adapter and bounded shadow sweeper
+
+## Workflow retirement
+
+The repository owner requested removal of the event observer and scheduled
+shadow sweeper on 2026-10-12. The corresponding
+`required-review-event-shadow.yml` and `required-review-sweeper-shadow.yml`
+workflow files are removed. `LI219_EVENT_SHADOW` no longer schedules these
+observers. Historical GitHub runs remain available; the adapter, policy and
+offline contract fixtures are retained. Production review and verifier
+workflows are unchanged.
+
+The execution description below records the original implementation. It is
+historical and does not describe an installed or scheduled workflow.
 
 LI-228 is owner-authorized split C of LI-219. It integrates the accepted pure
 state contract, LI-226 telemetry and LI-227 bounded transport. It does not
