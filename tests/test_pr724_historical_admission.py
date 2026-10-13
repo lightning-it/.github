@@ -18,6 +18,7 @@ MERGE = "89869f9e2a987fd59706863c04b46da8d5a693bc"
 class Pr724HistoricalAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.records = json.loads(FIXTURE.read_text())
+        self.api_routes = []
         self.arguments = {
             "repository": "lightning-it/.github", "pull": self.records["pull"],
             "pull_number": 724, "base_sha": BASE, "head_sha": HEAD,
@@ -26,11 +27,14 @@ class Pr724HistoricalAdmissionTests(unittest.TestCase):
 
     def api(self, arguments):
         route = arguments[-1].removeprefix("repos/lightning-it/.github/")
+        self.api_routes.append(route)
         names = {
-            "actions/runs/38336319411": "run",
+            "actions/runs/38336319411/attempts/2": "run",
             "actions/runs/38336319411/attempts/2/jobs?per_page=100": "jobs",
-            "actions/runs/38336320280": "quality",
+            "actions/runs/38336320280/attempts/1": "quality",
             "actions/runs/38336320280/attempts/1/jobs?per_page=100": "quality-jobs",
+            "actions/runs/38336319411": "latest-run",
+            "actions/runs/38336320280": "latest-quality",
             f"commits/{HEAD}": "head", f"commits/{MERGE}": "merge",
             f"compare/{BASE}...{HEAD}": "compare",
         }
@@ -55,6 +59,28 @@ class Pr724HistoricalAdmissionTests(unittest.TestCase):
         self.assertEqual(receipt["historical_exception"],
                          "owner-authorized-pr724-three-timeouts-2026-10-13")
         self.assertEqual(receipt["historical_findings_count"], 0)
+
+    def test_later_attempt_cannot_invalidate_or_replace_bound_receipt(self):
+        # GitHub retains the run ID while its top-level record advances.
+        # Only the already accepted producer attempt 2 and quality attempt 1
+        # supply evidence; these fixtures grant no authority for a new retry.
+        for record, latest in (("run", "latest-run"), ("quality", "latest-quality")):
+            self.records[latest] = copy.deepcopy(self.records[record])
+            self.records[latest].update(
+                run_attempt=self.records[record]["run_attempt"] + 1,
+                conclusion="failure", updated_at="2026-10-14T00:00:00Z",
+                triggering_actor={"login": "attacker", "id": 1, "type": "User"},
+            )
+        self.admission()
+        for route in ("actions/runs/38336319411", "actions/runs/38336320280"):
+            self.assertNotIn(route, self.api_routes)
+        self.assertIn("actions/runs/38336319411/attempts/2", self.api_routes)
+        self.assertIn("actions/runs/38336320280/attempts/1", self.api_routes)
+        # A successful later attempt cannot replace a bad bound attempt.
+        self.records["latest-run"]["conclusion"] = "success"
+        self.records["run"]["conclusion"] = "failure"
+        with self.assertRaises(MODULE.EvidenceError):
+            self.admission()
 
     def test_other_repository_pr_revision_or_producer_cannot_use_receipt(self):
         for field, value in (("repository", "lightning-it/other"), ("pull_number", 725),

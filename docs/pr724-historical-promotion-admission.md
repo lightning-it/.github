@@ -17,6 +17,10 @@ has the exact Sync-App author and `litroc` as actor and triggering actor of
 successful native producer `38336319411`, attempt 2. Review check
 `115097708345` records its deterministic managed-distribution policy result.
 Native quality run `38336320280`, attempt 1, passed on the exact head.
+Run records and job inventories are read from their fixed native attempt
+endpoints. A later top-level run attempt cannot invalidate or replace these
+accepted historical attempts; a missing or failed bound attempt still rejects
+the admission. This read-only selection authorizes no new retry.
 
 `validate_pr724_historical_admission` independently binds:
 

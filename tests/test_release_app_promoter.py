@@ -98,10 +98,9 @@ class ReleaseAppPromoterTests(unittest.TestCase):
     def test_release_app_tokens_are_separate_and_least_privilege(self) -> None:
         workflow = self.workflow
 
-        action = (
-            "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1"
+        self.assertEqual(
+            len(re.findall(r"(?m)^\s+uses:\s+actions/create-github-app-token@[0-9a-f]{40}[ \t]*(?:#[^\n]*)?$", workflow)), 1
         )
-        self.assertEqual(workflow.count(action), 1)
         self.assertEqual(
             workflow.count("secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY"), 1
         )

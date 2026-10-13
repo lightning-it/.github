@@ -6,6 +6,7 @@ import json
 import os
 import runpy
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,44 @@ TEST_TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 
 
 class OrganizationRequiredWorkflowTests(unittest.TestCase):
+    def test_verifier_finalizes_explicit_failure_without_overwriting_success(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        handler = 'finalize_failure() {' + workflow.split(
+            '          finalize_failure() {', 1)[1].split('          SH\n', 1)[0]
+        registration = next(line.strip() for line in workflow.splitlines()
+                            if line.strip().startswith('trap finalize_failure ERR'))
+        handler += '\n' + registration + '\n'
+        owned = {'id':901, 'head_sha':'a'*40, 'name':'Protected current-revision verifier',
+                 'external_id':'owned', 'status':'in_progress', 'conclusion':None,
+                 'app':{'id':15368, 'slug':'github-actions'}}
+        cases = [('exit 2', 2, True, owned), ('false', 1, True, owned), ('exit 0', 0, False, owned)]
+        cases.extend(('exit 2', 2, False, changed) for changed in (
+            {**owned, 'external_id':'other-owner'}, {**owned, 'head_sha':'b'*40},
+            {**owned, 'id':902}, {**owned, 'status':'completed', 'conclusion':'success'},
+            {**owned, 'app':{'id':7, 'slug':'other'}}))
+        for command, status, mutates, snapshot in cases:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                calls = Path(directory) / 'calls'
+                script = ('set -euo pipefail\n'
+                          'REPOSITORY=lightning-it/example\nPR_NUMBER=790\nEVENT_HEAD=' + 'a'*40 + '\n'
+                          'reservation_id=901\nfailure_stage=permanent-producer-inventory\n'
+                          "reservation_name='Protected current-revision verifier'\nreservation_external_id=owned\n"
+                          'gh() { if [ "${2:-}" = --method ]; then printf "%s\\n" "$@" >' +
+                          shlex.quote(str(calls)) + '; else printf "%s\\n" ' +
+                          shlex.quote(json.dumps(snapshot)) + '; fi; }\n'
+                          + handler + '\n' + command + '\n')
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(status, result.returncode, result.stderr)
+                self.assertEqual(mutates, calls.exists())
+                if mutates:
+                    arguments = calls.read_text().splitlines()
+                    self.assertIn('repos/lightning-it/example/check-runs/901', arguments)
+                    self.assertIn('status=completed', arguments)
+                    self.assertIn('conclusion=failure', arguments)
+                    self.assertIn('stage permanent-producer-inventory; fail-closed.',
+                                  '\n'.join(arguments))
+
     def _test_tool(self, name: str) -> str:
         executable = shutil.which(name, path=TEST_TOOL_PATH)
         if executable is None:
@@ -949,22 +988,28 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             'renovate_labels_json="$(jq -cer',
             'error("malformed Renovate pull-request labels")',
             'renovate_labels_sha256="$(printf',
-            'renovate_last_edited_at="$(jq -r',
             'renovate_head_repository="$(jq -er',
             'test "${renovate_head_repository}" = "${REPOSITORY}"',
             '--arg controller_ref "${DEFAULT_BRANCH}"',
             '--arg head_repository "${renovate_head_repository}"',
             '--arg labels_sha256 "${renovate_labels_sha256}"',
-            '--arg last_edited_at "${renovate_last_edited_at}"',
+            '--argjson last_edited_at "${last_edited_at}"',
             'controller_ref:$controller_ref',
             'head_repository:$head_repository',
             'pull_request_labels_sha256:$labels_sha256',
-            'pull_request_last_edited_at:(if $last_edited_at == "null"',
+            'pull_request_last_edited_at:$last_edited_at',
             'pull_request_number:$pr_number,review_id:null',
             'review_path:$review_path,run_url:$run_url',
         ):
             with self.subTest(binding=binding):
                 self.assertIn(binding, renovate_evidence)
+        self.assertNotIn('.last_edited_at', renovate_evidence)
+        self.assertIn(
+            'if [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ]; then\n'
+            '            assert_copilot_metadata_current\n'
+            '            last_edited_at="$(cat "${RUNNER_TEMP}/copilot-input-metadata.json")"',
+            publish,
+        )
 
     def test_required_workflow_is_external_ai_free_and_source_bound(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -4537,13 +4582,14 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             source_binding,
         )
         self.assertIn(
-            'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0)\'',
+            'reservation_id="$(jq -er \'.[0].id | select(type == "number" and . > 0 and floor == .)\'',
             permanent,
         )
         self.assertIn(
-            'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
-            permanent,
+            'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0 and floor == .)\'',
+            source_binding,
         )
+        self.assertIn("            validate_created_reservation\n", permanent)
         self.assertEqual(
             permanent.count('-f "details_url=${reservation_url}"'),
             2,
@@ -4561,25 +4607,452 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             permanent.count('-f external_id="${reservation_external_id}"'),
             3,
         )
+        owner = workflow.split('          validate_prior_reservation_owner() {', 1)[1].split(
+            '          validate_created_reservation() {', 1)[0]
+        self.assertIn('validate_prior_reservation_owner\n', permanent)
         self.assertIn(
-            "^rep60-required-workflow:v3:[1-9][0-9]*:${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
-            permanent,
+            "^rep60-required-workflow:v3:([1-9][0-9]*):${PR_NUMBER}:${EVENT_BASE}:${EVENT_HEAD}$",
+            owner,
         )
         self.assertIn(
             "^rep60-required-workflow:v2:([1-9][0-9]*):${PR_NUMBER}:${EVENT_HEAD}$",
-            permanent,
+            owner,
         )
-        self.assertIn('prior_verifier_run="$(gh api', permanent)
-        self.assertIn('.workflow_id == $workflow_id', permanent)
-        self.assertIn('.status == "completed"', permanent)
+        self.assertIn('prior_verifier_run="$(gh api', owner)
+        self.assertIn('.workflow_id == $workflow_id', owner)
+        self.assertIn('.status == "completed"', owner)
         self.assertIn(
             '(.conclusion == "success" or .conclusion == "failure")',
-            permanent,
+            owner,
         )
         self.assertLess(
             permanent.index('prior_external_id="$(jq -er'),
             permanent.index('-f external_id="${reservation_external_id}"'),
         )
+
+    def test_reservation_patch_readback_converges_only_for_the_live_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "patch_reservation_with_readback() {" + workflow.split(
+            "          patch_reservation_with_readback() {", 1
+        )[1].split('          SH\n', 1)[0]
+        head, base = "a" * 40, "b" * 40
+        external_id = f"rep60-required-workflow:v3:201:225:{base}:{head}"
+        prior_id = f"rep60-required-workflow:v3:200:225:{base}:{head}"
+        check = {
+            "id": 901, "name": "Protected current-revision verifier",
+            "head_sha": head, "external_id": external_id,
+            "details_url": "https://github.com/lightning-it/example/runs/901",
+            "status": "in_progress", "conclusion": None,
+            "app": {"id": 15368, "slug": "github-actions"},
+            "output": {"title": "Protected verifier is evaluating the live revision", "summary": f"PR #225; head {head}."},
+        }
+        live_pr = {
+            "number": 225, "state": "open", "head": {"sha": head},
+            "base": {"sha": base, "repo": {"full_name": "lightning-it/example"}},
+        }
+        scenarios = (
+            ("normal", {}, True, 1),
+            ("patch_404", {"patch_error": 404}, True, 2),
+            ("readback_404", {"readback_error": 404}, True, 2),
+            ("permanent_404", {"patch_error": 404, "permanent": True}, False, 5),
+            ("forbidden", {"patch_error": 403}, False, 1),
+            ("server_error", {"readback_error": 500}, False, 1),
+            ("wrong_app", {"snapshot": {**check, "app": {"id": 7, "slug": "other"}}}, False, 1),
+            ("wrong_head", {"snapshot": {**check, "head_sha": "c" * 40}}, False, 1),
+            ("foreign_owner", {"snapshot": {**check, "external_id": "foreign"}}, False, 1),
+            ("malformed_patch", {"response": {**check, "id": "901"}}, False, 1),
+            ("wrong_output", {"response": {**check, "output": {"title": "forged", "summary": "forged"}}}, False, 1),
+            ("stale_readback", {"snapshot": {**check, "details_url": None}}, True, 2),
+            ("moving_base", {"live_pr": {**live_pr, "base": {**live_pr["base"], "sha": "c" * 40}}}, False, 0),
+            ("closed_pr", {"live_pr": {**live_pr, "state": "closed"}}, False, 0),
+            ("reevaluation", {"reservation_count": 1}, True, 1),
+            ("retained_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}}, True, 2),
+            ("foreign_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": "foreign"}}, False, 1),
+            ("prior_owner_wrong_app", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "app": {"id": 7, "slug": "other"}}}, False, 1),
+            ("prior_owner_wrong_head", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "head_sha": "c" * 40}}, False, 1),
+            ("permanent_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id}, "retain_snapshot": True}, False, 5),
+            ("null_status", {"snapshot": {**check, "status": None}}, False, 1),
+            ("unknown_status", {"snapshot": {**check, "status": "unknown"}}, False, 1),
+            ("null_title", {"snapshot": {**check, "output": {**check["output"], "title": None}}}, False, 1),
+            ("numeric_summary", {"snapshot": {**check, "output": {**check["output"], "summary": 7}}}, False, 1),
+            ("object_url", {"snapshot": {**check, "details_url": {}}}, False, 1),
+            ("boolean_conclusion", {"snapshot": {**check, "conclusion": False}}, False, 1),
+            ("malformed_retained_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "status": "unknown"}}, False, 1),
+            ("numeric_status", {"snapshot": {**check, "status": 7}}, False, 1),
+            ("array_output", {"snapshot": {**check, "output": []}}, False, 1),
+            ("completed_without_conclusion", {"snapshot": {**check, "status": "completed"}}, False, 1),
+            ("active_with_conclusion", {"snapshot": {**check, "conclusion": "success"}}, False, 1),
+            ("missing_conclusion", {"snapshot": {key: value for key, value in check.items() if key != "conclusion"}}, False, 1),
+            ("missing_url", {"snapshot": {key: value for key, value in check.items() if key != "details_url"}}, False, 1),
+            ("valid_terminal_prior_owner", {"reservation_count": 1, "prior_external_id": prior_id, "snapshot": {**check, "external_id": prior_id, "status": "completed", "conclusion": "failure"}}, True, 2),
+            ("native_retained_terminal_conclusion", {"reservation_count": 1, "response": {**check, "status": "completed", "conclusion": "failure", "output": {**check["output"], "title": "Protected verifier is re-evaluating the live revision"}}}, False, 1),
+            ("completed_fail_closed_rebind", {"reservation_count": 1, "completed_rebind": True}, True, 1),
+            ("completed_rebind_rejects_success", {"reservation_count": 1, "completed_rebind": True,
+              "snapshot": {**check, "status": "completed", "conclusion": "success", "output": {**check["output"], "title": "Protected verifier is re-evaluating the live revision"}}, "retain_snapshot": True}, False, 5),
+        )
+        for name, changes, accepted, patches in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                expected = copy.deepcopy(check)
+                if changes.get("reservation_count") == 1:
+                    expected["output"]["title"] = "Protected verifier is re-evaluating the live revision"
+                if changes.get("completed_rebind"):
+                    expected.update(status="completed", conclusion="failure")
+                payload = {"response": expected, "snapshot": expected, "live_pr": live_pr, **changes}
+                for key in ("response", "snapshot", "live_pr"):
+                    (fixture / f"{key}.json").write_text(json.dumps(payload[key]), encoding="utf-8")
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    export PATH={TEST_TOOL_PATH}
+                    RUNNER_TEMP={json.dumps(directory)}
+                    REPOSITORY=lightning-it/example
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    EVENT_BASE={base}
+                    reservation_id=901
+                    reservation_count={payload.get('reservation_count', 0)}
+                    prior_external_id={payload.get('prior_external_id', external_id)}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={external_id}
+                    reservation_url=https://github.com/lightning-it/example/runs/901
+                    sleep() {{ printf '%s\\n' "$*" >>"$RUNNER_TEMP/sleeps"; }}
+                    gh() {{
+                      if [ "$1" != api ]; then return 90; fi
+                      shift
+                      if [ "$1" = repos/lightning-it/example/pulls/225 ]; then
+                        cat "$RUNNER_TEMP/live_pr.json"; return 0
+                      fi
+                      local count=0
+                      if [ -f "$RUNNER_TEMP/patches" ]; then
+                        read -r count <"$RUNNER_TEMP/patches"
+                      fi
+                      if [ "$1" = --method ]; then
+                        [ "$2" = PATCH ] && [ "$3" = repos/lightning-it/example/check-runs/901 ] || return 91
+                        count=$((count + 1))
+                        printf '%s\\n' "$count" >"$RUNNER_TEMP/patches"
+                        if [ {payload.get('patch_error', 0)} -ne 0 ] && {{ [ "$count" -eq 1 ] || [ {int(payload.get('permanent', False))} -eq 1 ]; }}; then
+                          echo 'gh: Not Found (HTTP {payload.get('patch_error', 0)})' >&2; return 1
+                        fi
+                        cat "$RUNNER_TEMP/response.json"; return 0
+                      fi
+                      [ "$1" = repos/lightning-it/example/check-runs/901 ] || return 92
+                      if [ "$count" -eq 1 ] || [ {int(payload.get('retain_snapshot', False))} -eq 1 ]; then
+                        if [ {payload.get('readback_error', 0)} -ne 0 ]; then
+                          echo 'gh: Not Found (HTTP {payload.get('readback_error', 0)})' >&2; return 1
+                        fi
+                        cat "$RUNNER_TEMP/snapshot.json"
+                      else
+                        cat "$RUNNER_TEMP/response.json"
+                      fi
+                    }}
+                    """) + helper + '\npatch_reservation_with_readback --method PATCH repos/lightning-it/example/check-runs/901 ' + (
+                        '-f status=completed -f conclusion=failure' if changes.get('completed_rebind') else '-f status=in_progress') + '\n'
+                result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                count_file = fixture / "patches"
+                self.assertEqual(int(count_file.read_text()) if count_file.exists() else 0, patches)
+                sleeps = fixture / "sleeps"
+                self.assertEqual(sleeps.read_text().splitlines() if sleeps.exists() else [], ["2"] * max(0, patches - 1))
+                if accepted:
+                    self.assertEqual(json.loads(result.stdout), expected)
+
+    def test_reservation_creation_is_not_retried_or_patched_with_a_foreign_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "validate_created_reservation() {" + workflow.split(
+            "          validate_created_reservation() {", 1
+        )[1].split("          SH\n", 1)[0]
+        creation = "reservation_id=''\n" + workflow.split(
+            "failure_stage='reservation-materialization'", 1
+        )[1].split("          else\n            reservation_id=''\n", 1)[1].split(
+            '          fi\n\n          test "${draft}"', 1
+        )[0]
+        head, base = "a" * 40, "b" * 40
+        check = {
+            "id": 901, "name": "Protected current-revision verifier",
+            "head_sha": head,
+            "external_id": f"rep60-required-workflow:v3:201:225:{base}:{head}",
+            "status": "in_progress", "conclusion": None,
+            "details_url": "https://github.com/lightning-it/example/runs/901",
+            "app": {"id": 15368, "slug": "github-actions"},
+        }
+        cases = (
+            (check, False, True),
+            (check, True, False),
+            ({**check, "id": "901"}, False, False),
+            ({**check, "id": 901.5}, False, False),
+            ({**check, "id": 0}, False, False),
+            ({**check, "id": -1}, False, False),
+            ({**check, "head_sha": "c" * 40}, False, False),
+            ({**check, "name": "other"}, False, False),
+            ({**check, "external_id": "foreign"}, False, False),
+            ({**check, "app": {"id": 7, "slug": "other"}}, False, False),
+        )
+        for response, fail_post, accepted in cases:
+            with self.subTest(response=response, fail_post=fail_post), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                (fixture / "response.json").write_text(json.dumps(response), encoding="utf-8")
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    export PATH={TEST_TOOL_PATH}
+                    RUNNER_TEMP={json.dumps(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    failure_stage=reservation-materialization
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={check['external_id']}
+                    sleep() {{ :; }}
+                    gh() {{
+                      [ "$1" = api ] && [ "$2" = --method ] && [ "$3" = POST ] || return 90
+                      printf '%s\\n' POST >>"$RUNNER_TEMP/calls"
+                      if [ {int(fail_post)} -eq 1 ]; then
+                        echo 'gh: Not Found (HTTP 404)' >&2; return 1
+                      fi
+                      cat "$RUNNER_TEMP/response.json"
+                    }}
+                    patch_reservation_with_readback() {{
+                      printf '%s\\n' PATCH >>"$RUNNER_TEMP/calls"
+                      cat "$RUNNER_TEMP/response.json"
+                    }}
+                    """) + helper + "\n" + creation
+                result = subprocess.run([self._test_tool("bash"), "-c", script], text=True, capture_output=True, check=False)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                self.assertEqual((fixture / "calls").read_text().splitlines(), ["POST", "PATCH"] if accepted else ["POST"])
+
+    def test_unknown_reservation_creation_recovers_only_one_authenticated_identity(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = "validate_created_reservation() {" + workflow.split(
+            "          validate_created_reservation() {", 1)[1].split("          SH\n", 1)[0]
+        creation = "reservation_id=''\n" + workflow.split("failure_stage='reservation-materialization'", 1)[1].split(
+            "          else\n            reservation_id=''\n", 1)[1].split('          fi\n\n          test "${draft}"', 1)[0]
+        head, base = 'a' * 40, 'b' * 40
+        check = {'id':901, 'name':'Protected current-revision verifier', 'head_sha':head,
+                 'external_id':f'rep60-required-workflow:v3:201:225:{base}:{head}',
+                 'status':'in_progress', 'conclusion':None, 'app':{'id':15368, 'slug':'github-actions'}}
+        cases = (
+            ('materialized_error', 17, check, [check], check, True),
+            ('malformed_response', 0, {}, [check], check, True),
+            ('fractional_response', 0, {**check, 'id':901.5}, [check], check, True),
+            ('absent_effect', 17, {}, [], check, False),
+            ('duplicate_effect', 17, {}, [check, {**check, 'id':902}], check, False),
+            ('terminal_duplicate', 17, {}, [check, {**check, 'id':902, 'status':'completed', 'conclusion':'failure'}], check, False),
+            ('foreign_identity', 17, {}, [{**check, 'external_id':'foreign'}], check, False),
+            ('malformed_inventory', 17, {}, [{**check, 'id':'901'}], check, False),
+            ('changed_owner', 17, {}, [check], {**check, 'external_id':'foreign'}, False),
+            ('missing_conclusion', 17, {}, [check], {k:v for k,v in check.items() if k != 'conclusion'}, False),
+        )
+        for name, post_code, response, inventory, snapshot, cleaned in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                for filename, payload in (('response', response), ('inventory', [{'total_count':len(inventory), 'check_runs':inventory}]), ('snapshot', snapshot)):
+                    (fixture / f'{filename}.json').write_text(json.dumps(payload))
+                script = textwrap.dedent(f'''\
+                    set -euo pipefail
+                    RUNNER_TEMP={shlex.quote(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={check['external_id']}
+                    failure_stage=reservation-materialization
+                    sleep() {{ :; }}
+                    gh() {{
+                      if [ "${{3:-}}" = POST ]; then
+                        echo POST >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/response.json"; return {post_code}
+                      elif [[ "$*" == *'check_name='* ]]; then
+                        echo GET-inventory >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/inventory.json"
+                      elif [ "${{2:-}}" = repos/lightning-it/example/check-runs/901 ]; then
+                        echo GET-check >>"$RUNNER_TEMP/calls"; cat "$RUNNER_TEMP/snapshot.json"
+                      elif [ "${{3:-}}" = PATCH ]; then
+                        echo PATCH >>"$RUNNER_TEMP/calls"; printf '%s\\n' "$@" >"$RUNNER_TEMP/cleanup"
+                      else return 91; fi
+                    }}
+                    patch_reservation_with_readback() {{ return 92; }}
+                    ''') + helper + '\n' + creation
+                result = subprocess.run([self._test_tool('bash'), '-c', script], text=True, capture_output=True, check=False)
+                self.assertEqual(post_code or 4, result.returncode, result.stderr)
+                calls = (fixture / 'calls').read_text().splitlines()
+                self.assertEqual(1, calls.count('POST'))
+                self.assertLessEqual(calls.count('GET-inventory'), 5)
+                self.assertEqual(int(cleaned), calls.count('PATCH'))
+                if cleaned:
+                    self.assertIn('conclusion=failure', (fixture / 'cleanup').read_text())
+
+    def test_owned_reservation_materialization_failure_is_finalized(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        binding = '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]' + workflow.split(
+            '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]', 1)[1].split(
+                '          issue_564_legacy_retirement_count=0', 1)[0]
+        helper = "validate_prior_reservation_owner() {" + workflow.split(
+            "          validate_prior_reservation_owner() {", 1
+        )[1].split("          SH\n", 1)[0]
+        materialization = "failure_stage='reservation-materialization'" + workflow.split(
+            "failure_stage='reservation-materialization'", 1
+        )[1].split('          test "${draft}"', 1)[0]
+        head, base = "a" * 40, "b" * 40
+        check = {"id": 901, "name": "Protected current-revision verifier",
+                 "head_sha": head, "status": "in_progress", "conclusion": None,
+                 "external_id": f"rep60-required-workflow:v3:201:225:{base}:{head}",
+                 "app": {"id": 15368, "slug": "github-actions"}}
+        prior = {'id':201, 'repository':{'full_name':'lightning-it/example'},
+                 'workflow_id':555, 'event':'pull_request_target', 'status':'completed',
+                 'conclusion':'failure', 'head_sha':head, 'run_attempt':1,
+                 'path':'.github/workflows/supplementary-current-revision-required.yml',
+                 'display_title':f'Protected current revision PR #225 opened {head}'}
+        current_external_id = f"rep60-required-workflow:v3:202:225:{base}:{head}"
+        for adopted, applied, terminal, attempt in (
+            (adopted, applied, terminal, attempt) for attempt in (1, 2, 3, 4)
+            for adopted, applied, terminal in ((False, False, False), (True, False, False), (True, True, False), (True, True, True))
+        ):
+            with self.subTest(adopted=adopted, applied=applied, terminal=terminal, attempt=attempt), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                selected = check if adopted else {**check, 'external_id':current_external_id}
+                if terminal:
+                    selected = {**selected, 'status':'completed', 'conclusion':'success'}
+                (fixture / "response.json").write_text(json.dumps(selected))
+                (fixture / "prior.json").write_text(json.dumps(prior))
+                (fixture / "current.json").write_text(json.dumps({**prior, 'id':202,
+                    'status':'in_progress', 'conclusion':None, 'run_attempt':attempt}))
+                (fixture / 'li259-entry-authorized').touch()
+                (fixture / "reservation-readback.sh").write_text(helper + "\n" +
+                    'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; '
+                    'printf "%s\\n" "$@" >"$RUNNER_TEMP/patch-args"; '
+                    'if [ "$APPLIED" = 1 ]; then jq --arg current "$reservation_external_id" '
+                    '--argjson terminal "$TERMINAL" \' .external_id=$current | if $terminal then .status="completed" | .conclusion="failure" else . end\' '
+                    '"$RUNNER_TEMP/response.json" >"$RUNNER_TEMP/rebound.json"; '
+                    'mv "$RUNNER_TEMP/rebound.json" "$RUNNER_TEMP/response.json"; fi; return 17; }\n')
+                script = textwrap.dedent(f"""\
+                    set -euo pipefail
+                    RUNNER_TEMP={shlex.quote(directory)}
+                    REPOSITORY=lightning-it/example
+                    GITHUB_SERVER_URL=https://github.com
+                    PR_NUMBER=225
+                    EVENT_HEAD={head}
+                    EVENT_BASE={base}
+                    reservation_name='Protected current-revision verifier'
+                    reservation_external_id={current_external_id}
+                    EVENT_ACTION=opened
+                    LI259_INFRA_RETRY=enabled
+                    GITHUB_RUN_ID=202
+                    GITHUB_RUN_ATTEMPT={attempt}
+                    APPLIED={int(applied)}
+                    TERMINAL={str(terminal).lower()}
+                    reservation_count={int(adopted)}
+                    reservations=$(jq -s . "$RUNNER_TEMP/response.json")
+                    gh() {{
+                      if [[ "${{2:-}}" == */actions/runs/202 ]]; then cat "$RUNNER_TEMP/current.json"; return 0; fi
+                      if [[ "${{2:-}}" == */actions/runs/201 ]]; then cat "$RUNNER_TEMP/prior.json"; return 0; fi
+                      if [ "${{3:-}}" = POST ] || [ "${{2:-}}" != --method ]; then cat "$RUNNER_TEMP/response.json"; return 0; fi
+                      printf '%s\\n' "$@" >>"$RUNNER_TEMP/failure"
+                    }}
+                    """) + binding + "\n" + materialization
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(17, result.returncode, result.stderr)
+                self.assertEqual(["materialize"], (fixture / "calls").read_text().splitlines())
+                if terminal:
+                    self.assertFalse((fixture / "failure").exists(), result.stderr)
+                    self.assertIn('conclusion=failure', (fixture / 'patch-args').read_text())
+                    self.assertEqual('failure', json.loads((fixture / 'response.json').read_text())['conclusion'])
+                else:
+                    self.assertTrue((fixture / "failure").exists(), result.stderr + result.stdout)
+                    failure = (fixture / "failure").read_text().splitlines()
+                    self.assertEqual(1, failure.count("PATCH"))
+                    self.assertIn("repos/lightning-it/example/check-runs/901", failure)
+                    self.assertIn("conclusion=failure", failure)
+
+    def test_cleanup_prior_owner_requires_a_completed_bound_native_run(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        helper = 'validate_prior_reservation_owner() {' + workflow.split(
+            '          validate_prior_reservation_owner() {', 1)[1].split(
+                '          validate_created_reservation() {', 1)[0]
+        head, base = 'a'*40, 'b'*40
+        prior = {'id':201, 'repository':{'full_name':'lightning-it/example'},
+                 'workflow_id':555, 'event':'pull_request_target', 'status':'completed',
+                 'conclusion':'failure', 'head_sha':head, 'run_attempt':1,
+                 'path':'.github/workflows/supplementary-current-revision-required.yml',
+                 'display_title':f'Protected current revision PR #225 opened {head}'}
+        mutations = [{}, {'id':202}, {'workflow_id':556}, {'event':'workflow_dispatch'},
+                     {'status':'in_progress'}, {'run_attempt':3}, {'head_sha':'c'*40},
+                     {'repository':{'full_name':'lightning-it/other'}}, {'display_title':'unbound'}]
+        for version in (2, 3):
+            external = (f'rep60-required-workflow:v{version}:201:225:' +
+                        (f'{base}:' if version == 3 else '') + head)
+            for mutation in mutations:
+                with self.subTest(version=version, mutation=mutation):
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\ncurrent_workflow_id=555\n'
+                              'GITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT=1\n'
+                              'prior_external_id=' + shlex.quote(external) + '\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps({**prior, **mutation})) + '; }\n'
+                              + helper + '\nvalidate_prior_reservation_owner\n')
+                    result = subprocess.run([self._test_tool('bash'), '-c', script],
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(not mutation, result.returncode == 0, result.stderr)
+
+    def test_same_run_reservation_requires_the_exact_active_native_attempt(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        binding = '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]' + workflow.split(
+            '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]', 1)[1].split(
+                '          issue_564_legacy_retirement_count=0', 1)[0]
+        helper = 'validate_prior_reservation_owner() {' + workflow.split(
+            '          validate_prior_reservation_owner() {', 1)[1].split(
+                '          validate_created_reservation() {', 1)[0]
+        head, base = 'a'*40, 'b'*40
+        current = {'id':202, 'repository':{'full_name':'lightning-it/example'},
+                   'workflow_id':555, 'event':'pull_request_target', 'status':'in_progress',
+                   'conclusion':None, 'head_sha':head,
+                   'path':'.github/workflows/supplementary-current-revision-required.yml',
+                   'display_title':f'Protected current revision PR #225 opened {head}'}
+        for attempt in (1, 2, 3, 4):
+            for mutation in ({}, {'run_attempt':attempt+1}, {'status':'completed', 'conclusion':'failure'},
+                             {'status':'queued'}, {'id':201}, {'head_sha':'c'*40}):
+                with self.subTest(attempt=attempt, mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                    fixture = Path(directory)
+                    (fixture / 'li259-entry-authorized').touch()
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\nEVENT_ACTION=opened\n'
+                              'LI259_INFRA_RETRY=enabled\nRUNNER_TEMP=' + shlex.quote(directory) + '\n'
+                              f'GITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT={attempt}\n'
+                              f'prior_external_id=rep60-required-workflow:v3:202:225:{base}:{head}\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps(
+                                  {**current, 'run_attempt':attempt, **mutation})) + '; }\n'
+                              + binding + '\n' + helper + '\nvalidate_prior_reservation_owner\n')
+                    result = subprocess.run([self._test_tool('bash'), '-c', script],
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(not mutation, result.returncode == 0, result.stderr)
+
+        for attempt in (3, 4, 5):
+            for enabled, authorized in ((False, False), (False, True), (True, False), (True, True)):
+                with self.subTest(attempt=attempt, enabled=enabled, authorized=authorized), tempfile.TemporaryDirectory() as directory:
+                    if authorized:
+                        (Path(directory) / 'li259-entry-authorized').touch()
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_HEAD={head}\nEVENT_ACTION=opened\nGITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT={attempt}\n'
+                              f'LI259_INFRA_RETRY={"enabled" if enabled else "disabled"}\n'
+                              'RUNNER_TEMP=' + shlex.quote(directory) + '\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps({**current, 'run_attempt':attempt})) + '; }\n'
+                              + binding)
+                    result = subprocess.run([self._test_tool('bash'), '-c', script], text=True, capture_output=True, check=False)
+                    self.assertEqual(enabled and authorized and attempt in (3, 4), result.returncode == 0, result.stderr)
+
+    def test_existing_reservation_id_rejects_fractional_identity_before_patch(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        extraction = workflow.split("failure_stage='reservation-materialization'", 1)[1].split(
+            '            reservation_id=', 1)[1].split('\n', 1)[0]
+        for value in (901, 901.5, 0, -1, "901", None, True):
+            with self.subTest(check_id=value), tempfile.TemporaryDirectory() as directory:
+                calls = Path(directory) / 'calls'
+                script = ('set -euo pipefail\n'
+                          + 'reservations=' + shlex.quote(json.dumps([{'id': value}])) + '\n'
+                          + 'reservation_id=' + extraction + '\n'
+                          + 'printf PATCH >' + shlex.quote(str(calls)) + '\n')
+                result = subprocess.run([self._test_tool("bash"), "-c", script],
+                                        text=True, capture_output=True, check=False)
+                self.assertEqual(value == 901 and type(value) is int, result.returncode == 0)
+                self.assertEqual(value == 901 and type(value) is int, calls.exists())
 
     def test_only_proven_same_workflow_foreign_reservations_are_retired(
         self,
@@ -5043,15 +5516,15 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             [1, 2],
         )
 
-        prior_block = workflow.split('prior_verifier_run="$(gh api', 1)[1].split(
-            '            reservation_url=', 1
-        )[0]
+        prior_block = workflow.split('          validate_prior_reservation_owner() {', 1)[1].split(
+            '          validate_created_reservation() {', 1)[0]
         prior_filter = prior_block.split(
             '--argjson workflow_id "${current_workflow_id}" \'\n', 1
-        )[1].split('\n                \' <<<"${prior_verifier_run}"', 1)[0]
+        )[1].split('\n              \' <<<"${prior_verifier_run}"', 1)[0]
         title = f"Protected current revision PR #225 opened {head}"
         protected_run = {
             "id": 201,
+            "repository": {"full_name": "lightning-it/example"},
             "workflow_id": 335,
             "event": "pull_request_target",
             "path": ".github/workflows/supplementary-current-revision-required.yml",
@@ -5062,6 +5535,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "display_title": title,
         }
         prior_args = [
+            "--arg", "repository", "lightning-it/example",
+            "--argjson", "current_run", "202", "--argjson", "current_attempt", "1",
             "--arg",
             "head",
             head,
@@ -5150,6 +5625,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "workflow_id": 335,
         }
         current_args = [
+            "--argjson", "attempt", "1",
             "--arg",
             "action",
             "opened",
@@ -6714,6 +7190,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
         for step_name in (
             "Bind the protected Required Workflow source",
+            "Prepare bounded reservation API readback",
             "Verify one protected result for the exact live revision",
         ):
             with self.subTest(step_name=step_name):
@@ -9230,9 +9707,8 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             )
             if value != "0" * 40
         ]
-        self.assertEqual(
-            ["043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"], one_off_shas
-        )
+        self.assertEqual(1, len(one_off_shas))
+        self.assertRegex(s0, rf"(?m)^\s+uses:\s+actions/upload-artifact@{one_off_shas[0]}[ \t]*(?:#[^\n]*)?$")
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",

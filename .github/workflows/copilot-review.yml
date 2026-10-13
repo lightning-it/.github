@@ -1897,7 +1897,8 @@ jobs:
       - name: Bind Copilot input metadata revision
         if: >-
           steps.producer-owner.outputs.owner == 'true' &&
-          steps.trusted-automation.outputs.trusted != 'true' &&
+          (steps.trusted-automation.outputs.trusted != 'true' ||
+           steps.trusted-automation.outputs.kind == 'renovate') &&
           github.event.pull_request.user.login != 'lightning-it-release-automation[bot]'
         env:
           EVENT_BASE: ${{ github.event.pull_request.base.sha }}
@@ -2421,7 +2422,7 @@ jobs:
         run: |
           set -euo pipefail
           assert_copilot_metadata_current() {
-            [ "${TRUSTED_KIND}" = none ] || return 0
+            [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ] || return 0
             test -f "${RUNNER_TEMP}/copilot-input-metadata.sh" || return 1
             test ! -L "${RUNNER_TEMP}/copilot-input-metadata.sh" || return 1
             # shellcheck source=/dev/null
@@ -2693,12 +2694,17 @@ jobs:
             test "${author}" != 'lightning-it-shared-assets-sync[bot]'
           fi
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          publication_text_fields=()
+          publication_text=''
           last_edited_at=null
-          if [ "${TRUSTED_KIND}" = none ]; then
+          if [ "${TRUSTED_KIND}" = none ] || [ "${TRUSTED_KIND}" = renovate ]; then
             assert_copilot_metadata_current
             last_edited_at="$(cat "${RUNNER_TEMP}/copilot-input-metadata.json")"
           fi
           if [ "${TRUSTED_KIND}" = renovate ]; then
+            renovate_title_sha256="$(jq -je '.title | select(type == "string")' <<<"${pr}" | sha256sum | cut -d ' ' -f 1)"
+            publication_text="Renovate title SHA-256: ${renovate_title_sha256}"
+            publication_text_fields=(-f "output[text]=${publication_text}")
             renovate_labels_json="$(jq -cer '
               if (.labels | type) == "array"
                 and all(.labels[]?;
@@ -2709,8 +2715,6 @@ jobs:
             renovate_labels_sha256="$(printf '%s' "${renovate_labels_json}" \
               | sha256sum | cut -d ' ' -f 1)"
             [[ "${renovate_labels_sha256}" =~ ^[0-9a-f]{64}$ ]]
-            renovate_last_edited_at="$(jq -r '.last_edited_at // "null"' \
-              <<<"${pr}")"
             renovate_head_repository="$(jq -er \
               '.head.repo.full_name | select(type == "string" and length > 0)' \
               <<<"${pr}")"
@@ -2722,7 +2726,7 @@ jobs:
               --arg head "${EVENT_HEAD}" \
               --arg head_repository "${renovate_head_repository}" \
               --arg labels_sha256 "${renovate_labels_sha256}" \
-              --arg last_edited_at "${renovate_last_edited_at}" \
+              --argjson last_edited_at "${last_edited_at}" \
               --arg review_path "${review_path}" \
               --argjson pr_number "${PR_NUMBER}" \
               --argjson run_id "${GITHUB_RUN_ID}" \
@@ -2731,8 +2735,7 @@ jobs:
                 controller_sha:$controller,head_repository:$head_repository,
                 head_sha:$head,producer_run_id:$run_id,
                 pull_request_labels_sha256:$labels_sha256,
-                pull_request_last_edited_at:(if $last_edited_at == "null"
-                  then null else $last_edited_at end),
+                pull_request_last_edited_at:$last_edited_at,
                 pull_request_number:$pr_number,review_id:null,
                 review_path:$review_path,run_url:$run_url}')"
           else
@@ -2782,12 +2785,14 @@ jobs:
               if snapshot="$(gh api "repos/${REPOSITORY}/check-runs/${check_id}")"; then
                 jq -e --argjson id "${check_id}" --arg head "${EVENT_HEAD}" \
                   --arg external "${external_id}" --arg evidence "${evidence}" \
+                  --arg text "${publication_text}" \
                   --arg conclusion "${conclusion}" '
                     .id == $id and .name == "Current revision review"
                     and .app.id == 15368 and .app.slug == "github-actions"
                     and .head_sha == $head and .external_id == $external
                     and .status == "completed" and .conclusion == $conclusion
                     and .output.summary == $evidence
+                    and ($text == "" or .output.text == $text)
                     and ($conclusion != "failure"
                       or .output.title == "Current revision publication pending")
                   ' <<<"${snapshot}" >/dev/null || return 1
@@ -2808,6 +2813,7 @@ jobs:
               -f status=completed -f conclusion=success \
               -f "completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               -f "output[title]=${result_title}" \
+              "${publication_text_fields[@]}" \
               -f "output[summary]=${evidence}" >/dev/null || true
             publication_read "${check_id}" "${external_id}" success || return 1
             if (publication_inputs); then return 0; fi
@@ -2817,6 +2823,7 @@ jobs:
             gh api --method PATCH "repos/${REPOSITORY}/check-runs/${check_id}" \
               -f status=completed -f conclusion=failure \
               -f 'output[title]=Current revision publication pending' \
+              "${publication_text_fields[@]}" \
               -f "output[summary]=${evidence}" >/dev/null || true
             publication_read "${check_id}" "${external_id}" failure || return 1
             return 1
@@ -2988,11 +2995,13 @@ jobs:
                 -f "details_url=${check_url}" \
                 -f "external_id=${external_id}" \
                 -f 'output[title]=Current revision publication pending' \
+                "${publication_text_fields[@]}" \
                 -f "output[summary]=${evidence}")"
               jq -e \
                 --arg check_name "${check_name}" \
                 --arg completed_at "${completed_at}" \
                 --arg evidence "${evidence}" \
+                --arg text "${publication_text}" \
                 --arg external_id "${external_id}" \
                 --arg head "${EVENT_HEAD}" \
                 --arg url "${check_url}" \
@@ -3008,6 +3017,7 @@ jobs:
                   and .status == "completed"
                   and .conclusion == "failure"
                   and .output.summary == $evidence
+                  and ($text == "" or .output.text == $text)
                 ' <<<"${updated}" >/dev/null
               printf '%s' "${check_id}"
               return
@@ -3047,6 +3057,7 @@ jobs:
                 -f conclusion=failure \
                 -f external_id="${external_id}" \
                 -f 'output[title]=Current revision publication pending' \
+                "${publication_text_fields[@]}" \
                 -f "output[summary]=${evidence}")"; then
               # Never retry a create blindly: GitHub can materialize the check
               # even when the client receives a non-success response. Recover
