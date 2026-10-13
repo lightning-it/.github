@@ -4542,8 +4542,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             'reservation_id="$(jq -er \'.id | select(type == "number" and . > 0)\'',
-            permanent,
+            source_binding,
         )
+        self.assertIn("            validate_created_reservation\n", permanent)
         self.assertEqual(
             permanent.count('-f "details_url=${reservation_url}"'),
             2,

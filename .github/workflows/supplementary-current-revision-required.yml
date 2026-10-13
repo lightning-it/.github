@@ -6346,6 +6346,8 @@ jobs:
       - name: Prepare bounded reservation API readback
         run: |
           set -euo pipefail
+          # A newly created check may briefly be absent from the check-ID API.
+          # Retry only the idempotent PATCH, never the check-creation POST.
           cat >"${RUNNER_TEMP}/reservation-readback.sh" <<'SH'
           patch_reservation_with_readback() {
             local reservation_attempt reservation_response reservation_snapshot live_pr
@@ -6429,6 +6431,7 @@ jobs:
             done
           }
           validate_created_reservation() {
+            reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
             jq -e --arg head "${EVENT_HEAD}" --arg name "${reservation_name}" \
               --arg external_id "${reservation_external_id}" '
                 .head_sha == $head and .name == $name
@@ -6436,6 +6439,7 @@ jobs:
                 and .conclusion == null
                 and .app.id == 15368 and .app.slug == "github-actions"
               ' <<<"${reservation}" >/dev/null
+            reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
           }
           SH
           chmod 0400 "${RUNNER_TEMP}/reservation-readback.sh"
@@ -6748,8 +6752,6 @@ jobs:
             exit 1
           fi
           failure_stage='reservation-materialization'
-          # A newly created check may briefly be absent from the check-ID API.
-          # Retry only the idempotent PATCH, never the check-creation POST.
           # shellcheck source=/dev/null
           source "${RUNNER_TEMP}/reservation-readback.sh"
           if [ "${reservation_count}" -eq 1 ]; then
@@ -6811,9 +6813,7 @@ jobs:
               -f external_id="${reservation_external_id}" \
               -f 'output[title]=Protected verifier is evaluating the live revision' \
               -f "output[summary]=PR #${PR_NUMBER}; head ${EVENT_HEAD}.")"
-            reservation_id="$(jq -er '.id | select(type == "number" and . > 0)' <<<"${reservation}")"
             validate_created_reservation
-            reservation_url="${GITHUB_SERVER_URL}/${REPOSITORY}/runs/${reservation_id}"
             reservation="$(patch_reservation_with_readback --method PATCH "repos/${REPOSITORY}/check-runs/${reservation_id}" \
               -f status=in_progress \
               -f external_id="${reservation_external_id}" \
