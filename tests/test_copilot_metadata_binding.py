@@ -1,8 +1,10 @@
 """Execute the real producer steps and feed their summary to native recovery."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
+import shlex
 import tempfile
 import unittest
 from unittest import mock
@@ -30,6 +32,7 @@ if route == 'graphql':
             d['metadata']['lastEditedAt'] = '2026-10-07T00:01:00Z'
         result = {'data': {'repository': {'nameWithOwner': d['repo'], 'pullRequest': d['metadata']}}}
     elif 'reviews(last:' in query:
+        d['review_queries'] = d.get('review_queries', 0) + 1
         result = {'data': {'repository': {'pullRequest': {'headRefOid': d['head'], 'reviews': {
             'nodes': [{'id':'R17','author':{'login':'copilot-pull-request-reviewer'},
                       'commit':{'oid':d['head']},'state':'APPROVED','submittedAt':d['submitted']}],
@@ -75,10 +78,26 @@ elif '/attempts/1/jobs?' in route:
     result = [{'total_count':1,'jobs':[{'id':78,'run_id':77,'run_attempt':1,'head_sha':d['head'],
         'name':'Verify current revision policy','status':'completed','steps':[
           {'name':'Publish bound neutral result','status':'completed','conclusion':d.get('previous_publish','failure')}]}]}]
+elif d.get('renovate_handoff') and '/actions/runs/' in route and '/jobs?' in route:
+    result = [{'jobs': [{'run_id':77,'head_sha':d['head'],'run_attempt':1,
+        'name':'Verify current revision policy','status':'completed','conclusion':'success',
+        'steps':[{'name':n,'status':'completed','conclusion':'success'} for n in
+                 ('Accept trusted automation exemption','Publish bound neutral result')]},
+        *[{'run_id':77,'head_sha':d['head'],'run_attempt':1,'name':n,
+           'status':'completed','conclusion':'skipped'} for n in
+          ('Request Copilot review for current revision','Request protected verifier re-evaluation')]]}]
 elif '/actions/runs/' in route:
     result = {'event':'pull_request_target','name':'Current revision review gate',
-        'path':'.github/workflows/copilot-review.yml','head_branch':'fix/test','head_sha':d['head'],
+        'path':'.github/workflows/copilot-review.yml','head_branch':d['pr']['head']['ref'],'head_sha':d['head'],
         'repository':{'full_name':d['repo']},'head_repository':{'full_name':d['repo']}}
+    if d.get('renovate_handoff'):
+        result.update(id=77,run_attempt=1,status='completed',conclusion='success',
+                      actor={'login':'renovate[bot]'},triggering_actor={'login':'renovate[bot]'},
+                      html_url='https://github.com/'+d['repo']+'/actions/runs/77')
+elif '/reviews?' in route:
+    result = [[]]
+elif route == 'repos/' + d['repo']:
+    result = {'default_branch':'develop'}
 elif '/pulls/' in route:
     result = d['pr']
 elif '/commits/' in route:
@@ -154,6 +173,149 @@ class ProducerMetadataTests(unittest.TestCase):
 
     def capture(self, succeeds=True):
         return self.execute('Bind Copilot input metadata revision', succeeds)
+
+    def configure_renovate(self, edited=None):
+        self.pr['user']['login'] = 'renovate[bot]'
+        self.pr['user']['type'] = 'Bot'
+        self.pr['head']['ref'] = 'renovate/github-actions'
+        self.pr['labels'] = [{'name': name} for name in
+                             ('dependencies', 'renovate', 'safe-automerge')]
+        self.data['metadata']['lastEditedAt'] = edited
+        self.env.update(TRUSTED_KIND='renovate', EVENT_HEAD_REF='renovate/github-actions',
+                        LI219_EVENT_MODE='disabled')
+        Path(self.env['GITHUB_EVENT_PATH']).write_text(json.dumps(
+            {'number':23, 'repository':{'full_name':self.repo}, 'pull_request':self.pr}))
+        self.save()
+
+    def test_renovate_publishes_graphql_revision_without_a_rest_edit_field(self):
+        for edited in (None, '2026-10-06T23:59:00Z'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.configure_renovate(edited)
+                self.assertNotIn('last_edited_at', self.pr)
+                self.capture()
+                self.publish()
+                summary = json.loads(self.data['check']['output']['summary'])
+                self.assertEqual(13, len(summary))
+                self.assertEqual(edited, summary['pull_request_last_edited_at'])
+                self.assertEqual('Renovate title SHA-256: ' + hashlib.sha256(self.pr['title'].encode()).hexdigest(),
+                                 self.data['check']['output']['text'])
+                self.assertEqual('deterministic policy-bound Renovate exemption',
+                                 summary['review_path'])
+                self.assertIsNone(summary['review_id'])
+                self.assertEqual('success', self.data['check']['conclusion'])
+                self.assertGreaterEqual(self.data['metadata_reads'], 3)
+                self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def prepare_renovate_handoff(self, edited):
+        self.configure_renovate(edited)
+        self.capture()
+        self.publish()
+        self.data['renovate_handoff'] = True
+        self.save()
+        required = yaml.safe_load((ROOT / '.github/workflows/supplementary-current-revision-required.yml').read_text())
+        self.required_steps = {step['name']:step['run'] for job in required['jobs'].values()
+                               for step in job.get('steps', []) if 'run' in step}
+        self.steps['required-reader'] = self.required_steps['Prepare protected Renovate metadata reader']
+        self.steps['required-handoff'] = self.required_steps['Validate one deterministic Renovate producer handoff']
+        finalizer = self.required_steps['Rebind and finalize the protected result']
+        self.steps['required-final-rebind'] = ('set -euo pipefail\nfinal_pr=' + shlex.quote(json.dumps(self.pr)) + '\n' +
+            'if [ "${PRODUCER_KIND}" = renovate ]; then' +
+            finalizer.split('if [ "${PRODUCER_KIND}" = renovate ]; then', 1)[1].split(
+                "failure_stage='permanent-finalization'", 1)[0])
+        self.env.update(PRODUCER_RUN_ID='77', PRODUCER_KIND='renovate')
+        self.execute('required-reader')
+
+    def test_renovate_producer_to_required_handoff_and_final_rebind(self):
+        for edited in (None, '2026-10-06T23:59:00Z'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.prepare_renovate_handoff(edited)
+                self.execute('required-handoff')
+                outputs = dict(line.split('=', 1) for line in Path(self.env['GITHUB_OUTPUT']).read_text().splitlines())
+                self.assertEqual(edited, json.loads(outputs['last_edited_at']))
+                self.env.update(RENOVATE_LAST_EDITED_AT=outputs['last_edited_at'],
+                                RENOVATE_TITLE_SHA256=outputs['title_sha256'],
+                                RENOVATE_LABELS_SHA256=outputs['labels_sha256'])
+                self.execute('required-final-rebind')
+                self.data['metadata']['lastEditedAt'] = '2026-10-06T23:59:30Z'
+                self.save()
+                self.execute('required-final-rebind', False)
+                self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def test_renovate_title_only_drift_rejects_handoff_and_final_rebind(self):
+        for edited in (None, '2026-10-06T23:59:00Z'):
+            for stage in ('required-handoff', 'required-final-rebind'):
+                with self.subTest(edited=edited, stage=stage):
+                    self.setUp()
+                    self.prepare_renovate_handoff(edited)
+                    if stage == 'required-final-rebind':
+                        self.execute('required-handoff')
+                        outputs = dict(line.split('=', 1) for line in Path(self.env['GITHUB_OUTPUT']).read_text().splitlines())
+                        self.env.update(RENOVATE_LAST_EDITED_AT=outputs['last_edited_at'],
+                                        RENOVATE_TITLE_SHA256=outputs['title_sha256'],
+                                        RENOVATE_LABELS_SHA256=outputs['labels_sha256'])
+                    old_pr = shlex.quote(json.dumps(self.pr))
+                    self.pr['title'] = 'Renamed Renovate pull request'
+                    self.data['metadata']['title'] = self.pr['title']
+                    self.steps['required-final-rebind'] = self.steps['required-final-rebind'].replace(
+                        'final_pr=' + old_pr, 'final_pr=' + shlex.quote(json.dumps(self.pr)), 1)
+                    self.save()
+                    self.execute(stage, False)
+                    self.assertEqual(edited, self.data['metadata']['lastEditedAt'])
+                    self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def test_renovate_handoff_rejects_missing_or_malformed_native_title_binding(self):
+        for text in (None, '', 'Renovate title SHA-256: ' + '0' * 64, {}):
+            with self.subTest(text=text):
+                self.setUp()
+                self.prepare_renovate_handoff(None)
+                if text is None:
+                    del self.data['check']['output']['text']
+                else:
+                    self.data['check']['output']['text'] = text
+                self.save()
+                self.execute('required-handoff', False)
+
+    def test_renovate_required_handoff_rejects_invalid_drifting_or_missing_metadata(self):
+        for edited in ('invalid', False, {}, '2026-10-07T00:01:00Z', 'missing', '2026-10-06T23:59:30Z'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.prepare_renovate_handoff('2026-10-06T23:59:00Z')
+                self.data['metadata']['lastEditedAt'] = edited
+                if edited == 'missing':
+                    del self.data['metadata']['lastEditedAt']
+                self.save()
+                self.execute('required-handoff', False)
+                self.assertNotIn('verified=true', Path(self.env['GITHUB_OUTPUT']).read_text())
+
+    def test_renovate_rejects_invalid_or_missing_graphql_revision(self):
+        for edited in ('invalid', False, [], {}, '2026-10-07T00:01:00Z', 'missing'):
+            with self.subTest(edited=edited):
+                self.setUp()
+                self.configure_renovate(edited)
+                if edited == 'missing':
+                    del self.data['metadata']['lastEditedAt']
+                    self.save()
+                self.capture(False)
+                self.assertEqual([], self.data['writes'])
+
+    def test_renovate_metadata_drift_rejects_or_revokes_publication(self):
+        for phase in ('before', 'after_post', 'after_promotion'):
+            with self.subTest(phase=phase):
+                self.setUp()
+                self.configure_renovate()
+                self.capture()
+                if phase == 'before':
+                    self.data['metadata']['lastEditedAt'] = '2026-10-07T00:01:00Z'
+                else:
+                    self.data['drift_' + phase] = True
+                self.save()
+                self.publish(False)
+                if phase == 'before':
+                    self.assertEqual([], self.data['writes'])
+                else:
+                    self.assertEqual('failure', self.data['check']['conclusion'])
 
     def verify(self, succeeds=True):
         return self.execute('Verify current Copilot review and resolved findings', succeeds)
