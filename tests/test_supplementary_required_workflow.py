@@ -4821,6 +4821,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_owned_reservation_materialization_failure_is_finalized(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        binding = '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]' + workflow.split(
+            '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]', 1)[1].split(
+                '          issue_564_legacy_retirement_count=0', 1)[0]
         helper = "validate_prior_reservation_owner() {" + workflow.split(
             "          validate_prior_reservation_owner() {", 1
         )[1].split("          SH\n", 1)[0]
@@ -4838,14 +4841,20 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                  'path':'.github/workflows/supplementary-current-revision-required.yml',
                  'display_title':f'Protected current revision PR #225 opened {head}'}
         current_external_id = f"rep60-required-workflow:v3:202:225:{base}:{head}"
-        for adopted, applied, terminal in ((False, False, False), (True, False, False), (True, True, False), (True, True, True)):
-            with self.subTest(adopted=adopted, applied=applied, terminal=terminal), tempfile.TemporaryDirectory() as directory:
+        for adopted, applied, terminal, attempt in (
+            (adopted, applied, terminal, attempt) for attempt in (1, 2, 3, 4)
+            for adopted, applied, terminal in ((False, False, False), (True, False, False), (True, True, False), (True, True, True))
+        ):
+            with self.subTest(adopted=adopted, applied=applied, terminal=terminal, attempt=attempt), tempfile.TemporaryDirectory() as directory:
                 fixture = Path(directory)
                 selected = check if adopted else {**check, 'external_id':current_external_id}
                 if terminal:
                     selected = {**selected, 'status':'completed', 'conclusion':'success'}
                 (fixture / "response.json").write_text(json.dumps(selected))
                 (fixture / "prior.json").write_text(json.dumps(prior))
+                (fixture / "current.json").write_text(json.dumps({**prior, 'id':202,
+                    'status':'in_progress', 'conclusion':None, 'run_attempt':attempt}))
+                (fixture / 'li259-entry-authorized').touch()
                 (fixture / "reservation-readback.sh").write_text(helper + "\n" +
                     'patch_reservation_with_readback() { printf "materialize\\n" >>"$RUNNER_TEMP/calls"; '
                     'printf "%s\\n" "$@" >"$RUNNER_TEMP/patch-args"; '
@@ -4863,19 +4872,21 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                     EVENT_BASE={base}
                     reservation_name='Protected current-revision verifier'
                     reservation_external_id={current_external_id}
-                    current_workflow_id=555
+                    EVENT_ACTION=opened
+                    LI259_INFRA_RETRY=enabled
                     GITHUB_RUN_ID=202
-                    GITHUB_RUN_ATTEMPT=1
+                    GITHUB_RUN_ATTEMPT={attempt}
                     APPLIED={int(applied)}
                     TERMINAL={str(terminal).lower()}
                     reservation_count={int(adopted)}
                     reservations=$(jq -s . "$RUNNER_TEMP/response.json")
                     gh() {{
+                      if [[ "${{2:-}}" == */actions/runs/202 ]]; then cat "$RUNNER_TEMP/current.json"; return 0; fi
                       if [[ "${{2:-}}" == */actions/runs/201 ]]; then cat "$RUNNER_TEMP/prior.json"; return 0; fi
                       if [ "${{3:-}}" = POST ] || [ "${{2:-}}" != --method ]; then cat "$RUNNER_TEMP/response.json"; return 0; fi
                       printf '%s\\n' "$@" >>"$RUNNER_TEMP/failure"
                     }}
-                    """) + materialization
+                    """) + binding + "\n" + materialization
                 result = subprocess.run([self._test_tool("bash"), "-c", script],
                                         text=True, capture_output=True, check=False)
                 self.assertEqual(17, result.returncode, result.stderr)
@@ -4922,6 +4933,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
 
     def test_same_run_reservation_requires_the_exact_active_native_attempt(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        binding = '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]' + workflow.split(
+            '          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]', 1)[1].split(
+                '          issue_564_legacy_retirement_count=0', 1)[0]
         helper = 'validate_prior_reservation_owner() {' + workflow.split(
             '          validate_prior_reservation_owner() {', 1)[1].split(
                 '          validate_created_reservation() {', 1)[0]
@@ -4933,18 +4947,35 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                    'display_title':f'Protected current revision PR #225 opened {head}'}
         for attempt in (1, 2, 3, 4):
             for mutation in ({}, {'run_attempt':attempt+1}, {'status':'completed', 'conclusion':'failure'},
-                             {'status':'queued'}, {'id':201}, {'workflow_id':556}, {'head_sha':'c'*40}):
-                with self.subTest(attempt=attempt, mutation=mutation):
+                             {'status':'queued'}, {'id':201}, {'head_sha':'c'*40}):
+                with self.subTest(attempt=attempt, mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                    fixture = Path(directory)
+                    (fixture / 'li259-entry-authorized').touch()
                     script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
-                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\ncurrent_workflow_id=555\n'
+                              f'EVENT_BASE={base}\nEVENT_HEAD={head}\nEVENT_ACTION=opened\n'
+                              'LI259_INFRA_RETRY=enabled\nRUNNER_TEMP=' + shlex.quote(directory) + '\n'
                               f'GITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT={attempt}\n'
                               f'prior_external_id=rep60-required-workflow:v3:202:225:{base}:{head}\n'
                               'gh() { printf "%s\\n" ' + shlex.quote(json.dumps(
                                   {**current, 'run_attempt':attempt, **mutation})) + '; }\n'
-                              + helper + '\nvalidate_prior_reservation_owner\n')
+                              + binding + '\n' + helper + '\nvalidate_prior_reservation_owner\n')
                     result = subprocess.run([self._test_tool('bash'), '-c', script],
                                             text=True, capture_output=True, check=False)
                     self.assertEqual(not mutation, result.returncode == 0, result.stderr)
+
+        for attempt in (3, 4, 5):
+            for enabled, authorized in ((False, False), (False, True), (True, False), (True, True)):
+                with self.subTest(attempt=attempt, enabled=enabled, authorized=authorized), tempfile.TemporaryDirectory() as directory:
+                    if authorized:
+                        (Path(directory) / 'li259-entry-authorized').touch()
+                    script = ('set -euo pipefail\nREPOSITORY=lightning-it/example\nPR_NUMBER=225\n'
+                              f'EVENT_HEAD={head}\nEVENT_ACTION=opened\nGITHUB_RUN_ID=202\nGITHUB_RUN_ATTEMPT={attempt}\n'
+                              f'LI259_INFRA_RETRY={"enabled" if enabled else "disabled"}\n'
+                              'RUNNER_TEMP=' + shlex.quote(directory) + '\n'
+                              'gh() { printf "%s\\n" ' + shlex.quote(json.dumps({**current, 'run_attempt':attempt})) + '; }\n'
+                              + binding)
+                    result = subprocess.run([self._test_tool('bash'), '-c', script], text=True, capture_output=True, check=False)
+                    self.assertEqual(enabled and authorized and attempt in (3, 4), result.returncode == 0, result.stderr)
 
     def test_existing_reservation_id_rejects_fractional_identity_before_patch(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -5533,6 +5564,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             "workflow_id": 335,
         }
         current_args = [
+            "--argjson", "attempt", "1",
             "--arg",
             "action",
             "opened",
@@ -9615,7 +9647,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             if value != "0" * 40
         ]
         self.assertEqual(1, len(one_off_shas))
-        self.assertIn(f"actions/upload-artifact@{one_off_shas[0]}", s0)
+        self.assertRegex(s0, rf"(?m)^\s+uses:\s+actions/upload-artifact@{one_off_shas[0]}[ \t]*(?:#[^\n]*)?$")
         self.assertIn(
             "needs['route-protected-current-revision'].outputs."
             "s0_candidate != 'true'",

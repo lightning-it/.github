@@ -99,7 +99,7 @@ class ReleaseAppPromoterTests(unittest.TestCase):
         workflow = self.workflow
 
         self.assertEqual(
-            len(re.findall(r"actions/create-github-app-token@[0-9a-f]{40}(?![0-9a-f])", workflow)), 1
+            len(re.findall(r"(?m)^\s+uses:\s+actions/create-github-app-token@[0-9a-f]{40}[ \t]*(?:#[^\n]*)?$", workflow)), 1
         )
         self.assertEqual(
             workflow.count("secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY"), 1

@@ -6725,12 +6725,18 @@ jobs:
             echo "Too many foreign protected verifier reservations exist for this commit." >&2
             exit 1
           fi
+          [[ "${GITHUB_RUN_ATTEMPT}" =~ ^[1-4]$ ]]
+          if [ "${GITHUB_RUN_ATTEMPT}" -gt 2 ]; then
+            test "${LI259_INFRA_RETRY:-disabled}" = enabled
+            test -f "${RUNNER_TEMP}/li259-entry-authorized"
+          fi
           current_verifier_run="$(gh api \
             "repos/${REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
           current_workflow_id="$(jq -er \
             --arg action "${EVENT_ACTION}" \
             --arg head "${EVENT_HEAD}" \
             --argjson pr_number "${PR_NUMBER}" \
+            --argjson attempt "${GITHUB_RUN_ATTEMPT}" \
             --argjson run_id "${GITHUB_RUN_ID}" '
               select(
                 .id == $run_id
@@ -6739,7 +6745,7 @@ jobs:
                 and .status == "in_progress"
                 and .conclusion == null
                 and .head_sha == $head
-                and ((.run_attempt == 1) or (.run_attempt == 2))
+                and .run_attempt == $attempt
                 and .display_title == (
                   "Protected current revision PR #"
                   + ($pr_number | tostring) + " " + $action + " " + $head
