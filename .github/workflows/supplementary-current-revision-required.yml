@@ -3674,6 +3674,9 @@ jobs:
               and (.output.summary | type) == "string"
             ' <<<"${check}" >/dev/null
           summary="$(jq -er '.output.summary | fromjson' <<<"${check}")"
+          title_sha256="$(jq -je '.title | select(type == "string")' <<<"${pr}" | sha256sum | cut -d ' ' -f 1)"
+          jq -e --arg text "Renovate title SHA-256: ${title_sha256}" \
+            '.output.text == $text' <<<"${check}" >/dev/null
 
           repository="$(gh api "repos/${REPOSITORY}")"
           controller_ref="$(jq -er \
@@ -3811,6 +3814,7 @@ jobs:
             echo 'verified=true'
             echo "labels_sha256=${labels_sha256}"
             echo "last_edited_at=${last_edited_at}"
+            echo "title_sha256=${title_sha256}"
           } >>"${GITHUB_OUTPUT}"
 
       - name: Validate an Exact-Revision producer handoff
@@ -8051,6 +8055,8 @@ jobs:
             ${{ steps.renovate-producer.outputs.labels_sha256 }}
           RENOVATE_LAST_EDITED_AT: >-
             ${{ steps.renovate-producer.outputs.last_edited_at }}
+          RENOVATE_TITLE_SHA256: >-
+            ${{ steps.renovate-producer.outputs.title_sha256 }}
           ISSUE_564_STAGE_1_SOURCE: >-
             ${{ steps.protected-source.outputs.issue_564_stage_1 }}
           ISSUE_564_PR568_SOURCE: >-
@@ -8558,6 +8564,8 @@ jobs:
             # shellcheck source=/dev/null
             source "${RUNNER_TEMP}/renovate-metadata.sh"
             test "$(printf '%s\n' "${final_pr}" | read_renovate_metadata_revision)" = "${RENOVATE_LAST_EDITED_AT}"
+            [[ "${RENOVATE_TITLE_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            test "$(jq -je '.title | select(type == "string")' <<<"${final_pr}" | sha256sum | cut -d ' ' -f 1)" = "${RENOVATE_TITLE_SHA256}"
             final_labels="$(jq -cer \
               'if (.labels | type) == "array"
                and all(.labels[];

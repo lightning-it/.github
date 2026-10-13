@@ -1,5 +1,6 @@
 """Execute the real producer steps and feed their summary to native recovery."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -197,6 +198,8 @@ class ProducerMetadataTests(unittest.TestCase):
                 summary = json.loads(self.data['check']['output']['summary'])
                 self.assertEqual(13, len(summary))
                 self.assertEqual(edited, summary['pull_request_last_edited_at'])
+                self.assertEqual('Renovate title SHA-256: ' + hashlib.sha256(self.pr['title'].encode()).hexdigest(),
+                                 self.data['check']['output']['text'])
                 self.assertEqual('deterministic policy-bound Renovate exemption',
                                  summary['review_path'])
                 self.assertIsNone(summary['review_id'])
@@ -232,12 +235,47 @@ class ProducerMetadataTests(unittest.TestCase):
                 outputs = dict(line.split('=', 1) for line in Path(self.env['GITHUB_OUTPUT']).read_text().splitlines())
                 self.assertEqual(edited, json.loads(outputs['last_edited_at']))
                 self.env.update(RENOVATE_LAST_EDITED_AT=outputs['last_edited_at'],
+                                RENOVATE_TITLE_SHA256=outputs['title_sha256'],
                                 RENOVATE_LABELS_SHA256=outputs['labels_sha256'])
                 self.execute('required-final-rebind')
                 self.data['metadata']['lastEditedAt'] = '2026-10-06T23:59:30Z'
                 self.save()
                 self.execute('required-final-rebind', False)
                 self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def test_renovate_title_only_drift_rejects_handoff_and_final_rebind(self):
+        for edited in (None, '2026-10-06T23:59:00Z'):
+            for stage in ('required-handoff', 'required-final-rebind'):
+                with self.subTest(edited=edited, stage=stage):
+                    self.setUp()
+                    self.prepare_renovate_handoff(edited)
+                    if stage == 'required-final-rebind':
+                        self.execute('required-handoff')
+                        outputs = dict(line.split('=', 1) for line in Path(self.env['GITHUB_OUTPUT']).read_text().splitlines())
+                        self.env.update(RENOVATE_LAST_EDITED_AT=outputs['last_edited_at'],
+                                        RENOVATE_TITLE_SHA256=outputs['title_sha256'],
+                                        RENOVATE_LABELS_SHA256=outputs['labels_sha256'])
+                    old_pr = shlex.quote(json.dumps(self.pr))
+                    self.pr['title'] = 'Renamed Renovate pull request'
+                    self.data['metadata']['title'] = self.pr['title']
+                    self.steps['required-final-rebind'] = self.steps['required-final-rebind'].replace(
+                        'final_pr=' + old_pr, 'final_pr=' + shlex.quote(json.dumps(self.pr)), 1)
+                    self.save()
+                    self.execute(stage, False)
+                    self.assertEqual(edited, self.data['metadata']['lastEditedAt'])
+                    self.assertEqual(0, self.data.get('review_queries', 0))
+
+    def test_renovate_handoff_rejects_missing_or_malformed_native_title_binding(self):
+        for text in (None, '', 'Renovate title SHA-256: ' + '0' * 64, {}):
+            with self.subTest(text=text):
+                self.setUp()
+                self.prepare_renovate_handoff(None)
+                if text is None:
+                    del self.data['check']['output']['text']
+                else:
+                    self.data['check']['output']['text'] = text
+                self.save()
+                self.execute('required-handoff', False)
 
     def test_renovate_required_handoff_rejects_invalid_drifting_or_missing_metadata(self):
         for edited in ('invalid', False, {}, '2026-10-07T00:01:00Z', 'missing', '2026-10-06T23:59:30Z'):
