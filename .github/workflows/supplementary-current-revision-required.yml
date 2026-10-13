@@ -7867,6 +7867,20 @@ jobs:
                 jq -e 'length == 0 or error(tojson)' <<<"${disallowed_terminal_jobs}" >/dev/null
                 jq -e --argjson inactive "$(jq .inactive_helpers <<<"${terminal_job_inventory}")" --arg d "${d}" '(($inactive<=1 and length<=(5+$inactive) and (map(.name)|unique|length)==length and ([.[].name|select(test($d))]|length)<=1) or error(tojson))' <<<"${allowed_skipped_terminal_jobs}" >/dev/null
                 if [ "$(jq 'length' <<<"${evidence_jobs}")" -eq 1 ]; then
+                  # Pending step metadata must converge through read-only polling.
+                  # Duplicate, malformed, or failed critical steps remain terminal.
+                  jq -e --arg policy_step "${INLINE_POLICY_STEP}" '
+                    [.[0].steps[] |
+                      select(.name == $policy_step
+                        or .name == "Publish bound neutral result")] as $steps
+                    | ($steps | length) <= 2
+                    and ($steps | map(.name) | unique | length)
+                      == ($steps | length)
+                    and all($steps[];
+                      (.status == "completed" and .conclusion == "success")
+                      or ((.status | IN("queued", "pending", "in_progress"))
+                        and has("conclusion") and .conclusion == null))
+                    ' <<<"${evidence_jobs}" >/dev/null
                   critical_steps="$(jq -c \
                     --arg policy_step "${INLINE_POLICY_STEP}" '
                     [.[0].steps[] |
@@ -7876,14 +7890,11 @@ jobs:
                       select(.status == "completed"
                         and .conclusion == "success")]
                     ' <<<"${evidence_jobs}")"
-                  test "$(jq 'length' <<<"${critical_steps}")" -eq 2
-                  test "$(jq '[.[].name] | unique | length' <<<"${critical_steps}")" -eq 2
-                  producer_evidence_ready=true
+                  if [ "$(jq 'length' <<<"${critical_steps}")" -eq 2 ]; then
+                    producer_evidence_ready=true
+                  fi
                 fi
                 [ "${producer_evidence_ready}" != true ] || break
-                if [ "${producer_status}" = completed ]; then
-                  break
-                fi
                 if [ "${producer_observation}" -eq "${producer_limit}" ]; then
                   echo 'Awaiting producer evidence.' >&2
                   exit 1
