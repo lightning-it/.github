@@ -5426,13 +5426,17 @@ jobs:
             "Request protected verifier re-evaluation" as $canonical |
             ($canonical+" / Re-run the one protected verifier attempt") as $expanded |
             [.[]|select(.name==$expanded)] as $children |
-            if ($children|length)==0 or all($children[];
-              (bound_reusable_identity and (.runner_id|type)=="number"
-                and .runner_id>0 and (.steps|type)=="array")|not) then .
+            if ($children|length)==0 then .
             elif ($children|length)!=1 then error("duplicate reusable producer helper")
-            elif ($children[0]|bound_reusable_identity
-              and (.runner_id|type)=="number" and .runner_id>0
-              and (.steps|type)=="array") then
+            elif ($children[0]|bound_reusable_identity|not)
+              then error("invalid reusable producer identity")
+            elif ($children[0]|runnerless and .status=="completed"
+              and .conclusion=="skipped") then .
+            elif ($children[0]|(.runner_id|type)=="number" and .runner_id>0
+              and (.runner_id|floor)==.runner_id and (.steps|type)=="array"
+              and ((.status=="completed" and (.conclusion|IN("success","failure")))
+                or ((.status|IN("queued","pending","requested","waiting","in_progress"))
+                  and has("conclusion") and .conclusion==null))) then
               [.[]|select(.name==$canonical)] as $parents |
               if ($parents|length)>1 or any($parents[];
                 (bound_reusable_identity and .id!=$children[0].id and runnerless
@@ -5440,7 +5444,7 @@ jobs:
               then error("ambiguous reusable producer parent")
               else map(select(.name!=$canonical)|
                 if .name==$expanded then .name=$canonical else . end) end
-            else . end;
+            else error("invalid reusable producer state") end;
           [.[].jobs[]] | normalize_reusable_helper |
           [.[]|select(.status=="completed" and .conclusion!="success")] as $terminal |
           {disallowed:[$terminal[]|select(allowed|not)],

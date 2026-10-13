@@ -7678,7 +7678,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {
                 "name": (
                     "Request protected verifier re-evaluation / "
-                    "Re-run the one protected verifier attempt"
+                    "Diagnose Release-App reusable context and fail closed"
                 ),
                 "status": "completed",
                 "conclusion": "skipped",
@@ -7697,7 +7697,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
             {
                 "name": (
                     "Request protected verifier re-evaluation / "
-                    "Re-run the one protected verifier attempt"
+                    "Diagnose Release-App reusable context and fail closed"
                 ),
                 "status": "completed",
                 "conclusion": "skipped",
@@ -7799,7 +7799,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
-                "Re-run the one protected verifier attempt",
+                "Diagnose Release-App reusable context and fail closed",
                 "Classify protected Release-App ancestry backmerge",
                 "Classify protected main trust-root handoff",
                 "Request protected verifier re-evaluation",
@@ -7821,7 +7821,7 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 "Request protected verifier re-evaluation / "
                 "Diagnose Release-App reusable context and fail closed",
                 "Request protected verifier re-evaluation / "
-                "Re-run the one protected verifier attempt",
+                "Diagnose Release-App reusable context and fail closed",
             ],
         )
 
@@ -8030,7 +8030,9 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
         def evaluate(rows):
             return subprocess.run(
                 [self._test_tool("jq"), "-c", "--arg", "repository", repository,
-                 "--arg", "head", head, "--arg", "d", "^" + canonical + "$",
+                 "--arg", "head", head, "--arg", "d", "^" + canonical +
+                 "( / (Diagnose Release-App reusable context and fail closed|"
+                 "Re-run the one protected verifier attempt))?$",
                  "--argjson", "run_id", "123", "--argjson", "attempt", "1",
                  self._terminal_job_inventory_filter()],
                 input=json.dumps([{"jobs": rows}]), text=True, capture_output=True,
@@ -8044,12 +8046,37 @@ class OrganizationRequiredWorkflowTests(unittest.TestCase):
                 self.assertEqual([{**child, "name": canonical}], inventory["allowed"])
                 self.assertTrue(inventory["dispatch_failed"])
         for field, value in (("id", 8.5), ("run_id", 124), ("run_attempt", 2),
-                             ("head_sha", "b" * 40), ("runner_id", None),
+                             ("head_sha", "b" * 40), ("runner_id", None), ("runner_id", 99.5),
                              ("workflow_name", "unknown"), ("run_url", "https://foreign"),
                              ("name", canonical + " / unknown"), ("conclusion", "cancelled")):
             with self.subTest(field=field):
                 result = evaluate([{**child, field: value}, parent])
                 self.assertTrue(result.returncode != 0 or json.loads(result.stdout)["disallowed"])
+        for status, conclusion in (("unknown", None), ("unknown", "success"),
+                                   ("completed", None), ("in_progress", "success"),
+                                   ("queued", "failure")):
+            with self.subTest(status=status, conclusion=conclusion):
+                self.assertNotEqual(0, evaluate([{**child, "status": status,
+                                                 "conclusion": conclusion}, parent]).returncode)
+        for field, value in (("run_id", 124), ("head_sha", "b" * 40),
+                             ("runner_id", 99.5)):
+            with self.subTest(success_field=field):
+                self.assertNotEqual(0, evaluate([{**child, "conclusion": "success",
+                                                 field: value}, parent]).returncode)
+        for status, conclusion in (("completed", "success"), ("queued", None),
+                                   ("pending", None), ("requested", None),
+                                   ("waiting", None), ("in_progress", None)):
+            with self.subTest(valid_status=status):
+                result = evaluate([{**child, "status": status,
+                                    "conclusion": conclusion}, parent])
+                self.assertEqual(0, result.returncode, result.stderr)
+                inventory = json.loads(result.stdout)
+                self.assertEqual([], inventory["disallowed"])
+                self.assertFalse(inventory["dispatch_failed"])
+        inert = {**child, "conclusion": "skipped", "runner_id": None, "steps": []}
+        result = evaluate([inert])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], json.loads(result.stdout)["disallowed"])
         for rows in ([child, {**child, "id": 10}, parent],
                      [child, parent, {**parent, "id": 10}],
                      [child, {**parent, "id": child["id"]}],
