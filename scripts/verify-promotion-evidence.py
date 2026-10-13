@@ -3453,6 +3453,163 @@ def validate_producer_run(
                      if evidence_kind == "copilot" else 0)
 
 
+def validate_pr724_historical_admission(
+    check: JSON, *, repository: str, pull: JSON, pull_number: int,
+    base_sha: str, head_sha: str, producer_run_id: int,
+) -> tuple[JSON, int]:
+    """Bind the owner's historical #724 exception; never fabricate Required PASS.
+
+    The owner approved recognition in promotion on 2026-10-13. This receipt
+    admits only the already merged three-timeout change and its existing native
+    policy/quality results. It grants no future actor, review or retry authority.
+    """
+    prefix = "repos/lightning-it/.github"
+    base = "94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac"
+    head = "7daee000ad2bdda7928f803906c592f7e374f08c"
+    merge = "89869f9e2a987fd59706863c04b46da8d5a693bc"
+    branch = "chore/sync-repository-quality-.github-37043374596-1"
+    require(
+        repository == "lightning-it/.github" and pull_number == 724
+        and base_sha == base and head_sha == head
+        and producer_run_id == 38336319411,
+        "pr724-historical-tuple",
+    )
+    require(
+        integer(pull.get("number"), "pr724-pull-number") == 724 and pull.get("state") == "closed"
+        and pull.get("merged_at") == "2026-10-13T02:34:35Z"
+        and pull.get("merge_commit_sha") == merge
+        and pull.get("title") == "chore: sync repository quality assets",
+        "pr724-historical-pull",
+    )
+    user = exact_object(pull.get("user"), "pr724-author")
+    require(
+        (user.get("login"), integer(user.get("id"), "pr724-author-id"), user.get("type"))
+        == (SYNC_APP_LOGIN, SYNC_APP_ID, "Bot"), "pr724-historical-author",
+    )
+    for side, revision, reference in (("base", base, "develop"), ("head", head, branch)):
+        value = exact_object(pull.get(side), "pr724-side")
+        repo = exact_object(value.get("repo"), "pr724-repository")
+        require(value.get("sha") == revision and value.get("ref") == reference
+                and repo.get("full_name") == repository, "pr724-historical-revision")
+    app = exact_object(check.get("app"), "pr724-check-app")
+    output = exact_object(check.get("output"), "pr724-check-output")
+    require(
+        integer(check.get("id"), "pr724-check-id") == 115097708345 and check.get("head_sha") == head
+        and check.get("name") == "Current revision review"
+        and check.get("status") == "completed" and check.get("conclusion") == "success"
+        and integer(app.get("id"), "pr724-check-app-id") == 15368 and app.get("slug") == "github-actions"
+        and check.get("details_url") == f"https://github.com/{repository}/runs/115097708345"
+        and check.get("external_id") == f"mlx90-current-revision:managed-sync:v6:724:38336319411:{base}:{head}"
+        and output.get("title") == "Current revision managed distribution exemption passed",
+        "pr724-historical-check",
+    )
+    summary = review_summary(check)
+    for field in ("schema", "pull_request_number", "producer_run_id"):
+        integer(summary.get(field), f"pr724-summary-{field}")
+    require(summary == {
+        "schema": 4, "base_sha": base, "head_sha": head, "controller_sha": base,
+        "pull_request_number": 724, "producer_run_id": 38336319411,
+        "review_path": "deterministic provenance-bound managed distribution exemption",
+        "run_url": f"https://github.com/{repository}/actions/runs/38336319411",
+    }, "pr724-historical-summary")
+    merged_at = timestamp(pull["merged_at"], "pr724-merged-at")
+    check_completed = timestamp(check.get("completed_at"), "pr724-check-completed-at")
+    for run_id, attempt, event, path, name, reference in (
+        (38336319411, 2, "pull_request_target", ".github/workflows/copilot-review.yml",
+         "Current revision review gate", branch),
+        (38336320280, 1, "pull_request", ".github/workflows/repository-quality.yml",
+         "Repository Quality", branch),
+    ):
+        run = exact_object(gh_json([
+            "api", f"{prefix}/actions/runs/{run_id}/attempts/{attempt}"
+        ]), "pr724-run")
+        run_repo = exact_object(run.get("repository"), "pr724-run-repository")
+        require(
+            integer(run.get("id"), "pr724-run-id") == run_id
+            and integer(run.get("run_attempt"), "pr724-run-attempt") == attempt
+            and run.get("event") == event and run.get("path") == path
+            and run.get("name") == name and run.get("head_branch") == reference
+            and run.get("head_sha") == head and run.get("status") == "completed"
+            and run.get("conclusion") == "success"
+            and run.get("html_url") == f"https://github.com/{repository}/actions/runs/{run_id}"
+            and run_repo.get("full_name") == repository
+            and integer(run_repo.get("id"), "pr724-run-repository-id") == 1112629689,
+            "pr724-historical-run",
+        )
+        for field in ("actor", "triggering_actor"):
+            actor = exact_object(run.get(field), "pr724-actor")
+            require((actor.get("login"), integer(actor.get("id"), "pr724-actor-id"), actor.get("type"))
+                    == ("litroc", 76040632, "User"), "pr724-historical-actor")
+        created = timestamp(run.get("created_at"), "pr724-run-created")
+        updated = timestamp(run.get("updated_at"), "pr724-run-updated")
+        require(created <= updated <= merged_at, "pr724-historical-chronology")
+        if run_id == 38336319411:
+            require(created <= check_completed <= updated, "pr724-historical-check-time")
+        inventory = exact_object(gh_json([
+            "api", f"{prefix}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100"
+        ]), "pr724-jobs")
+        jobs = exact_array(inventory.get("jobs"), "pr724-jobs")
+        expected_jobs = ({
+            115097581154: ("Verify current revision policy", "success"),
+            115097582201: ("Classify protected main trust-root handoff", "skipped"),
+            115097582205: ("Request Copilot review for current revision", "skipped"),
+            115097795516: ("Request protected verifier re-evaluation", "success"),
+        } if run_id == 38336319411 else {115097099203: ("repository / quality", "success")})
+        require(integer(inventory.get("total_count"), "pr724-job-count") == len(expected_jobs)
+                and len(jobs) == len(expected_jobs), "pr724-historical-jobs")
+        seen = set()
+        for raw in jobs:
+            job = exact_object(raw, "pr724-job")
+            job_id = integer(job.get("id"), "pr724-job-id")
+            require(job_id in expected_jobs and job_id not in seen
+                    and (job.get("name"), job.get("conclusion")) == expected_jobs[job_id]
+                    and integer(job.get("run_id"), "pr724-job-run-id") == run_id
+                    and integer(job.get("run_attempt"), "pr724-job-attempt") == attempt
+                    and job.get("head_sha") == head and job.get("status") == "completed",
+                    "pr724-historical-job")
+            seen.add(job_id)
+    head_commit = exact_object(gh_json(["api", f"{prefix}/commits/{head}"]), "pr724-head")
+    merge_commit = exact_object(gh_json(["api", f"{prefix}/commits/{merge}"]), "pr724-merge")
+    parents = exact_array(merge_commit.get("parents"), "pr724-parents")
+    require(head_commit.get("sha") == head and merge_commit.get("sha") == merge
+            and [exact_object(p, "pr724-parent").get("sha") for p in parents] == [base, head],
+            "pr724-historical-parents")
+    trees = []
+    for commit in (head_commit, merge_commit):
+        tree = exact_object(exact_object(commit.get("commit"), "pr724-commit").get("tree"), "pr724-tree")
+        trees.append(sha(tree.get("sha"), "pr724-tree-sha"))
+    require(trees[0] == trees[1], "pr724-historical-merge-tree")
+    comparison = exact_object(gh_json(["api", f"{prefix}/compare/{base}...{head}"]), "pr724-compare")
+    require(comparison.get("status") == "ahead" and type(comparison.get("behind_by")) is int
+            and comparison.get("behind_by") == 0
+            and exact_object(comparison.get("merge_base_commit"), "pr724-merge-base").get("sha") == base,
+            "pr724-historical-diff-base")
+    files = exact_array(comparison.get("files"), "pr724-files")
+    expected_files = {
+        ".github/workflows/openssf-scorecard.yml": (
+            "35cfb8ab7ec2071e4826e48c3a2bd941513b60a6", 2,
+            "0e93399727ab48669cfbd63a286a7cc303ae7b7a75ff7bff2ddc00aea1cbbb10"),
+        ".github/workflows/renovate-guarded-automerge.yml": (
+            "c86dad245c0463d3a611d9ec1f2318cc845f5c09", 1,
+            "e8ca66f88daae4176b1c2d3fefca70adf9c1bf26601e2cd2a007b9be0084f64c"),
+    }
+    require(len(files) == 2, "pr724-historical-diff-scope")
+    paths = set()
+    for raw in files:
+        file = exact_object(raw, "pr724-file")
+        path = text(file.get("filename"), "pr724-path")
+        require(path in expected_files and path not in paths, "pr724-historical-diff-scope")
+        paths.add(path)
+        blob, additions, patch_hash = expected_files[path]
+        require(file.get("sha") == blob and file.get("status") == "modified"
+                and integer(file.get("additions"), "pr724-additions") == additions
+                and type(file.get("deletions")) is int and file.get("deletions") == 0
+                and integer(file.get("changes"), "pr724-changes") == additions
+                and hashlib.sha256(text(file.get("patch"), "pr724-patch").encode()).hexdigest() == patch_hash,
+                "pr724-historical-three-timeouts")
+    return summary, 0
+
+
 def bound_review_check(
     pages: Any,
     *,
@@ -3495,18 +3652,25 @@ def bound_review_check(
                 and output_title == v6_titles[expected_kind]
             ):
                 native_binding: JSON = {}
-                summary, historical_findings_count = validate_producer_run(
-                    check,
-                    repository=repository,
-                    pull=pull,
-                    pull_number=pull_number,
-                    base_sha=base_sha,
-                    head_sha=head_sha,
-                    evidence_kind=v6.group("kind"),
-                    evidence_version="v6",
-                    copilot_binding=native_binding,
-                    producer_run_id=int(v6.group("run")),
-                )
+                historical_pr724 = repository == "lightning-it/.github" and pull_number == 724
+                if historical_pr724:
+                    summary, historical_findings_count = validate_pr724_historical_admission(
+                        check, repository=repository, pull=pull, pull_number=pull_number,
+                        base_sha=base_sha, head_sha=head_sha, producer_run_id=int(v6.group("run")),
+                    )
+                else:
+                    summary, historical_findings_count = validate_producer_run(
+                        check,
+                        repository=repository,
+                        pull=pull,
+                        pull_number=pull_number,
+                        base_sha=base_sha,
+                        head_sha=head_sha,
+                        evidence_kind=v6.group("kind"),
+                        evidence_version="v6",
+                        copilot_binding=native_binding,
+                        producer_run_id=int(v6.group("run")),
+                    )
                 match = {
                     "check_id": integer(check.get("id"), "check-id"),
                     "evidence_kind": v6.group("kind"),
@@ -3518,6 +3682,8 @@ def bound_review_check(
                 }
                 if native_binding:
                     match["copilot_binding"] = native_binding
+                if historical_pr724:
+                    match["historical_exception"] = "owner-authorized-pr724-three-timeouts-2026-10-13"
                 matches.append(match)
             continue
         v5 = V5_EXTERNAL_ID.fullmatch(external_id)

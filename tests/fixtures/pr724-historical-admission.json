@@ -1,0 +1,227 @@
+{
+  "run": {
+    "id": 38336319411,
+    "run_attempt": 2,
+    "status": "completed",
+    "conclusion": "success",
+    "event": "pull_request_target",
+    "path": ".github/workflows/copilot-review.yml",
+    "name": "Current revision review gate",
+    "html_url": "https://github.com/lightning-it/.github/actions/runs/38336319411",
+    "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+    "head_branch": "chore/sync-repository-quality-.github-37043374596-1",
+    "created_at": "2026-10-13T02:21:12Z",
+    "updated_at": "2026-10-13T02:22:21Z",
+    "actor": {
+      "login": "litroc",
+      "id": 76040632,
+      "type": "User"
+    },
+    "triggering_actor": {
+      "login": "litroc",
+      "id": 76040632,
+      "type": "User"
+    },
+    "repository": {
+      "id": 1112629689,
+      "full_name": "lightning-it/.github"
+    }
+  },
+  "jobs": {
+    "total_count": 4,
+    "jobs": [
+      {
+        "id": 115097581154,
+        "run_id": 38336319411,
+        "run_attempt": 2,
+        "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+        "name": "Verify current revision policy",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-13T02:21:15Z",
+        "completed_at": "2026-10-13T02:22:04Z"
+      },
+      {
+        "id": 115097582201,
+        "run_id": 38336319411,
+        "run_attempt": 2,
+        "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+        "name": "Classify protected main trust-root handoff",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-13T02:21:13Z",
+        "completed_at": "2026-10-13T02:19:15Z"
+      },
+      {
+        "id": 115097582205,
+        "run_id": 38336319411,
+        "run_attempt": 2,
+        "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+        "name": "Request Copilot review for current revision",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-13T02:21:13Z",
+        "completed_at": "2026-10-13T02:19:15Z"
+      },
+      {
+        "id": 115097795516,
+        "run_id": 38336319411,
+        "run_attempt": 2,
+        "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+        "name": "Request protected verifier re-evaluation",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-13T02:22:07Z",
+        "completed_at": "2026-10-13T02:22:20Z"
+      }
+    ]
+  },
+  "quality": {
+    "id": 38336320280,
+    "run_attempt": 1,
+    "status": "completed",
+    "conclusion": "success",
+    "event": "pull_request",
+    "path": ".github/workflows/repository-quality.yml",
+    "name": "Repository Quality",
+    "html_url": "https://github.com/lightning-it/.github/actions/runs/38336320280",
+    "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+    "head_branch": "chore/sync-repository-quality-.github-37043374596-1",
+    "created_at": "2026-10-13T02:19:15Z",
+    "updated_at": "2026-10-13T02:29:47Z",
+    "actor": {
+      "login": "litroc",
+      "id": 76040632,
+      "type": "User"
+    },
+    "triggering_actor": {
+      "login": "litroc",
+      "id": 76040632,
+      "type": "User"
+    },
+    "repository": {
+      "id": 1112629689,
+      "full_name": "lightning-it/.github"
+    }
+  },
+  "quality-jobs": {
+    "total_count": 1,
+    "jobs": [
+      {
+        "id": 115097099203,
+        "run_id": 38336320280,
+        "run_attempt": 1,
+        "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+        "name": "repository / quality",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-13T02:19:18Z",
+        "completed_at": "2026-10-13T02:29:46Z"
+      }
+    ]
+  },
+  "check": {
+    "id": 115097708345,
+    "name": "Current revision review",
+    "head_sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+    "status": "completed",
+    "conclusion": "success",
+    "external_id": "mlx90-current-revision:managed-sync:v6:724:38336319411:94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac:7daee000ad2bdda7928f803906c592f7e374f08c",
+    "details_url": "https://github.com/lightning-it/.github/runs/115097708345",
+    "completed_at": "2026-10-13T02:21:57Z",
+    "app": {
+      "id": 15368,
+      "slug": "github-actions"
+    },
+    "output": {
+      "title": "Current revision managed distribution exemption passed",
+      "summary": "{\"schema\":4,\"base_sha\":\"94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac\",\"head_sha\":\"7daee000ad2bdda7928f803906c592f7e374f08c\",\"controller_sha\":\"94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac\",\"pull_request_number\":724,\"producer_run_id\":38336319411,\"review_path\":\"deterministic provenance-bound managed distribution exemption\",\"run_url\":\"https://github.com/lightning-it/.github/actions/runs/38336319411\"}"
+    }
+  },
+  "merge": {
+    "sha": "89869f9e2a987fd59706863c04b46da8d5a693bc",
+    "parents": [
+      {
+        "sha": "94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac"
+      },
+      {
+        "sha": "7daee000ad2bdda7928f803906c592f7e374f08c"
+      }
+    ],
+    "commit": {
+      "tree": {
+        "sha": "4e5d5eee4a4f13f293aacb86c6ed61a22f0eb5fd"
+      }
+    }
+  },
+  "head": {
+    "sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+    "parents": [
+      {
+        "sha": "edfc4dfaac8d838f105132bb29075584c45b20e6"
+      },
+      {
+        "sha": "94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac"
+      }
+    ],
+    "commit": {
+      "tree": {
+        "sha": "4e5d5eee4a4f13f293aacb86c6ed61a22f0eb5fd"
+      }
+    }
+  },
+  "compare": {
+    "status": "ahead",
+    "ahead_by": 2,
+    "behind_by": 0,
+    "merge_base_commit": {
+      "sha": "94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac"
+    },
+    "files": [
+      {
+        "filename": ".github/workflows/openssf-scorecard.yml",
+        "sha": "35cfb8ab7ec2071e4826e48c3a2bd941513b60a6",
+        "status": "modified",
+        "additions": 2,
+        "deletions": 0,
+        "changes": 2,
+        "patch": "@@ -14,6 +14,7 @@ permissions:\n \n jobs:\n   scorecard:\n+    timeout-minutes: 60\n     name: OpenSSF Scorecard\n     runs-on: ubuntu-24.04\n     permissions:\n@@ -46,6 +47,7 @@ jobs:\n           if-no-files-found: error\n \n   upload-sarif:\n+    timeout-minutes: 10\n     name: Upload Scorecard SARIF\n     runs-on: ubuntu-24.04\n     needs: scorecard"
+      },
+      {
+        "filename": ".github/workflows/renovate-guarded-automerge.yml",
+        "sha": "c86dad245c0463d3a611d9ec1f2318cc845f5c09",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+        "patch": "@@ -25,6 +25,7 @@ concurrency:\n \n jobs:\n   enable-trusted-renovate-automerge:\n+    timeout-minutes: 10\n     name: Enable auto-merge for trusted Renovate PR\n     if: github.event.pull_request.user.login == 'renovate[bot]'\n     runs-on: ubuntu-latest"
+      }
+    ]
+  },
+  "pull": {
+    "number": 724,
+    "state": "closed",
+    "merged_at": "2026-10-13T02:34:35Z",
+    "merge_commit_sha": "89869f9e2a987fd59706863c04b46da8d5a693bc",
+    "title": "chore: sync repository quality assets",
+    "user": {
+      "login": "lightning-it-shared-assets-sync[bot]",
+      "id": 307342877,
+      "type": "Bot"
+    },
+    "base": {
+      "ref": "develop",
+      "sha": "94dff2e6880afb7821441ab4c4b8bbd64dc3b6ac",
+      "repo": {
+        "full_name": "lightning-it/.github"
+      }
+    },
+    "head": {
+      "ref": "chore/sync-repository-quality-.github-37043374596-1",
+      "sha": "7daee000ad2bdda7928f803906c592f7e374f08c",
+      "repo": {
+        "full_name": "lightning-it/.github"
+      }
+    }
+  }
+}
