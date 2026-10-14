@@ -23,10 +23,10 @@ class MetadataControllerTests(unittest.TestCase):
                 return {'type': 'file', 'encoding': 'base64', 'sha': 'e'*40,
                         'size': len(payload), 'content': base64.b64encode(payload).decode()}
         return Client()
-    def test_same_protected_metadata_controller_accepts_and_human_job_implementation_may_change(self):
+    def test_same_protected_workflow_accepts_and_job_changes_require_staged_source_transition(self):
         M.metadata_controller(self.client(), self.value)
         self.candidate['jobs']['approve']['steps'][-1]['name'] = 'Reword trusted human step'
-        M.metadata_controller(self.client(), self.value)
+        with self.assertRaises(ERROR): M.metadata_controller(self.client(), self.value)
     def test_candidate_metadata_code_token_event_coverage_or_global_shell_cannot_replace_main(self):
         variants = []
         d = copy.deepcopy(self.doc); d['jobs']['metadata']['steps'][-1]['run'] = 'echo forged'; variants.append(d)
@@ -38,6 +38,19 @@ class MetadataControllerTests(unittest.TestCase):
         for d in variants:
             self.candidate = d
             with self.subTest(doc=d), self.assertRaises(ERROR): M.metadata_controller(self.client(), self.value)
+    def test_all_target_job_execution_fields_are_bound_to_main(self):
+        for job in ('preflight', 'approve', 'verify-dot-github-current-revision'):
+            variants = []
+            d = copy.deepcopy(self.doc); d['jobs'][job]['if'] = 'always()'; variants.append(d)
+            d = copy.deepcopy(self.doc); d['jobs'][job]['permissions'] = {'contents': 'write'}; variants.append(d)
+            d = copy.deepcopy(self.doc); d['jobs'][job]['runs-on'] = 'candidate-runner'; variants.append(d)
+            d = copy.deepcopy(self.doc); d['jobs'][job]['steps'][0]['with']['ref'] = self.value['head']; variants.append(d)
+            d = copy.deepcopy(self.doc); d['jobs'][job]['steps'][-1]['run'] = 'echo forged'; variants.append(d)
+            d = copy.deepcopy(self.doc); d['jobs'][job]['env'] = {'GH_TOKEN': 'candidate-token'}; variants.append(d)
+            for candidate in variants:
+                self.candidate = candidate
+                with self.subTest(job=job, variant=variants.index(candidate)), self.assertRaises(ERROR):
+                    M.metadata_controller(self.client(), self.value)
     def test_native_check_is_queued_without_publisher_and_uses_read_only_main(self):
         triggers = self.doc[True]
         self.assertEqual(triggers['pull_request']['types'], ['edited','labeled','unlabeled'])

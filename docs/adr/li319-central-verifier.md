@@ -72,12 +72,13 @@ The target-event slot uses the distinct name
 metadata name through a skipped job.
 No custom check-result publication or write token is needed.
 
-Candidate metadata job orchestration, global environment/defaults/permissions,
-activity coverage, concurrency, job inventory and native check names must match
-current protected main. Its Python code always comes from protected main.
-Future changes to this fixed orchestration require a separately reviewed staged
-source-version transition; other human/technical implementation changes remain
-possible while preserving that metadata contract. The Root-only ruleset requires
+The complete candidate workflow orchestration must semantically match current
+protected main, including every job, event gate, token permission, dependency,
+checkout and dispatcher. This single comparison replaces partial job field
+allowlists. Python helpers always come from protected main during authorization;
+normal proposed helper changes are tested separately before adoption. Future
+YAML orchestration changes require a separately reviewed staged source-version
+transition. The Root-only ruleset requires
 both the native workflow and the App-15368 metadata job. Private Management binds
 the latest real metadata job/run, four-role job inventory, protected source and
 digest receipts, and original genuinely approved human canary run. Changed

@@ -350,18 +350,10 @@ def metadata_controller(client: Any, value: dict[str, Any]) -> None:
         doc = EVIDENCE.require_mapping(yaml.safe_load(payload), "metadata controller YAML")
         documents.append(doc)
     canonical, candidate = documents
-    for field in ("name", "run-name", "env", "defaults", "permissions", "concurrency"):
-        EVIDENCE.require_equal(candidate.get(field), canonical.get(field), f"metadata controller {field}")
-    EVIDENCE.require_equal(candidate.get("on", candidate.get(True)),
-                           canonical.get("on", canonical.get(True)), "metadata controller event coverage")
-    candidate_jobs = EVIDENCE.require_mapping(candidate.get("jobs"), "candidate jobs")
-    canonical_jobs = EVIDENCE.require_mapping(canonical.get("jobs"), "canonical jobs")
-    EVIDENCE.require_equal(sorted(candidate_jobs), sorted(canonical_jobs), "metadata controller job inventory")
-    for job_id in canonical_jobs:
-        EVIDENCE.require_equal(candidate_jobs[job_id].get("name"), canonical_jobs[job_id].get("name"),
-                               "metadata controller native check names")
-    EVIDENCE.require_equal(candidate_jobs.get("metadata"), canonical_jobs.get("metadata"),
-                           "protected metadata job definition")
+    # One immutable semantic workflow contract avoids a partial field allowlist:
+    # event gates, job tokens, dependencies, checkout and dispatchers all remain
+    # protected-main owned. Helper scripts are reviewed independently.
+    EVIDENCE.require_equal(candidate, canonical, "protected workflow orchestration")
 
 
 def audit_metadata(client: Any, environment: dict[str, str], run_id: int,

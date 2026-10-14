@@ -267,7 +267,10 @@ metadata job only reuses genuine authorization and reruns technical checks.
 Every policy job is read-only and executes current protected main code. The
 candidate's metadata job, global controller environment/defaults, native names,
 job inventory, activity coverage and concurrency must match protected main;
-candidate code remains controller data. Changes to this immutable metadata
+candidate code remains controller data. The complete workflow document,
+including all target jobs and their event gates, tokens, dependencies, checkouts
+and dispatchers, must semantically match protected main. Helper implementation
+changes remain separately testable. Changes to this immutable workflow
 orchestration require a separately reviewed staged source-version transition,
 not candidate self-replacement. Changed metadata still requires fresh matching
 authorization; timeouts preserve a proven unchanged human authorization and
