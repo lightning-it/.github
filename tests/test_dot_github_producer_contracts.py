@@ -183,6 +183,20 @@ class OrdinaryClient(PromotionClient):
 
 
 class OrdinaryTests(unittest.TestCase):
+    def test_established_current_v5_copilot_is_preserved_with_optional_pr_field(self):
+        for number_present in (True, False):
+            for metadata_present in (True, False):
+                client = OrdinaryClient()
+                summary = json.loads(client.neutral['output']['summary'])
+                if not number_present:
+                    del summary['pull_request_number']
+                if not metadata_present:
+                    del summary['pull_request_last_edited_at']
+                client.neutral['output']['summary'] = json.dumps(summary)
+                client.neutral['external_id'] = f'mlx90-current-revision:copilot:v5:88:{BASE}:{HEAD}'
+                with self.subTest(number=number_present, metadata=metadata_present):
+                    client.verify()
+
     def test_full_ordinary_human_pr_composition(self):
         OrdinaryClient().verify()
 
@@ -220,6 +234,38 @@ class OrdinaryTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
+    def test_established_v5_ancestry_retains_its_deterministic_proof(self):
+        main = 'c' * 40
+        client, summary, reservation = self.fixture('managed-sync')
+        client.pr['head']['ref'] = f'backmerge/github-{main[:12]}-{BASE[:12]}-main'
+        client.pr['title'] = f'chore(governance): record main ancestry before {main[:12]}'
+        summary['review_path'] = M.ANCESTRY_REVIEW_PATH
+        client.check['external_id'] = f'mlx90-current-revision:ancestry-backmerge:v5:88:{BASE}:{HEAD}'
+        client.check['output']['summary'] = json.dumps(summary)
+        client.check['output']['title'] = 'Current revision deterministic exemption passed'
+        import base64
+        proof = json.dumps({'schema_version': 1, 'repository': M.TARGET_REPOSITORY, 'main_sha': main,
+                            'develop_parent_sha': BASE, 'purpose': 'Bind the reviewed main ancestry backmerge.'}).encode()
+        read = client.get
+        def ancestry(path):
+            if path.endswith('/branches/main'):
+                return {'name': 'main', 'protected': True, 'commit': {'sha': main}}
+            if '/git/commits/' in path:
+                return {'sha': HEAD, 'parents': [{'sha': BASE}, {'sha': main}]}
+            if '/compare/' in path:
+                return {'merge_base_commit': {'sha': BASE}, 'files': [
+                    {'filename': '.lit/main-ancestry.json', 'status': 'added'}]}
+            if '/contents/.lit/main-ancestry.json' in path:
+                return {'type': 'file', 'encoding': 'base64', 'size': len(proof),
+                        'content': base64.b64encode(proof).decode()}
+            return read(path)
+        from unittest import mock
+        with mock.patch.object(client, 'get', side_effect=ancestry):
+            self.validate(client, reservation)
+            client.pr['head']['ref'] = 'different'
+            with self.assertRaises(M.VerificationError):
+                self.validate(client, reservation)
+
     def fixture(self, kind):
         client = PromotionClient()
         client.pr['base']['ref'] = 'develop'

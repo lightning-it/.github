@@ -51,6 +51,18 @@ state, same author, Base/Head SHA/ref/repository and owner metadata revision
 must match the established contract; owner drift blocks the final reread.
 This preserves existing review consumption instead of requesting another AI
 review. Current PR approval remains independently bound to its own revision.
+Established v5 Copilot and ancestry evidence retains its authenticated version,
+producer and existing optional owner-number schema; no obsolete evidence gains
+new authority. A bounded final-only attempt-2 recovery preserves the original
+attempt-1 preflight and native human approval for exact duplicate-event reuse.
+The cache revalidates that original binding, bot recovery and sole attempt-2
+job rather than asking the same person to approve the same revision again.
+
+Required Workflow event filters do not create native label runs. GitHub's
+documented native events remain opened/synchronize/reopened; existing legacy
+ready/edited locators are preserved. Existing general label/metadata checks
+and the new label-bound approval fingerprint remain active. A types list is
+not counted as proof that the Required Workflow evaluated a label event.
 
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.

@@ -287,6 +287,10 @@ def validate_neutral_metadata(
     owner_number = number
     owner_pr = pr
     external = check.get("external_id")
+    legacy_match = re.fullmatch(
+        rf"mlx90-current-revision:(copilot|ancestry-backmerge):v5:([1-9][0-9]*):{base}:{head}",
+        external if isinstance(external, str) else "",
+    )
     owner_match = re.fullmatch(
         rf"mlx90-current-revision:copilot:v6:([1-9][0-9]*):[1-9][0-9]*:{base}:{head}",
         external if isinstance(external, str) else "",
@@ -319,6 +323,8 @@ def validate_neutral_metadata(
         ("base_sha", base),
         ("head_sha", head),
     ):
+        if field == "pull_request_number" and legacy_match is not None and field not in summary:
+            continue
         require_equal(summary.get(field), value, f"neutral {field}")
     if str(check.get("external_id", "")).startswith("mlx90-current-revision:v4:"):
         validate_release_neutral(client, check, summary, pr, number, base, head, server)
@@ -330,6 +336,8 @@ def validate_neutral_metadata(
         "schema", "base_sha", "head_sha", "controller_sha", "pull_request_number",
         "producer_run_id", "review_path", "run_url",
     }
+    if legacy_match is not None and "pull_request_number" not in summary:
+        common_keys.remove("pull_request_number")
     # Preserve the legacy eight-field human publisher and bind the current
     # nine-field publisher's metadata revision independently of Renovate.
     kind = "copilot"
@@ -394,11 +402,13 @@ def validate_neutral_metadata(
         raise VerificationError("neutral producer ID is invalid")
     run_url = f"{server}/{TARGET_REPOSITORY}/actions/runs/{producer}"
     require_equal(summary.get("run_url"), run_url, "neutral producer URL")
-    require_equal(
-        check.get("external_id"),
-        f"mlx90-current-revision:{kind}:v6:{owner_number}:{producer}:{base}:{head}",
-        "neutral producer identity",
-    )
+    if legacy_match is not None:
+        require_equal(kind, legacy_match.group(1), "legacy neutral producer kind")
+        require_equal(producer, int(legacy_match.group(2)), "legacy neutral producer ID")
+        expected_external = f"mlx90-current-revision:{kind}:v5:{producer}:{base}:{head}"
+    else:
+        expected_external = f"mlx90-current-revision:{kind}:v6:{owner_number}:{producer}:{base}:{head}"
+    require_equal(check.get("external_id"), expected_external, "neutral producer identity")
     require_equal(
         require_mapping(reservation.get("output"), "reservation output").get("summary"),
         f"PR #{number}; base {base}; head {head}; producer {run_url}.",

@@ -183,6 +183,8 @@ class ReuseTests(unittest.TestCase):
                     return {"type": "file", "sha": sha}
                 if "/attempts/1/jobs" in path:
                     return {"jobs": copy.deepcopy(owner.jobs), "total_count": len(owner.jobs)}
+                if "/attempts/2/jobs" in path:
+                    return {"jobs": copy.deepcopy(owner.recovered_jobs), "total_count": len(owner.recovered_jobs)}
                 raise AssertionError(path)
         return NativeClient()
 
@@ -307,11 +309,30 @@ class ReuseTests(unittest.TestCase):
             verify.assert_called_once()
 
     def test_unprotected_branch_run_other_attempt_or_current_run_is_not_reused(self):
-        for key, value in (("head_branch", "different"), ("run_attempt", 2),
+        for key, value in (("head_branch", "different"), ("run_attempt", 3),
                            ("event", "pull_request"), ("head_sha", "d" * 40)):
             with mock.patch.dict(self.run, {key: value}):
                 self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
         self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 100))
+
+    def test_recovered_final_job_reuses_original_human_approval(self):
+        self.prepare_recovery()
+        self.run.update(status='completed', conclusion='success')
+        self.recovered_jobs = [dict(self.jobs[2], id=4, run_attempt=2, conclusion='success')]
+        with mock.patch.object(MODULE, 'log_binding', return_value='c' * 64):
+            self.assertEqual(MODULE.reusable_approval(self.recovery_client(), self.value, 'c' * 64, 101), 100)
+
+    def test_recovery_reuse_rejects_wrong_attempt_or_additional_effects(self):
+        self.prepare_recovery()
+        self.run.update(status='completed', conclusion='success')
+        self.recovered_jobs = [dict(self.jobs[2], id=4, run_attempt=2, conclusion='success')]
+        with mock.patch.object(MODULE, 'log_binding', return_value='c' * 64):
+            for field, bad in (('run_id', 101), ('run_attempt', 1), ('name', MODULE.APPROVAL_JOB)):
+                with mock.patch.dict(self.recovered_jobs[0], {field: bad}), self.assertRaises(ERROR):
+                    MODULE.reusable_approval(self.recovery_client(), self.value, 'c' * 64, 101)
+            self.recovered_jobs.append(dict(self.recovered_jobs[0], id=5))
+            with self.assertRaises(ERROR):
+                MODULE.reusable_approval(self.recovery_client(), self.value, 'c' * 64, 101)
 
     def test_candidate_run_requires_native_ruleset_identity_and_exact_pr_tuple(self):
         api = "https://api.github.com/repos/" + MODULE.REPOSITORY

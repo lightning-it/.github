@@ -195,7 +195,7 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             if (run_id == current_run or run.get("path") != WORKFLOW
                     or run.get("event") != "pull_request_target"
                     or not native_run_binding(run, value)
-                    or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
+                    or not EVIDENCE.native_integer(run.get("run_attempt")) or run["run_attempt"] not in {1, 2}
                     or run.get("status") != "completed"
                     or run.get("conclusion") not in {"success", "failure", "cancelled"}):
                 continue
@@ -256,6 +256,17 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             if prior == digest:
                 if approval_error is not None:
                     raise approval_error
+                if run["run_attempt"] == 2:
+                    # Attempt 2 only reruns the final technical job. It cannot
+                    # erase the already-consumed attempt-1 human authorization.
+                    validate_final_recovery(client, value, digest, run_id)
+                    recovered = EVIDENCE.native_jobs(client.get(
+                        f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/2/jobs?per_page=100&page=1"),
+                        run_id, 2, value["head"], "prior final recovery")
+                    if (len(recovered) != 1 or recovered[0].get("name") != FINAL_JOB
+                            or recovered[0].get("status") != "completed"
+                            or recovered[0].get("conclusion") not in {"success", "failure", "cancelled"}):
+                        raise EVIDENCE.VerificationError("prior recovery was not the sole bounded final job")
                 native_approval(client, run_id, value["environment_id"])
                 return run_id
         if len(runs) < 100:
