@@ -278,3 +278,18 @@ The delayed-event reconciler retains both old and current locator histories and
 the same ten-minute cooldown, preventing migration from restoring a dispatch slot.
 Other pilot repositories retain their adopted source path until template adoption.
 Pilot flags stay unchanged; publication alone does not activate a pilot.
+
+## Owner-approved bounded historical promotion recognition
+
+On 2026-10-14 the owner expressly accepted exactly two already integrated
+historical Renovate ingress cases whose successful native producer was triggered
+by the maintainer rather than the PR's Renovate author. Their old failed Required
+runs remain failed. The public reader stores only opaque immutable tuple digests;
+private PR metadata and contents remain in the private target and tracking pages.
+The binding includes the repository, PR, base/head, merge/time, native check,
+original producer, complete summary, actor/trigger and first attempt. All other
+source, metadata, label, native-check and chronology checks still apply. Unmatched
+identities, changed tuples, new attempts and all future ingress keep the ordinary
+strict author identity. The resulting promotion still needs every current
+technical gate and the genuine native one-person authorization. This is no
+synthetic check, retry grant, new review request or retrospective Required PASS.
