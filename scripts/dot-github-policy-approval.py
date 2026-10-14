@@ -34,6 +34,9 @@ BINDING_JOB = "Bind protected dot-github approval revision"
 FINAL_JOB = "Required dot-github current-revision workflow"
 METADATA_JOB = "dot-github / approved metadata"
 INACTIVE_METADATA_JOB = "Inactive metadata audit for target event"
+INACTIVE_METADATA_API_NAME = ("github.event_name == 'pull_request' && "
+                             "'dot-github / approved metadata' || "
+                             "'Inactive metadata audit for target event'")
 MAX_LOG_BYTES = 4_000_000
 MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_APPROVAL_BINDING=([0-9a-f]{64})$")
 SOURCE_MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_PROTECTED_SOURCE=([0-9a-f]{40})$")
@@ -135,7 +138,7 @@ def log_binding(client: Any, job_id: int, expected_source: str) -> str:
     # gh handles GitHub's authenticated log redirect without shell interpolation.
     # Only the protected .github repository and a validated numeric ID are used.
     result = subprocess.run(
-        ["gh", "api", f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
+        ["gh", "api", "--allow-escape-sequences", f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
         capture_output=True, timeout=30, check=True)
     if len(result.stdout) > MAX_LOG_BYTES:
         raise EVIDENCE.VerificationError("approval log exceeds its bounded input size")
@@ -312,7 +315,9 @@ def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run
     if len(jobs) != 4 or any(not isinstance(j, dict) for j in jobs):
         raise EVIDENCE.VerificationError("original job inventory is incomplete")
     ids = [positive_integer(j.get("id"), "original job ID") for j in jobs]
-    if len(set(ids)) != 4 or sorted(j.get("name", "") for j in jobs) != sorted(
+    names = [INACTIVE_METADATA_JOB if j.get("name") == INACTIVE_METADATA_API_NAME
+             else j.get("name", "") for j in jobs]
+    if len(set(ids)) != 4 or sorted(names) != sorted(
             (BINDING_JOB, APPROVAL_JOB, FINAL_JOB, INACTIVE_METADATA_JOB)):
         raise EVIDENCE.VerificationError("original job inventory is ambiguous")
     for job in jobs:
@@ -322,7 +327,8 @@ def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run
         conclusion = job.get("conclusion")
         expected = ({"success"} if job["name"] == BINDING_JOB else
                     {"success", "skipped"} if job["name"] == APPROVAL_JOB else
-                    {"skipped"} if job["name"] == INACTIVE_METADATA_JOB else {"failure"})
+                    {"skipped"} if job["name"] in {
+                        INACTIVE_METADATA_JOB, INACTIVE_METADATA_API_NAME} else {"failure"})
         if conclusion not in expected:
             raise EVIDENCE.VerificationError("only the failed final technical job may recover")
     binding_job = next(j for j in jobs if j["name"] == BINDING_JOB)
