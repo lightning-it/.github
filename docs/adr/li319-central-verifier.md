@@ -20,7 +20,9 @@ person. The organization Required Workflow still blocks technical failures.
 Admission binds PR, head, base, metadata, reviewer policy and protected source
 before waiting and rechecks them after approval and final evidence validation.
 Successful identical native authorizations can be reused from their authenticated
-run, original native review and exact protected-source job binding. Lost or
+run, original native review and exact protected-source job binding. Cancellation
+after a successful approval job does not consume another human approval; the
+current technical verifier still runs and rejects failed evidence. Lost or
 ambiguous evidence fails closed. History is not rewritten or converted to PASS.
 The bounded discovery window does not authorize a blind repeat when exhausted.
 Changed inputs require a newly reviewed authorization. No AI request is made.

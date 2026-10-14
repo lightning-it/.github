@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -143,8 +144,27 @@ class ReuseTests(unittest.TestCase):
             self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
         with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
             self.assertIsNone(MODULE.reusable_approval(self.client(True), self.value, "c" * 64, 101))
-            self.jobs[-1]["conclusion"] = "failure"
+            self.jobs[0]["conclusion"] = "failure"
             self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
+
+    def test_cancellation_after_approval_does_not_require_another_human_review(self):
+        for conclusion in ("cancelled", "failure"):
+            with mock.patch.dict(self.run, {"conclusion": conclusion}), \
+                 mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
+                self.assertEqual(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101), 100)
+
+    def test_reused_human_approval_never_replaces_failed_technical_verification(self):
+        env = {"GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "101",
+               "APPROVAL_BINDING": "c" * 64, "APPROVAL_REUSE_RUN": "100"}
+        with mock.patch.dict(MODULE.os.environ, env), \
+             mock.patch.object(sys,
+                               "argv", ["approval", "verify"]), \
+             mock.patch.object(MODULE, "revision", return_value=(self.value, "c" * 64)), \
+             mock.patch.object(MODULE.EVIDENCE, "GitHubClient"), \
+             mock.patch.object(MODULE, "reusable_approval", return_value=100), \
+             mock.patch.object(MODULE.EVIDENCE, "verify", side_effect=ERROR("technical failure")) as verify:
+            self.assertEqual(MODULE.main(), 1)
+            verify.assert_called_once()
 
     def test_unprotected_branch_run_other_attempt_or_current_run_is_not_reused(self):
         for key, value in (("head_branch", "feature"), ("run_attempt", 2),

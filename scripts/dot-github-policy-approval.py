@@ -132,7 +132,7 @@ def log_binding(client: Any, job_id: int) -> str:
 
 
 def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_run: int) -> int | None:
-    """Reuse only a completed native approved run of identical protected code."""
+    """Reuse a successful native approval job; always verify technical evidence anew."""
     for page in range(1, 6):
         response = EVIDENCE.require_mapping(client.get(
             f"repos/{REPOSITORY}/actions/runs?event=pull_request_target&head_sha={value['base']}"
@@ -146,7 +146,8 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                     or run.get("head_sha") != value["base"]
                     or run.get("head_branch") != value["base_ref"]
                     or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
-                    or run.get("status") != "completed" or run.get("conclusion") != "success"):
+                    or run.get("status") != "completed"
+                    or run.get("conclusion") not in {"success", "failure", "cancelled"}):
                 continue
             try:
                 native_approval(client, run_id, value["environment_id"])
@@ -181,14 +182,13 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             else:
                 raise EVIDENCE.VerificationError("prior job inventory exceeds its bound")
             matches = [j for j in jobs if isinstance(j, dict) and j.get("name") == APPROVAL_JOB]
-            finals = [j for j in jobs if isinstance(j, dict) and j.get("name") == FINAL_JOB]
-            if len(matches) != 1 or len(finals) != 1:
+            if len(matches) != 1:
                 continue
             if not all(type(j.get("run_id")) is int and j["run_id"] == run_id
                        and type(j.get("run_attempt")) is int and j["run_attempt"] == 1
                        and j.get("head_sha") == value["base"]
                        and j.get("status") == "completed" and j.get("conclusion") == "success"
-                       for j in (matches[0], finals[0])):
+                       for j in matches):
                 continue
             native_approval(client, run_id, value["environment_id"])
             if log_binding(client, positive_integer(matches[0].get("id"), "approval job ID")) == digest:
