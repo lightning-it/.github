@@ -145,12 +145,20 @@ class BindingTests(unittest.TestCase):
 class ReuseTests(unittest.TestCase):
     def setUp(self):
         self.value = {"base": "a" * 40, "source": "b" * 40,
+                      "head": "c" * 40, "head_ref": "feature", "pr": 4,
                       "base_ref": "develop", "environment_id": 77}
+        api = "https://api.github.com/repos/" + MODULE.REPOSITORY
+        record = {"number": 4, "url": api + "/pulls/4",
+                  "base": {"sha": "a" * 40, "ref": "develop", "repo": {"id": MODULE.REPOSITORY_ID}},
+                  "head": {"sha": "c" * 40, "ref": "feature", "repo": {"id": MODULE.REPOSITORY_ID}}}
         self.run = {"id": 100, "path": MODULE.WORKFLOW, "event": "pull_request_target",
-                    "head_sha": "a" * 40, "head_branch": "develop", "run_attempt": 1,
+                    "head_sha": "c" * 40, "head_branch": "feature", "run_attempt": 1,
+                    "workflow_id": 2, "workflow_url": api + "/actions/required_workflows/2",
+                    "repository": {"id": MODULE.REPOSITORY_ID},
+                    "head_repository": {"id": MODULE.REPOSITORY_ID}, "pull_requests": [record],
                     "status": "completed", "conclusion": "success"}
         self.jobs = [{"id": i, "name": name, "run_id": 100, "run_attempt": 1,
-                      "head_sha": "a" * 40, "status": "completed", "conclusion": "success"}
+                      "head_sha": "c" * 40, "status": "completed", "conclusion": "success"}
                      for i, name in enumerate((MODULE.APPROVAL_JOB, MODULE.FINAL_JOB), 1)]
 
     def client(self, changed_source=False):
@@ -201,11 +209,25 @@ class ReuseTests(unittest.TestCase):
             verify.assert_called_once()
 
     def test_unprotected_branch_run_other_attempt_or_current_run_is_not_reused(self):
-        for key, value in (("head_branch", "feature"), ("run_attempt", 2),
+        for key, value in (("head_branch", "different"), ("run_attempt", 2),
                            ("event", "pull_request"), ("head_sha", "d" * 40)):
             with mock.patch.dict(self.run, {key: value}):
                 self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
         self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 100))
+
+    def test_candidate_run_requires_native_ruleset_identity_and_exact_pr_tuple(self):
+        api = "https://api.github.com/repos/" + MODULE.REPOSITORY
+        for key, value in (("workflow_url", api + "/actions/workflows/2"),
+                           ("pull_requests", []), ("repository", {"id": 2}),
+                           ("head_repository", {"id": 2})):
+            with mock.patch.dict(self.run, {key: value}):
+                self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
+        for side, key, value in (("base", "sha", "d" * 40), ("base", "ref", "feature"),
+                                 ("head", "sha", "d" * 40)):
+            record = copy.deepcopy(self.run["pull_requests"])
+            record[0][side][key] = value
+            with mock.patch.dict(self.run, {"pull_requests": record}):
+                self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
 
     def test_native_log_marker_must_be_unique(self):
         for data in (b"", ("LI319_APPROVAL_BINDING=" + "a" * 64 + "\n") .encode() * 2):

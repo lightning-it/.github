@@ -135,11 +135,36 @@ def log_binding(client: Any, job_id: int) -> str:
     return matches[0]
 
 
+def native_run_binding(run: dict[str, Any], value: dict[str, Any]) -> bool:
+    """Authenticate the native ruleset run, whose API head is the candidate."""
+    api = f"https://api.github.com/repos/{REPOSITORY}"
+    workflow_id = run.get("workflow_id")
+    entries = run.get("pull_requests")
+    if type(workflow_id) is not int or workflow_id <= 0 or not isinstance(entries, list) or len(entries) != 1:
+        return False
+    record = entries[0]
+    if not isinstance(record, dict):
+        return False
+    return (run.get("workflow_url") == f"{api}/actions/required_workflows/{workflow_id}"
+            and run.get("repository", {}).get("id") == REPOSITORY_ID
+            and run.get("head_repository", {}).get("id") == REPOSITORY_ID
+            and run.get("head_sha") == value["head"]
+            and run.get("head_branch") == value["head_ref"]
+            and record.get("number") == value["pr"]
+            and record.get("url") == f"{api}/pulls/{value['pr']}"
+            and record.get("base", {}).get("sha") == value["base"]
+            and record.get("base", {}).get("ref") == value["base_ref"]
+            and record.get("base", {}).get("repo", {}).get("id") == REPOSITORY_ID
+            and record.get("head", {}).get("sha") == value["head"]
+            and record.get("head", {}).get("ref") == value["head_ref"]
+            and record.get("head", {}).get("repo", {}).get("id") == REPOSITORY_ID)
+
+
 def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_run: int) -> int | None:
     """Reuse a successful native approval job; always verify technical evidence anew."""
     for page in range(1, 6):
         response = EVIDENCE.require_mapping(client.get(
-            f"repos/{REPOSITORY}/actions/runs?event=pull_request_target&head_sha={value['base']}"
+            f"repos/{REPOSITORY}/actions/runs?event=pull_request_target&head_sha={value['head']}"
             f"&per_page=100&page={page}"), "prior workflow runs")
         runs = EVIDENCE.require_list(response.get("workflow_runs"), "prior runs")
         for run in runs:
@@ -147,8 +172,7 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             run_id = positive_integer(run.get("id"), "prior run ID")
             if (run_id == current_run or run.get("path") != WORKFLOW
                     or run.get("event") != "pull_request_target"
-                    or run.get("head_sha") != value["base"]
-                    or run.get("head_branch") != value["base_ref"]
+                    or not native_run_binding(run, value)
                     or type(run.get("run_attempt")) is not int or run["run_attempt"] != 1
                     or run.get("status") != "completed"
                     or run.get("conclusion") not in {"success", "failure", "cancelled"}):
@@ -164,7 +188,7 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             same_code = True
             for path in SOURCE_PATHS:
                 old = EVIDENCE.require_mapping(client.get(
-                    f"repos/{REPOSITORY}/contents/{path}?ref={run['head_sha']}"), "prior source file")
+                    f"repos/{REPOSITORY}/contents/{path}?ref={value['base']}"), "prior source file")
                 new = EVIDENCE.require_mapping(client.get(
                     f"repos/{REPOSITORY}/contents/{path}?ref={value['source']}"), "current source file")
                 if (old.get("type") != "file" or new.get("type") != "file"
@@ -190,7 +214,7 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                 continue
             if not all(type(j.get("run_id")) is int and j["run_id"] == run_id
                        and type(j.get("run_attempt")) is int and j["run_attempt"] == 1
-                       and j.get("head_sha") == value["base"]
+                       and j.get("head_sha") == value["head"]
                        and j.get("status") == "completed" and j.get("conclusion") == "success"
                        for j in matches):
                 continue
