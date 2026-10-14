@@ -316,6 +316,13 @@ jobs:
             if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
               [ "${GITHUB_REPOSITORY}" = lightning-it/.github ] || return 0
               [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ] || return 0
+              # Root default CAS belongs only to the existing write-scoped
+              # refresh consumer, never to a read-only legacy helper.
+              [ "${GITHUB_JOB:-}" = refresh-canonical-gate ] || return 0
+              case "${GITHUB_WORKFLOW_REF:-}" in
+                'lightning-it/.github/.github/workflows/copilot-review-refresh.yml@refs/heads/develop'|'lightning-it/.github/.github/workflows/copilot-review-refresh.yml@refs/heads/main') ;;
+                *) return 0 ;;
+              esac
               [ "${GITHUB_REF_PROTECTED}" = true ] || return 1
               [ "${GITHUB_ACTOR}" = 'github-actions[bot]' ] || return 1
               [ "${GITHUB_TRIGGERING_ACTOR}" = 'github-actions[bot]' ] || return 1

@@ -341,3 +341,15 @@ is also explicit in AGENTS.md and its bound Copilot instructions. A regression
 executes the real claim implementation twice against the same journal: only one
 technical CAS/effect is accepted, no AI request occurs, and actor, trigger,
 protection or attempt drift produces no mutation.
+
+
+Following the second native finding, the default exception is deliberately
+simplified to one existing write-scoped consumer. The shared claim function
+requires both the native protected refresh workflow ref and
+`GITHUB_JOB=refresh-canonical-gate` in Root default mode. Legacy reevaluation
+helpers keep contents/checks read permissions and execute their original
+non-journal path; no new helper writer or evidence authority is introduced.
+The regression exercises their actual selected job/source with the real claim
+function and rejects any API access. This bounded correction is recorded in
+LI-319 rather than creating an equivalent blind successor or resetting review
+budgets.

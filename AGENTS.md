@@ -48,7 +48,8 @@
 - The owner-authorized LI-319 central-source consolidation also permits
   `lightning-it/.github` in disabled/default mode to recover a late valid review
   through the existing technical verifier CAS slot. Only a first-attempt
-  `github-actions[bot]` dispatch from the protected branch may claim that slot;
+  `github-actions[bot]` dispatch from the protected branch in the existing
+  write-scoped `copilot-review-refresh.yml` canonical job may claim that slot;
   authenticate the original producer, current PR/base/head, native review,
   protected source, complete helper inventory and chronological receipt.
   This grants no AI request, funding, extra retry or pilot activation. Other
