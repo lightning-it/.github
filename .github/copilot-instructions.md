@@ -12,4 +12,4 @@
   `AGENTS.md`; instruction drift is a blocking finding.
 
 <!-- Managed contract: Codex and Copilot must apply AGENTS.md. -->
-<!-- AGENTS_SHA256: 082a849b78afb99278f1917081c874c347316e4991e960bf4c474476b4a33765 -->
+<!-- AGENTS_SHA256: 3127a604bfa40a5acf6477b991fddb890f06e6671f7eed3cff04397a55dd53d9 -->

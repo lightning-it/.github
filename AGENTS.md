@@ -235,3 +235,43 @@ content and unresolved findings. This amendment grants no bypass or weaker
 platform, protected-source, actor, Required-Workflow, or merge authority.
 
 <!-- LIT at-most-once review funding: end -->
+
+## LI-319 central verifier and single-person approval
+
+The owner-authorized 2026-10-13 amendment makes this public repository the
+canonical Required Workflow source. Supplementary's reciprocal verifier remains
+authoritative until the reviewed overlapping cutover is natively accepted.
+The replacement dot-github verifier executes only protected main source; it
+retains the existing native current-revision evidence checks.
+
+One authorized human may approve their own revision through the native
+`dot-github-policy-approval` environment with self-review permitted and no
+administrator bypass. Human PR/CODEOWNER approvals and last-push approval must
+not require a second person. Environment authorization is bound to the exact PR,
+head, base, metadata and protected controller. An identical successful native
+authorization may be reused without another approval; drift invalidates it.
+Technical failures remain blocking. Automated agents never simulate the human
+environment review. This amendment does not add AI requests or relax existing
+producer, actor, source, review-budget, recovery or release evidence contracts.
+
+Private target data stays in its target repository. Public policy code receives
+no general private-repository administration credential. Management owns
+settings, Shared Assets owns ordinary templates, and this repository owns the
+central verifier implementation. See `docs/adr/li319-central-verifier.md`.
+
+The central workflow's native pull_request metadata job creates the mandatory
+App-15368 `dot-github / approved metadata` context before runner, checkout,
+container or API setup. Failures leave that native context blocking. The separate
+protected pull_request_target route alone requests human authorization; the
+metadata job only reuses genuine authorization and reruns technical checks.
+Every policy job is read-only and executes current protected main code. The
+candidate's metadata job, global controller environment/defaults, native names,
+job inventory, activity coverage and concurrency must match protected main;
+candidate code remains controller data. The complete workflow document,
+including all target jobs and their event gates, tokens, dependencies, checkouts
+and dispatchers, must semantically match protected main. Helper implementation
+changes remain separately testable. Changes to this immutable workflow
+orchestration require a separately reviewed staged source-version transition,
+not candidate self-replacement. Changed metadata still requires fresh matching
+authorization; timeouts preserve a proven unchanged human authorization and
+never restore an AI opportunity. Neither route simulates a human review.
