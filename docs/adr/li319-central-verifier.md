@@ -34,6 +34,9 @@ base is not substituted for the controller loaded from protected main. Missing,
 changed or duplicate receipts block reuse. Source/current-main drift still
 invalidates approval. The supported five-event contract matches existing
 locators, and the final job allows 18 minutes for the inherited bounded waits.
+A well-formed receipt for another source is discarded so the new revision can
+request fresh native admission; missing or ambiguous receipt evidence blocks
+admission. The same original technical recovery cannot cross a source change.
 
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.

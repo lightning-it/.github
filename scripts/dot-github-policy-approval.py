@@ -34,6 +34,10 @@ MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_APPROVAL_BINDING=([0-9a-
 SOURCE_MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_PROTECTED_SOURCE=([0-9a-f]{40})$")
 
 
+class SourceChanged(EVIDENCE.VerificationError):
+    """A well-formed prior authorization belongs to another protected source."""
+
+
 def positive_integer(value: Any, label: str) -> int:
     if not EVIDENCE.native_integer(value) or value <= 0:
         raise EVIDENCE.VerificationError(f"{label} must be a positive integer")
@@ -134,8 +138,10 @@ def log_binding(client: Any, job_id: int, expected_source: str) -> str:
     matches = [m.group(1) for line in lines
                if (m := MARKER.fullmatch(line))]
     sources = [m.group(1) for line in lines if (m := SOURCE_MARKER.fullmatch(line))]
-    if len(matches) != 1 or sources != [expected_source]:
-        raise EVIDENCE.VerificationError("native approval/source binding is missing, changed or ambiguous")
+    if len(matches) != 1 or len(sources) != 1:
+        raise EVIDENCE.VerificationError("native approval/source binding is missing or ambiguous")
+    if sources[0] != expected_source:
+        raise SourceChanged("native authorization belongs to another protected source")
     return matches[0]
 
 
@@ -240,8 +246,14 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             # Only a successful native Required-Workflow preflight owns this
             # receipt. It validates the actual workflow_sha against protected
             # main before emitting both source and exact-revision markers.
-            if log_binding(client, positive_integer(matches[0].get("id"), "approval job ID"),
-                           value["source"]) == digest:
+            try:
+                prior = log_binding(client, positive_integer(matches[0].get("id"), "approval job ID"),
+                                    value["source"])
+            except SourceChanged:
+                # A source change is a new revision requiring fresh admission;
+                # it must neither reuse the old approval nor trap that revision.
+                continue
+            if prior == digest:
                 return run_id
         if len(runs) < 100:
             return None

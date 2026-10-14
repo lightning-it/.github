@@ -254,8 +254,16 @@ class ReuseTests(unittest.TestCase):
                    + 'LI319_PROTECTED_SOURCE=' + self.value['source'] + '\n').encode()
         with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=payload)):
             self.assertEqual(MODULE.reusable_approval(self.client(True), self.value, 'c' * 64, 101), 100)
-        for bad in (payload.replace(self.value['source'].encode(), b'd' * 40),
-                    payload.split(b'LI319_PROTECTED_SOURCE')[0], payload + payload):
+        changed = payload.replace(self.value['source'].encode(), b'd' * 40)
+        with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=changed)):
+            self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, 'c' * 64, 101))
+            self.prepare_recovery()
+            with self.assertRaises(ERROR):
+                MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+        self.run['run_attempt'] = 1
+        self.run['status'] = 'completed'
+        self.run['conclusion'] = 'failure'
+        for bad in (payload.split(b'LI319_PROTECTED_SOURCE')[0], payload + payload):
             with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=bad)), self.assertRaises(ERROR):
                 MODULE.reusable_approval(self.client(), self.value, 'c' * 64, 101)
 
