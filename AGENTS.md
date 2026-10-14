@@ -258,3 +258,13 @@ Private target data stays in its target repository. Public policy code receives
 no general private-repository administration credential. Management owns
 settings, Shared Assets owns ordinary templates, and this repository owns the
 central verifier implementation. See `docs/adr/li319-central-verifier.md`.
+
+The central workflow's metadata-only local events revoke the App-15368
+`dot-github / approved metadata` mandatory check on the exact candidate head.
+They execute current protected main code and cannot authorize admission.
+Only the successful native Required Workflow publishes success after approval,
+technical verification and final revision reread. Native check-result write
+permission is narrowly admitted for these two public check publications; it
+grants no private settings, repository write, AI funding or merge authority.
+Changed metadata needs fresh authorization by the same person and independently
+valid technical evidence; existing consumed review opportunities remain binding.

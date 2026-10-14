@@ -877,6 +877,38 @@ def wait_for_aggregated_promotion(
     raise VerificationError("aggregated promotion evidence did not become successful")
 
 
+def authenticate_verifier_workflow(client: GitHubClient, run: Mapping[str, Any], label: str) -> None:
+    """Required run IDs and registered local workflow IDs use distinct namespaces.
+
+    GitHub still returns /required_workflows/N in native run metadata, while
+    GET on that deprecated endpoint returns 422. Authenticate the native run
+    namespace and resolve the active canonical workflow by its exact path.
+    Local runs additionally require equality with their registered workflow ID.
+    """
+    workflow_id = run.get("workflow_id")
+    if not native_integer(workflow_id) or workflow_id <= 0:
+        raise VerificationError(f"{label} workflow ID is invalid")
+    local = f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}"
+    required = f"repos/{TARGET_REPOSITORY}/actions/required_workflows/{workflow_id}"
+    url = run.get("workflow_url")
+    if url == f"{client.api_url}/{local}":
+        lookup = local
+        native = False
+    elif url == f"{client.api_url}/{required}":
+        lookup = f"repos/{TARGET_REPOSITORY}/actions/workflows/{TARGET_VERIFIER_PATH.rsplit('/', 1)[-1]}"
+        native = True
+    else:
+        raise VerificationError(f"{label} workflow URL is not exactly bound")
+    workflow = require_mapping(client.get(lookup), f"{label} workflow")
+    registered_id = workflow.get("id")
+    if not native_integer(registered_id) or registered_id <= 0:
+        raise VerificationError(f"{label} registered workflow ID is invalid")
+    if not native:
+        require_equal(registered_id, workflow_id, f"{label} workflow ID")
+    require_equal(workflow.get("path"), TARGET_VERIFIER_PATH, f"{label} workflow path")
+    require_equal(workflow.get("state"), "active", f"{label} workflow state")
+
+
 def validate_aggregated_promotion(
     client: GitHubClient,
     evidence: tuple[Mapping[str, Any], Mapping[str, Any], int],
@@ -939,29 +971,7 @@ def validate_aggregated_promotion(
     if not exact_promotion_run_association(run, pr_number, event_base, event_head):
         raise VerificationError("promotion run association drifted")
 
-    workflow_id = run.get("workflow_id")
-    if not native_integer(workflow_id) or workflow_id <= 0:
-        raise VerificationError("promotion workflow ID is invalid")
-    workflow_paths = {
-        f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
-        f"repos/{TARGET_REPOSITORY}/actions/required_workflows/{workflow_id}",
-    }
-    workflow_url = str(run.get("workflow_url", ""))
-    matching_workflow_paths = {
-        path
-        for path in workflow_paths
-        if workflow_url == f"{client.api_url}/{path}"
-    }
-    if len(matching_workflow_paths) != 1:
-        raise VerificationError("promotion workflow URL is not exactly bound")
-    workflow_path = matching_workflow_paths.pop()
-    workflow = require_mapping(
-        client.get(workflow_path),
-        "promotion workflow",
-    )
-    require_equal(workflow.get("id"), workflow_id, "promotion workflow ID")
-    require_equal(workflow.get("path"), TARGET_VERIFIER_PATH, "promotion workflow path")
-    require_equal(workflow.get("state"), "active", "promotion workflow state")
+    authenticate_verifier_workflow(client, run, "promotion")
 
     jobs_payload = require_mapping(
         client.get(
@@ -1187,21 +1197,7 @@ def validate_reservation(
         f"{server_url}/{TARGET_REPOSITORY}/actions/runs/{producer_run_id}",
         "verifier run URL",
     )
-    workflow_id = producer.get("workflow_id")
-    if not native_integer(workflow_id) or workflow_id <= 0:
-        raise VerificationError("verifier workflow ID is invalid")
-    workflow_paths = {
-        f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
-        f"repos/{TARGET_REPOSITORY}/actions/required_workflows/{workflow_id}",
-    }
-    matching = [path for path in workflow_paths
-                if producer.get("workflow_url") == f"{client.api_url}/{path}"]
-    if len(matching) != 1:
-        raise VerificationError("verifier workflow URL is not exactly bound")
-    workflow = require_mapping(client.get(matching[0]), "verifier workflow")
-    require_equal(workflow.get("id"), workflow_id, "verifier workflow ID")
-    require_equal(workflow.get("path"), TARGET_VERIFIER_PATH, "verifier workflow path")
-    require_equal(workflow.get("state"), "active", "verifier workflow state")
+    authenticate_verifier_workflow(client, producer, "verifier")
 
     attempt = run_attempt
     jobs_payload = require_mapping(

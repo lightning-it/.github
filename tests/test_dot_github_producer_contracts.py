@@ -75,7 +75,7 @@ class PromotionClient:
             run = copy.deepcopy(self.run)
             run['id'] = int(path.rsplit('/', 1)[-1])
             return run
-        if path.endswith(('/actions/workflows/9', '/actions/required_workflows/9')):
+        if path.endswith(('/actions/workflows/9', '/actions/workflows/supplementary-current-revision-required.yml')):
             return copy.deepcopy(self.workflow)
         if '/jobs?' in path:
             return {'total_count': len(self.jobs), 'jobs': copy.deepcopy(self.jobs)}
@@ -96,6 +96,15 @@ class PromotionClient:
 class PromotionTests(unittest.TestCase):
     def test_full_develop_to_main_branch_accepts_exact_native_evidence(self):
         PromotionClient().verify()
+
+    def test_full_promotion_accepts_required_run_without_deprecated_api_lookup(self):
+        client = PromotionClient()
+        client.run['workflow_url'] = API + '/actions/required_workflows/9'
+        client.workflow['id'] = 19
+        client.verify()
+        client.workflow['id'] = True
+        with self.assertRaises(M.VerificationError):
+            client.verify()
 
     def test_promotion_classifier_and_association_reject_numeric_coercion(self):
         client = PromotionClient()
@@ -186,6 +195,7 @@ class OrdinaryTests(unittest.TestCase):
     def test_full_ordinary_accepts_authenticated_overlapping_required_workflow(self):
         client = OrdinaryClient()
         client.run['workflow_url'] = API + '/actions/required_workflows/9'
+        client.workflow['id'] = 19  # Registered local ID differs from native Required ID.
         client.verify()
         for bad in (API + '/actions/required_workflows/10',
                     'https://untrusted.invalid/actions/required_workflows/9'):
