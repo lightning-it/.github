@@ -44,7 +44,7 @@ else:
     def run_dispatcher(self, mode, **changes):
         environment = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
             GITHUB_ACTIONS="true", REPOSITORY="lightning-it/.github", GH_TOKEN="fixture-token",
-            GITHUB_OUTPUT=str(self.output), OPENAI_API_KEY="not-a-credential",
+            GITHUB_OUTPUT=str(self.output), OPENAI_API_KEY="unused",
             WUNDER_DEVTOOLS_PRIVILEGED="1", WUNDER_DEVTOOLS_DOCKER_SOCKET="required",
             EVENT_TITLE_JSON=json.dumps("A title with $(unsafe) and `unsafe`"))
         environment.update(changes)
