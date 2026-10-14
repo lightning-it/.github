@@ -32,6 +32,55 @@ class SequencedClient:
 
 
 class SourceSchemaTests(unittest.TestCase):
+    def test_native_integer_contract_rejects_bool_float_string_and_null(self):
+        for bad in (True, False, 1.0, 2.0, '1', None):
+            with self.subTest(value=bad):
+                self.assertFalse(MODULE.native_integer(bad))
+        for good in (0, 1, 2, 15368):
+            self.assertTrue(MODULE.native_integer(good))
+
+    def test_action_contract_matches_current_required_consumers(self):
+        self.assertEqual(MODULE.PRODUCER_ACTIONS,
+                         {'opened', 'synchronize', 'reopened', 'ready_for_review', 'edited'})
+
+    def test_actual_producer_attempt_validation_rejects_boolean_and_float(self):
+        base, head = 'a' * 40, 'b' * 40
+        check = {'id': 17, 'head_sha': head, 'app': {'id': 15368, 'slug': 'github-actions'},
+                 'details_url': 'https://github.com/lightning-it/.github/runs/17',
+                 'external_id': f'rep60-required-workflow:v3:42:7:{base}:{head}'}
+        repo = {'full_name': MODULE.TARGET_REPOSITORY, 'owner': {'login': 'lightning-it'}}
+        pr = {'head': {'ref': 'feature', 'repo': repo}}
+        for attempt in (True, 1.0, 2.0, 1, 2):
+            producer = {'id': 42, 'event': 'pull_request_target', 'path': MODULE.TARGET_VERIFIER_PATH,
+                        'status': 'completed', 'conclusion': 'success', 'head_sha': head,
+                        'head_branch': 'feature', 'repository': repo, 'head_repository': repo,
+                        'pull_requests': [], 'actor': {'login': 'litroc'}, 'run_attempt': attempt,
+                        'triggering_actor': {'login': 'litroc' if attempt == 1 else 'github-actions[bot]'},
+                        'display_title': f'Protected current revision PR #7 opened {head}',
+                        'html_url': 'https://github.com/lightning-it/.github/actions/runs/42',
+                        'workflow_id': 9,
+                        'workflow_url': 'https://api.github.com/repos/lightning-it/.github/actions/workflows/9'}
+            class ProducerClient:
+                api_url = 'https://api.github.com'
+                def get(self, path):
+                    if path.endswith('/actions/runs/42'):
+                        return producer
+                    if path.endswith('/actions/workflows/9'):
+                        return {'id': 9, 'path': MODULE.TARGET_VERIFIER_PATH, 'state': 'active'}
+                    if '/jobs?' in path:
+                        return {'total_count': 1, 'jobs': [{'name': MODULE.TARGET_VERIFIER_NAME,
+                                                           'status': 'completed', 'conclusion': 'success'}]}
+                    raise AssertionError(path)
+            def validate():
+                return MODULE.validate_reservation(ProducerClient(), check, pr, 7, base, head,
+                    'https://github.com', attempts=1, sleep=lambda seconds: None)
+            with self.subTest(attempt=attempt):
+                if type(attempt) is int:
+                    self.assertEqual(validate(), producer)
+                else:
+                    with self.assertRaisesRegex(MODULE.VerificationError, 'outside the bounded contract'):
+                        validate()
+
     def test_external_values_are_type_exact_including_nested_records(self):
         for actual, expected in ((1, True), (False, 0), (1.0, 1),
                                  ({'attempt': True}, {'attempt': 1}),

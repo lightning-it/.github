@@ -27,6 +27,14 @@ ambiguous evidence fails closed. History is not rewritten or converted to PASS.
 The bounded discovery window does not authorize a blind repeat when exhausted.
 Changed inputs require a newly reviewed authorization. No AI request is made.
 
+The successful native preflight emits one protected-source SHA receipt and one
+exact-revision binding marker. Reuse and management adoption authenticate that
+native Required Workflow job and its actual source receipt; a target develop
+base is not substituted for the controller loaded from protected main. Missing,
+changed or duplicate receipts block reuse. Source/current-main drift still
+invalidates approval. The supported five-event contract matches existing
+locators, and the final job allows 18 minutes for the inherited bounded waits.
+
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.
 The receiver requires the exact native ruleset run and PR tuple, bot triggering

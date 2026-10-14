@@ -26,18 +26,16 @@ APPROVER_LOGIN = "litroc"
 APPROVER_ID = 76040632
 ENVIRONMENT = "dot-github-policy-approval"
 WORKFLOW = ".github/workflows/dot-github-current-revision-required.yml"
-SOURCE_PATHS = (WORKFLOW, "scripts/verify-dot-github-current-revision.py",
-                "scripts/dot-github-policy-approval.py", "scripts/dot-github-policy-devtools.sh",
-                "scripts/wunder-devtools-ee.sh")
 APPROVAL_JOB = "Approve dot-github policy revision"
 BINDING_JOB = "Bind protected dot-github approval revision"
 FINAL_JOB = "Required dot-github current-revision workflow"
 MAX_LOG_BYTES = 4_000_000
 MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_APPROVAL_BINDING=([0-9a-f]{64})$")
+SOURCE_MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_PROTECTED_SOURCE=([0-9a-f]{40})$")
 
 
 def positive_integer(value: Any, label: str) -> int:
-    if type(value) is not int or value <= 0:
+    if not EVIDENCE.native_integer(value) or value <= 0:
         raise EVIDENCE.VerificationError(f"{label} must be a positive integer")
     return value
 
@@ -124,7 +122,7 @@ def native_approval(client: Any, run_id: int, environment_id: int) -> None:
         raise EVIDENCE.VerificationError("native human approval is missing")
 
 
-def log_binding(client: Any, job_id: int) -> str:
+def log_binding(client: Any, job_id: int, expected_source: str) -> str:
     # gh handles GitHub's authenticated log redirect without shell interpolation.
     # Only the protected .github repository and a validated numeric ID are used.
     result = subprocess.run(
@@ -132,10 +130,12 @@ def log_binding(client: Any, job_id: int) -> str:
         capture_output=True, timeout=30, check=True)
     if len(result.stdout) > MAX_LOG_BYTES:
         raise EVIDENCE.VerificationError("approval log exceeds its bounded input size")
-    matches = [m.group(1) for line in result.stdout.decode("utf-8", errors="strict").splitlines()
+    lines = result.stdout.decode("utf-8", errors="strict").splitlines()
+    matches = [m.group(1) for line in lines
                if (m := MARKER.fullmatch(line))]
-    if len(matches) != 1:
-        raise EVIDENCE.VerificationError("native approval binding is missing or ambiguous")
+    sources = [m.group(1) for line in lines if (m := SOURCE_MARKER.fullmatch(line))]
+    if len(matches) != 1 or sources != [expected_source]:
+        raise EVIDENCE.VerificationError("native approval/source binding is missing, changed or ambiguous")
     return matches[0]
 
 
@@ -199,22 +199,6 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                 if str(exc) == "native human approval is missing":
                     continue
                 raise
-            # Native run metadata binds its protected base tree. All three
-            # executable files must match the actual required-source commit.
-            same_code = True
-            for path in SOURCE_PATHS:
-                old = EVIDENCE.require_mapping(client.get(
-                    f"repos/{REPOSITORY}/contents/{path}?ref={value['base']}"), "prior source file")
-                new = EVIDENCE.require_mapping(client.get(
-                    f"repos/{REPOSITORY}/contents/{path}?ref={value['source']}"), "current source file")
-                if (old.get("type") != "file" or new.get("type") != "file"
-                        or not isinstance(old.get("sha"), str)
-                        or not EVIDENCE.SHA_PATTERN.fullmatch(old["sha"])
-                        or old.get("sha") != new.get("sha")):
-                    same_code = False
-                    break
-            if not same_code:
-                continue
             jobs = []
             total = None
             for jobs_page in range(1, 11):
@@ -253,7 +237,11 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                        and j.get("head_sha") == value["head"] for j in approval_jobs):
                 raise EVIDENCE.VerificationError("native approval job identity is inconsistent")
             native_approval(client, run_id, value["environment_id"])
-            if log_binding(client, positive_integer(matches[0].get("id"), "approval job ID")) == digest:
+            # Only a successful native Required-Workflow preflight owns this
+            # receipt. It validates the actual workflow_sha against protected
+            # main before emitting both source and exact-revision markers.
+            if log_binding(client, positive_integer(matches[0].get("id"), "approval job ID"),
+                           value["source"]) == digest:
                 return run_id
         if len(runs) < 100:
             return None
@@ -302,7 +290,7 @@ def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run
         if conclusion not in expected:
             raise EVIDENCE.VerificationError("only the failed final technical job may recover")
     binding_job = next(j for j in jobs if j["name"] == BINDING_JOB)
-    EVIDENCE.require_equal(log_binding(client, binding_job["id"]), digest,
+    EVIDENCE.require_equal(log_binding(client, binding_job["id"], value["source"]), digest,
                            "original approved revision")
 
 
@@ -327,6 +315,7 @@ def main() -> int:
             # The successful preflight fixes what the subsequent native human
             # approves. A later technical interruption cannot require reapproval.
             print(f"LI319_APPROVAL_BINDING={digest}", file=sys.stderr)
+            print(f"LI319_PROTECTED_SOURCE={value['source']}", file=sys.stderr)
         else:
             EVIDENCE.require_equal(digest, os.environ.get("APPROVAL_BINDING", ""), "approval revision")
             if args.mode == "approve":

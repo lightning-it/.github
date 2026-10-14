@@ -111,6 +111,10 @@ class BindingTests(unittest.TestCase):
                "repository": {"full_name": MODULE.REPOSITORY},
                "head_repository": {"full_name": MODULE.REPOSITORY}, "pull_requests": [record]}
         self.assertTrue(locator.required_locator(run, MODULE.REPOSITORY, pr))
+        for action in MODULE.EVIDENCE.PRODUCER_ACTIONS:
+            with self.subTest(action=action):
+                run['display_title'] = title.replace(' opened ', f' {action} ')
+                self.assertTrue(locator.required_locator(run, MODULE.REPOSITORY, pr))
 
     def test_hash_changes_when_reviewed_inputs_change(self):
         binding = {"base_ref": "develop", "head_repository": MODULE.REPOSITORY,
@@ -238,10 +242,27 @@ class ReuseTests(unittest.TestCase):
         with mock.patch.object(MODULE, "log_binding", return_value="d" * 64):
             self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
         with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
-            self.assertIsNone(MODULE.reusable_approval(self.client(True), self.value, "c" * 64, 101))
+            # Target develop and protected main may legitimately have different
+            # blobs: reuse authenticates the native preflight's actual source.
+            self.assertEqual(MODULE.reusable_approval(self.client(True), self.value, "c" * 64, 101), 100)
             self.jobs[0]["conclusion"] = "failure"
             with self.assertRaises(ERROR):
                 MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101)
+
+    def test_reuse_requires_exact_native_preflight_source_marker(self):
+        payload = ('LI319_APPROVAL_BINDING=' + 'c' * 64 + '\n'
+                   + 'LI319_PROTECTED_SOURCE=' + self.value['source'] + '\n').encode()
+        with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=payload)):
+            self.assertEqual(MODULE.reusable_approval(self.client(True), self.value, 'c' * 64, 101), 100)
+        for bad in (payload.replace(self.value['source'].encode(), b'd' * 40),
+                    payload.split(b'LI319_PROTECTED_SOURCE')[0], payload + payload):
+            with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=bad)), self.assertRaises(ERROR):
+                MODULE.reusable_approval(self.client(), self.value, 'c' * 64, 101)
+
+    def test_final_job_timeout_has_margin_for_both_existing_waits(self):
+        document = yaml.safe_load((ROOT / MODULE.WORKFLOW).read_text())
+        final = document['jobs']['verify-dot-github-current-revision']
+        self.assertGreaterEqual(final['timeout-minutes'], 18)
 
     def test_interruption_after_native_approval_does_not_request_reapproval(self):
         self.run["conclusion"] = "failure"
@@ -293,7 +314,7 @@ class ReuseTests(unittest.TestCase):
         for data in (b"", ("LI319_APPROVAL_BINDING=" + "a" * 64 + "\n") .encode() * 2):
             with mock.patch.object(MODULE.subprocess, "run", return_value=mock.Mock(stdout=data)):
                 with self.assertRaises(ERROR):
-                    MODULE.log_binding(None, 1)
+                    MODULE.log_binding(None, 1, self.value['source'])
 
     def recovery_client(self):
         owner = self

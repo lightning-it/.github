@@ -53,7 +53,7 @@ RESERVATION_PATTERN = re.compile(
     r"(?P<head>[0-9a-f]{40})$"
 )
 PRODUCER_ACTIONS = frozenset(
-    {"opened", "synchronize", "reopened", "ready_for_review", "edited", "labeled", "unlabeled"}
+    {"opened", "synchronize", "reopened", "ready_for_review", "edited"}
 )
 NONTERMINAL_RUN_STATUSES = frozenset(
     {"pending", "queued", "requested", "waiting", "in_progress"}
@@ -169,7 +169,7 @@ def validate_ancestry_binding(client: GitHubClient, pr: Mapping[str, Any], base:
     require_equal(author.get("type"), "Bot", "ancestry author type")
     identity = (author.get("login"), author.get("id"))
     if (
-        not isinstance(author.get("id"), int)
+        not native_integer(author.get("id"))
         or isinstance(author.get("id"), bool)
         or identity != (ANCESTRY_APP_LOGIN, ANCESTRY_APP_ID)
     ):
@@ -216,7 +216,7 @@ def validate_ancestry_binding(client: GitHubClient, pr: Mapping[str, Any], base:
     if (
         not isinstance(encoded, str)
         or len(encoded) > 8192
-        or not isinstance(size, int)
+        or not native_integer(size)
         or isinstance(size, bool)
         or not 0 < size <= 4096
     ):
@@ -232,7 +232,7 @@ def validate_ancestry_binding(client: GitHubClient, pr: Mapping[str, Any], base:
         {"schema_version", "repository", "main_sha", "develop_parent_sha", "purpose"},
         "ancestry proof fields",
     )
-    if not isinstance(proof.get("schema_version"), int) or isinstance(proof.get("schema_version"), bool):
+    if not native_integer(proof.get("schema_version")) or isinstance(proof.get("schema_version"), bool):
         raise VerificationError("ancestry proof schema is invalid")
     for field, value in (
         ("schema_version", 1),
@@ -373,6 +373,11 @@ def require_sha(value: str, label: str) -> str:
     return value
 
 
+def native_integer(value: Any) -> bool:
+    """External JSON numbers must be integers, never bool/float coercions."""
+    return type(value) is int
+
+
 def require_positive_integer(value: str, label: str) -> int:
     if not POSITIVE_INTEGER_PATTERN.fullmatch(value):
         raise VerificationError(f"{label} must be a positive integer")
@@ -438,12 +443,12 @@ def validate_source(
     status = comparison.get("status")
     ahead_by = comparison.get("ahead_by")
     behind_by = comparison.get("behind_by")
-    if type(ahead_by) is not int or type(behind_by) is not int or not (
+    if not native_integer(ahead_by) or not native_integer(behind_by) or not (
         (status == "identical" and source_head == workflow_sha and ahead_by == 0)
         or (
             status == "ahead"
             and source_head != workflow_sha
-            and type(ahead_by) is int
+            and native_integer(ahead_by)
             and ahead_by > 0
         )
     ) or behind_by != 0:
@@ -629,7 +634,7 @@ def matching_aggregated_promotion_checks(
     )
     checks = require_list(payload.get("check_runs"), "aggregated promotion checks")
     total_count = payload.get("total_count")
-    if type(total_count) is not int or total_count != len(checks) or total_count > 100:
+    if not native_integer(total_count) or total_count != len(checks) or total_count > 100:
         raise VerificationError("aggregated promotion check inventory is incomplete")
 
     matches: list[tuple[Mapping[str, Any], Mapping[str, Any], int]] = []
@@ -734,7 +739,7 @@ def validate_aggregated_promotion(
 
     check, run, job_id = evidence
     check_id = check.get("id")
-    if not isinstance(check_id, int) or check_id <= 0 or check_id != job_id:
+    if not native_integer(check_id) or check_id <= 0 or check_id != job_id:
         raise VerificationError("aggregated promotion check ID is invalid")
     require_equal(check.get("name"), TARGET_VERIFIER_NAME, "promotion check name")
     require_equal(check.get("head_sha"), event_head, "promotion check head")
@@ -745,7 +750,7 @@ def validate_aggregated_promotion(
     require_equal(app.get("slug"), "github-actions", "promotion check App")
 
     run_id = run.get("id")
-    if not isinstance(run_id, int) or run_id <= 0:
+    if not native_integer(run_id) or run_id <= 0:
         raise VerificationError("aggregated promotion run ID is invalid")
     require_equal(
         check.get("details_url"),
@@ -784,7 +789,7 @@ def validate_aggregated_promotion(
         raise VerificationError("promotion run association drifted")
 
     workflow_id = run.get("workflow_id")
-    if not isinstance(workflow_id, int) or workflow_id <= 0:
+    if not native_integer(workflow_id) or workflow_id <= 0:
         raise VerificationError("promotion workflow ID is invalid")
     workflow_paths = {
         f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
@@ -816,7 +821,7 @@ def validate_aggregated_promotion(
     )
     jobs = require_list(jobs_payload.get("jobs"), "promotion jobs")
     total_count = jobs_payload.get("total_count")
-    if type(total_count) is not int or total_count != len(jobs) or total_count > 100:
+    if not native_integer(total_count) or total_count != len(jobs) or total_count > 100:
         raise VerificationError("promotion job inventory is incomplete")
     final_jobs = [
         require_mapping(job, "promotion job")
@@ -867,7 +872,7 @@ def matching_reservations(
     )
     checks = require_list(payload.get("check_runs"), "protected verifier checks")
     total_count = payload.get("total_count")
-    if type(total_count) is not int or total_count != len(checks) or total_count > 100:
+    if not native_integer(total_count) or total_count != len(checks) or total_count > 100:
         raise VerificationError("protected verifier check inventory is incomplete")
     result: list[Mapping[str, Any]] = []
     for raw_check in checks:
@@ -941,7 +946,7 @@ def validate_reservation(
     sleep: Callable[[float], None],
 ) -> Mapping[str, Any]:
     check_id = check.get("id")
-    if not isinstance(check_id, int) or check_id <= 0:
+    if not native_integer(check_id) or check_id <= 0:
         raise VerificationError("protected verifier check ID is invalid")
     require_equal(check.get("head_sha"), event_head, "protected verifier head")
     app = require_mapping(check.get("app"), "protected verifier App")
@@ -1011,7 +1016,7 @@ def validate_reservation(
     if not isinstance(sender, str) or not sender or any(char.isspace() for char in sender):
         raise VerificationError("verifier sender is invalid")
     run_attempt = producer.get("run_attempt")
-    if run_attempt not in {1, 2}:
+    if not native_integer(run_attempt) or run_attempt not in {1, 2}:
         raise VerificationError("verifier run attempt is outside the bounded contract")
     triggering_actor = require_mapping(
         producer.get("triggering_actor"), "verifier triggering actor"
@@ -1035,7 +1040,7 @@ def validate_reservation(
         "verifier run URL",
     )
     workflow_id = producer.get("workflow_id")
-    if not isinstance(workflow_id, int) or workflow_id <= 0:
+    if not native_integer(workflow_id) or workflow_id <= 0:
         raise VerificationError("verifier workflow ID is invalid")
     require_equal(
         producer.get("workflow_url"),
@@ -1050,7 +1055,7 @@ def validate_reservation(
     require_equal(workflow.get("path"), TARGET_VERIFIER_PATH, "verifier workflow path")
     require_equal(workflow.get("state"), "active", "verifier workflow state")
 
-    attempt = int(run_attempt)
+    attempt = run_attempt
     jobs_payload = require_mapping(
         client.get(
             f"repos/{TARGET_REPOSITORY}/actions/runs/{producer_run_id}"
@@ -1060,7 +1065,7 @@ def validate_reservation(
     )
     jobs = require_list(jobs_payload.get("jobs"), "verifier jobs")
     total_count = jobs_payload.get("total_count")
-    if type(total_count) is not int or total_count != len(jobs) or total_count > 100:
+    if not native_integer(total_count) or total_count != len(jobs) or total_count > 100:
         raise VerificationError("verifier job inventory is incomplete")
     matching_jobs = [
         require_mapping(job, "verifier job")
