@@ -5496,7 +5496,10 @@ jobs:
           def inactive_refresh_name:
             .name == $inactive or .name == ("(vars.LI219_EVENT_MODE == \u0027enabled\u0027 && contains(fromJSON(\u0027[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]\u0027), github.repository))" +
               (if $event_claim then " && \u0027Inactive legacy writer\u0027 || \u0027Refresh canonical Copilot review gate\u0027"
-               else " && \u0027Refresh canonical Copilot review gate\u0027 || \u0027Inactive event writer\u0027" end));
+               else " && \u0027Refresh canonical Copilot review gate\u0027 || \u0027Inactive event writer\u0027" end))
+            or ($count == 5 and $refresh.repository.full_name == "lightning-it/.github" and .name == ("(github.repository == 'lightning-it/.github' || (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('[\"lightning-it/.github\",\"lightning-it/shared-assets-lit\",\"lightning-it/ansible-collection-supplementary\"]'), github.repository)))" +
+              (if $event_claim then " && \u0027Inactive legacy writer\u0027 || \u0027Refresh canonical Copilot review gate\u0027"
+               else " && \u0027Refresh canonical Copilot review gate\u0027 || \u0027Inactive event writer\u0027" end)));
           select(if $count == 1 then
               # Historical single-job native refreshes remain valid only on
               # the legacy route; current CAS dispatch always has three jobs.
@@ -5867,6 +5870,8 @@ jobs:
           CONSOLIDATED_INACTIVE_NAMES = {
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
           CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
                                               for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
@@ -6303,7 +6308,8 @@ jobs:
               python3 "$@"
           }
           validate_recorded_ref() {
-            if [ "${LI219_EVENT_MODE:-disabled}" = enabled ] \
+            if { [ "${LI219_EVENT_MODE:-disabled}" = enabled ] \
+                 || [ "${REPOSITORY}" = lightning-it/.github ]; } \
               && [ "${author}" = litroc ] \
               && jq -e '.pull_requests == []' <<<"$1" >/dev/null; then
               jq -cn --arg repo "${REPOSITORY}" --arg base "${EVENT_BASE}" \
@@ -6324,6 +6330,30 @@ jobs:
               --arg submitted "${review_submitted_at}" \
               '[add[]? | select(.event=="review_requested" and .actor.login == $actor and .requested_reviewer.login=="Copilot" and .created_at>=$start and .created_at<=$submitted)] | length == 1' \
               <<<"${tl}" >/dev/null; then return 0; fi
+            if [ "${LI219_EVENT_MODE:-disabled}" != enabled ] \
+              && [ "${REPOSITORY}" = lightning-it/.github ] \
+              && [ "${recovery_status}" -eq 0 ]; then
+              local original_request
+              original_request="$(jq -ce --arg head "${EVENT_HEAD}" --argjson run "${producer_run_id}" '
+                [.[].jobs[] | select(.name == "Request Copilot review for current revision"
+                  and .run_id == $run and .run_attempt == 1 and .head_sha == $head
+                  and .status == "completed" and .conclusion == "success")]
+                | select(length == 1) | .[0].steps
+                | map(select(.name == "Request Copilot review for the current revision"
+                  and .number == 3 and .status == "completed" and .conclusion == "success"))
+                | select(length == 1) | .[0]
+                ' <<<"${attempt_one_jobs}")" || return 1
+              jq -e --arg start "$(jq -er .started_at <<<"${original_request}")" \
+                --arg request_completed "$(jq -er .completed_at <<<"${original_request}")" \
+                --arg submitted "${review_submitted_at}" '
+                [add[]? | select(.event == "review_requested"
+                  and .actor.login == "github-actions[bot]" and .actor.type == "Bot"
+                  and .requested_reviewer.login == "Copilot"
+                  and .created_at >= $start and .created_at <= $request_completed
+                  and .created_at <= $submitted)] | length == 1
+                ' <<<"${tl}" >/dev/null
+              return $?
+            fi
             [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 1
             [ "${recovery_status}" -eq 0 ] || return 1
             jq -cn --arg repository "${REPOSITORY}" --arg repository_id "${GITHUB_REPOSITORY_ID}" \
@@ -6337,7 +6367,9 @@ jobs:
               '$ARGS.named' | run_request_proof /proof/request-origin.py
           }
           verify_event_recovery() {
-            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 10
+            if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+              [ "${REPOSITORY}" = lightning-it/.github ] || return 10
+            fi
             local key pages claims claim receipt refresh_id refresh_run refresh_jobs
             local source_sha source_ancestry source_branch source_head journal_commit journal_head journal_path journal_snapshot journal_record
             key="li219-verifier-operation:v1:${owner_pr_number}:${EVENT_BASE}:${EVENT_HEAD}:${producer_run_id}"
@@ -6417,6 +6449,16 @@ jobs:
             jq -e --arg source "$(jq -r .source_sha <<<"${journal_record}")" '
               .event == "workflow_dispatch" and .head_sha == $source
               ' <<<"${refresh_run}" >/dev/null || return 1
+            if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+              jq -e --arg source "${EVENT_BASE}" --arg branch "${base_ref}" '
+                .repository.full_name == "lightning-it/.github"
+                and .head_repository.full_name == "lightning-it/.github"
+                and .event == "workflow_dispatch" and .head_sha == $source
+                and .head_branch == $branch
+                and .actor.login == "github-actions[bot]"
+                and .triggering_actor.login == "github-actions[bot]"
+              ' <<<"${refresh_run}" >/dev/null || return 1
+            fi
             if [ "$(jq -r .event <<<"${refresh_run}")" = workflow_dispatch ]; then
               source_sha="$(jq -er '.head_sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"${refresh_run}")" || return 1
               [[ "${base_ref}" =~ ^(develop|main)$ ]] || return 1

@@ -60,13 +60,12 @@ class DefaultRefreshSourceTests(unittest.TestCase):
         self.assertIn('actions/workflows/copilot-review-refresh.yml/dispatches', script)
         self.assertNotIn('requested_reviewers', script)
         self.assertNotIn('/rerun', script)
-        consumer = jobs['legacy-refresh']
+        consumer = jobs['refresh-canonical-gate']
         for guard in ("inputs.operation != 'continue'", "github.ref_protected",
                       "github.actor == 'github-actions[bot]'",
-                      "github.triggering_actor == 'github-actions[bot]'", 'github.run_attempt == 1',
-                      "github.repository != 'lightning-it/.github'"):
+                      "github.triggering_actor == 'github-actions[bot]'", 'github.run_attempt == 1'):
             self.assertIn(guard, consumer['if'])
-        self.assertEqual({'actions': 'write', 'checks': 'write', 'contents': 'read', 'pull-requests': 'read'}, consumer['permissions'])
+        self.assertEqual({'actions': 'write', 'checks': 'write', 'contents': 'write', 'pull-requests': 'read'}, consumer['permissions'])
         self.assertNotIn('issues', consumer['permissions'])
         self.assertIn('test "${WORKFLOW_SHA}" = "${LOCATOR_BASE}"', consumer['steps'][1]['run'])
         self.assertIn('test "${GITHUB_REF}" = "refs/heads/${branch}"', consumer['steps'][1]['run'])

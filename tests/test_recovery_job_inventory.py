@@ -77,13 +77,24 @@ class RecoveryJobInventoryTests(unittest.TestCase):
         source = yaml.safe_load((ROOT / '.github/workflows/copilot-review-refresh.yml').read_text())
         for event, role in ((False, 'refresh-canonical-gate'), (True, 'legacy-refresh')):
             jobs = self.jobs(event)
-            jobs[2]['name'] = source['jobs'][role]['name'][4:-3]
-            self.assertTrue(self.accepted(jobs, event, caller=not event))
+            if event:
+                jobs += [{**jobs[1], 'id': 58 + n, 'name': name} for n, name in enumerate(
+                    ('Locate deferred first review request', 'Resume deferred first review request'))]
+                metadata = {'repository': {'full_name': 'lightning-it/.github'},
+                            'head_repository': {'full_name': 'lightning-it/.github'},
+                            'path': '.github/workflows/copilot-review-refresh.yml'}
+                jobs[2]['name'] = source['jobs'][role]['name'][4:-3]
+            else:
+                metadata = None
+                jobs[2]['name'] = source['jobs'][role]['name'][4:-3].replace(
+                    "(github.repository == 'lightning-it/.github' || ", '', 1).replace(
+                    "github.repository)))", "github.repository))", 1)
+            self.assertTrue(self.accepted(jobs, event, refresh=metadata, caller=not event))
             for field, value in (('runner_id', 7), ('steps', [self.effect]), ('conclusion', 'success'),
                                  ('name', jobs[2]['name'] + ' unexpected'), ('run_attempt', 2)):
                 mutated = copy.deepcopy(jobs)
                 mutated[2][field] = value
-                self.assertFalse(self.accepted(mutated, event))
+                self.assertFalse(self.accepted(mutated, event, refresh=metadata))
 
     def test_inventory_must_be_complete_consistent_and_unique(self):
         for event in (True, False):

@@ -177,10 +177,10 @@ jobs:
         }}
       cancel-in-progress: false
       queue: max
-    name: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'Refresh canonical Copilot review gate' || 'Inactive event writer' }}
+    name: ${{ (github.repository == 'lightning-it/.github' || (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository))) && 'Refresh canonical Copilot review gate' || 'Inactive event writer' }}
     if: >-
-      (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
-      github.event_name == 'workflow_dispatch' && inputs.operation != 'continue' && github.ref_protected && github.actor == 'github-actions[bot]'
+      (github.repository == 'lightning-it/.github' || (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository))) &&
+      github.event_name == 'workflow_dispatch' && inputs.operation != 'continue' && github.ref_protected && github.actor == 'github-actions[bot]' && github.triggering_actor == 'github-actions[bot]' && github.run_attempt == 1
     permissions:
       actions: write
       checks: write
@@ -196,7 +196,13 @@ jobs:
           umask 077
           cat >"${RUNNER_TEMP}/refresh-operation.sh" <<'CLAIM'
           claim_review_operation() {
-            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 0
+            if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+              [ "${GITHUB_REPOSITORY}" = lightning-it/.github ] || return 0
+              [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ] || return 0
+              [ "${GITHUB_REF_PROTECTED}" = true ] || return 1
+              [ "${GITHUB_ACTOR}" = 'github-actions[bot]' ] || return 1
+              [ "${GITHUB_TRIGGERING_ACTOR}" = 'github-actions[bot]' ] || return 1
+            fi
             # The data ref is the CAS authority; Check inventory is never a lock.
             local target="$1" head="$2" base="$3" pr="$4"
             local key path action target_run created now prior snapshot record payload response committed marker rows attempt
@@ -1653,48 +1659,41 @@ jobs:
         }}
       cancel-in-progress: false
       queue: max
-    name: ${{ (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) && 'Inactive legacy writer' || 'Refresh canonical Copilot review gate' }}
+    name: ${{ (github.repository == 'lightning-it/.github' || (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository))) && 'Inactive legacy writer' || 'Refresh canonical Copilot review gate' }}
     if: >-
       inputs.operation != 'continue' &&
       !(vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
+      github.repository != 'lightning-it/.github' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       (
-        (github.repository == 'lightning-it/.github' && github.event_name == 'workflow_dispatch' &&
-         github.ref_protected && github.actor == 'github-actions[bot]' &&
-         github.triggering_actor == 'github-actions[bot]' && github.run_attempt == 1)
-        ||
-        (github.repository != 'lightning-it/.github' &&
-        github.event.pull_request.draft == false &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
         (
+          github.event_name == 'pull_request_review' &&
           (
-            github.event_name == 'pull_request_review' &&
             (
-              (
-                contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-                github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
-              ) ||
-              (
-                github.actor == 'litroc' &&
-                github.event.review.user.login == 'litroc'
-              ) ||
-              contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
-            )
-          ) ||
-          (
-            github.event_name == 'pull_request_review_comment' &&
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+              github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
             (
-              (
-                contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-                github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
-              ) ||
-              (
-                github.actor == 'litroc' &&
-                github.event.comment.user.login == 'litroc'
-              ) ||
-              contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
-            )
+              github.actor == 'litroc' &&
+              github.event.review.user.login == 'litroc'
+            ) ||
+            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
           )
-        )
+        ) ||
+        (
+          github.event_name == 'pull_request_review_comment' &&
+          (
+            (
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+              github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+            ) ||
+            (
+              github.actor == 'litroc' &&
+              github.event.comment.user.login == 'litroc'
+            ) ||
+            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+          )
         )
       )
     permissions:
@@ -1757,6 +1756,8 @@ jobs:
           CONSOLIDATED_INACTIVE_NAMES = {
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
           CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
                                               for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
@@ -2485,6 +2486,8 @@ jobs:
           CONSOLIDATED_INACTIVE_NAMES = {
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+              '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
           CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
                                               for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})

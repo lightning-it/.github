@@ -297,14 +297,16 @@ synthetic check, retry grant, new review request or retrospective Required PASS.
 ### Default-mode refresh source correction
 
 Native Copilot review 5524790626 completed on e698 with zero findings. The
-Root default-mode refresh then failed at its existing protected-source guard:
-the pull-request review event materialized the synthetic PR merge source,
-while the guard correctly required protected Develop and its exact Base SHA.
+The Root default-mode refresh failed without an effective mutation. Native
+metadata proves that its review event materialized the synthetic PR merge
+source, which its existing source guard correctly rejects in favor of protected
+Develop and its exact Base SHA. The exact first failure line was not traced.
 No producer rerun or AI request occurred. The rejected native result remains.
 
 Root now forwards review locators in default mode as well as pilot mode. The
-Root default consumer accepts only a first-attempt protected branch dispatch
-from github-actions[bot], with the explicit continuation operation excluded.
+Root default route uses the existing CAS-scoped canonical consumer, which
+accepts only a first-attempt protected branch dispatch from github-actions[bot],
+with the explicit continuation operation excluded.
 The existing live protected-branch/source, PR tuple, native review, actor,
 content/thread, original-producer and retry-budget guards are unchanged.
 Copilot's native event alias is admitted only at the read-only locator; the
@@ -313,3 +315,21 @@ Non-Root default behavior remains unchanged. Neither activation flag is enabled,
 no new AI request entitlement is added, and the PR merge source is never admitted
 as a mutation authority. The original e698 acceptance evidence stays historical;
 the corrected final head requires normal fresh review and technical checks.
+
+The independent Copilot finding at c40 identified the downstream provenance
+reader that still expected a direct review-event writer. The corrected Root
+default consumer now uses the existing durable verifier-operation CAS receipt
+and its write-scoped job; the separate non-Root legacy consumer keeps its
+original permissions and behavior. No repository pilot flag is enabled. The
+reader authenticates the receipt, complete journal snapshot, protected source
+and branch, exact PR/base/head/producer, chronology and all five native jobs.
+The original default-mode Bot request must lie inside the source-bound original
+requester effect step. Other contributors/default repositories keep their
+existing funding-origin rules. The original single technical retry remains
+bounded by its consumed operation; no AI request opportunity is restored.
+
+The complete late-review regression executes the actual protected reader and
+request-origin entry points with disabled pilot mode. It rejects changed
+actors, trigger actors, source/head/base, PR locator, attempt, claim, active
+companion jobs and original request timing or identity. Fixtures are offline
+contract evidence, never a native GitHub PASS or proof of Main delivery.
