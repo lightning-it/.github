@@ -121,6 +121,42 @@ review history and live settings are acceptance evidence; this document alone
 is not native acceptance. Future multi-person requirements are a separate
 policy change, not enabled by this amendment.
 
+### Operator acceptance sequence
+
+1. Freeze the delivered public `main` source SHA. Run the private protected
+   Management `central-verifier-transition` operation with stage `prepare`
+   and that exact SHA. Record its native run, approval and successful readback.
+   Preparation creates the approval environment and an Evaluate rule while
+   keeping the original Supplementary rule active.
+2. Open a normal, technically reviewed `.github` PR without modifying the
+   central workflow orchestration. Keep its base, head and metadata unchanged
+   throughout acceptance. Record the genuine native Required Workflow target
+   run, original human approval, protected-source receipt and binding digest.
+   Independently require the successful native PR metadata job with the same
+   source, digest and original approval-run receipt.
+3. Run `enforce` through protected Management with the frozen source SHA and
+   accepted target-run ID. Read back both active protections. Run `cutover`
+   with the same accepted evidence and read back the original rule's new
+   `.github/main` source and removal of the temporary rule. These are distinct
+   administrative operations; each can be approved by the same authorized
+   person. Never replace a real native approval with a chat statement.
+4. Confirm that rule 20938748 and all its consumer repositories retain their
+   existing source, and that both protected Root branches retain strict native
+   quality checks, zero human PR reviewers and no administrative bypass.
+   Only after this acceptance retire the former Supplementary source files,
+   their callers and distribution generators.
+5. Deliver the workflow consolidations separately. Recount current files and
+   active/disabled registry entries after protected delivery; historical run
+   entries are retained and are not the current-file inventory.
+
+Before cutover, a failed or interrupted canary leaves the original mandatory
+source in place. Resume with authenticated unchanged human authorization and
+current technical checks, or investigate the concrete failure. If the frozen
+source or PR tuple changes, collect fresh bound acceptance evidence before
+administrative adoption. Jira LI-319 and the linked Confluence controls record
+the actual stage and readbacks, including delegation when the operator explicitly
+asks an agent to execute a genuine native approval on their behalf.
+
 ## Workflow consolidation acceptance
 
 The owner additionally requires a substantially smaller current workflow-file
