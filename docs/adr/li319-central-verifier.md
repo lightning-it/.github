@@ -237,3 +237,28 @@ already bound audit. The actual protected preflight entrypoint regression runs
 the source, live revision, environment and document validators without
 authorization-helper stubs: unchanged document accepts and a forged local
 always-successful metadata job rejects before binding output.
+
+### Observed single-person authorization and unchanged reuse
+
+The pre-cutover native trial used the protected source
+`1472399a503146f092d6aa68000e76ccae705c96`. Its genuine environment review on
+run `38579107091` was performed under the explicitly authorized account `litroc`.
+The subsequent unchanged target run `38580956567` completed successfully while
+its approval job `115911076071` was skipped because the original authorization
+was authenticated and reused. Independent metadata run `38580954817` also
+completed successfully. This demonstrates the native one-person path and avoids
+a second authorization for an unchanged revision; it is historical trial
+acceptance, not evidence for a later source version.
+
+The compatibility fix separately preserves a normal reopened producer whose
+existing exact-head review is reused without an active request job. The native
+request role must be runnerless and step-free with its exact run URL and workflow
+identity; all review, policy, source, revision and chronology checks still apply.
+A failed request, active request or unverifiable original review cannot inherit
+that exception. Technical verification never obtains another AI request slot.
+
+After delivering that fix, freeze the new protected main source and collect a
+fresh original native target plus independent metadata receipt before adoption.
+Keep that acceptance revision open throughout the distinct private enforce and
+cutover operations. Their approvals may all be performed by the same authorized
+person; current technical failures remain independently blocking.
