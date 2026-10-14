@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Protected orchestration only; every policy workload runs in pinned Devtools.
 set -euo pipefail
-case "${1:-}" in preflight|approve|verify|invalidate) ;; *) exit 1 ;; esac
+case "${1:-}" in preflight|approve|verify|audit-metadata) ;; *) exit 1 ;; esac
 [ "$#" -eq 1 ]
 [ "${GITHUB_ACTIONS:-}" = true ]
 [ "${REPOSITORY:-}" = lightning-it/.github ]
@@ -9,7 +9,7 @@ policy_mode="$1"
 cd "$(dirname "$0")/.."
 
 policy_environment=()
-for policy_name in GH_TOKEN GITHUB_API_URL GITHUB_RUN_ATTEMPT GITHUB_RUN_ID \
+for policy_name in GH_TOKEN GITHUB_API_URL GITHUB_RUN_ATTEMPT GITHUB_RUN_ID GITHUB_EVENT_NAME \
   REPOSITORY PR_NUMBER WORKFLOW_REF WORKFLOW_SHA LI219_EVENT_MODE \
   EVENT_UPDATED_AT EVENT_TITLE_JSON EVENT_BODY_JSON EVENT_LABELS_JSON \
   EVENT_ACTION EVENT_BASE EVENT_HEAD EVENT_HEAD_REPOSITORY \

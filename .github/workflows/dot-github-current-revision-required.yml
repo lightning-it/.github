@@ -1,6 +1,6 @@
 # LI-319: canonical protected .github source; native single-person approval.
-# Local metadata events only revoke stale approval. Native rulesets ignore
-# filters and retain opened/synchronize/reopened as the approval authority.
+# A native PR check is pending before fallible setup. Only protected target
+# events authorize humans; the read-only PR job audits that exact authorization.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Protected dot-github current-revision verifier
@@ -11,6 +11,8 @@ run-name: >-
 
 on:
   pull_request_target:
+    branches-ignore: ['**']
+  pull_request:
     types: [edited, labeled, unlabeled]
     branches: [main, develop]
 
@@ -41,16 +43,16 @@ env:
 
 concurrency:
   group: >-
-    protected-dot-github-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+    protected-dot-github-${{ github.event_name }}-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
 jobs:
   preflight:
     name: Bind protected dot-github approval revision
-    if: github.repository == 'lightning-it/.github'
+    if: github.repository == 'lightning-it/.github' && github.event_name == 'pull_request_target'
     permissions:
       actions: read
-      checks: write
+      checks: read
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
@@ -64,7 +66,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: ${{ contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && 'refs/heads/main' || github.workflow_sha }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
           path: protected-source
@@ -74,12 +76,6 @@ jobs:
             scripts/dot-github-policy-devtools.sh
             scripts/wunder-devtools-ee.sh
           sparse-checkout-cone-mode: false
-      - name: Revoke approval after metadata changes
-        if: contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
-        env:
-          WORKFLOW_REF: lightning-it/.github/.github/workflows/dot-github-current-revision-required.yml@refs/heads/main
-          WORKFLOW_SHA: ${{ steps.source.outputs.commit }}
-        run: bash protected-source/scripts/dot-github-policy-devtools.sh invalidate
       - name: Bind current revision and find existing native approval
         id: binding
         run: bash protected-source/scripts/dot-github-policy-devtools.sh preflight
@@ -87,7 +83,7 @@ jobs:
   approve:
     name: Approve dot-github policy revision
     needs: preflight
-    if: needs.preflight.outputs.reuse-run == ''
+    if: github.event_name == 'pull_request_target' && needs.preflight.outputs.reuse-run == ''
     permissions:
       actions: read
       contents: read
@@ -122,13 +118,14 @@ jobs:
     needs: [preflight, approve]
     if: >-
       always()
+      && github.event_name == 'pull_request_target'
       && needs.preflight.result == 'success'
       && (needs.approve.result == 'success'
           || (needs.approve.result == 'skipped'
               && needs.preflight.outputs.reuse-run != ''))
     permissions:
       actions: read
-      checks: write
+      checks: read
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
@@ -153,3 +150,35 @@ jobs:
           APPROVAL_BINDING: ${{ needs.preflight.outputs.binding }}
           APPROVAL_REUSE_RUN: ${{ needs.preflight.outputs.reuse-run }}
         run: bash protected-source/scripts/dot-github-policy-devtools.sh verify
+
+  metadata:
+    name: dot-github / approved metadata
+    if: github.repository == 'lightning-it/.github' && github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out current protected main only
+        id: source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: refs/heads/main
+          fetch-depth: 1
+          persist-credentials: false
+          path: protected-source
+          sparse-checkout: |
+            scripts/verify-dot-github-current-revision.py
+            scripts/dot-github-policy-approval.py
+            scripts/dot-github-policy-devtools.sh
+            scripts/wunder-devtools-ee.sh
+          sparse-checkout-cone-mode: false
+      - name: Audit exact native authorization and current technical evidence
+        env:
+          WORKFLOW_REF: lightning-it/.github/.github/workflows/dot-github-current-revision-required.yml@refs/heads/main
+          WORKFLOW_SHA: ${{ steps.source.outputs.commit }}
+        run: bash protected-source/scripts/dot-github-policy-devtools.sh audit-metadata

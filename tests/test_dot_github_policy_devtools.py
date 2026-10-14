@@ -91,8 +91,7 @@ else:
         for job_id, job in workflow["jobs"].items():
             checkout = job["steps"][0]["with"]
             self.assertEqual(checkout["repository"], "lightning-it/.github")
-            expected_ref = ("${{ contains(fromJSON('[\"edited\",\"labeled\",\"unlabeled\"]'), github.event.action) && 'refs/heads/main' || github.workflow_sha }}"
-                            if job_id == 'preflight' else "${{ github.workflow_sha }}")
+            expected_ref = 'refs/heads/main' if job_id == 'metadata' else "${{ github.workflow_sha }}"
             self.assertEqual(checkout["ref"], expected_ref)
             self.assertIn(DISPATCHER, checkout["sparse-checkout"].splitlines())
             self.assertIn("scripts/wunder-devtools-ee.sh", checkout["sparse-checkout"].splitlines())

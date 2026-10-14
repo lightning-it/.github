@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import unittest
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,17 @@ class SequencedClient:
 
 
 class SourceSchemaTests(unittest.TestCase):
+    def test_actual_graphql_reader_rejects_falsey_malformed_error_envelopes(self):
+        client = MODULE.GitHubClient('fixture-token', 'https://api.github.com')
+        payload = {'data': {'repository': {'pullRequest': {'number': 1, 'lastEditedAt': None}}}}
+        for errors in ({}, '', 0, False, None, [{'message': 'denied'}]):
+            with self.subTest(errors=errors), mock.patch.object(MODULE.urllib.request, 'urlopen',
+                    return_value=io.StringIO(json.dumps(dict(payload, errors=errors)))), self.assertRaises(MODULE.VerificationError):
+                client.metadata_revision(1)
+        for valid in (payload, dict(payload, errors=[])):
+            with mock.patch.object(MODULE.urllib.request, 'urlopen', return_value=io.StringIO(json.dumps(valid))):
+                self.assertIsNone(client.metadata_revision(1))
+
     def test_native_integer_contract_rejects_bool_float_string_and_null(self):
         for bad in (True, False, 1.0, 2.0, '1', None):
             with self.subTest(value=bad):

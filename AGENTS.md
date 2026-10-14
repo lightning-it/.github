@@ -259,12 +259,16 @@ no general private-repository administration credential. Management owns
 settings, Shared Assets owns ordinary templates, and this repository owns the
 central verifier implementation. See `docs/adr/li319-central-verifier.md`.
 
-The central workflow's metadata-only local events revoke the App-15368
-`dot-github / approved metadata` mandatory check on the exact candidate head.
-They execute current protected main code and cannot authorize admission.
-Only the successful native Required Workflow publishes success after approval,
-technical verification and final revision reread. Native check-result write
-permission is narrowly admitted for these two public check publications; it
-grants no private settings, repository write, AI funding or merge authority.
-Changed metadata needs fresh authorization by the same person and independently
-valid technical evidence; existing consumed review opportunities remain binding.
+The central workflow's native pull_request metadata job creates the mandatory
+App-15368 `dot-github / approved metadata` context before runner, checkout,
+container or API setup. Failures leave that native context blocking. The separate
+protected pull_request_target route alone requests human authorization; the
+metadata job only reuses genuine authorization and reruns technical checks.
+Every policy job is read-only and executes current protected main code. The
+candidate's metadata job, global controller environment/defaults, native names,
+job inventory, activity coverage and concurrency must match protected main;
+candidate code remains controller data. Changes to this immutable metadata
+orchestration require a separately reviewed staged source-version transition,
+not candidate self-replacement. Changed metadata still requires fresh matching
+authorization; timeouts preserve a proven unchanged human authorization and
+never restore an AI opportunity. Neither route simulates a human review.

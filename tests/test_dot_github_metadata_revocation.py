@@ -1,80 +1,83 @@
-"""Native metadata revocation never grants local human approval."""
+"""Native queue-time metadata context plus immutable protected orchestration."""
+import base64
 import copy
 import json
-import subprocess
 import unittest
 from unittest import mock
 import yaml
-import test_dot_github_policy_approval as APPROVAL_TESTS
-from test_dot_github_policy_approval import MODULE, ROOT, ERROR
+import test_dot_github_policy_approval as A
+M, ROOT, ERROR = A.MODULE, A.ROOT, A.ERROR
 
-class MetadataRevocationTests(unittest.TestCase):
+class MetadataControllerTests(unittest.TestCase):
     def setUp(self):
-        fixture = APPROVAL_TESTS.ReuseTests()
-        fixture.setUp()
+        fixture = A.ReuseTests(); fixture.setUp()
         self.value, self.run = fixture.value, fixture.run
-        self.local = copy.deepcopy(self.run)
-        self.local.update(workflow_url=self.local['workflow_url'].replace('/required_workflows/', '/workflows/'),
-                          display_title=f"Cross-protect .github PR #4 edited {self.value['head']}")
-        self.pr = {'number': 4, 'title': 'changed after approval', 'body': 'changed body',
-                   'base': {'ref': 'develop', 'repo': {'id': MODULE.REPOSITORY_ID}},
-                   'head': {'sha': self.value['head'], 'ref': 'feature', 'repo': {'id': MODULE.REPOSITORY_ID}}}
-        self.env = {'REPOSITORY': MODULE.REPOSITORY, 'EVENT_ACTION': 'edited',
-                    'PR_NUMBER': '4', 'EVENT_HEAD': self.value['head'],
-                    'WORKFLOW_SHA': self.value['source'], 'WORKFLOW_REF': MODULE.EVIDENCE.SOURCE_WORKFLOW_REF}
-        self.posts = []
-    def client(self, local=False):
+        self.doc = yaml.safe_load((ROOT / M.WORKFLOW).read_text())
+        self.candidate = copy.deepcopy(self.doc)
+    def client(self):
         owner = self
         class Client:
-            api_url = 'https://api.github.com'
             def get(self, path):
-                if path == 'repos/' + MODULE.REPOSITORY:
-                    return {'full_name': MODULE.REPOSITORY, 'visibility': 'public', 'archived': False, 'disabled': False}
-                if path.endswith('/branches/main'):
-                    return {'name': 'main', 'protected': True, 'commit': {'sha': owner.value['source']}}
-                if '/compare/' in path:
-                    return {'base_commit': {'sha': owner.value['source']}, 'merge_base_commit': {'sha': owner.value['source']},
-                            'status': 'identical', 'ahead_by': 0, 'behind_by': 0}
-                if '/contents/' in path: return {'type': 'file', 'sha': 'e' * 40}
-                if path.endswith('/pulls/4'): return copy.deepcopy(owner.pr)
-                if path.endswith('/actions/runs/100'): return copy.deepcopy(owner.local if local else owner.run)
-                if path.endswith('/actions/workflows/2'): return {'id': 2, 'path': MODULE.WORKFLOW, 'state': 'active'}
-                raise AssertionError(path)
+                doc = owner.candidate if path.endswith(owner.value['head']) else owner.doc
+                payload = yaml.safe_dump(doc).encode()
+                return {'type': 'file', 'encoding': 'base64', 'sha': 'e'*40,
+                        'size': len(payload), 'content': base64.b64encode(payload).decode()}
         return Client()
-    def post(self, argv, **kwargs):
-        self.assertEqual(argv, ['gh', 'api', '--method', 'POST', 'repos/' + MODULE.REPOSITORY + '/check-runs', '--input', '-'])
-        self.assertEqual(kwargs['timeout'], 30)
-        payload = json.loads(kwargs['input']); self.posts.append(payload)
-        return subprocess.CompletedProcess(argv, 0, json.dumps(dict(payload, app={'id': 15368})).encode(), b'')
-    def test_title_body_and_labels_only_revoke_exact_head(self):
-        for action in ('edited', 'labeled', 'unlabeled'):
-            self.local['display_title'] = f"Cross-protect .github PR #4 {action} {self.value['head']}"
-            with mock.patch.object(MODULE.subprocess, 'run', side_effect=self.post):
-                MODULE.invalidate_metadata(self.client(True), dict(self.env, EVENT_ACTION=action), 100)
-            self.assertEqual(self.posts[-1]['conclusion'], 'failure')
-            self.assertEqual(self.posts[-1]['head_sha'], self.value['head'])
-            self.assertEqual(self.posts[-1]['name'], MODULE.METADATA_CHECK)
-    def test_old_head_foreign_source_and_non_metadata_event_never_publish(self):
-        for name, value in (('EVENT_HEAD', 'd'*40), ('EVENT_ACTION', 'opened'), ('WORKFLOW_SHA', 'd'*40), ('REPOSITORY', 'lightning-it/private')):
-            with mock.patch.object(MODULE.subprocess, 'run') as post, self.assertRaises(ERROR):
-                MODULE.invalidate_metadata(self.client(True), dict(self.env, **{name: value}), 100)
-            post.assert_not_called()
-        self.local['workflow_url'] = self.local['workflow_url'].replace('api.github.com', 'untrusted.invalid')
-        with mock.patch.object(MODULE.subprocess, 'run') as post, self.assertRaises(ERROR):
-            MODULE.invalidate_metadata(self.client(True), self.env, 100)
-        post.assert_not_called()
-    def test_only_authenticated_required_gate_can_publish_success(self):
-        with mock.patch.object(MODULE.subprocess, 'run', side_effect=self.post):
-            MODULE.publish_metadata_check(self.client(), self.value, 100, approved=True)
-        self.assertEqual(self.posts[-1]['conclusion'], 'success')
-        with mock.patch.object(MODULE.subprocess, 'run') as post, self.assertRaises(ERROR):
-            MODULE.publish_metadata_check(self.client(True), self.value, 100, approved=True)
-        post.assert_not_called()
-    def test_local_metadata_yaml_cannot_enter_admission(self):
-        doc = yaml.safe_load((ROOT / MODULE.WORKFLOW).read_text())
-        self.assertEqual(doc['on' if 'on' in doc else True]['pull_request_target']['types'], ['edited', 'labeled', 'unlabeled'])
-        job = doc['jobs']['preflight']; step = next(s for s in job['steps'] if 'Revoke approval' in s['name'])
-        self.assertEqual(step['env']['WORKFLOW_REF'], MODULE.EVIDENCE.SOURCE_WORKFLOW_REF)
-        self.assertEqual(step['env']['WORKFLOW_SHA'], '${{ steps.source.outputs.commit }}')
-        self.assertTrue(step['run'].endswith(' invalidate'))
-        self.assertNotIn('checks', doc['jobs']['approve']['permissions'])
+    def test_same_protected_metadata_controller_accepts_and_human_job_implementation_may_change(self):
+        M.metadata_controller(self.client(), self.value)
+        self.candidate['jobs']['approve']['steps'][-1]['name'] = 'Reword trusted human step'
+        M.metadata_controller(self.client(), self.value)
+    def test_candidate_metadata_code_token_event_coverage_or_global_shell_cannot_replace_main(self):
+        variants = []
+        d = copy.deepcopy(self.doc); d['jobs']['metadata']['steps'][-1]['run'] = 'echo forged'; variants.append(d)
+        d = copy.deepcopy(self.doc); d['defaults'] = {'run': {'shell': 'custom {0}'}}; variants.append(d)
+        d = copy.deepcopy(self.doc); d['env']['GH_TOKEN'] = 'candidate token'; variants.append(d)
+        d = copy.deepcopy(self.doc); d[True]['pull_request']['types'] = ['edited']; variants.append(d)
+        d = copy.deepcopy(self.doc); d['jobs']['extra'] = d['jobs']['metadata']; variants.append(d)
+        d = copy.deepcopy(self.doc); d['jobs']['approve']['name'] = M.METADATA_JOB; variants.append(d)
+        for d in variants:
+            self.candidate = d
+            with self.subTest(doc=d), self.assertRaises(ERROR): M.metadata_controller(self.client(), self.value)
+    def test_native_check_is_queued_without_publisher_and_uses_read_only_main(self):
+        triggers = self.doc[True]
+        self.assertEqual(triggers['pull_request']['types'], ['edited','labeled','unlabeled'])
+        self.assertEqual(triggers['pull_request_target']['branches-ignore'], ['**'])
+        job = self.doc['jobs']['metadata']
+        self.assertEqual(job['name'], M.METADATA_JOB)
+        self.assertNotIn('needs', job)
+        self.assertEqual(job['steps'][0]['with']['ref'], 'refs/heads/main')
+        self.assertTrue(job['steps'][-1]['run'].endswith(' audit-metadata'))
+        self.assertNotIn('environment', job)
+        for role in self.doc['jobs'].values():
+            self.assertNotIn('write', role['permissions'].values())
+
+class NativeMetadataAuditTests(unittest.TestCase):
+    def setUp(self):
+        fixture = A.ReuseTests(); fixture.setUp()
+        self.value, self.run = fixture.value, fixture.run
+        self.run.update(id=101, event='pull_request')
+        self.env = {'GITHUB_EVENT_NAME': 'pull_request'}
+        self.client = mock.Mock(); self.client.get.return_value = self.run
+    def patches(self):
+        return (mock.patch.object(M,'revision',return_value=(self.value,'c'*64)),
+                mock.patch.object(M,'metadata_controller'),
+                mock.patch.object(M,'reusable_approval',return_value=100),
+                mock.patch.object(M.EVIDENCE,'verify'))
+    def test_full_audit_reuses_human_but_never_requests_another_approval(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for patch in self.patches(): stack.enter_context(patch)
+            with mock.patch.object(M, 'native_approval') as human, mock.patch.object(M.subprocess, 'run') as write:
+                M.audit_metadata(self.client,self.env,101,attempts=1,sleep=lambda _:None)
+                human.assert_not_called(); write.assert_not_called()
+                M.EVIDENCE.verify.assert_called_once()
+    def test_missing_or_changed_approval_and_wrong_native_run_block(self):
+        from contextlib import ExitStack
+        for problem in ('missing','source','run'):
+            with ExitStack() as stack:
+                for patch in self.patches(): stack.enter_context(patch)
+                if problem=='missing': M.reusable_approval.return_value=None
+                if problem=='source': M.revision.side_effect=[(self.value,'c'*64),(self.value,'d'*64)]
+                if problem=='run': self.run['head_sha']='d'*40
+                with self.subTest(problem=problem), self.assertRaises(ERROR):
+                    M.audit_metadata(self.client,self.env,101,attempts=1,sleep=lambda _:None)

@@ -155,7 +155,7 @@ class ReuseTests(unittest.TestCase):
         self.value = {"base": "a" * 40, "source": "b" * 40,
                       "head": "c" * 40, "head_ref": "feature", "pr": 4,
                       "head_repository_id": MODULE.REPOSITORY_ID,
-                      "base_ref": "develop", "environment_id": 77}
+                      "base_ref": "develop", "environment_id": 77, "head_repository": MODULE.REPOSITORY}
         api = "https://api.github.com/repos/" + MODULE.REPOSITORY
         record = {"number": 4, "url": api + "/pulls/4",
                   "base": {"sha": "a" * 40, "ref": "develop", "repo": {"id": MODULE.REPOSITORY_ID}},
@@ -168,7 +168,8 @@ class ReuseTests(unittest.TestCase):
                     "status": "completed", "conclusion": "success"}
         self.jobs = [{"id": i, "name": name, "run_id": 100, "run_attempt": 1,
                       "head_sha": "c" * 40, "status": "completed", "conclusion": "success"}
-                     for i, name in enumerate((MODULE.BINDING_JOB, MODULE.APPROVAL_JOB, MODULE.FINAL_JOB), 1)]
+                     for i, name in enumerate((MODULE.BINDING_JOB, MODULE.APPROVAL_JOB, MODULE.FINAL_JOB, MODULE.METADATA_JOB), 1)]
+        self.jobs[3]['conclusion'] = 'skipped' 
 
     def client(self, changed_source=False):
         owner = self
@@ -208,7 +209,7 @@ class ReuseTests(unittest.TestCase):
                 if "/attempts/1/jobs" in path:
                     result["total_count"] = inner.count
                 return result
-        for count in (4, True, "3", None):
+        for count in (5, True, "4", None):
             client = Truncated()
             client.count = count
             with self.subTest(count=count), mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
@@ -216,7 +217,7 @@ class ReuseTests(unittest.TestCase):
                     MODULE.reusable_approval(client, self.value, "c" * 64, 101)
 
     def test_complete_paginated_inventory_and_count_drift(self):
-        self.jobs.extend({"id": i, "name": "other"} for i in range(4, 102))
+        self.jobs.extend({"id": i, "name": "other"} for i in range(5, 103))
         delegate = self.client()
         class Pages:
             drift = False
@@ -304,6 +305,7 @@ class ReuseTests(unittest.TestCase):
              mock.patch.object(MODULE, "revision", return_value=(self.value, "c" * 64)), \
              mock.patch.object(MODULE.EVIDENCE, "GitHubClient"), \
              mock.patch.object(MODULE, "reusable_approval", return_value=100), \
+             mock.patch.object(MODULE, "metadata_controller"), \
              mock.patch.object(MODULE.EVIDENCE, "verify", side_effect=ERROR("technical failure")) as verify:
             self.assertEqual(MODULE.main(), 1)
             verify.assert_called_once()
@@ -385,13 +387,22 @@ class ReuseTests(unittest.TestCase):
              mock.patch.object(MODULE, 'log_binding', return_value='c' * 64), \
              mock.patch.object(MODULE, 'native_approval') as approval, \
              mock.patch.object(MODULE.EVIDENCE, 'verify') as verify, \
-             mock.patch.object(MODULE, 'publish_metadata_check') as metadata:
+             mock.patch.object(MODULE, 'metadata_controller') as metadata:
             self.assertEqual(MODULE.main(), 0)
             metadata.assert_called_once()
-            self.assertEqual(metadata.call_args.args[1:], (self.value, 100))
-            self.assertEqual(metadata.call_args.kwargs, {'approved': True})
+            self.assertEqual(metadata.call_args.args[1:], (self.value,))
             approval.assert_called_once()
             verify.assert_called_once()
+
+    def test_timeout_reuses_the_exact_original_native_human_approval(self):
+        self.run['conclusion'] = 'timed_out'
+        self.jobs[2]['conclusion'] = 'timed_out'
+        with mock.patch.object(MODULE, 'log_binding', return_value='c'*64):
+            self.assertEqual(MODULE.reusable_approval(self.client(), self.value, 'c'*64, 101), 100)
+        self.prepare_recovery()
+        self.jobs[2]['conclusion'] = 'timed_out'
+        with mock.patch.object(MODULE, 'log_binding', return_value='c'*64):
+            MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c'*64, 100)
 
     def test_native_repository_and_pr_ids_are_not_coerced(self):
         for target, field in ((self.run['repository'], 'id'),

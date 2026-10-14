@@ -111,7 +111,8 @@ class GitHubClient:
                 payload = json.load(response)
         except (urllib.error.URLError, TimeoutError) as exc:
             raise VerificationError("pull request metadata revision read failed") from exc
-        if not isinstance(payload, dict) or payload.get("errors"):
+        if (not isinstance(payload, dict) or ("errors" in payload
+                and (not isinstance(payload["errors"], list) or payload["errors"]))):
             raise VerificationError("pull request metadata revision is unavailable")
         record = require_mapping(
             require_mapping(
@@ -1232,7 +1233,7 @@ def verify(
     repository = environment.get("REPOSITORY", "")
     require_equal(repository, TARGET_REPOSITORY, "target repository environment")
     event_action = environment.get("EVENT_ACTION", "")
-    if event_action not in PRODUCER_ACTIONS:
+    if event_action not in PRODUCER_ACTIONS | {"labeled", "unlabeled"}:
         raise VerificationError("unsupported pull request activity")
     event_base = require_sha(environment.get("EVENT_BASE", ""), "event base")
     event_head = require_sha(environment.get("EVENT_HEAD", ""), "event head")
