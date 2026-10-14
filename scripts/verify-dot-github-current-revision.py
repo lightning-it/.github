@@ -173,7 +173,8 @@ def validate_ancestry_binding(client: GitHubClient, pr: Mapping[str, Any], base:
     if (
         not native_integer(author.get("id"))
         or isinstance(author.get("id"), bool)
-        or identity != (ANCESTRY_APP_LOGIN, ANCESTRY_APP_ID)
+        or identity not in {(ANCESTRY_APP_LOGIN, ANCESTRY_APP_ID),
+                            (RELEASE_APP_LOGIN, RELEASE_APP_ID)}
     ):
         raise VerificationError("ancestry author identity is invalid")
     require_equal(pr["base"]["ref"], "develop", "ancestry base ref")

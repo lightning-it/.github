@@ -140,3 +140,19 @@ Promotion discovery filters genuine evidence by exact PR/base/head before
 choosing the newest current result. A check for an old base attached to the
 same develop head remains unavailable during bounded polling, rather than
 aborting a fresh promotion or masking a failed newest current result.
+
+The established ancestry exemption retains both exact native publisher pairs:
+Shared Assets App 307342877 and Release App 307565056. Versions v5 and v6 still
+require the same protected main, exact branch/title, two ordered parents and
+the sole ancestry-proof file; mixed login/ID pairs and numeric aliases reject.
+
+A candidate-local metadata success is never sufficient authorization. The
+independent native Required Workflow from protected main calls the complete
+candidate orchestration comparison before preflight output or human admission.
+Changing the workflow requires a new Git head and its mandatory target event;
+that event rejects forged local metadata steps. With an unchanged accepted
+head, the workflow bytes are immutable while metadata-only edits run the
+already bound audit. The actual protected preflight entrypoint regression runs
+the source, live revision, environment and document validators without
+authorization-helper stubs: unchanged document accepts and a forged local
+always-successful metadata job rejects before binding output.

@@ -283,37 +283,49 @@ class OrdinaryTests(unittest.TestCase):
 
 
 class PublisherTests(unittest.TestCase):
-    def test_established_v5_ancestry_retains_its_deterministic_proof(self):
+    def test_established_ancestry_publishers_and_versions_retain_their_deterministic_proof(self):
         main = 'c' * 40
-        client, summary, reservation = self.fixture('managed-sync')
-        client.pr['head']['ref'] = f'backmerge/github-{main[:12]}-{BASE[:12]}-main'
-        client.pr['title'] = f'chore(governance): record main ancestry before {main[:12]}'
-        summary['review_path'] = M.ANCESTRY_REVIEW_PATH
-        client.check['external_id'] = f'mlx90-current-revision:ancestry-backmerge:v5:88:{BASE}:{HEAD}'
-        client.check['output']['summary'] = json.dumps(summary)
-        client.check['output']['title'] = 'Current revision deterministic exemption passed'
-        import base64
-        proof = json.dumps({'schema_version': 1, 'repository': M.TARGET_REPOSITORY, 'main_sha': main,
-                            'develop_parent_sha': BASE, 'purpose': 'Bind the reviewed main ancestry backmerge.'}).encode()
-        read = client.get
-        def ancestry(path):
-            if path.endswith('/branches/main'):
-                return {'name': 'main', 'protected': True, 'commit': {'sha': main}}
-            if '/git/commits/' in path:
-                return {'sha': HEAD, 'parents': [{'sha': BASE}, {'sha': main}]}
-            if '/compare/' in path:
-                return {'merge_base_commit': {'sha': BASE}, 'files': [
-                    {'filename': '.lit/main-ancestry.json', 'status': 'added'}]}
-            if '/contents/.lit/main-ancestry.json' in path:
-                return {'type': 'file', 'encoding': 'base64', 'size': len(proof),
-                        'content': base64.b64encode(proof).decode()}
-            return read(path)
-        from unittest import mock
-        with mock.patch.object(client, 'get', side_effect=ancestry):
-            self.validate(client, reservation)
-            client.pr['head']['ref'] = 'different'
-            with self.assertRaises(M.VerificationError):
-                self.validate(client, reservation)
+        for login, identity in ((M.ANCESTRY_APP_LOGIN, M.ANCESTRY_APP_ID), (M.RELEASE_APP_LOGIN, M.RELEASE_APP_ID)):
+            for version in ('v5', 'v6'):
+                client, summary, reservation = self.fixture('managed-sync')
+                client.pr['head']['ref'] = f'backmerge/github-{main[:12]}-{BASE[:12]}-main'
+                client.pr['title'] = f'chore(governance): record main ancestry before {main[:12]}'
+                client.pr['user'] = {'login': login, 'id': identity, 'type': 'Bot'}
+                summary['review_path'] = M.ANCESTRY_REVIEW_PATH
+                client.check['external_id'] = f'mlx90-current-revision:ancestry-backmerge:{version}:' + ('4:' if version == 'v6' else '') + f'88:{BASE}:{HEAD}'
+                client.check['output']['summary'] = json.dumps(summary)
+                client.check['output']['title'] = 'Current revision deterministic exemption passed'
+                import base64
+                proof = json.dumps({'schema_version': 1, 'repository': M.TARGET_REPOSITORY, 'main_sha': main,
+                                    'develop_parent_sha': BASE, 'purpose': 'Bind the reviewed main ancestry backmerge.'}).encode()
+                read = client.get
+                def ancestry(path):
+                    if path.endswith('/branches/main'):
+                        return {'name': 'main', 'protected': True, 'commit': {'sha': main}}
+                    if '/git/commits/' in path:
+                        return {'sha': HEAD, 'parents': [{'sha': BASE}, {'sha': main}]}
+                    if '/compare/' in path:
+                        return {'merge_base_commit': {'sha': BASE}, 'files': [
+                            {'filename': '.lit/main-ancestry.json', 'status': 'added'}]}
+                    if '/contents/.lit/main-ancestry.json' in path:
+                        return {'type': 'file', 'encoding': 'base64', 'size': len(proof),
+                                'content': base64.b64encode(proof).decode()}
+                    return read(path)
+                from unittest import mock
+                with mock.patch.object(client, 'get', side_effect=ancestry):
+                    self.validate(client, reservation)
+                    client.pr['head']['ref'] = 'different'
+                    with self.assertRaises(M.VerificationError):
+                        self.validate(client, reservation)
+                    client.pr['head']['ref'] = f'backmerge/github-{main[:12]}-{BASE[:12]}-main'
+                    for wrong in ({'login': login, 'id': 1, 'type': 'Bot'},
+                                  {'login': M.RELEASE_APP_LOGIN, 'id': M.ANCESTRY_APP_ID, 'type': 'Bot'},
+                                  {'login': M.ANCESTRY_APP_LOGIN, 'id': M.RELEASE_APP_ID, 'type': 'Bot'},
+                                  {'login': login, 'id': float(identity), 'type': 'Bot'},
+                                  {'login': login, 'id': identity, 'type': 'User'}):
+                        client.pr['user'] = wrong
+                        with self.subTest(version=version, wrong=wrong), self.assertRaises(M.VerificationError):
+                            self.validate(client, reservation)
 
     def fixture(self, kind):
         client = PromotionClient()

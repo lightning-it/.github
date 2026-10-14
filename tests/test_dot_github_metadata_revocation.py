@@ -51,6 +51,44 @@ class MetadataControllerTests(unittest.TestCase):
                 self.candidate = candidate
                 with self.subTest(job=job, variant=variants.index(candidate)), self.assertRaises(ERROR):
                     M.metadata_controller(self.client(), self.value)
+    def test_forged_local_metadata_context_cannot_pass_independent_protected_preflight(self):
+        import test_dot_github_producer_contracts as C
+        owner = self
+        class ProtectedClient(C.PromotionClient):
+            def __init__(self):
+                super().__init__()
+                self.pr['base']['ref'] = 'develop'
+                self.pr['head']['ref'] = 'feature'
+                self.pr['user'] = {'login': M.APPROVER_LOGIN, 'id': M.APPROVER_ID, 'type': 'User'}
+            def get(self, path):
+                if '/environments/' in path: return A.protected_environment()
+                if '/actions/runs?' in path: return {'workflow_runs': []}
+                if '/contents/' in path:
+                    doc = owner.candidate if path.endswith(C.HEAD) else owner.doc
+                    payload = yaml.safe_dump(doc).encode()
+                    return {'type': 'file', 'encoding': 'base64', 'sha': 'e'*40,
+                            'size': len(payload), 'content': base64.b64encode(payload).decode()}
+                return super().get(path)
+        client = ProtectedClient()
+        env = {'REPOSITORY': M.REPOSITORY, 'PR_NUMBER': '4', 'EVENT_BASE': C.BASE,
+               'EVENT_HEAD': C.HEAD, 'WORKFLOW_SHA': C.BASE, 'WORKFLOW_REF': M.EVIDENCE.SOURCE_WORKFLOW_REF,
+               'EVENT_HEAD_REPOSITORY': M.REPOSITORY, 'EVENT_HEAD_REPOSITORY_OWNER': 'lightning-it',
+               'EVENT_HEAD_REF': 'feature', 'EVENT_BASE_REF': 'develop', 'EVENT_AUTHOR': M.APPROVER_LOGIN,
+               'EVENT_AUTHOR_TYPE': 'User', 'EVENT_SENDER': M.APPROVER_LOGIN, 'EVENT_ACTION': 'edited',
+               'EVENT_UPDATED_AT': C.STAMP, 'EVENT_TITLE_JSON': json.dumps(client.pr['title']),
+               'EVENT_BODY_JSON': json.dumps(client.pr['body']), 'EVENT_LABELS_JSON': '[]',
+               'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_RUN_ID': '101', 'GITHUB_EVENT_NAME': 'pull_request_target'}
+        import os, sys
+        with mock.patch.dict(os.environ,env,clear=True), mock.patch.object(sys,'argv',['helper','preflight']),              mock.patch.object(M.EVIDENCE,'GitHubClient',return_value=client), mock.patch.object(M,'output') as output:
+            # Actual source, live revision, environment and document validators run.
+            self.assertEqual(0,M.main())
+            self.assertEqual(['binding','reuse-run'],[call.args[0] for call in output.call_args_list])
+            output.reset_mock()
+            self.candidate['jobs']['metadata']['steps'] = [{'run':'true'}]
+            # A forged local green check cannot replace this independent native
+            # protected target workflow, which rejects before human admission.
+            self.assertEqual(1,M.main())
+            output.assert_not_called()
     def test_native_check_is_queued_without_publisher_and_uses_read_only_main(self):
         triggers = self.doc[True]
         self.assertEqual(triggers['pull_request']['types'], ['edited','labeled','unlabeled'])
