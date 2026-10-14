@@ -75,6 +75,10 @@ def revision(client: Any, environment: dict[str, str]) -> tuple[dict[str, Any], 
     EVIDENCE.require_equal(environment.get("REPOSITORY"), REPOSITORY, "target repository")
     source = EVIDENCE.require_sha(environment.get("WORKFLOW_SHA", ""), "source SHA")
     EVIDENCE.validate_source(client, environment.get("WORKFLOW_REF", ""), source)
+    active = EVIDENCE.require_mapping(
+        client.get(f"repos/{REPOSITORY}/branches/main"), "active source branch")
+    commit = EVIDENCE.require_mapping(active.get("commit"), "active source commit")
+    EVIDENCE.require_equal(commit.get("sha"), source, "active approval controller")
     binding = EVIDENCE.event_pr_binding(environment)
     number = EVIDENCE.require_positive_integer(environment.get("PR_NUMBER", ""), "PR number")
     base = EVIDENCE.require_sha(environment.get("EVENT_BASE", ""), "base SHA")

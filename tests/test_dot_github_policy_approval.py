@@ -95,17 +95,22 @@ class BindingTests(unittest.TestCase):
              mock.patch.object(MODULE.EVIDENCE, "event_pr_binding", return_value=binding), \
              mock.patch.object(MODULE.EVIDENCE, "validate_live_pr", return_value=pr), \
              mock.patch.object(MODULE, "approval_environment", return_value=77):
-            original = MODULE.revision(Client({}), env)[1]
-            self.assertEqual(MODULE.revision(Client({}), env)[1], original)
+            client = Client({"commit": {"sha": "c" * 40}})
+            original = MODULE.revision(client, env)[1]
+            self.assertEqual(MODULE.revision(client, env)[1], original)
             for key, value in (("EVENT_HEAD", "d" * 40), ("EVENT_BASE", "d" * 40),
-                               ("WORKFLOW_SHA", "d" * 40)):
+                               ("LI219_EVENT_MODE", "enabled")):
                 changed = dict(env, **{key: value})
-                self.assertNotEqual(MODULE.revision(Client({}), changed)[1], original)
+                self.assertNotEqual(MODULE.revision(client, changed)[1], original)
+            with self.assertRaisesRegex(ERROR, "active approval controller"):
+                MODULE.revision(client, dict(env, WORKFLOW_SHA="d" * 40))
+            with self.assertRaisesRegex(ERROR, "active approval controller"):
+                MODULE.revision(Client({"commit": {"sha": "d" * 40}}), env)
             for key, value in (("title", "different"), ("body", "different"),
                                ("_metadata_revision", "2026-10-13T00:00:00Z")):
                 changed = dict(pr, **{key: value})
                 with mock.patch.object(MODULE.EVIDENCE, "validate_live_pr", return_value=changed):
-                    self.assertNotEqual(MODULE.revision(Client({}), env)[1], original)
+                    self.assertNotEqual(MODULE.revision(client, env)[1], original)
 
 
 class ReuseTests(unittest.TestCase):
