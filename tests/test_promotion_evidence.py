@@ -2415,6 +2415,34 @@ class PromotionEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(88, evidence["producer_run_id"])
 
+        # A normal reopen reuses the already bound exact-head review without
+        # another request. Its request job is entirely inert, while the current
+        # policy and later failed handoff keep their complete native evidence.
+        reused_jobs = [dict(job) for job in exact_jobs]
+        reused_jobs[0].update(conclusion="skipped", runner_id=None, steps=[],
+                              workflow_name="Current revision review gate",
+                              run_url="https://api.github.com/repos/lightning-it/example/actions/runs/88")
+        for changes, accepted in (({}, True), ({"runner_id": 7}, False),
+                                  ({"steps": [{"name": "request"}]}, False),
+                                  ({"workflow_name": "unknown"}, False),
+                                  ({"run_url": "https://api.github.com/repos/lightning-it/example/actions/runs/89"}, False),
+                                  ({"conclusion": "failure"}, False)):
+            candidate = [dict(job) for job in reused_jobs]
+            candidate[0].update(changes)
+            with self.subTest(reused_request=changes), mock.patch.object(
+                MODULE, "gh_json", side_effect=evidence_api(run, jobs=candidate)
+            ):
+                def verify_reuse():
+                    return MODULE.bound_review_check(
+                        [{"check_runs": [check_run(external_id, v6_summary())]}],
+                        repository="lightning-it/example", pull=ingress_pull(),
+                        pull_number=17, base_sha=BASE, head_sha=HEAD)
+                if accepted:
+                    self.assertEqual(88, verify_reuse()["producer_run_id"])
+                else:
+                    with self.assertRaisesRegex(MODULE.EvidenceError, "producer-run-job-binding"):
+                        verify_reuse()
+
         # Real native helper name, projected onto this fixture's bound run.
         native = json.loads((ROOT / "tests/fixtures/native-inactive-producer-job.json").read_text())
         native.update(id=6, run_id=88, head_sha=HEAD,
