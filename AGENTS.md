@@ -235,3 +235,26 @@ content and unresolved findings. This amendment grants no bypass or weaker
 platform, protected-source, actor, Required-Workflow, or merge authority.
 
 <!-- LIT at-most-once review funding: end -->
+
+## LI-319 central verifier and single-person approval
+
+The owner-authorized 2026-10-13 amendment makes this public repository the
+canonical Required Workflow source. Supplementary's reciprocal verifier remains
+authoritative until the reviewed overlapping cutover is natively accepted.
+The replacement dot-github verifier executes only protected main source; it
+retains the existing native current-revision evidence checks.
+
+One authorized human may approve their own revision through the native
+`dot-github-policy-approval` environment with self-review permitted and no
+administrator bypass. Human PR/CODEOWNER approvals and last-push approval must
+not require a second person. Environment authorization is bound to the exact PR,
+head, base, metadata and protected controller. An identical successful native
+authorization may be reused without another approval; drift invalidates it.
+Technical failures remain blocking. Automated agents never simulate the human
+environment review. This amendment does not add AI requests or relax existing
+producer, actor, source, review-budget, recovery or release evidence contracts.
+
+Private target data stays in its target repository. Public policy code receives
+no general private-repository administration credential. Management owns
+settings, Shared Assets owns ordinary templates, and this repository owns the
+central verifier implementation. See `docs/adr/li319-central-verifier.md`.
