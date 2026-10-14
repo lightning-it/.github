@@ -868,6 +868,74 @@ class PromotionEvidenceTests(unittest.TestCase):
                     with self.assertRaises(MODULE.EvidenceError):
                         validate()
 
+    def test_historical_renovate_actor_is_exact_and_other_guards_remain(self) -> None:
+        pull = ingress_pull(login="renovate[bot]", user_id=29139614, user_type="Bot")
+        pull["head"]["ref"] = "renovate/dependency"
+        pull["labels"] = [{"name": name} for name in (
+            "dependencies", "renovate", "safe-automerge",
+        )]
+        summary = json.loads(v6_summary("renovate"))
+        summary["pull_request_labels_sha256"] = hashlib.sha256(
+            b'["dependencies","renovate","safe-automerge"]'
+        ).hexdigest()
+        check = check_run(
+            f"mlx90-current-revision:renovate:v6:17:88:{BASE}:{HEAD}",
+            json.dumps(summary), "Current revision Renovate exemption passed",
+        )
+        run = producer_run()
+        run["actor"] = {"login": "litroc", "id": 76040632, "type": "User"}
+        run["triggering_actor"] = dict(run["actor"])
+        run["head_branch"] = "renovate/dependency"
+        run["pull_requests"][0]["head"]["ref"] = "renovate/dependency"
+        # Independent fixture binding; private historical tuples are never public.
+        summary_digest = hashlib.sha256((json.dumps(
+            summary, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ) + "\n").encode()).hexdigest()
+        binding = {
+            "repository": "lightning-it/example", "pull_request_number": 17,
+            "base_sha": BASE, "head_sha": HEAD, "merge_commit_sha": MERGE,
+            "merged_at": pull["merged_at"], "check_id": 99, "producer_run_id": 88,
+            "summary_sha256": summary_digest, "run_attempt": 1,
+            "actor": dict(run["actor"]), "triggering_actor": dict(run["triggering_actor"]),
+        }
+        admitted = hashlib.sha256((json.dumps(
+            binding, ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+        ) + "\n").encode()).hexdigest()
+        def verify(candidate_pull, candidate_check, candidate_run):
+            with mock.patch.object(MODULE, "gh_json", side_effect=evidence_api(candidate_run)):
+                return MODULE.bound_review_check(
+                    [{"check_runs": [candidate_check]}], repository="lightning-it/example",
+                    pull=candidate_pull, pull_number=17, base_sha=BASE, head_sha=HEAD,
+                )
+        with self.assertRaisesRegex(MODULE.EvidenceError, "producer-run-actor-identity"):
+            verify(pull, check, run)
+        with mock.patch.object(MODULE, "HISTORICAL_RENOVATE_ACTOR_BINDINGS", frozenset({admitted})):
+            result = verify(pull, check, run)
+            self.assertEqual("native-historical-actor:" + admitted, result["historical_exception"])
+            self.assertNotIn("copilot_binding", result)
+            for change in ("actor", "trigger", "attempt", "merge", "source", "event", "conclusion", "labels"):
+                candidate_pull = json.loads(json.dumps(pull))
+                candidate_check = json.loads(json.dumps(check))
+                candidate_run = json.loads(json.dumps(run))
+                if change == "actor":
+                    candidate_run["actor"]["id"] = 1
+                elif change == "trigger":
+                    candidate_run["triggering_actor"]["login"] = "unknown-user"
+                elif change == "attempt":
+                    candidate_run["run_attempt"] = 2
+                elif change == "merge":
+                    candidate_pull["merge_commit_sha"] = "9" * 40
+                elif change == "source":
+                    candidate_run["path"] = ".github/workflows/other.yml"
+                elif change == "event":
+                    candidate_run["event"] = "workflow_dispatch"
+                elif change == "conclusion":
+                    candidate_run["conclusion"] = "failure"
+                elif change == "labels":
+                    candidate_pull["labels"].append({"name": "breaking-update"})
+                with self.subTest(change=change), self.assertRaises(MODULE.EvidenceError):
+                    verify(candidate_pull, candidate_check, candidate_run)
+
     def test_v6_renovate_check_requires_the_exact_producer_title(self) -> None:
         renovate = ingress_pull(
             login="renovate[bot]", user_id=29139614, user_type="Bot"
