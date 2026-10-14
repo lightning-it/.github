@@ -72,6 +72,33 @@ The target-event slot uses the distinct name
 metadata name through a skipped job.
 No custom check-result publication or write token is needed.
 
+Native log transport compatibility is tested through the actual CLI argument
+parser installed in the digest-pinned Devtools runtime. A reviewer or host CLI
+version is not substituted for that runtime. Color bytes are captured internally;
+source and digest receipts still require unique exact native markers.
+
+An immutable producer that already failed its neutral publication cannot be
+replaced by a later successful locator-only workflow. Close/reopen preserves the
+original review budget and cannot turn that failed publisher into new evidence.
+Retain Ready state while investigating a finding that needs no source change;
+use Draft when correcting a confirmed defect. Existing protected recovery must
+authenticate the original owner and its remaining slot. If that path is absent,
+only a meaningful new implementation or regression change merits a new revision;
+never use empty commits or rewrite a failed native record to reset a budget.
+
+With the existing LI-219 pilot disabled, the legacy requester admits `opened`
+and `ready_for_review`, and does not fund requests on `synchronize`. Stage a
+meaningful new head while the PR is Draft, then mark that verified head Ready
+once. Pushing a new head while Ready can elect a synchronize owner that waits
+for a request its own event cannot fund; a later Ready locator cannot replace
+that immutable owner. Keep this protocol until the separately reviewed workflow
+consolidation changes its producer/requester contract atomically.
+
+Log-read failures report only a bounded error category (GitHub HTTP status,
+unsupported arguments, terminal-control rejection or CLI exit). Raw stderr and
+signed redirect URLs are never printed. No diagnostic authorizes a retry,
+another human approval or weakened evidence checks.
+
 The complete candidate workflow orchestration must semantically match current
 protected main, including every job, event gate, token permission, dependency,
 checkout and dispatcher. This single comparison replaces partial job field
@@ -120,6 +147,42 @@ Shared Assets. Private target evidence stays private. Native PRs, source commits
 review history and live settings are acceptance evidence; this document alone
 is not native acceptance. Future multi-person requirements are a separate
 policy change, not enabled by this amendment.
+
+### Operator acceptance sequence
+
+1. Freeze the delivered public `main` source SHA. Run the private protected
+   Management `central-verifier-transition` operation with stage `prepare`
+   and that exact SHA. Record its native run, approval and successful readback.
+   Preparation creates the approval environment and an Evaluate rule while
+   keeping the original Supplementary rule active.
+2. Open a normal, technically reviewed `.github` PR without modifying the
+   central workflow orchestration. Keep its base, head and metadata unchanged
+   throughout acceptance. Record the genuine native Required Workflow target
+   run, original human approval, protected-source receipt and binding digest.
+   Independently require the successful native PR metadata job with the same
+   source, digest and original approval-run receipt.
+3. Run `enforce` through protected Management with the frozen source SHA and
+   accepted target-run ID. Read back both active protections. Run `cutover`
+   with the same accepted evidence and read back the original rule's new
+   `.github/main` source and removal of the temporary rule. These are distinct
+   administrative operations; each can be approved by the same authorized
+   person. Never replace a real native approval with a chat statement.
+4. Confirm that rule 20938748 and all its consumer repositories retain their
+   existing source, and that both protected Root branches retain strict native
+   quality checks, zero human PR reviewers and no administrative bypass.
+   Only after this acceptance retire the former Supplementary source files,
+   their callers and distribution generators.
+5. Deliver the workflow consolidations separately. Recount current files and
+   active/disabled registry entries after protected delivery; historical run
+   entries are retained and are not the current-file inventory.
+
+Before cutover, a failed or interrupted canary leaves the original mandatory
+source in place. Resume with authenticated unchanged human authorization and
+current technical checks, or investigate the concrete failure. If the frozen
+source or PR tuple changes, collect fresh bound acceptance evidence before
+administrative adoption. Jira LI-319 and the linked Confluence controls record
+the actual stage and readbacks, including delegation when the operator explicitly
+asks an agent to execute a genuine native approval on their behalf.
 
 ## Workflow consolidation acceptance
 

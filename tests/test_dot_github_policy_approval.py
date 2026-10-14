@@ -356,6 +356,51 @@ class ReuseTests(unittest.TestCase):
                 with self.assertRaises(ERROR):
                     MODULE.log_binding(None, 1, self.value['source'])
 
+    def test_real_native_log_transport_captures_color_without_terminal_output(self):
+        payload = (b'2026-10-14T11:15:36Z \x1b[32mcontainer progress\x1b[0m\n'
+                   + ('2026-10-14T11:15:36Z LI319_APPROVAL_BINDING=' + 'c'*64 + '\n'
+                      + '2026-10-14T11:15:36Z LI319_PROTECTED_SOURCE=' + self.value['source'] + '\n').encode())
+        with mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=payload)) as request:
+            self.assertEqual(MODULE.log_binding(None, 1, self.value['source']), 'c'*64)
+            args, kwargs = request.call_args
+            self.assertEqual(args[0], ['gh', 'api', '--allow-escape-sequences',
+                                      'repos/lightning-it/.github/actions/jobs/1/logs'])
+            self.assertTrue(kwargs['capture_output'])
+            self.assertEqual(kwargs['timeout'], 30)
+
+    def test_pinned_runtime_real_cli_parser_supports_native_log_transport(self):
+        # Run the installed CLI, not a mocked subprocess or a review host CLI.
+        # --help parses options without auth, provider requests or network access.
+        result = MODULE.subprocess.run(
+            ['gh', 'api', '--allow-escape-sequences', '--help'],
+            capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b'--allow-escape-sequences', result.stdout)
+
+    def test_native_transport_failure_reports_cause_without_raw_secret_stderr(self):
+        secret = b'https://example.invalid/log?sig=private-receipt-token'
+        for stderr, reason in ((b'gh: HTTP 403 ' + secret, 'GitHub HTTP 403'),
+                               (b'unknown flag: --allow-escape-sequences ' + secret, 'CLI rejected arguments'),
+                               (b'the response contains terminal escape sequences ' + secret,
+                                'CLI refused terminal-control bytes'),
+                               (b'other transport failure ' + secret, 'CLI exit 1')):
+            error = MODULE.subprocess.CalledProcessError(1, ['gh', 'api'], stderr=stderr)
+            with mock.patch.object(MODULE.subprocess, 'run', side_effect=error), self.assertRaises(ERROR) as raised:
+                MODULE.log_binding(None, 1, self.value['source'])
+            self.assertEqual(str(raised.exception), 'native approval log read failed: ' + reason)
+            self.assertNotIn('private-receipt-token', str(raised.exception))
+
+    def test_recovery_authenticates_native_skipped_expression_role(self):
+        self.prepare_recovery()
+        self.jobs[3]['name'] = MODULE.INACTIVE_METADATA_API_NAME
+        with mock.patch.object(MODULE, 'log_binding', return_value='c'*64):
+            MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c'*64, 100)
+            for field, bad in (('name', MODULE.METADATA_JOB), ('name', 'unknown expression'),
+                               ('conclusion', 'success'), ('run_id', 101),
+                               ('run_attempt', True), ('head_sha', 'd'*40)):
+                with mock.patch.dict(self.jobs[3], {field: bad}), self.assertRaises(ERROR):
+                    MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c'*64, 100)
+
     def recovery_client(self):
         owner = self
         previous = self.client()
