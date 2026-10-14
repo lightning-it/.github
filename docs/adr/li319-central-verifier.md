@@ -72,6 +72,20 @@ The target-event slot uses the distinct name
 metadata name through a skipped job.
 No custom check-result publication or write token is needed.
 
+Native log transport compatibility is tested through the actual CLI argument
+parser installed in the digest-pinned Devtools runtime. A reviewer or host CLI
+version is not substituted for that runtime. Color bytes are captured internally;
+source and digest receipts still require unique exact native markers.
+
+An immutable producer that already failed its neutral publication cannot be
+replaced by a later successful locator-only workflow. Close/reopen preserves the
+original review budget and cannot turn that failed publisher into new evidence.
+Retain Ready state while investigating a finding that needs no source change;
+use Draft when correcting a confirmed defect. Existing protected recovery must
+authenticate the original owner and its remaining slot. If that path is absent,
+only a meaningful new implementation or regression change merits a new revision;
+never use empty commits or rewrite a failed native record to reset a budget.
+
 The complete candidate workflow orchestration must semantically match current
 protected main, including every job, event gate, token permission, dependency,
 checkout and dispatcher. This single comparison replaces partial job field

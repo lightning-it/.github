@@ -368,6 +368,15 @@ class ReuseTests(unittest.TestCase):
             self.assertTrue(kwargs['capture_output'])
             self.assertEqual(kwargs['timeout'], 30)
 
+    def test_pinned_runtime_real_cli_parser_supports_native_log_transport(self):
+        # Run the installed CLI, not a mocked subprocess or a review host CLI.
+        # --help parses options without auth, provider requests or network access.
+        result = MODULE.subprocess.run(
+            ['gh', 'api', '--allow-escape-sequences', '--help'],
+            capture_output=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b'--allow-escape-sequences', result.stdout)
+
     def test_recovery_authenticates_native_skipped_expression_role(self):
         self.prepare_recovery()
         self.jobs[3]['name'] = MODULE.INACTIVE_METADATA_API_NAME
