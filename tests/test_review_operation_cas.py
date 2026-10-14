@@ -210,6 +210,24 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
                     second = [c for c in state['calls'] if c['worker'] == '501' and c.get('cas')]
                     self.assertEqual(INITIAL, second[0]['input']['expectedHeadOid'])
 
+    def test_root_default_dispatch_consumes_same_single_verifier_slot(self):
+        context = {'LI219_EVENT_MODE': 'disabled',
+                   'GITHUB_REPOSITORY': 'lightning-it/.github',
+                   'GITHUB_ACTOR': 'github-actions[bot]',
+                   'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]'}
+        state, _ = self.probe('consistent', **context)
+        self.assertEqual(1, sum(c.get('cas', False) for c in state['calls']))
+        self.assertEqual(1, sum(c.get('rerun', False) for c in state['calls']))
+        self.assertFalse(any(c.get('request') for c in state['calls']))
+        for field, value in (('GITHUB_ACTOR', 'litroc'),
+                             ('GITHUB_TRIGGERING_ACTOR', 'litroc'),
+                             ('GITHUB_REF_PROTECTED', 'false'),
+                             ('GITHUB_RUN_ATTEMPT', '2')):
+            with self.subTest(field=field):
+                state, _ = self.probe('consistent', **{**context, field: value})
+                self.assertFalse(any(c.get('cas') or c.get('marker') or c.get('rerun')
+                                     for c in state['calls']))
+
     def test_terminal_review_preserves_cas_until_later_valid_review(self):
         for marker in ('premium request quota', 'premium requests quota', 'encountered an error'):
             for in_comment in (False, True):

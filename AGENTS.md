@@ -45,6 +45,15 @@
   paths without CAS mutation, but must persist and confirm the exact-head
   UNCERTAIN reservation before the request POST. An interruption after that
   reservation consumes the slot even if delivery never occurred.
+- The owner-authorized LI-319 central-source consolidation also permits
+  `lightning-it/.github` in disabled/default mode to recover a late valid review
+  through the existing technical verifier CAS slot. Only a first-attempt
+  `github-actions[bot]` dispatch from the protected branch may claim that slot;
+  authenticate the original producer, current PR/base/head, native review,
+  protected source, complete helper inventory and chronological receipt.
+  This grants no AI request, funding, extra retry or pilot activation. Other
+  default repositories retain their existing behavior. The original request
+  reservation remains consumed independently of the verifier operation.
 - The owner-authorized LI-259 follow-up separates that single event entitlement
   from technical recovery. Only the wired supplementary verifier, with both
   `LI219_EVENT_MODE` and `LI259_INFRA_RETRY` enabled, may consume native attempts

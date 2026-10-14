@@ -333,3 +333,11 @@ request-origin entry points with disabled pilot mode. It rejects changed
 actors, trigger actors, source/head/base, PR locator, attempt, claim, active
 companion jobs and original request timing or identity. Fixtures are offline
 contract evidence, never a native GitHub PASS or proof of Main delivery.
+
+The operation-claim shell implementation is synchronized in all three native
+callers (request, refresh and protected reevaluation). Their existing equality
+and uncertain-effect tests remain mandatory. The LI-319 Root default exception
+is also explicit in AGENTS.md and its bound Copilot instructions. A regression
+executes the real claim implementation twice against the same journal: only one
+technical CAS/effect is accepted, no AI request occurs, and actor, trigger,
+protection or attempt drift produces no mutation.

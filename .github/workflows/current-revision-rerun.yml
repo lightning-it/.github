@@ -313,7 +313,13 @@ jobs:
               ' <<<"${owner_pr}" >/dev/null
           }
           claim_review_operation() {
-            [ "${LI219_EVENT_MODE:-disabled}" = enabled ] || return 0
+            if [ "${LI219_EVENT_MODE:-disabled}" != enabled ]; then
+              [ "${GITHUB_REPOSITORY}" = lightning-it/.github ] || return 0
+              [ "${GITHUB_EVENT_NAME}" = workflow_dispatch ] || return 0
+              [ "${GITHUB_REF_PROTECTED}" = true ] || return 1
+              [ "${GITHUB_ACTOR}" = 'github-actions[bot]' ] || return 1
+              [ "${GITHUB_TRIGGERING_ACTOR}" = 'github-actions[bot]' ] || return 1
+            fi
             # The data ref is the CAS authority; Check inventory is never a lock.
             local target="$1" head="$2" base="$3" pr="$4"
             local key path action target_run created now prior snapshot record payload response committed marker rows attempt
