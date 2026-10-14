@@ -186,6 +186,24 @@ asks an agent to execute a genuine native approval on their behalf.
 
 ## Workflow consolidation acceptance
 
+### Delivered-source acceptance record
+
+The acceptance PR is a normal documentation change, not a replacement verifier
+or an artificial review-budget reset. Before administrative adoption, record the
+delivered protected source separately from the candidate head and protected base.
+The original target run must complete its preflight, genuine environment approval
+and technical verifier successfully on its first attempt. The separate native PR
+metadata job must then publish the same source, revision digest and original
+approval-run ID. A green target run alone is insufficient.
+
+The operator must retain the unchanged acceptance PR until Management has read
+both native receipts for `enforce` and `cutover`. Record each administrative run
+and its genuine approval independently; the same authorized person can perform
+all three operations. Record delegated execution explicitly when the person has
+authorized an agent to perform the real GitHub review. Do not describe delegation
+as a personal UI click. Keep failed earlier source trials as diagnostic history,
+and never substitute them for the delivered-source acceptance receipts.
+
 The owner additionally requires a substantially smaller current workflow-file
 inventory and no disabled standalone workflow files. Necessary manual release,
 recovery and guarded automation functions must be bundled with their admission

@@ -2987,9 +2987,24 @@ def validate_producer_run(
             # A managed sync publishes deterministic native evidence instead of
             # requesting Copilot. Its separate finalizer handoff must succeed;
             # only the later verifier helper may account for a failed producer.
+            # A normal Copilot reopen can reuse its exact-head review. Admit
+            # only the native runnerless request role; the bound review, policy,
+            # source, PR and post-evidence handoff are still verified below.
+            reused_request = evidence_kind == "copilot" and any(
+                isinstance(job, dict)
+                and job.get("name") == "Request Copilot review for current revision"
+                and job.get("status") == "completed"
+                and job.get("conclusion") == "skipped"
+                and "runner_id" in job and job["runner_id"] is None
+                and job.get("steps") == []
+                and job.get("workflow_name") == "Current revision review gate"
+                and job.get("run_url")
+                == f"https://api.github.com/repos/{repository}/actions/runs/{producer_run_id}"
+                for job in jobs
+            )
             expected_jobs = {
                 "Request Copilot review for current revision": (
-                    "skipped" if evidence_kind == "managed-sync" else "success"
+                    "skipped" if evidence_kind == "managed-sync" or reused_request else "success"
                 ),
                 "Verify current revision policy": "success",
                 "Classify protected main trust-root handoff": "skipped",
