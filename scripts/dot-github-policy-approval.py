@@ -137,9 +137,25 @@ def native_approval(client: Any, run_id: int, environment_id: int) -> None:
 def log_binding(client: Any, job_id: int, expected_source: str) -> str:
     # gh handles GitHub's authenticated log redirect without shell interpolation.
     # Only the protected .github repository and a validated numeric ID are used.
-    result = subprocess.run(
-        ["gh", "api", "--allow-escape-sequences", f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
-        capture_output=True, timeout=30, check=True)
+    try:
+        result = subprocess.run(
+            ["gh", "api", "--allow-escape-sequences", f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"],
+            capture_output=True, timeout=30, check=True)
+    except subprocess.CalledProcessError as error:
+        # Native transport failures must be distinguishable without exposing
+        # raw stderr, credentials or signed log-redirect URLs in public output.
+        stderr = error.stderr or b""
+        if isinstance(stderr, bytes):
+            stderr = stderr[:8192].decode("utf-8", errors="replace")
+        else:
+            stderr = stderr[:8192]
+        status = re.search(r"\bHTTP (401|403|404|429|5[0-9]{2})\b", stderr)
+        reason = (f"GitHub HTTP {status[1]}" if status else
+                  "CLI rejected arguments" if "unknown flag" in stderr else
+                  "CLI refused terminal-control bytes" if
+                  "response contains terminal escape sequences" in stderr else
+                  f"CLI exit {error.returncode}")
+        raise EVIDENCE.VerificationError(f"native approval log read failed: {reason}") from None
     if len(result.stdout) > MAX_LOG_BYTES:
         raise EVIDENCE.VerificationError("approval log exceeds its bounded input size")
     lines = result.stdout.decode("utf-8", errors="strict").splitlines()

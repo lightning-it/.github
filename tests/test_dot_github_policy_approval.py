@@ -377,6 +377,19 @@ class ReuseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertIn(b'--allow-escape-sequences', result.stdout)
 
+    def test_native_transport_failure_reports_cause_without_raw_secret_stderr(self):
+        secret = b'https://example.invalid/log?sig=private-receipt-token'
+        for stderr, reason in ((b'gh: HTTP 403 ' + secret, 'GitHub HTTP 403'),
+                               (b'unknown flag: --allow-escape-sequences ' + secret, 'CLI rejected arguments'),
+                               (b'the response contains terminal escape sequences ' + secret,
+                                'CLI refused terminal-control bytes'),
+                               (b'other transport failure ' + secret, 'CLI exit 1')):
+            error = MODULE.subprocess.CalledProcessError(1, ['gh', 'api'], stderr=stderr)
+            with mock.patch.object(MODULE.subprocess, 'run', side_effect=error), self.assertRaises(ERROR) as raised:
+                MODULE.log_binding(None, 1, self.value['source'])
+            self.assertEqual(str(raised.exception), 'native approval log read failed: ' + reason)
+            self.assertNotIn('private-receipt-token', str(raised.exception))
+
     def test_recovery_authenticates_native_skipped_expression_role(self):
         self.prepare_recovery()
         self.jobs[3]['name'] = MODULE.INACTIVE_METADATA_API_NAME

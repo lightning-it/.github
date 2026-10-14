@@ -86,6 +86,19 @@ authenticate the original owner and its remaining slot. If that path is absent,
 only a meaningful new implementation or regression change merits a new revision;
 never use empty commits or rewrite a failed native record to reset a budget.
 
+With the existing LI-219 pilot disabled, the legacy requester admits `opened`
+and `ready_for_review`, and does not fund requests on `synchronize`. Stage a
+meaningful new head while the PR is Draft, then mark that verified head Ready
+once. Pushing a new head while Ready can elect a synchronize owner that waits
+for a request its own event cannot fund; a later Ready locator cannot replace
+that immutable owner. Keep this protocol until the separately reviewed workflow
+consolidation changes its producer/requester contract atomically.
+
+Log-read failures report only a bounded error category (GitHub HTTP status,
+unsupported arguments, terminal-control rejection or CLI exit). Raw stderr and
+signed redirect URLs are never printed. No diagnostic authorizes a retry,
+another human approval or weakened evidence checks.
+
 The complete candidate workflow orchestration must semantically match current
 protected main, including every job, event gate, token permission, dependency,
 checkout and dispatcher. This single comparison replaces partial job field
