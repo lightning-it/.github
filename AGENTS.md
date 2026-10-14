@@ -254,6 +254,14 @@ Technical failures remain blocking. Automated agents never simulate the human
 environment review. This amendment does not add AI requests or relax existing
 producer, actor, source, review-budget, recovery or release evidence contracts.
 
+For this LI-319 migration, the owner explicitly delegated execution of the
+necessary genuine native approvals through their authenticated GitHub account.
+The human makes that authorization decision; an agent may execute its API call
+and must record delegation in the native approval comment and tracking ticket.
+This scoped instruction permits delegated execution, never fabricated reviews,
+an agent's independent human-authorization decision or an administrator bypass.
+All exact-revision and technical checks remain mandatory.
+
 Private target data stays in its target repository. Public policy code receives
 no general private-repository administration credential. Management owns
 settings, Shared Assets owns ordinary templates, and this repository owns the
