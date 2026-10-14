@@ -38,6 +38,14 @@ A well-formed receipt for another source is discarded so the new revision can
 request fresh native admission; missing or ambiguous receipt evidence blocks
 admission. The same original technical recovery cannot cross a source change.
 
+Producer compatibility retains the established current Human, deterministic
+ancestry, Renovate, provenance-bound managed-sync v6 and protected Release-App
+v4 contracts. Automation identities and schema fields are validated explicitly.
+The Release-App review job may finish while its downstream receiver handoff
+still runs; that successful bound job is required instead of creating a cyclic
+whole-run wait. One complete typed job-inventory boundary binds IDs, run,
+attempt and head for ordinary, release and aggregated promotion evidence.
+
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.
 The receiver requires the exact native ruleset run and PR tuple, bot triggering

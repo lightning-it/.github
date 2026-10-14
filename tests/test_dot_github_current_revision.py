@@ -68,7 +68,8 @@ class SourceSchemaTests(unittest.TestCase):
                     if path.endswith('/actions/workflows/9'):
                         return {'id': 9, 'path': MODULE.TARGET_VERIFIER_PATH, 'state': 'active'}
                     if '/jobs?' in path:
-                        return {'total_count': 1, 'jobs': [{'name': MODULE.TARGET_VERIFIER_NAME,
+                        return {'total_count': 1, 'jobs': [{'id': 53, 'run_id': 42, 'head_sha': head,
+                                                           'run_attempt': attempt, 'name': MODULE.TARGET_VERIFIER_NAME,
                                                            'status': 'completed', 'conclusion': 'success'}]}
                     raise AssertionError(path)
             def validate():

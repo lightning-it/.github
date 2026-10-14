@@ -40,6 +40,7 @@ RELEASE_APP_ID = 307565056
 ANCESTRY_APP_LOGIN = "lightning-it-shared-assets-sync[bot]"
 ANCESTRY_APP_ID = 307342877
 ANCESTRY_REVIEW_PATH = "deterministic evidence-bound ancestry exemption"
+MANAGED_REVIEW_PATH = "deterministic provenance-bound managed distribution exemption"
 PROMOTION_TITLE = "chore(release): promote develop to main"
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
@@ -290,6 +291,12 @@ def validate_neutral_metadata(
         ("head_sha", head),
     ):
         require_equal(summary.get(field), value, f"neutral {field}")
+    if str(check.get("external_id", "")).startswith("mlx90-current-revision:v4:"):
+        validate_release_neutral(client, check, summary, pr, number, base, head, server)
+        require_equal(reservation.get("output", {}).get("summary"),
+                      f"PR #{number}; base {base}; head {head}; producer {summary['run_url']}.",
+                      "reservation release producer association")
+        return check
     common_keys = {
         "schema", "base_sha", "head_sha", "controller_sha", "pull_request_number",
         "producer_run_id", "review_path", "run_url",
@@ -298,18 +305,30 @@ def validate_neutral_metadata(
     # nine-field publisher's metadata revision independently of Renovate.
     kind = "copilot"
     title = "Current revision review passed"
-    if summary.get("review_path") == ANCESTRY_REVIEW_PATH:
+    if summary.get("review_path") == MANAGED_REVIEW_PATH:
+        require_equal(set(summary), common_keys, "neutral managed distribution fields")
+        author = require_mapping(pr.get("user"), "managed distribution author")
+        require_equal(author.get("id"), ANCESTRY_APP_ID, "managed distribution author ID")
+        require_equal(author.get("login"), ANCESTRY_APP_LOGIN, "managed distribution author")
+        require_equal(author.get("type"), "Bot", "managed distribution author type")
+        require_equal(pr["base"]["ref"], "develop", "managed distribution base ref")
+        require_equal(pr["head"]["repo"]["full_name"], TARGET_REPOSITORY, "managed distribution head repository")
+        kind = "managed-sync"
+        title = "Current revision managed distribution exemption passed"
+    elif summary.get("review_path") == ANCESTRY_REVIEW_PATH:
         require_equal(set(summary), common_keys, "neutral ancestry fields")
         require_equal(summary.get("controller_sha"), base, "neutral ancestry controller")
         validate_ancestry_binding(client, pr, base, head)
         kind = "ancestry-backmerge"
         title = "Current revision deterministic exemption passed"
     elif set(summary) == common_keys | {"pull_request_last_edited_at"}:
+        require_equal(summary.get("review_path"), "applicable Copilot or governed automation exemption",
+                      "neutral current human path")
         revision = summary["pull_request_last_edited_at"]
         if revision is not None:
             require_timestamp(revision, "neutral metadata revision")
         require_equal(revision, pr["_metadata_revision"], "neutral metadata revision")
-    elif set(summary) != common_keys:
+    elif summary.get("review_path") == "deterministic policy-bound Renovate exemption":
         require_equal(
             set(summary),
             common_keys | {
@@ -330,6 +349,10 @@ def validate_neutral_metadata(
             raise VerificationError("neutral Renovate controller ref is invalid")
         kind = "renovate"
         title = "Current revision Renovate exemption passed"
+    else:
+        require_equal(set(summary), common_keys, "neutral legacy human fields")
+        require_equal(summary.get("review_path"), "applicable Copilot or governed automation exemption",
+                      "neutral legacy human path")
     require_equal(output.get("title"), title, "neutral title")
     controller = summary.get("controller_sha")
     if not isinstance(controller, str):
@@ -355,6 +378,70 @@ def validate_neutral_metadata(
     return check
 
 
+def validate_release_neutral(client: GitHubClient, check: Mapping[str, Any], summary: Mapping[str, Any],
+                             pr: Mapping[str, Any], number: int, base: str, head: str, server: str) -> None:
+    """Retain the established protected Release-App schema and ready-review job.
+
+    Its downstream recovery job may still be running: requiring that entire
+    producer to finish would deadlock the existing producer/receiver handoff.
+    """
+    require_equal(set(summary), {"schema", "base_sha", "head_sha", "merge_base_sha", "integration_tree_sha",
+                  "diff_sha256", "input_sha256", "workflow_sha", "pull_request_number", "producer_run_id", "run_url"},
+                  "release neutral schema")
+    author = require_mapping(pr.get("user"), "release neutral author")
+    for field, expected in (("id", RELEASE_APP_ID), ("login", RELEASE_APP_LOGIN), ("type", "Bot")):
+        require_equal(author.get(field), expected, f"release neutral author {field}")
+    require_equal(pr["head"]["repo"]["full_name"], TARGET_REPOSITORY, "release neutral head repository")
+    for field in ("merge_base_sha", "integration_tree_sha", "workflow_sha"):
+        require_sha(summary.get(field), f"release neutral {field}")
+    require_equal(summary.get("workflow_sha"), base, "release neutral protected base")
+    for field in ("diff_sha256", "input_sha256"):
+        value = summary.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise VerificationError(f"release neutral {field} is invalid")
+    producer_id = summary.get("producer_run_id")
+    if not native_integer(producer_id) or producer_id <= 0:
+        raise VerificationError("release neutral producer ID is invalid")
+    url = f"{server}/{TARGET_REPOSITORY}/actions/runs/{producer_id}"
+    require_equal(summary.get("run_url"), url, "release neutral producer URL")
+    require_equal(check.get("external_id"), f"mlx90-current-revision:v4:{producer_id}:{summary['input_sha256']}",
+                  "release neutral identity")
+    require_equal(check.get("output", {}).get("title"), "Protected Exact-Revision Codex review passed",
+                  "release neutral title")
+    run = require_mapping(client.get(f"repos/{TARGET_REPOSITORY}/actions/runs/{producer_id}"), "release producer")
+    path = ".github/workflows/release-bot-exact-head-review.yml"
+    for field, expected in (("id", producer_id), ("event", "workflow_dispatch"), ("run_attempt", 1),
+                            ("head_sha", base), ("head_branch", pr["base"]["ref"]), ("path", path),
+                            ("html_url", url), ("display_title", f"Exact-Revision Codex PR #{number} {base}..{head}")):
+        require_equal(run.get(field), expected, f"release producer {field}")
+    for field in ("actor", "triggering_actor"):
+        actor = require_mapping(run.get(field), f"release producer {field}")
+        require_equal(actor.get("login"), RELEASE_APP_LOGIN, f"release producer {field} login")
+        require_equal(actor.get("id"), RELEASE_APP_ID, f"release producer {field} ID")
+        require_equal(actor.get("type"), "Bot", f"release producer {field} type")
+    for field in ("repository", "head_repository"):
+        repository = require_mapping(run.get(field), f"release producer {field}")
+        require_equal(repository.get("full_name"), TARGET_REPOSITORY, f"release producer {field} name")
+    if not ((run.get("status") in NONTERMINAL_RUN_STATUSES and run.get("conclusion") is None)
+            or (run.get("status") == "completed" and run.get("conclusion") in {"success", "failure"})):
+        raise VerificationError("release producer has contradictory terminal state")
+    workflow_id = run.get("workflow_id")
+    if not native_integer(workflow_id) or workflow_id <= 0:
+        raise VerificationError("release producer workflow ID is invalid")
+    require_equal(run.get("workflow_url"), f"{client.api_url}/repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
+                  "release producer workflow URL")
+    workflow = require_mapping(client.get(f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}"), "release workflow")
+    for field, expected in (("id", workflow_id), ("path", path), ("state", "active")):
+        require_equal(workflow.get(field), expected, f"release workflow {field}")
+    jobs = native_jobs(client.get(f"repos/{TARGET_REPOSITORY}/actions/runs/{producer_id}/attempts/1/jobs?per_page=100"),
+                       producer_id, 1, base, "release producer")
+    review = [job for job in jobs if job.get("name") == "Current revision review"]
+    if len(review) != 1:
+        raise VerificationError("release review job is missing or ambiguous")
+    require_equal(review[0].get("status"), "completed", "release review job status")
+    require_equal(review[0].get("conclusion"), "success", "release review job conclusion")
+
+
 def require_mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise VerificationError(f"{label} must be an object")
@@ -365,6 +452,27 @@ def require_list(value: Any, label: str) -> list[Any]:
     if not isinstance(value, list):
         raise VerificationError(f"{label} must be an array")
     return value
+
+
+def native_jobs(payload: Any, run_id: int, attempt: int, head: str, label: str) -> list[Any]:
+    """One strict complete-inventory boundary for ordinary, release and promotion jobs."""
+    payload = require_mapping(payload, f"{label} job inventory")
+    jobs = require_list(payload.get("jobs"), f"{label} jobs")
+    count = payload.get("total_count")
+    if not native_integer(count) or count != len(jobs) or count > 100:
+        raise VerificationError(f"{label} job inventory is incomplete")
+    ids = []
+    for value in jobs:
+        job = require_mapping(value, f"{label} job")
+        jid = job.get("id")
+        if not native_integer(jid) or jid <= 0:
+            raise VerificationError(f"{label} job ID is invalid")
+        ids.append(jid)
+        for field, expected in (("run_id", run_id), ("run_attempt", attempt), ("head_sha", head)):
+            require_equal(job.get(field), expected, f"{label} job {field}")
+    if len(ids) != len(set(ids)):
+        raise VerificationError(f"{label} job inventory is ambiguous")
+    return jobs
 
 
 def require_sha(value: str, label: str) -> str:
@@ -568,6 +676,7 @@ def is_aggregated_promotion(pr: Mapping[str, Any]) -> bool:
         base.get("ref") == "main"
         and head.get("ref") == "develop"
         and author.get("login") == RELEASE_APP_LOGIN
+        and native_integer(author.get("id"))
         and author.get("id") == RELEASE_APP_ID
         and author.get("type") == "Bot"
     )
@@ -602,7 +711,8 @@ def exact_promotion_run_association(
     if not isinstance(base_repo, dict) or not isinstance(head_repo, dict):
         return False
     return (
-        association.get("number") == pr_number
+        native_integer(association.get("number"))
+        and association.get("number") == pr_number
         and base.get("ref") == "main"
         and base.get("sha") == event_base
         and base_repo.get("name") == ".github"
@@ -658,11 +768,13 @@ def matching_aggregated_promotion_checks(
             client.get(f"repos/{TARGET_REPOSITORY}/actions/runs/{run_id}"),
             "aggregated promotion run",
         )
+        require_equal(run.get("id"), run_id, "promotion locator run ID")
+        require_equal(check.get("id"), job_id, "promotion locator job ID")
         if run_id in seen_runs:
             raise VerificationError("aggregated promotion evidence is ambiguous")
         seen_runs.add(run_id)
         matches.append((check, run, job_id))
-    matches.sort(key=lambda evidence: int(evidence[1].get("id", 0)))
+    matches.sort(key=lambda evidence: evidence[1]["id"])
     return matches
 
 
@@ -819,10 +931,7 @@ def validate_aggregated_promotion(
         ),
         "promotion jobs",
     )
-    jobs = require_list(jobs_payload.get("jobs"), "promotion jobs")
-    total_count = jobs_payload.get("total_count")
-    if not native_integer(total_count) or total_count != len(jobs) or total_count > 100:
-        raise VerificationError("promotion job inventory is incomplete")
+    jobs = native_jobs(jobs_payload, run_id, 1, event_head, "promotion")
     final_jobs = [
         require_mapping(job, "promotion job")
         for job in jobs
@@ -1063,10 +1172,7 @@ def validate_reservation(
         ),
         "verifier jobs",
     )
-    jobs = require_list(jobs_payload.get("jobs"), "verifier jobs")
-    total_count = jobs_payload.get("total_count")
-    if not native_integer(total_count) or total_count != len(jobs) or total_count > 100:
-        raise VerificationError("verifier job inventory is incomplete")
+    jobs = native_jobs(jobs_payload, producer_run_id, attempt, event_head, "verifier")
     matching_jobs = [
         require_mapping(job, "verifier job")
         for job in jobs
