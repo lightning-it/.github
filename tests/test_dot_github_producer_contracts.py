@@ -327,6 +327,62 @@ class PublisherTests(unittest.TestCase):
                         with self.subTest(version=version, wrong=wrong), self.assertRaises(M.VerificationError):
                             self.validate(client, reservation)
 
+    def renovate_fixture(self):
+        client, summary, reservation = self.fixture('managed-sync')
+        client.pr['user'] = {'login': 'renovate[bot]', 'id': 29139614, 'type': 'Bot'}
+        client.pr['head']['ref'] = 'renovate/pinned-dependency'
+        client.pr['labels'] = [{'name': name} for name in ('renovate', 'dependencies', 'safe-automerge')]
+        summary.update(review_path='deterministic policy-bound Renovate exemption',
+                       controller_ref='develop', head_repository=M.TARGET_REPOSITORY,
+                       pull_request_last_edited_at=None,
+                       pull_request_labels_sha256=M.labels_digest(client.pr['labels']), review_id=None)
+        client.check['external_id'] = f'mlx90-current-revision:renovate:v6:4:88:{BASE}:{HEAD}'
+        client.check['output'].update(title='Current revision Renovate exemption passed',
+                                      summary=json.dumps(summary))
+        return client, summary, reservation
+
+    def test_renovate_thirteen_field_evidence_accepts_bound_controller_metadata_and_labels(self):
+        for ref in ('main', 'develop'):
+            client, summary, reservation = self.renovate_fixture()
+            summary['controller_ref'] = ref
+            client.check['output']['summary'] = json.dumps(summary)
+            self.validate(client, reservation)
+
+    def test_renovate_rejects_malformed_fields_stale_labels_metadata_and_external_identity(self):
+        for field, wrong in (('controller_ref', 'feature'), ('controller_sha', 'invalid'),
+                             ('head_repository', 'other/repo'), ('pull_request_last_edited_at', STAMP),
+                             ('pull_request_labels_sha256', 'f'*64), ('review_id', 99),
+                             ('schema', True), ('producer_run_id', True), ('head_sha', 'f'*40),
+                             ('pull_request_number', True)):
+            client, summary, reservation = self.renovate_fixture()
+            summary[field] = wrong
+            client.check['output']['summary'] = json.dumps(summary)
+            with self.subTest(field=field), self.assertRaises(M.VerificationError):
+                self.validate(client, reservation)
+        for field in ('controller_ref', 'review_id', 'pull_request_labels_sha256'):
+            client, summary, reservation = self.renovate_fixture()
+            summary.pop(field)
+            client.check['output']['summary'] = json.dumps(summary)
+            with self.subTest(missing=field), self.assertRaises(M.VerificationError):
+                self.validate(client, reservation)
+        client, summary, reservation = self.renovate_fixture()
+        summary['extra'] = 'unsupported'
+        client.check['output']['summary'] = json.dumps(summary)
+        with self.assertRaises(M.VerificationError): self.validate(client, reservation)
+        client, _, reservation = self.renovate_fixture()
+        client.pr['labels'].append({'name':'breaking-update'})
+        with self.assertRaises(M.VerificationError): self.validate(client, reservation)
+        client, _, reservation = self.renovate_fixture()
+        client.pr['_metadata_revision'] = STAMP
+        with self.assertRaises(M.VerificationError): self.validate(client, reservation)
+        for external in (f'mlx90-current-revision:copilot:v6:4:88:{BASE}:{HEAD}',
+                         f'mlx90-current-revision:renovate:v6:5:88:{BASE}:{HEAD}',
+                         f'mlx90-current-revision:renovate:v6:4:89:{BASE}:{HEAD}'):
+            client, _, reservation = self.renovate_fixture()
+            client.check['external_id'] = external
+            with self.subTest(external=external), self.assertRaises(M.VerificationError):
+                self.validate(client, reservation)
+
     def fixture(self, kind):
         client = PromotionClient()
         client.pr['base']['ref'] = 'develop'
