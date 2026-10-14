@@ -401,7 +401,7 @@ class ReuseTests(unittest.TestCase):
             self.assertEqual(MODULE.reusable_approval(self.client(), self.value, 'c'*64, 101), 100)
         self.prepare_recovery()
         self.jobs[2]['conclusion'] = 'timed_out'
-        with mock.patch.object(MODULE, 'log_binding', return_value='c'*64):
+        with mock.patch.object(MODULE, 'log_binding', return_value='c'*64), self.assertRaises(ERROR):
             MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c'*64, 100)
 
     def test_native_repository_and_pr_ids_are_not_coerced(self):

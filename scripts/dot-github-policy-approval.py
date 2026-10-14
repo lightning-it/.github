@@ -322,7 +322,7 @@ def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run
         conclusion = job.get("conclusion")
         expected = ({"success"} if job["name"] == BINDING_JOB else
                     {"success", "skipped"} if job["name"] == APPROVAL_JOB else
-                    {"skipped"} if job["name"] == INACTIVE_METADATA_JOB else {"failure", "timed_out"})
+                    {"skipped"} if job["name"] == INACTIVE_METADATA_JOB else {"failure"})
         if conclusion not in expected:
             raise EVIDENCE.VerificationError("only the failed final technical job may recover")
     binding_job = next(j for j in jobs if j["name"] == BINDING_JOB)

@@ -813,6 +813,11 @@ def matching_aggregated_promotion_checks(
         if run_id in seen_runs:
             raise VerificationError("aggregated promotion evidence is ambiguous")
         seen_runs.add(run_id)
+        if not exact_promotion_run_association(run, pr_number, event_base, event_head):
+            # Older base revisions remain attached to an unchanged head while
+            # the fresh native result is being produced. They are not current
+            # evidence and must not terminate this bounded polling window.
+            continue
         matches.append((check, run, job_id))
     matches.sort(key=lambda evidence: evidence[1]["id"])
     return matches

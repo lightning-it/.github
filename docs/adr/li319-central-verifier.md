@@ -129,3 +129,13 @@ and identity checks intact; unused functions must be removed with their callers
 and regeneration sources. Disabled pilots must not become enabled incidentally.
 Historical Actions entries and execution evidence may remain visible on GitHub.
 The source cutover alone does not complete this acceptance criterion.
+
+
+Automatic final-only bot recovery retains the existing failure-only dispatcher
+contract. A technical timeout preserves genuine unchanged human authorization
+for a later normal event, but does not grant a new timeout rerun path. This
+receiver never advertises an automatic effect that its dispatcher cannot issue.
+Promotion discovery filters genuine evidence by exact PR/base/head before
+choosing the newest current result. A check for an old base attached to the
+same develop head remains unavailable during bounded polling, rather than
+aborting a fresh promotion or masking a failed newest current result.

@@ -134,6 +134,31 @@ class PromotionTests(unittest.TestCase):
         with self.assertRaises(M.VerificationError):
             client.verify()
 
+    def test_stale_base_check_does_not_abort_polling_before_fresh_result(self):
+        class Client(PromotionClient):
+            def __init__(self):
+                super().__init__()
+                self.polls = 0
+            def get(self, path):
+                if '/check-runs?' in path:
+                    self.polls += 1
+                    old = dict(self.check, id=61, details_url=WEB+'/actions/runs/78/job/61')
+                    return {'total_count': 1 if self.polls == 1 else 2,
+                            'check_runs': [old] if self.polls == 1 else [old, self.check]}
+                if path.endswith('/actions/runs/78'):
+                    value = super().get(path)
+                    value['pull_requests'][0]['base']['sha'] = 'd'*40
+                    return value
+                return super().get(path)
+        client = Client()
+        sleeps = []
+        result = M.wait_for_aggregated_promotion(client,4,BASE,HEAD,attempts=2,sleep=sleeps.append)
+        self.assertEqual(result[1]['id'],77)
+        self.assertEqual(sleeps,[10])
+        client.polls = 0
+        with self.assertRaises(M.VerificationError):
+            M.wait_for_aggregated_promotion(client,4,BASE,HEAD,attempts=1,sleep=sleeps.append)
+
     def test_newest_failed_result_cannot_be_hidden_by_older_success(self):
         client = PromotionClient()
         newer = dict(client.check, id=61, conclusion='failure', details_url=WEB + '/actions/runs/78/job/61')
