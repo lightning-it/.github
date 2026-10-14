@@ -45,6 +45,12 @@ The Release-App review job may finish while its downstream receiver handoff
 still runs; that successful bound job is required instead of creating a cyclic
 whole-run wait. One complete typed job-inventory boundary binds IDs, run,
 attempt and head for ordinary, release and aggregated promotion evidence.
+Copilot v6 evidence may retain its original owner PR when an exact successor
+reuses a closed, unmerged predecessor. The authenticated owner number, ready
+state, same author, Base/Head SHA/ref/repository and owner metadata revision
+must match the established contract; owner drift blocks the final reread.
+This preserves existing review consumption instead of requesting another AI
+review. Current PR approval remains independently bound to its own revision.
 
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.

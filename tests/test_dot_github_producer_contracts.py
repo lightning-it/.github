@@ -35,7 +35,8 @@ class PromotionClient:
                     'actor': {'login': M.RELEASE_APP_LOGIN},
                     'repository': repo, 'head_repository': repo,
                     'triggering_actor': {'login': M.RELEASE_APP_LOGIN}, 'created_at': STAMP,
-                    'pull_requests': [{'number': 4, 'base': self.pr['base'], 'head': self.pr['head']}]}
+                    'pull_requests': [{'number': 4, 'url': API + '/pulls/4',
+                                       'base': self.pr['base'], 'head': self.pr['head']}]}
         self.check = {'id': 51, 'name': M.TARGET_VERIFIER_NAME, 'head_sha': HEAD,
                       'status': 'completed', 'conclusion': 'success',
                       'app': {'id': 15368, 'slug': 'github-actions'},
@@ -84,10 +85,10 @@ class PromotionClient:
         env = {'REPOSITORY': M.TARGET_REPOSITORY, 'PR_NUMBER': '4', 'EVENT_BASE': BASE,
                'EVENT_HEAD': HEAD, 'WORKFLOW_SHA': BASE, 'WORKFLOW_REF': M.SOURCE_WORKFLOW_REF,
                'EVENT_HEAD_REPOSITORY': M.TARGET_REPOSITORY, 'EVENT_HEAD_REPOSITORY_OWNER': 'lightning-it',
-               'EVENT_HEAD_REF': 'develop', 'EVENT_BASE_REF': 'main',
-               'EVENT_AUTHOR': M.RELEASE_APP_LOGIN, 'EVENT_AUTHOR_TYPE': 'Bot',
-               'EVENT_SENDER': M.RELEASE_APP_LOGIN, 'EVENT_ACTION': 'opened', 'EVENT_UPDATED_AT': STAMP,
-               'EVENT_TITLE_JSON': json.dumps(M.PROMOTION_TITLE), 'EVENT_BODY_JSON': '""',
+               'EVENT_HEAD_REF': self.pr['head']['ref'], 'EVENT_BASE_REF': self.pr['base']['ref'],
+               'EVENT_AUTHOR': self.pr['user']['login'], 'EVENT_AUTHOR_TYPE': self.pr['user']['type'],
+               'EVENT_SENDER': self.pr['user']['login'], 'EVENT_ACTION': 'opened', 'EVENT_UPDATED_AT': STAMP,
+               'EVENT_TITLE_JSON': json.dumps(self.pr['title']), 'EVENT_BODY_JSON': json.dumps(self.pr['body']),
                'EVENT_LABELS_JSON': '[]'}
         M.verify(self, env, attempts=1, sleep=lambda seconds: None)
 
@@ -129,6 +130,92 @@ class PromotionTests(unittest.TestCase):
         newer = dict(client.check, id=61, conclusion='failure', details_url=WEB + '/actions/runs/78/job/61')
         client.checks = [newer, client.check]
         with self.assertRaisesRegex(M.VerificationError, 'latest aggregated promotion evidence failed'):
+            client.verify()
+
+
+class OrdinaryClient(PromotionClient):
+    def __init__(self, owner_number=4):
+        super().__init__()
+        self.pr.update(title='feat: ordinary source check', user={'login': 'litroc', 'id': 76040632, 'type': 'User'})
+        self.pr['base']['ref'] = 'develop'
+        self.pr['head']['ref'] = 'feature'
+        self.run.update(head_branch='feature', actor={'login': 'litroc'}, triggering_actor={'login': 'litroc'})
+        self.jobs = self.jobs[:1]
+        self.check.update(id=17, name=M.RESERVATION_NAME, details_url=WEB + '/runs/17',
+                          external_id=f'rep60-required-workflow:v3:77:4:{BASE}:{HEAD}',
+                          output={'summary': f'PR #4; base {BASE}; head {HEAD}; producer {WEB}/actions/runs/88.'})
+        summary = {'schema': 4, 'pull_request_number': owner_number, 'base_sha': BASE, 'head_sha': HEAD,
+                   'controller_sha': BASE, 'producer_run_id': 88, 'run_url': WEB + '/actions/runs/88',
+                   'review_path': 'applicable Copilot or governed automation exemption',
+                   'pull_request_last_edited_at': None}
+        self.neutral = dict(self.check, id=18, name='Current revision review', details_url=WEB + '/runs/18',
+                            external_id=f'mlx90-current-revision:copilot:v6:{owner_number}:88:{BASE}:{HEAD}',
+                            output={'title': 'Current revision review passed', 'summary': json.dumps(summary)})
+        self.owner = copy.deepcopy(self.pr)
+        self.owner.update(number=owner_number, state='closed' if owner_number != 4 else 'open', merged_at=None)
+        self.owner_reads = 0
+        self.owner_drift = False
+        self.metadata_reads = 0
+        self.metadata_drift = False
+        self.reservation_reads = 0
+        self.reservation_drift = False
+
+    def metadata_revision(self, number):
+        self.metadata_reads += 1
+        return STAMP if self.metadata_drift and self.metadata_reads > 1 else None
+
+    def get(self, path):
+        if path.endswith('/pulls/3'):
+            self.owner_reads += 1
+            value = copy.deepcopy(self.owner)
+            if self.owner_drift and self.owner_reads > 1:
+                value['head']['sha'] = 'c' * 40
+            return value
+        if '/check-runs?' in path:
+            if 'Current%20revision%20review' in path:
+                return {'total_count': 1, 'check_runs': [copy.deepcopy(self.neutral)]}
+            self.reservation_reads += 1
+            value = copy.deepcopy(self.check)
+            if self.reservation_drift and self.reservation_reads > 1:
+                value['conclusion'] = 'failure'
+            return {'total_count': 1, 'check_runs': [value]}
+        return super().get(path)
+
+
+class OrdinaryTests(unittest.TestCase):
+    def test_full_ordinary_human_pr_composition(self):
+        OrdinaryClient().verify()
+
+    def test_malformed_final_job_and_post_validation_metadata_or_reservation_drift_block(self):
+        for field, bad in (('run_id', 78), ('run_attempt', True), ('head_sha', 'c' * 40)):
+            client = OrdinaryClient()
+            client.jobs[0][field] = bad
+            with self.subTest(field=field), self.assertRaises(M.VerificationError):
+                client.verify()
+        for field in ('metadata_drift', 'reservation_drift'):
+            client = OrdinaryClient()
+            setattr(client, field, True)
+            with self.subTest(field=field), self.assertRaises(M.VerificationError):
+                client.verify()
+
+    def test_closed_unmerged_exact_predecessor_review_is_reused(self):
+        OrdinaryClient(3).verify()
+
+    def test_owner_actor_revision_state_merge_and_final_drift_are_rejected(self):
+        for field, bad in (('state', 'open'), ('merged_at', STAMP), ('draft', True), ('number', 3.0)):
+            client = OrdinaryClient(3)
+            client.owner[field] = bad
+            with self.subTest(field=field), self.assertRaises(M.VerificationError):
+                client.verify()
+        for container, field, bad in (('user', 'login', 'other'), ('head', 'sha', 'c' * 40),
+                                       ('base', 'ref', 'main')):
+            client = OrdinaryClient(3)
+            client.owner[container][field] = bad
+            with self.subTest(container=container, field=field), self.assertRaises(M.VerificationError):
+                client.verify()
+        client = OrdinaryClient(3)
+        client.owner_drift = True
+        with self.assertRaises(M.VerificationError):
             client.verify()
 
 

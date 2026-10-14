@@ -284,9 +284,38 @@ def validate_neutral_metadata(
         summary = require_mapping(json.loads(output.get("summary", "")), "neutral summary")
     except (ValueError, TypeError) as exc:
         raise VerificationError("neutral summary is invalid") from exc
+    owner_number = number
+    owner_pr = pr
+    external = check.get("external_id")
+    owner_match = re.fullmatch(
+        rf"mlx90-current-revision:copilot:v6:([1-9][0-9]*):[1-9][0-9]*:{base}:{head}",
+        external if isinstance(external, str) else "",
+    )
+    if owner_match is not None:
+        owner_number = int(owner_match.group(1))
+        if owner_number != number:
+            owner_pr = require_mapping(client.get(
+                f"repos/{TARGET_REPOSITORY}/pulls/{owner_number}"), "neutral predecessor PR")
+            for field, expected in (("number", owner_number), ("draft", False),
+                                    ("state", "closed"), ("merged_at", None)):
+                require_equal(owner_pr.get(field), expected, f"neutral owner {field}")
+            owner_author = require_mapping(owner_pr.get("user"), "neutral owner author")
+            author = require_mapping(pr.get("user"), "neutral current author")
+            for field in ("login", "id", "type"):
+                require_equal(owner_author.get(field), author.get(field), f"neutral owner author {field}")
+            for side in ("base", "head"):
+                original = require_mapping(owner_pr.get(side), f"neutral owner {side}")
+                current = require_mapping(pr.get(side), f"neutral current {side}")
+                for field in ("ref", "sha"):
+                    require_equal(original.get(field), current.get(field), f"neutral owner {side} {field}")
+                require_equal(require_mapping(original.get("repo"), "owner repository").get("full_name"),
+                              require_mapping(current.get("repo"), "current repository").get("full_name"),
+                              f"neutral owner {side} repository")
+            owner_pr = dict(owner_pr)
+            owner_pr["_metadata_revision"] = client.metadata_revision(owner_number)
     for field, value in (
         ("schema", 4),
-        ("pull_request_number", number),
+        ("pull_request_number", owner_number),
         ("base_sha", base),
         ("head_sha", head),
     ):
@@ -327,7 +356,7 @@ def validate_neutral_metadata(
         revision = summary["pull_request_last_edited_at"]
         if revision is not None:
             require_timestamp(revision, "neutral metadata revision")
-        require_equal(revision, pr["_metadata_revision"], "neutral metadata revision")
+        require_equal(revision, owner_pr["_metadata_revision"], "neutral metadata revision")
     elif summary.get("review_path") == "deterministic policy-bound Renovate exemption":
         require_equal(
             set(summary),
@@ -367,7 +396,7 @@ def validate_neutral_metadata(
     require_equal(summary.get("run_url"), run_url, "neutral producer URL")
     require_equal(
         check.get("external_id"),
-        f"mlx90-current-revision:{kind}:v6:{number}:{producer}:{base}:{head}",
+        f"mlx90-current-revision:{kind}:v6:{owner_number}:{producer}:{base}:{head}",
         "neutral producer identity",
     )
     require_equal(
