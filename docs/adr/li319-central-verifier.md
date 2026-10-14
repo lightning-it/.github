@@ -20,8 +20,8 @@ person. The organization Required Workflow still blocks technical failures.
 Admission binds PR, head, base, metadata, reviewer policy and protected source
 before waiting and rechecks them after approval and final evidence validation.
 Successful identical native authorizations can be reused from their authenticated
-run, original native review and exact protected-source job binding. Cancellation
-after a successful approval job does not consume another human approval; the
+run, original native review and successful protected preflight binding. An
+interruption after native approval does not consume another human approval; the
 current technical verifier still runs and rejects failed evidence. Lost or
 ambiguous evidence fails closed. History is not rewritten or converted to PASS.
 The bounded discovery window does not authorize a blind repeat when exhausted.
@@ -32,6 +32,12 @@ Required Workflows ignore those filters. The new source must be installed on
 protected main before ruleset adoption. Candidate code is never executable
 controller input. The previous external repository trust boundary is explicitly
 replaced by this native single-person authorization and protected source.
+
+All three policy jobs use the existing digest-pinned, read-only, socket-free
+Devtools adapter through one protected shell dispatcher. Its explicit API network
+and read-only Actions token scope do not grant private administration or AI
+credentials. Native ruleset events are opened/synchronize/reopened; serialized
+concurrency retains the native gate without unsupported automatic cancellation.
 
 ## Migration and rollback
 

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +27,10 @@ APPROVER_ID = 76040632
 ENVIRONMENT = "dot-github-policy-approval"
 WORKFLOW = ".github/workflows/dot-github-current-revision-required.yml"
 SOURCE_PATHS = (WORKFLOW, "scripts/verify-dot-github-current-revision.py",
-                "scripts/dot-github-policy-approval.py")
+                "scripts/dot-github-policy-approval.py", "scripts/dot-github-policy-devtools.sh",
+                "scripts/wunder-devtools-ee.sh")
 APPROVAL_JOB = "Approve dot-github policy revision"
+BINDING_JOB = "Bind protected dot-github approval revision"
 FINAL_JOB = "Required dot-github current-revision workflow"
 MAX_LOG_BYTES = 4_000_000
 MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_APPROVAL_BINDING=([0-9a-f]{64})$")
@@ -91,6 +94,7 @@ def revision(client: Any, environment: dict[str, str]) -> tuple[dict[str, Any], 
              "base": base, "head": head, "base_ref": binding["base_ref"],
              "source": source, "workflow_ref": environment["WORKFLOW_REF"],
              "head_repository": binding["head_repository"], "head_ref": binding["head_ref"],
+             "head_repository_id": positive_integer(pr["head"]["repo"].get("id"), "head repository ID"),
              "author": binding["author"], "author_type": binding["author_type"],
              "title": pr.get("title"), "body": pr.get("body"),
              "labels_sha256": binding["labels_sha256"],
@@ -147,7 +151,7 @@ def native_run_binding(run: dict[str, Any], value: dict[str, Any]) -> bool:
         return False
     return (run.get("workflow_url") == f"{api}/actions/required_workflows/{workflow_id}"
             and run.get("repository", {}).get("id") == REPOSITORY_ID
-            and run.get("head_repository", {}).get("id") == REPOSITORY_ID
+            and run.get("head_repository", {}).get("id") == value["head_repository_id"]
             and run.get("head_sha") == value["head"]
             and run.get("head_branch") == value["head_ref"]
             and record.get("number") == value["pr"]
@@ -157,11 +161,11 @@ def native_run_binding(run: dict[str, Any], value: dict[str, Any]) -> bool:
             and record.get("base", {}).get("repo", {}).get("id") == REPOSITORY_ID
             and record.get("head", {}).get("sha") == value["head"]
             and record.get("head", {}).get("ref") == value["head_ref"]
-            and record.get("head", {}).get("repo", {}).get("id") == REPOSITORY_ID)
+            and record.get("head", {}).get("repo", {}).get("id") == value["head_repository_id"])
 
 
 def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_run: int) -> int | None:
-    """Reuse a successful native approval job; always verify technical evidence anew."""
+    """Reuse native approval of a protected preflight; verify technical evidence anew."""
     for page in range(1, 6):
         response = EVIDENCE.require_mapping(client.get(
             f"repos/{REPOSITORY}/actions/runs?event=pull_request_target&head_sha={value['head']}"
@@ -199,25 +203,42 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
             if not same_code:
                 continue
             jobs = []
+            total = None
             for jobs_page in range(1, 11):
                 inventory = EVIDENCE.require_mapping(client.get(
                     f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/1/jobs"
                     f"?per_page=100&page={jobs_page}"), "prior native jobs")
                 entries = EVIDENCE.require_list(inventory.get("jobs"), "prior job page")
+                count = positive_integer(inventory.get("total_count"), "prior job inventory count")
+                if total is not None and count != total:
+                    raise EVIDENCE.VerificationError("prior job inventory count drifted")
+                total = count
+                if len(entries) > 100 or any(not isinstance(j, dict) for j in entries):
+                    raise EVIDENCE.VerificationError("prior job inventory is malformed")
                 jobs.extend(entries)
-                if len(entries) < 100:
+                ids = [positive_integer(j.get("id"), "prior job ID") for j in jobs]
+                if len(ids) != len(set(ids)) or len(jobs) > total:
+                    raise EVIDENCE.VerificationError("prior job inventory is ambiguous")
+                if len(jobs) == total:
                     break
+                if len(entries) < 100:
+                    raise EVIDENCE.VerificationError("prior job inventory is truncated")
             else:
                 raise EVIDENCE.VerificationError("prior job inventory exceeds its bound")
-            matches = [j for j in jobs if isinstance(j, dict) and j.get("name") == APPROVAL_JOB]
-            if len(matches) != 1:
-                continue
+            matches = [j for j in jobs if j.get("name") == BINDING_JOB]
+            approval_jobs = [j for j in jobs if j.get("name") == APPROVAL_JOB]
+            if len(matches) != 1 or len(approval_jobs) != 1:
+                raise EVIDENCE.VerificationError("approved native run has ambiguous job evidence")
             if not all(type(j.get("run_id")) is int and j["run_id"] == run_id
                        and type(j.get("run_attempt")) is int and j["run_attempt"] == 1
                        and j.get("head_sha") == value["head"]
                        and j.get("status") == "completed" and j.get("conclusion") == "success"
                        for j in matches):
-                continue
+                raise EVIDENCE.VerificationError("approved native run has no successful protected binding")
+            if not all(type(j.get("run_id")) is int and j["run_id"] == run_id
+                       and type(j.get("run_attempt")) is int and j["run_attempt"] == 1
+                       and j.get("head_sha") == value["head"] for j in approval_jobs):
+                raise EVIDENCE.VerificationError("native approval job identity is inconsistent")
             native_approval(client, run_id, value["environment_id"])
             if log_binding(client, positive_integer(matches[0].get("id"), "approval job ID")) == digest:
                 return run_id
@@ -245,6 +266,9 @@ def main() -> int:
             reuse = reusable_approval(client, value, digest, run_id)
             output("binding", digest)
             output("reuse-run", str(reuse) if reuse is not None else "")
+            # The successful preflight fixes what the subsequent native human
+            # approves. A later technical interruption cannot require reapproval.
+            print(f"LI319_APPROVAL_BINDING={digest}", file=sys.stderr)
         else:
             EVIDENCE.require_equal(digest, os.environ.get("APPROVAL_BINDING", ""), "approval revision")
             if args.mode == "approve":

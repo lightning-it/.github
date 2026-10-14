@@ -117,6 +117,7 @@ class BindingTests(unittest.TestCase):
                    "head_ref": "feature", "author": "litroc", "author_type": "User",
                    "labels_sha256": "labels"}
         pr = {"title": "change", "body": "body", "_metadata_revision": None}
+        pr["head"] = {"repo": {"id": MODULE.REPOSITORY_ID}}
         env = {"REPOSITORY": MODULE.REPOSITORY, "WORKFLOW_SHA": "c" * 40,
                "WORKFLOW_REF": MODULE.EVIDENCE.SOURCE_WORKFLOW_REF,
                "PR_NUMBER": "1", "EVENT_BASE": "a" * 40, "EVENT_HEAD": "b" * 40}
@@ -140,12 +141,16 @@ class BindingTests(unittest.TestCase):
                 changed = dict(pr, **{key: value})
                 with mock.patch.object(MODULE.EVIDENCE, "validate_live_pr", return_value=changed):
                     self.assertNotEqual(MODULE.revision(client, env)[1], original)
+            changed = dict(pr, head={"repo": {"id": 987654321}})
+            with mock.patch.object(MODULE.EVIDENCE, "validate_live_pr", return_value=changed):
+                self.assertNotEqual(MODULE.revision(client, env)[1], original)
 
 
 class ReuseTests(unittest.TestCase):
     def setUp(self):
         self.value = {"base": "a" * 40, "source": "b" * 40,
                       "head": "c" * 40, "head_ref": "feature", "pr": 4,
+                      "head_repository_id": MODULE.REPOSITORY_ID,
                       "base_ref": "develop", "environment_id": 77}
         api = "https://api.github.com/repos/" + MODULE.REPOSITORY
         record = {"number": 4, "url": api + "/pulls/4",
@@ -159,7 +164,7 @@ class ReuseTests(unittest.TestCase):
                     "status": "completed", "conclusion": "success"}
         self.jobs = [{"id": i, "name": name, "run_id": 100, "run_attempt": 1,
                       "head_sha": "c" * 40, "status": "completed", "conclusion": "success"}
-                     for i, name in enumerate((MODULE.APPROVAL_JOB, MODULE.FINAL_JOB), 1)]
+                     for i, name in enumerate((MODULE.BINDING_JOB, MODULE.APPROVAL_JOB, MODULE.FINAL_JOB), 1)]
 
     def client(self, changed_source=False):
         owner = self
@@ -173,7 +178,7 @@ class ReuseTests(unittest.TestCase):
                     sha = "f" * 40 if changed_source and path.endswith("b" * 40) else "e" * 40
                     return {"type": "file", "sha": sha}
                 if "/attempts/1/jobs" in path:
-                    return {"jobs": copy.deepcopy(owner.jobs)}
+                    return {"jobs": copy.deepcopy(owner.jobs), "total_count": len(owner.jobs)}
                 raise AssertionError(path)
         return NativeClient()
 
@@ -181,13 +186,68 @@ class ReuseTests(unittest.TestCase):
         with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
             self.assertEqual(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101), 100)
 
+    def test_user_fork_duplicate_reuses_exact_fork_identity(self):
+        self.value["head_repository_id"] = 987654321
+        self.run["head_repository"]["id"] = 987654321
+        self.run["pull_requests"][0]["head"]["repo"]["id"] = 987654321
+        with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
+            self.assertEqual(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101), 100)
+
+    def test_truncated_or_malformed_native_inventory_never_authorizes(self):
+        delegate = self.client()
+        class Truncated:
+            count = 4
+            def get(inner, path):
+                result = delegate.get(path)
+                if "/attempts/1/jobs" in path:
+                    result["total_count"] = inner.count
+                return result
+        for count in (4, True, "3", None):
+            client = Truncated()
+            client.count = count
+            with self.subTest(count=count), mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
+                with self.assertRaises(ERROR):
+                    MODULE.reusable_approval(client, self.value, "c" * 64, 101)
+
+    def test_complete_paginated_inventory_and_count_drift(self):
+        self.jobs.extend({"id": i, "name": "other"} for i in range(4, 102))
+        delegate = self.client()
+        class Pages:
+            drift = False
+            def get(inner, path):
+                result = delegate.get(path)
+                if "/attempts/1/jobs" in path:
+                    page = int(path.rsplit("page=", 1)[1])
+                    result["jobs"] = result["jobs"][(page - 1) * 100:page * 100]
+                    if inner.drift and page == 2:
+                        result["total_count"] += 1
+                return result
+        client = Pages()
+        with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
+            self.assertEqual(MODULE.reusable_approval(client, self.value, "c" * 64, 101), 100)
+            client.drift = True
+            with self.assertRaisesRegex(ERROR, "count drifted"):
+                MODULE.reusable_approval(client, self.value, "c" * 64, 101)
+
+    def test_duplicate_job_ids_make_native_inventory_ambiguous(self):
+        self.jobs.append(copy.deepcopy(self.jobs[0]))
+        with self.assertRaisesRegex(ERROR, "inventory is ambiguous"):
+            MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101)
+
     def test_changed_binding_code_or_failed_native_job_cannot_be_reused(self):
         with mock.patch.object(MODULE, "log_binding", return_value="d" * 64):
             self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
         with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
             self.assertIsNone(MODULE.reusable_approval(self.client(True), self.value, "c" * 64, 101))
             self.jobs[0]["conclusion"] = "failure"
-            self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101))
+            with self.assertRaises(ERROR):
+                MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101)
+
+    def test_interruption_after_native_approval_does_not_request_reapproval(self):
+        self.run["conclusion"] = "failure"
+        self.jobs[1]["conclusion"] = "failure"
+        with mock.patch.object(MODULE, "log_binding", return_value="c" * 64):
+            self.assertEqual(MODULE.reusable_approval(self.client(), self.value, "c" * 64, 101), 100)
 
     def test_cancellation_after_approval_does_not_require_another_human_review(self):
         for conclusion in ("cancelled", "failure"):

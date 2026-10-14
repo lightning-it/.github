@@ -368,7 +368,7 @@ def require_list(value: Any, label: str) -> list[Any]:
 
 
 def require_sha(value: str, label: str) -> str:
-    if not SHA_PATTERN.fullmatch(value):
+    if not isinstance(value, str) or not SHA_PATTERN.fullmatch(value):
         raise VerificationError(f"{label} must be a full lowercase SHA")
     return value
 
@@ -406,7 +406,7 @@ def validate_source(
     require_equal(branch.get("name"), "main", "source branch")
     require_equal(branch.get("protected"), True, "source branch protection")
     source_head = require_sha(
-        str(require_mapping(branch.get("commit"), "source commit").get("sha", "")),
+        require_mapping(branch.get("commit"), "source commit").get("sha", ""),
         "source main head",
     )
     comparison = require_mapping(
@@ -443,14 +443,15 @@ def validate_source(
     ) or behind_by != 0:
         raise VerificationError("workflow SHA is not trusted source-main ancestry")
 
-    for path in (SOURCE_WORKFLOW_PATH, "scripts/verify-dot-github-current-revision.py", "scripts/dot-github-policy-approval.py"):
+    for path in (SOURCE_WORKFLOW_PATH, "scripts/verify-dot-github-current-revision.py",
+                 "scripts/dot-github-policy-approval.py", "scripts/dot-github-policy-devtools.sh",
+                 "scripts/wunder-devtools-ee.sh"):
         content = require_mapping(
             client.get(f"repos/{SOURCE_REPOSITORY}/contents/{path}?ref={workflow_sha}"),
             f"source file {path}",
         )
         require_equal(content.get("type"), "file", f"source file type {path}")
-        if not SHA_PATTERN.fullmatch(str(content.get("sha", ""))):
-            raise VerificationError(f"source file {path} has no immutable blob")
+        require_sha(content.get("sha", ""), f"source file {path} blob")
 
 
 def event_pr_binding(environment: Mapping[str, str]) -> Mapping[str, Any]:

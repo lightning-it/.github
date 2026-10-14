@@ -31,6 +31,31 @@ class SequencedClient:
         return self.payloads[0]
 
 
+class SourceSchemaTests(unittest.TestCase):
+    def test_nonstring_branch_and_blob_sha_are_rejected(self):
+        sha = "1" * 40
+        class SourceClient:
+            malformed = "branch"
+            def get(self, path):
+                if path == "repos/" + MODULE.SOURCE_REPOSITORY:
+                    return {"full_name": MODULE.SOURCE_REPOSITORY, "visibility": "public",
+                            "archived": False, "disabled": False}
+                if path.endswith("/branches/main"):
+                    return {"name": "main", "protected": True, "commit": {
+                        "sha": int(sha) if self.malformed == "branch" else sha}}
+                if "/compare/" in path:
+                    return {"base_commit": {"sha": sha}, "merge_base_commit": {"sha": sha},
+                            "status": "identical", "ahead_by": 0, "behind_by": 0}
+                if "/contents/" in path:
+                    return {"type": "file", "sha": int(sha) if self.malformed == "blob" else sha}
+                raise AssertionError(path)
+        for field in ("branch", "blob"):
+            client = SourceClient()
+            client.malformed = field
+            with self.subTest(field=field), self.assertRaises(MODULE.VerificationError):
+                MODULE.validate_source(client, MODULE.SOURCE_WORKFLOW_REF, sha)
+
+
 class ProducerRunConvergenceTests(unittest.TestCase):
     def test_waits_for_the_same_nonterminal_run_to_complete(self) -> None:
         client = SequencedClient(

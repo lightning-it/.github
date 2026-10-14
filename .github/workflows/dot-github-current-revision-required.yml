@@ -41,7 +41,7 @@ env:
 concurrency:
   group: >-
     protected-dot-github-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   preflight:
@@ -68,10 +68,12 @@ jobs:
           sparse-checkout: |
             scripts/verify-dot-github-current-revision.py
             scripts/dot-github-policy-approval.py
+            scripts/dot-github-policy-devtools.sh
+            scripts/wunder-devtools-ee.sh
           sparse-checkout-cone-mode: false
       - name: Bind current revision and find existing native approval
         id: binding
-        run: python3 protected-source/scripts/dot-github-policy-approval.py preflight
+        run: bash protected-source/scripts/dot-github-policy-devtools.sh preflight
 
   approve:
     name: Approve dot-github policy revision
@@ -98,11 +100,13 @@ jobs:
           sparse-checkout: |
             scripts/verify-dot-github-current-revision.py
             scripts/dot-github-policy-approval.py
+            scripts/dot-github-policy-devtools.sh
+            scripts/wunder-devtools-ee.sh
           sparse-checkout-cone-mode: false
       - name: Revalidate the native human approval
         env:
           APPROVAL_BINDING: ${{ needs.preflight.outputs.binding }}
-        run: python3 protected-source/scripts/dot-github-policy-approval.py approve
+        run: bash protected-source/scripts/dot-github-policy-devtools.sh approve
 
   verify-dot-github-current-revision:
     name: Required dot-github current-revision workflow
@@ -132,9 +136,11 @@ jobs:
           sparse-checkout: |
             scripts/verify-dot-github-current-revision.py
             scripts/dot-github-policy-approval.py
+            scripts/dot-github-policy-devtools.sh
+            scripts/wunder-devtools-ee.sh
           sparse-checkout-cone-mode: false
       - name: Verify protected evidence and exact native approval
         env:
           APPROVAL_BINDING: ${{ needs.preflight.outputs.binding }}
           APPROVAL_REUSE_RUN: ${{ needs.preflight.outputs.reuse-run }}
-        run: python3 protected-source/scripts/dot-github-policy-approval.py verify
+        run: bash protected-source/scripts/dot-github-policy-devtools.sh verify
