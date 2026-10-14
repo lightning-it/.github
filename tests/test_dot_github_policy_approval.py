@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "dot_github_approval", ROOT / "scripts/dot-github-policy-approval.py")
@@ -83,6 +85,33 @@ class EnvironmentTests(unittest.TestCase):
 
 
 class BindingTests(unittest.TestCase):
+    def test_workflow_title_remains_consumable_by_existing_required_locator(self):
+        spec = importlib.util.spec_from_file_location(
+            "existing_required_locator", ROOT / "scripts/review-event-reconcile.py")
+        locator = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = locator
+        spec.loader.exec_module(locator)
+        document = yaml.safe_load((ROOT / MODULE.WORKFLOW).read_text())
+        title = document["run-name"].strip()
+        for expression, value in (("github.event.pull_request.number", "4"),
+                                  ("github.event.action", "opened"),
+                                  ("github.event.pull_request.head.sha", "b" * 40)):
+            title = title.replace("${{ " + expression + " }}", value)
+        api = "https://api.github.com/repos/" + MODULE.REPOSITORY
+        pr = {"number": 4, "base": {"ref": "develop", "sha": "a" * 40},
+              "head": {"ref": "feature", "sha": "b" * 40,
+                       "repo": {"full_name": MODULE.REPOSITORY}}}
+        record = {"number": 4, "url": api + "/pulls/4",
+                  "base": dict(pr["base"], repo={"url": api}),
+                  "head": {"ref": "feature", "sha": "b" * 40, "repo": {"url": api}}}
+        run = {"id": 1, "workflow_id": 2, "event": "pull_request_target",
+               "name": "Protected dot-github current-revision verifier",
+               "path": MODULE.WORKFLOW, "workflow_url": api + "/actions/required_workflows/2",
+               "head_sha": "b" * 40, "head_branch": "feature", "display_title": title,
+               "repository": {"full_name": MODULE.REPOSITORY},
+               "head_repository": {"full_name": MODULE.REPOSITORY}, "pull_requests": [record]}
+        self.assertTrue(locator.required_locator(run, MODULE.REPOSITORY, pr))
+
     def test_hash_changes_when_reviewed_inputs_change(self):
         binding = {"base_ref": "develop", "head_repository": MODULE.REPOSITORY,
                    "head_ref": "feature", "author": "litroc", "author_type": "User",
