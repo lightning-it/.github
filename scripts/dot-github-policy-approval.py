@@ -149,6 +149,18 @@ def native_run_binding(run: dict[str, Any], value: dict[str, Any]) -> bool:
     record = entries[0]
     if not isinstance(record, dict):
         return False
+    for side in ("base", "head"):
+        if (not isinstance(record.get(side), dict)
+                or not isinstance(record[side].get("repo"), dict)):
+            return False
+    if (not isinstance(run.get("repository"), dict)
+            or not isinstance(run.get("head_repository"), dict)):
+        return False
+    if any(type(item) is not int for item in (
+            run["repository"].get("id"), run["head_repository"].get("id"),
+            record.get("number"), record["base"]["repo"].get("id"),
+            record["head"]["repo"].get("id"))):
+        return False
     return (run.get("workflow_url") == f"{api}/actions/required_workflows/{workflow_id}"
             and run.get("repository", {}).get("id") == REPOSITORY_ID
             and run.get("head_repository", {}).get("id") == value["head_repository_id"]
@@ -196,7 +208,8 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                 new = EVIDENCE.require_mapping(client.get(
                     f"repos/{REPOSITORY}/contents/{path}?ref={value['source']}"), "current source file")
                 if (old.get("type") != "file" or new.get("type") != "file"
-                        or not EVIDENCE.SHA_PATTERN.fullmatch(str(old.get("sha", "")))
+                        or not isinstance(old.get("sha"), str)
+                        or not EVIDENCE.SHA_PATTERN.fullmatch(old["sha"])
                         or old.get("sha") != new.get("sha")):
                     same_code = False
                     break
@@ -252,6 +265,47 @@ def output(name: str, value: str) -> None:
         stream.write(f"{name}={value}\n")
 
 
+def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run_id: int) -> None:
+    """Admit only the existing bot's final-job retry with intact first-attempt proof.
+
+    Preflight and human admission never rerun. Current technical verification
+    and native approval are still checked by the caller after this admission.
+    """
+    run = EVIDENCE.require_mapping(client.get(
+        f"repos/{REPOSITORY}/actions/runs/{run_id}"), "recovery native run")
+    for field, expected in (("id", run_id), ("run_attempt", 2),
+                            ("event", "pull_request_target"), ("path", WORKFLOW)):
+        EVIDENCE.require_equal(run.get(field), expected, f"recovery {field}")
+    if not native_run_binding(run, value):
+        raise EVIDENCE.VerificationError("recovery is not the bound native required workflow")
+    actor = EVIDENCE.require_mapping(run.get("triggering_actor"), "recovery actor")
+    EVIDENCE.require_equal(actor.get("login"), "github-actions[bot]", "recovery actor login")
+    EVIDENCE.require_equal(actor.get("type"), "Bot", "recovery actor type")
+    inventory = EVIDENCE.require_mapping(client.get(
+        f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/1/jobs?per_page=100&page=1"),
+        "original native jobs")
+    jobs = EVIDENCE.require_list(inventory.get("jobs"), "original jobs")
+    EVIDENCE.require_equal(inventory.get("total_count"), 3, "original job count")
+    if len(jobs) != 3 or any(not isinstance(j, dict) for j in jobs):
+        raise EVIDENCE.VerificationError("original job inventory is incomplete")
+    ids = [positive_integer(j.get("id"), "original job ID") for j in jobs]
+    if len(set(ids)) != 3 or sorted(j.get("name", "") for j in jobs) != sorted(
+            (BINDING_JOB, APPROVAL_JOB, FINAL_JOB)):
+        raise EVIDENCE.VerificationError("original job inventory is ambiguous")
+    for job in jobs:
+        for field, expected in (("run_id", run_id), ("run_attempt", 1),
+                                ("head_sha", value["head"]), ("status", "completed")):
+            EVIDENCE.require_equal(job.get(field), expected, f"original job {field}")
+        conclusion = job.get("conclusion")
+        expected = ({"success"} if job["name"] == BINDING_JOB else
+                    {"success", "skipped"} if job["name"] == APPROVAL_JOB else {"failure"})
+        if conclusion not in expected:
+            raise EVIDENCE.VerificationError("only the failed final technical job may recover")
+    binding_job = next(j for j in jobs if j["name"] == BINDING_JOB)
+    EVIDENCE.require_equal(log_binding(client, binding_job["id"]), digest,
+                           "original approved revision")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("preflight", "approve", "verify"))
@@ -259,9 +313,13 @@ def main() -> int:
     try:
         client = EVIDENCE.GitHubClient(os.environ.get("GH_TOKEN", ""),
                                        os.environ.get("GITHUB_API_URL", "https://api.github.com"))
-        EVIDENCE.require_equal(os.environ.get("GITHUB_RUN_ATTEMPT"), "1", "native run attempt")
+        attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
+        if attempt != "1" and not (args.mode == "verify" and attempt == "2"):
+            raise EVIDENCE.VerificationError("native run attempt is not admitted")
         value, digest = revision(client, dict(os.environ))
         run_id = EVIDENCE.require_positive_integer(os.environ.get("GITHUB_RUN_ID", ""), "run ID")
+        if attempt == "2":
+            validate_final_recovery(client, value, digest, run_id)
         if args.mode == "preflight":
             reuse = reusable_approval(client, value, digest, run_id)
             output("binding", digest)

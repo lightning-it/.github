@@ -32,6 +32,13 @@ class SequencedClient:
 
 
 class SourceSchemaTests(unittest.TestCase):
+    def test_external_values_are_type_exact_including_nested_records(self):
+        for actual, expected in ((1, True), (False, 0), (1.0, 1),
+                                 ({'attempt': True}, {'attempt': 1}),
+                                 ([1.0], [1])):
+            with self.subTest(actual=actual, expected=expected), self.assertRaises(MODULE.VerificationError):
+                MODULE.require_equal(actual, expected, 'external evidence')
+
     def test_nonstring_branch_and_blob_sha_are_rejected(self):
         sha = "1" * 40
         class SourceClient:

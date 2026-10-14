@@ -380,8 +380,14 @@ def require_positive_integer(value: str, label: str) -> int:
 
 
 def require_equal(actual: Any, expected: Any, label: str) -> None:
-    if actual != expected:
+    if type(actual) is not type(expected) or actual != expected:
         raise VerificationError(f"{label} is not exactly bound")
+    if isinstance(expected, dict):
+        for key in expected:
+            require_equal(actual[key], expected[key], f"{label}.{key}")
+    elif isinstance(expected, (list, tuple)):
+        for index, value in enumerate(expected):
+            require_equal(actual[index], value, f"{label}[{index}]")
 
 
 def validate_source(
@@ -432,12 +438,12 @@ def validate_source(
     status = comparison.get("status")
     ahead_by = comparison.get("ahead_by")
     behind_by = comparison.get("behind_by")
-    if not (
+    if type(ahead_by) is not int or type(behind_by) is not int or not (
         (status == "identical" and source_head == workflow_sha and ahead_by == 0)
         or (
             status == "ahead"
             and source_head != workflow_sha
-            and isinstance(ahead_by, int)
+            and type(ahead_by) is int
             and ahead_by > 0
         )
     ) or behind_by != 0:
@@ -623,7 +629,7 @@ def matching_aggregated_promotion_checks(
     )
     checks = require_list(payload.get("check_runs"), "aggregated promotion checks")
     total_count = payload.get("total_count")
-    if not isinstance(total_count, int) or total_count != len(checks) or total_count > 100:
+    if type(total_count) is not int or total_count != len(checks) or total_count > 100:
         raise VerificationError("aggregated promotion check inventory is incomplete")
 
     matches: list[tuple[Mapping[str, Any], Mapping[str, Any], int]] = []
@@ -810,7 +816,7 @@ def validate_aggregated_promotion(
     )
     jobs = require_list(jobs_payload.get("jobs"), "promotion jobs")
     total_count = jobs_payload.get("total_count")
-    if not isinstance(total_count, int) or total_count != len(jobs) or total_count > 100:
+    if type(total_count) is not int or total_count != len(jobs) or total_count > 100:
         raise VerificationError("promotion job inventory is incomplete")
     final_jobs = [
         require_mapping(job, "promotion job")
@@ -861,7 +867,7 @@ def matching_reservations(
     )
     checks = require_list(payload.get("check_runs"), "protected verifier checks")
     total_count = payload.get("total_count")
-    if not isinstance(total_count, int) or total_count != len(checks) or total_count > 100:
+    if type(total_count) is not int or total_count != len(checks) or total_count > 100:
         raise VerificationError("protected verifier check inventory is incomplete")
     result: list[Mapping[str, Any]] = []
     for raw_check in checks:
@@ -1054,7 +1060,7 @@ def validate_reservation(
     )
     jobs = require_list(jobs_payload.get("jobs"), "verifier jobs")
     total_count = jobs_payload.get("total_count")
-    if not isinstance(total_count, int) or total_count != len(jobs) or total_count > 100:
+    if type(total_count) is not int or total_count != len(jobs) or total_count > 100:
         raise VerificationError("verifier job inventory is incomplete")
     matching_jobs = [
         require_mapping(job, "verifier job")

@@ -27,6 +27,14 @@ ambiguous evidence fails closed. History is not rewritten or converted to PASS.
 The bounded discovery window does not authorize a blind repeat when exhausted.
 Changed inputs require a newly reviewed authorization. No AI request is made.
 
+The existing protected bot may recover the failed final technical job once
+(native attempt 2). Admission and approval jobs remain first-attempt only.
+The receiver requires the exact native ruleset run and PR tuple, bot triggering
+identity, complete three-job first-attempt evidence, a successful original
+preflight with its unchanged binding marker, and a failed original final job.
+It then revalidates native human approval and all current technical evidence.
+Neither a new approval nor further retry attempts are granted by this recovery.
+
 The workflow's normal branch filters suppress duplicate local runs; organization
 Required Workflows ignore those filters. The new source must be installed on
 protected main before ruleset adoption. Candidate code is never executable
@@ -52,3 +60,13 @@ Shared Assets. Private target evidence stays private. Native PRs, source commits
 review history and live settings are acceptance evidence; this document alone
 is not native acceptance. Future multi-person requirements are a separate
 policy change, not enabled by this amendment.
+
+## Workflow consolidation acceptance
+
+The owner additionally requires a substantially smaller current workflow-file
+inventory and no disabled standalone workflow files. Necessary manual release,
+recovery and guarded automation functions must be bundled with their admission
+and identity checks intact; unused functions must be removed with their callers
+and regeneration sources. Disabled pilots must not become enabled incidentally.
+Historical Actions entries and execution evidence may remain visible on GitHub.
+The source cutover alone does not complete this acceptance criterion.

@@ -295,6 +295,71 @@ class ReuseTests(unittest.TestCase):
                 with self.assertRaises(ERROR):
                     MODULE.log_binding(None, 1)
 
+    def recovery_client(self):
+        owner = self
+        previous = self.client()
+        class RecoveryClient:
+            def get(self, path):
+                if path.endswith('/actions/runs/100'):
+                    return copy.deepcopy(owner.run)
+                return previous.get(path)
+        return RecoveryClient()
+
+    def prepare_recovery(self):
+        self.run.update(run_attempt=2, status='in_progress', conclusion=None,
+                        triggering_actor={'login': 'github-actions[bot]', 'type': 'Bot'})
+        self.jobs[2]['conclusion'] = 'failure'
+
+    def test_final_recovery_preserves_original_approval_binding(self):
+        self.prepare_recovery()
+        with mock.patch.object(MODULE, 'log_binding', return_value='c' * 64):
+            MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+
+    def test_recovery_success_still_runs_current_native_approval_and_technical_checks(self):
+        self.prepare_recovery()
+        env = {'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_RUN_ID': '100',
+               'APPROVAL_BINDING': 'c' * 64, 'APPROVAL_REUSE_RUN': ''}
+        with mock.patch.dict(MODULE.os.environ, env), \
+             mock.patch.object(sys, 'argv', ['approval', 'verify']), \
+             mock.patch.object(MODULE, 'revision', return_value=(self.value, 'c' * 64)), \
+             mock.patch.object(MODULE.EVIDENCE, 'GitHubClient', return_value=self.recovery_client()), \
+             mock.patch.object(MODULE, 'log_binding', return_value='c' * 64), \
+             mock.patch.object(MODULE, 'native_approval') as approval, \
+             mock.patch.object(MODULE.EVIDENCE, 'verify') as verify:
+            self.assertEqual(MODULE.main(), 0)
+            approval.assert_called_once()
+            verify.assert_called_once()
+
+    def test_native_repository_and_pr_ids_are_not_coerced(self):
+        for target, field in ((self.run['repository'], 'id'),
+                              (self.run['pull_requests'][0], 'number')):
+            with mock.patch.dict(target, {field: float(target[field])}):
+                self.assertFalse(MODULE.native_run_binding(self.run, self.value))
+
+    def test_recovery_rejects_foreign_actor_changed_binding_and_incomplete_jobs(self):
+        self.prepare_recovery()
+        with mock.patch.object(MODULE, 'log_binding', return_value='c' * 64):
+            for key, bad in (('run_attempt', 3), ('id', 101),
+                             ('triggering_actor', {'login': 'litroc', 'type': 'User'}),
+                             ('event', 'workflow_dispatch')):
+                with mock.patch.dict(self.run, {key: bad}), self.assertRaises(ERROR):
+                    MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+            with mock.patch.dict(self.jobs[0], {'conclusion': 'failure'}), self.assertRaises(ERROR):
+                MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+            with mock.patch.dict(self.jobs[2], {'conclusion': 'success'}), self.assertRaises(ERROR):
+                MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+        with mock.patch.object(MODULE, 'log_binding', return_value='d' * 64), self.assertRaises(ERROR):
+            MODULE.validate_final_recovery(self.recovery_client(), self.value, 'c' * 64, 100)
+
+    def test_attempt_two_is_only_admitted_for_final_technical_verification(self):
+        for mode in ('preflight', 'approve'):
+            with mock.patch.dict(MODULE.os.environ, {'GITHUB_RUN_ATTEMPT': '2'}), \
+                 mock.patch.object(sys, 'argv', ['approval', mode]), \
+                 mock.patch.object(MODULE.EVIDENCE, 'GitHubClient'), \
+                 mock.patch.object(MODULE, 'revision') as revision:
+                self.assertEqual(MODULE.main(), 1)
+                revision.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
