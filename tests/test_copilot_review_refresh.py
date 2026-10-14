@@ -2486,7 +2486,9 @@ gh() {
             self.fail(f"jq is required to validate refresh evidence: {error}")
 
     def test_event_specific_payloads_are_guarded(self) -> None:
-        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8")
+        # This existing contract applies to the refresh jobs. The independently
+        # tested continuation jobs have their own event-specific predicates.
+        workflow = REFRESH_WORKFLOW.read_text(encoding="utf-8").split("\n  locate:\n", 1)[0]
 
         self.assertTrue(
             workflow.startswith(

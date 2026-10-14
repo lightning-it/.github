@@ -144,14 +144,32 @@ class RecoveryJobInventoryTests(unittest.TestCase):
                 jobs[0]['steps'] = steps
                 self.assertFalse(self.accepted(jobs, event))
 
-    def test_actual_refresh_source_has_the_three_expected_jobs_and_steps(self):
+    def test_actual_refresh_source_has_distinct_refresh_and_continuation_jobs(self):
         import yaml
         refresh = yaml.safe_load((ROOT / '.github/workflows/copilot-review-refresh.yml').read_text())
         jobs = refresh['jobs']
-        self.assertEqual({'forward-review-event', 'refresh-canonical-gate', 'legacy-refresh'}, set(jobs))
+        self.assertEqual({'forward-review-event', 'refresh-canonical-gate', 'legacy-refresh', 'locate', 'resume'}, set(jobs))
         self.assertEqual('Locate protected review refresh', jobs['forward-review-event']['name'])
         for job_id, inactive in (('refresh-canonical-gate', 'Inactive event writer'), ('legacy-refresh', 'Inactive legacy writer')):
             self.assertIn(inactive, jobs[job_id]['name'])
             self.assertIn('Refresh canonical Copilot review gate', jobs[job_id]['name'])
             self.assertEqual(['Materialize the protected operation claim', 'Rerun the canonical protected gate when needed'],
                              [step['name'] for step in jobs[job_id]['steps']])
+
+    def test_consolidated_root_refresh_has_two_additional_inert_bound_jobs(self):
+        for event in (False, True):
+            jobs = self.jobs(event)
+            jobs += [{**jobs[1], "id": 58 + index, "name": name} for index, name in enumerate(
+                ("Locate deferred first review request", "Resume deferred first review request"))]
+            refresh = {"repository": {"full_name": "lightning-it/.github"},
+                       "head_repository": {"full_name": "lightning-it/.github"},
+                       "path": ".github/workflows/copilot-review-refresh.yml"}
+            self.assertTrue(self.accepted(jobs, event, refresh=refresh))
+            for changes in ({"repository": {"full_name": "foreign/repo"}}, {"head_repository": {"full_name": "foreign/repo"}},
+                            {"path": ".github/workflows/foreign.yml"}):
+                self.assertFalse(self.accepted(jobs, event, refresh={**refresh, **changes}))
+            for index in (3, 4):
+                for changes in ({"conclusion": "success"}, {"runner_id": 7}, {"steps": [self.effect]}, {"run_attempt": 2},
+                                {"name": "Foreign writer"}):
+                    mutated = copy.deepcopy(jobs); mutated[index].update(changes)
+                    self.assertFalse(self.accepted(mutated, event, refresh=refresh))

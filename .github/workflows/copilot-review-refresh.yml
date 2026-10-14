@@ -1749,6 +1749,8 @@ jobs:
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
+          CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
+                                              for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
 
 
           def continuation_workflow(repo):
@@ -2475,6 +2477,8 @@ jobs:
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
+          CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
+                                              for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
 
 
           def continuation_workflow(repo):

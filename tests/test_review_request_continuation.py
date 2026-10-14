@@ -795,7 +795,7 @@ class ContinuationTests(unittest.TestCase):
         return receipt, context, check
 
     def test_consolidated_receipt_authenticates_exact_inert_companion_inventory(self):
-        for mode in ("valid", "raw native names", "active companion", "foreign companion", "missing companion", "foreign identity"):
+        for mode in ("valid", "raw native names", "bare native names", "active companion", "foreign companion", "missing companion", "foreign identity"):
             with self.subTest(mode=mode):
                 self.setUp()
                 receipt, context, check = self.prepare_readonly_provenance()
@@ -806,10 +806,13 @@ class ContinuationTests(unittest.TestCase):
                 names = ["Locate protected review refresh", "Refresh canonical Copilot review gate", "Inactive legacy writer"]
                 inventory["jobs"] += [{**locator, "id": 182 + index, "name": name} for index, name in enumerate(names)]
                 inventory["total_count"] = 5
-                if mode == "raw native names":
+                if mode in {"raw native names", "bare native names"}:
                     workflow = yaml.safe_load((ROOT / ".github/workflows/copilot-review-refresh.yml").read_text())
                     inventory["jobs"][3]["name"] = workflow["jobs"]["refresh-canonical-gate"]["name"]
                     inventory["jobs"][4]["name"] = workflow["jobs"]["legacy-refresh"]["name"]
+                    if mode == "bare native names":
+                        for index in (3, 4):
+                            inventory["jobs"][index]["name"] = inventory["jobs"][index]["name"][3:-2].strip()
                 elif mode == "active companion":
                     inventory["jobs"][3].update(conclusion="success", runner_id=8)
                 elif mode == "foreign companion":
@@ -819,7 +822,7 @@ class ContinuationTests(unittest.TestCase):
                 elif mode == "foreign identity":
                     run["name"] = "Continue deferred first review request"
                 result = self.execute("python3 " + str(check), {}, {"CONTEXT": json.dumps(context), "RECEIPT": json.dumps(receipt)})
-                self.assertEqual(mode in {"valid", "raw native names"}, result.returncode == 0, result.stderr)
+                self.assertEqual(mode in {"valid", "raw native names", "bare native names"}, result.returncode == 0, result.stderr)
 
     def test_historical_receipt_retains_original_native_identity(self):
         receipt, context, check = self.prepare_readonly_provenance()

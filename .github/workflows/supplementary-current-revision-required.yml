@@ -5482,7 +5482,10 @@ jobs:
           select(([.[].total_count] | unique | length) == 1) |
           .[0].total_count as $count |
           [.[].jobs[]] |
-          select(length == $count and ($count == 1 or $count == 3)) |
+          select(length == $count and ($count == 1 or $count == 3 or
+            ($count == 5 and $refresh.repository.full_name == "lightning-it/.github"
+              and $refresh.head_repository.full_name == "lightning-it/.github"
+              and $refresh.path == ".github/workflows/copilot-review-refresh.yml"))) |
           select(all(.[]; type == "object" and (.id | positive_id)
             and (.run_id | positive_id)
             and .run_id == $refresh.id and .run_attempt == 1 and .head_sha == $head
@@ -5504,6 +5507,10 @@ jobs:
               and ([.[]|select(inactive_refresh_name)]|length)==1
               and ([.[]|select(.name=="Locate protected review refresh")]|length)==1
               and ([.[]|select(.name=="Refresh canonical Copilot review gate")]|length)==1
+              and (if $count == 5 then
+                ([.[]|select(.name=="Locate deferred first review request")]|length)==1
+                and ([.[]|select(.name=="Resume deferred first review request")]|length)==1
+                else true end)
               and all(.[] | select(.name != "Refresh canonical Copilot review gate");
                 .status == "completed" and .conclusion == "skipped"
                 and has("runner_id") and .runner_id == null and .steps == [])
@@ -5861,6 +5868,8 @@ jobs:
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
               '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
           }
+          CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
+                                              for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
 
 
           def continuation_workflow(repo):
