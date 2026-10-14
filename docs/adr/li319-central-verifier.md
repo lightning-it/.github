@@ -58,11 +58,21 @@ attempt-1 preflight and native human approval for exact duplicate-event reuse.
 The cache revalidates that original binding, bot recovery and sole attempt-2
 job rather than asking the same person to approve the same revision again.
 
-Required Workflow event filters do not create native label runs. GitHub's
-documented native events remain opened/synchronize/reopened; existing legacy
-ready/edited locators are preserved. Existing general label/metadata checks
-and the new label-bound approval fingerprint remain active. A types list is
-not counted as proof that the Required Workflow evaluated a label event.
+Required Workflow event filters do not create native metadata runs. Native
+approval remains opened/synchronize/reopened. The same YAML separately receives
+edited/labeled/unlabeled on protected main/develop solely to revoke the App-bound
+`dot-github / approved metadata` check on the exact live candidate head. It loads
+only current protected main code and cannot enter human or technical admission.
+The three-job native gate publishes success only after genuine approval, complete
+technical verification and final unchanged revision reread. Both the Required
+Workflow and this App-15368 status are mandatory in the Root-only ruleset.
+After changed metadata, reopening requests approval of the new revision by the
+same human; technical checks and consumed AI opportunities remain independently
+binding. A technical failure may require a meaningful new code revision rather
+than a prohibited same-head AI request. Reopening an identical revision reuses
+genuine prior authorization. Management evaluates and enforces both constraints,
+and requires the latest successful metadata status bound to the actual canary.
+No extra workflow file or private administration credential is introduced.
 
 The existing protected bot may recover the failed final technical job once
 (native attempt 2). Admission and approval jobs remain first-attempt only.
@@ -72,16 +82,17 @@ preflight with its unchanged binding marker, and a failed original final job.
 It then revalidates native human approval and all current technical evidence.
 Neither a new approval nor further retry attempts are granted by this recovery.
 
-The workflow's normal branch filters suppress duplicate local runs; organization
-Required Workflows ignore those filters. The new source must be installed on
+The workflow's local activity filters permit only failure-only metadata
+invalidation; organization Required Workflows ignore those filters. The new source must be installed on
 protected main before ruleset adoption. Candidate code is never executable
 controller input. The previous external repository trust boundary is explicitly
 replaced by this native single-person authorization and protected source.
 
 All three policy jobs use the existing digest-pinned, read-only, socket-free
 Devtools adapter through one protected shell dispatcher. Its explicit API network
-and read-only Actions token scope do not grant private administration or AI
-credentials. Native ruleset events are opened/synchronize/reopened; serialized
+and native Actions token scopes do not grant private administration or AI
+credentials. Preflight invalidation and final publication can write only public
+repository check results; human admission remains read-only. Native ruleset events are opened/synchronize/reopened; serialized
 concurrency retains the native gate without unsupported automatic cancellation.
 
 ## Migration and rollback

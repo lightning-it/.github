@@ -29,6 +29,8 @@ WORKFLOW = ".github/workflows/dot-github-current-revision-required.yml"
 APPROVAL_JOB = "Approve dot-github policy revision"
 BINDING_JOB = "Bind protected dot-github approval revision"
 FINAL_JOB = "Required dot-github current-revision workflow"
+METADATA_CHECK = "dot-github / approved metadata"
+METADATA_ACTIONS = frozenset(("edited", "labeled", "unlabeled"))
 MAX_LOG_BYTES = 4_000_000
 MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_APPROVAL_BINDING=([0-9a-f]{64})$")
 SOURCE_MARKER = re.compile(r"^(?:\d{4}-\d\d-\d\dT\S+\s+)?LI319_PROTECTED_SOURCE=([0-9a-f]{40})$")
@@ -320,9 +322,84 @@ def validate_final_recovery(client: Any, value: dict[str, Any], digest: str, run
                            "original approved revision")
 
 
+def publish_metadata_check(client: Any, value: dict[str, Any], run_id: int,
+                           *, approved: bool) -> None:
+    """Publish only this public candidate's App-bound metadata status.
+
+    Failure-only local event delivery never grants approval. Success is called
+    only after native approval, technical verification and final revision reread.
+    """
+    run = EVIDENCE.require_mapping(client.get(
+        f"repos/{REPOSITORY}/actions/runs/{run_id}"), "metadata producer run")
+    for field, expected in (("id", run_id), ("path", WORKFLOW),
+                            ("event", "pull_request_target")):
+        EVIDENCE.require_equal(run.get(field), expected, f"metadata producer {field}")
+    if approved:
+        if not native_run_binding(run, value):
+            raise EVIDENCE.VerificationError("only the native required gate may approve metadata")
+    else:
+        workflow_id = positive_integer(run.get("workflow_id"), "metadata workflow ID")
+        EVIDENCE.require_equal(run.get("workflow_url"),
+            f"https://api.github.com/repos/{REPOSITORY}/actions/workflows/{workflow_id}",
+            "local metadata workflow URL")
+        workflow = EVIDENCE.require_mapping(client.get(
+            f"repos/{REPOSITORY}/actions/workflows/{workflow_id}"), "metadata workflow")
+        for field, expected in (("id", workflow_id), ("path", WORKFLOW), ("state", "active")):
+            EVIDENCE.require_equal(workflow.get(field), expected, f"metadata workflow {field}")
+        EVIDENCE.require_equal(run.get("head_sha"), value["head"], "metadata run head")
+        EVIDENCE.require_equal(run.get("head_branch"), value["head_ref"], "metadata run branch")
+        EVIDENCE.require_equal(run.get("repository", {}).get("id"), REPOSITORY_ID,
+                               "metadata run repository")
+        EVIDENCE.require_equal(run.get("head_repository", {}).get("id"),
+                               value["head_repository_id"], "metadata run head repository")
+        EVIDENCE.require_equal(run.get("run_attempt"), 1, "metadata invalidation attempt")
+        EVIDENCE.require_equal(run.get("display_title"), value["display_title"], "metadata run title")
+    payload = {"name": METADATA_CHECK, "head_sha": value["head"],
+               "status": "completed", "conclusion": "success" if approved else "failure",
+               "details_url": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}",
+               "external_id": f"li319-metadata:v1:{value['pr']}:{run_id}:{value['head']}",
+               "output": {"title": "Exact metadata approved" if approved else "Metadata changed; approval invalidated",
+                          "summary": "Native protected approval and technical verification passed." if approved else
+                              "Reopen the PR to request approval of the changed revision. The same person may approve."}}
+    result = subprocess.run(["gh", "api", "--method", "POST",
+        f"repos/{REPOSITORY}/check-runs", "--input", "-"],
+        input=json.dumps(payload).encode(), capture_output=True, timeout=30, check=True)
+    if len(result.stdout) > MAX_LOG_BYTES:
+        raise EVIDENCE.VerificationError("metadata status response is oversized")
+    check = EVIDENCE.require_mapping(json.loads(result.stdout), "published metadata status")
+    for field in ("name", "head_sha", "status", "conclusion", "external_id"):
+        EVIDENCE.require_equal(check.get(field), payload[field], f"published metadata {field}")
+    EVIDENCE.require_equal(check.get("app", {}).get("id"), 15368, "metadata status App")
+
+
+def invalidate_metadata(client: Any, environment: dict[str, str], run_id: int) -> None:
+    """Invalidate even stale metadata deliveries; never overwrite another head."""
+    EVIDENCE.require_equal(environment.get("REPOSITORY"), REPOSITORY, "metadata repository")
+    action = environment.get("EVENT_ACTION")
+    if action not in METADATA_ACTIONS:
+        raise EVIDENCE.VerificationError("only metadata mutations may invalidate approval")
+    source = EVIDENCE.require_sha(environment.get("WORKFLOW_SHA", ""), "metadata protected source")
+    EVIDENCE.validate_source(client, environment.get("WORKFLOW_REF", ""), source)
+    branch = EVIDENCE.require_mapping(client.get(f"repos/{REPOSITORY}/branches/main"), "metadata main")
+    EVIDENCE.require_equal(branch.get("commit", {}).get("sha"), source, "metadata current protected source")
+    number = EVIDENCE.require_positive_integer(environment.get("PR_NUMBER", ""), "metadata PR")
+    head = EVIDENCE.require_sha(environment.get("EVENT_HEAD", ""), "metadata head")
+    pr = EVIDENCE.require_mapping(client.get(f"repos/{REPOSITORY}/pulls/{number}"), "metadata live PR")
+    EVIDENCE.require_equal(pr.get("number"), number, "metadata PR number")
+    EVIDENCE.require_equal(pr.get("head", {}).get("sha"), head, "metadata live head")
+    EVIDENCE.require_equal(pr.get("base", {}).get("repo", {}).get("id"), REPOSITORY_ID,
+                           "metadata target repository")
+    if pr.get("base", {}).get("ref") not in {"main", "develop"}:
+        raise EVIDENCE.VerificationError("metadata base is outside protected branches")
+    value = {"pr": number, "head": head, "head_ref": pr["head"]["ref"],
+             "head_repository_id": positive_integer(pr["head"]["repo"].get("id"), "metadata head repository ID"),
+             "display_title": f"Cross-protect .github PR #{number} {action} {head}"}
+    publish_metadata_check(client, value, run_id, approved=False)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("preflight", "approve", "verify"))
+    parser.add_argument("mode", choices=("preflight", "approve", "verify", "invalidate"))
     args = parser.parse_args()
     try:
         client = EVIDENCE.GitHubClient(os.environ.get("GH_TOKEN", ""),
@@ -330,8 +407,11 @@ def main() -> int:
         attempt = os.environ.get("GITHUB_RUN_ATTEMPT")
         if attempt != "1" and not (args.mode == "verify" and attempt == "2"):
             raise EVIDENCE.VerificationError("native run attempt is not admitted")
-        value, digest = revision(client, dict(os.environ))
         run_id = EVIDENCE.require_positive_integer(os.environ.get("GITHUB_RUN_ID", ""), "run ID")
+        if args.mode == "invalidate":
+            invalidate_metadata(client, dict(os.environ), run_id)
+            return 1  # Stop local admission; only a fresh native gate can approve.
+        value, digest = revision(client, dict(os.environ))
         if attempt == "2":
             validate_final_recovery(client, value, digest, run_id)
         if args.mode == "preflight":
@@ -359,8 +439,9 @@ def main() -> int:
                 EVIDENCE.verify(client, os.environ, attempts=attempts)
                 EVIDENCE.require_equal(revision(client, dict(os.environ))[1], digest,
                                        "final approval revision")
+                publish_metadata_check(client, value, run_id, approved=True)
                 print("Protected evidence and native single-person approval verified.")
-    except (EVIDENCE.VerificationError, subprocess.SubprocessError, UnicodeError, OSError) as exc:
+    except (EVIDENCE.VerificationError, subprocess.SubprocessError, UnicodeError, OSError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}")
         return 1
     return 0

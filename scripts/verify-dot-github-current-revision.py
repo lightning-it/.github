@@ -1190,15 +1190,15 @@ def validate_reservation(
     workflow_id = producer.get("workflow_id")
     if not native_integer(workflow_id) or workflow_id <= 0:
         raise VerificationError("verifier workflow ID is invalid")
-    require_equal(
-        producer.get("workflow_url"),
-        f"{client.api_url}/repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
-        "verifier workflow URL",
-    )
-    workflow = require_mapping(
-        client.get(f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}"),
-        "verifier workflow",
-    )
+    workflow_paths = {
+        f"repos/{TARGET_REPOSITORY}/actions/workflows/{workflow_id}",
+        f"repos/{TARGET_REPOSITORY}/actions/required_workflows/{workflow_id}",
+    }
+    matching = [path for path in workflow_paths
+                if producer.get("workflow_url") == f"{client.api_url}/{path}"]
+    if len(matching) != 1:
+        raise VerificationError("verifier workflow URL is not exactly bound")
+    workflow = require_mapping(client.get(matching[0]), "verifier workflow")
     require_equal(workflow.get("id"), workflow_id, "verifier workflow ID")
     require_equal(workflow.get("path"), TARGET_VERIFIER_PATH, "verifier workflow path")
     require_equal(workflow.get("state"), "active", "verifier workflow state")

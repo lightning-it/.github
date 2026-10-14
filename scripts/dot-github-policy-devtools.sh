@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Protected orchestration only; every policy workload runs in pinned Devtools.
 set -euo pipefail
-case "${1:-}" in preflight|approve|verify) ;; *) exit 1 ;; esac
+case "${1:-}" in preflight|approve|verify|invalidate) ;; *) exit 1 ;; esac
 [ "$#" -eq 1 ]
 [ "${GITHUB_ACTIONS:-}" = true ]
 [ "${REPOSITORY:-}" = lightning-it/.github ]

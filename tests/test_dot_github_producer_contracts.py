@@ -75,7 +75,7 @@ class PromotionClient:
             run = copy.deepcopy(self.run)
             run['id'] = int(path.rsplit('/', 1)[-1])
             return run
-        if path.endswith('/actions/workflows/9'):
+        if path.endswith(('/actions/workflows/9', '/actions/required_workflows/9')):
             return copy.deepcopy(self.workflow)
         if '/jobs?' in path:
             return {'total_count': len(self.jobs), 'jobs': copy.deepcopy(self.jobs)}
@@ -183,6 +183,20 @@ class OrdinaryClient(PromotionClient):
 
 
 class OrdinaryTests(unittest.TestCase):
+    def test_full_ordinary_accepts_authenticated_overlapping_required_workflow(self):
+        client = OrdinaryClient()
+        client.run['workflow_url'] = API + '/actions/required_workflows/9'
+        client.verify()
+        for bad in (API + '/actions/required_workflows/10',
+                    'https://untrusted.invalid/actions/required_workflows/9'):
+            client.run['workflow_url'] = bad
+            with self.subTest(bad=bad), self.assertRaises(M.VerificationError):
+                client.verify()
+        client.run['workflow_url'] = API + '/actions/required_workflows/9'
+        client.workflow['path'] = 'wrong.yml'
+        with self.assertRaises(M.VerificationError):
+            client.verify()
+
     def test_established_current_v5_copilot_is_preserved_with_optional_pr_field(self):
         for number_present in (True, False):
             for metadata_present in (True, False):

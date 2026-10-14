@@ -88,10 +88,12 @@ else:
     def test_all_native_jobs_use_protected_dispatcher_without_automatic_cancellation(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/dot-github-current-revision-required.yml").read_text())
         self.assertIs(workflow["concurrency"]["cancel-in-progress"], False)
-        for job in workflow["jobs"].values():
+        for job_id, job in workflow["jobs"].items():
             checkout = job["steps"][0]["with"]
             self.assertEqual(checkout["repository"], "lightning-it/.github")
-            self.assertEqual(checkout["ref"], "${{ github.workflow_sha }}")
+            expected_ref = ("${{ contains(fromJSON('[\"edited\",\"labeled\",\"unlabeled\"]'), github.event.action) && 'refs/heads/main' || github.workflow_sha }}"
+                            if job_id == 'preflight' else "${{ github.workflow_sha }}")
+            self.assertEqual(checkout["ref"], expected_ref)
             self.assertIn(DISPATCHER, checkout["sparse-checkout"].splitlines())
             self.assertIn("scripts/wunder-devtools-ee.sh", checkout["sparse-checkout"].splitlines())
             run = job["steps"][1]["run"]

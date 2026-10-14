@@ -384,8 +384,12 @@ class ReuseTests(unittest.TestCase):
              mock.patch.object(MODULE.EVIDENCE, 'GitHubClient', return_value=self.recovery_client()), \
              mock.patch.object(MODULE, 'log_binding', return_value='c' * 64), \
              mock.patch.object(MODULE, 'native_approval') as approval, \
-             mock.patch.object(MODULE.EVIDENCE, 'verify') as verify:
+             mock.patch.object(MODULE.EVIDENCE, 'verify') as verify, \
+             mock.patch.object(MODULE, 'publish_metadata_check') as metadata:
             self.assertEqual(MODULE.main(), 0)
+            metadata.assert_called_once()
+            self.assertEqual(metadata.call_args.args[1:], (self.value, 100))
+            self.assertEqual(metadata.call_args.kwargs, {'approved': True})
             approval.assert_called_once()
             verify.assert_called_once()
 

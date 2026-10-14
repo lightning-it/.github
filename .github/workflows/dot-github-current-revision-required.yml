@@ -1,6 +1,6 @@
 # LI-319: canonical protected .github source; native single-person approval.
-# Branch filters suppress a duplicate local invocation. Ruleset workflows
-# ignore event filters and remain authoritative for main/develop pull requests.
+# Local metadata events only revoke stale approval. Native rulesets ignore
+# filters and retain opened/synchronize/reopened as the approval authority.
 # yamllint disable rule:truthy rule:line-length
 ---
 name: Protected dot-github current-revision verifier
@@ -11,7 +11,8 @@ run-name: >-
 
 on:
   pull_request_target:
-    branches-ignore: ['**']
+    types: [edited, labeled, unlabeled]
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -49,6 +50,7 @@ jobs:
     if: github.repository == 'lightning-it/.github'
     permissions:
       actions: read
+      checks: write
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
@@ -58,10 +60,11 @@ jobs:
       reuse-run: ${{ steps.binding.outputs.reuse-run }}
     steps:
       - name: Check out protected source only
+        id: source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: ${{ github.workflow_sha }}
+          ref: ${{ contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action) && 'refs/heads/main' || github.workflow_sha }}
           fetch-depth: 1
           persist-credentials: false
           path: protected-source
@@ -71,6 +74,12 @@ jobs:
             scripts/dot-github-policy-devtools.sh
             scripts/wunder-devtools-ee.sh
           sparse-checkout-cone-mode: false
+      - name: Revoke approval after metadata changes
+        if: contains(fromJSON('["edited","labeled","unlabeled"]'), github.event.action)
+        env:
+          WORKFLOW_REF: lightning-it/.github/.github/workflows/dot-github-current-revision-required.yml@refs/heads/main
+          WORKFLOW_SHA: ${{ steps.source.outputs.commit }}
+        run: bash protected-source/scripts/dot-github-policy-devtools.sh invalidate
       - name: Bind current revision and find existing native approval
         id: binding
         run: bash protected-source/scripts/dot-github-policy-devtools.sh preflight
@@ -119,7 +128,7 @@ jobs:
               && needs.preflight.outputs.reuse-run != ''))
     permissions:
       actions: read
-      checks: read
+      checks: write
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
