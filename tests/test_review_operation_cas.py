@@ -210,6 +210,49 @@ read_refresh_review_state() { printf '%s' '{"event_current":true,"incomplete":0,
                     second = [c for c in state['calls'] if c['worker'] == '501' and c.get('cas')]
                     self.assertEqual(INITIAL, second[0]['input']['expectedHeadOid'])
 
+    def test_root_default_dispatch_consumes_same_single_verifier_slot(self):
+        context = {'LI219_EVENT_MODE': 'disabled',
+                   'GITHUB_REPOSITORY': 'lightning-it/.github',
+                   'GITHUB_JOB': 'refresh-canonical-gate',
+                   'GITHUB_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review-refresh.yml@refs/heads/develop',
+                   'GITHUB_ACTOR': 'github-actions[bot]',
+                   'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]'}
+        state, _ = self.probe('consistent', **context)
+        self.assertEqual(1, sum(c.get('cas', False) for c in state['calls']))
+        self.assertEqual(1, sum(c.get('rerun', False) for c in state['calls']))
+        self.assertFalse(any(c.get('request') for c in state['calls']))
+        for field, value in (('GITHUB_ACTOR', 'litroc'),
+                             ('GITHUB_TRIGGERING_ACTOR', 'litroc'),
+                             ('GITHUB_REF_PROTECTED', 'false'),
+                             ('GITHUB_RUN_ATTEMPT', '2')):
+            with self.subTest(field=field):
+                state, _ = self.probe('consistent', **{**context, field: value})
+                self.assertFalse(any(c.get('cas') or c.get('marker') or c.get('rerun')
+                                     for c in state['calls']))
+
+    def test_root_default_legacy_helper_never_claims_with_read_only_token(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / '.github/workflows/current-revision-rerun.yml').read_text())
+        legacy = workflow['jobs']['legacy-rerun']
+        self.assertEqual('read', legacy['permissions']['contents'])
+        self.assertEqual('read', legacy['permissions']['checks'])
+        self.assertIn('!(vars.LI219_EVENT_MODE', legacy['if'])
+        claim = contracts.CopilotReviewRefreshTests._rerun_shell_function('claim_review_operation')
+        self.assertIn('${GITHUB_JOB:-}', claim)
+        # Execute the real shared function with the selected helper's native
+        # source/job identity. Any API read or mutation fails the subprocess.
+        context = {**os.environ, 'LI219_EVENT_MODE': 'disabled',
+                   'GITHUB_REPOSITORY': 'lightning-it/.github',
+                   'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_JOB': 'legacy-rerun',
+                   'GITHUB_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/current-revision-rerun.yml@refs/heads/develop'}
+        script = 'set -eu\ngh() { echo forbidden >&2; return 99; }\n' + claim + '\nclaim_review_operation 77 ' + HEAD + ' ' + BASE + ' 23\n'
+        for changes in ({}, {'GITHUB_JOB': 'refresh-canonical-gate'},
+                        {'GITHUB_WORKFLOW_REF': 'lightning-it/.github/.github/workflows/copilot-review-refresh.yml@refs/heads/develop'}):
+            with self.subTest(changes=changes):
+                result = subprocess.run(['bash', '-c', script], env={**context, **changes}, text=True, capture_output=True)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual('', result.stderr)
+
     def test_terminal_review_preserves_cas_until_later_valid_review(self):
         for marker in ('premium request quota', 'premium requests quota', 'encountered an error'):
             for in_comment in (False, True):

@@ -2671,6 +2671,35 @@ def bind_copilot_review_findings(
     }
 
 
+
+# Opaque tuple digests keep private historical ingress metadata out of public source.
+# The owner explicitly approved exactly two historical cases on 2026-10-14.
+# Old Required failures stay failed; no future actor, review or retry authority.
+HISTORICAL_RENOVATE_ACTOR_BINDINGS = frozenset({
+    "660e6da3baa857019be6d7321a6d63304a0382132efcb34864788b2572d6fbcd",
+    "17f07d98ac5530c37a873615ef061c35ca53438630584450cc958bc1ccb59ebb",
+})
+
+
+def historical_renovate_actor_binding(
+    check: JSON, pull: JSON, run: JSON, summary: JSON, *,
+    repository: str, pull_number: int, base_sha: str, head_sha: str,
+) -> str | None:
+    actors = {}
+    for role in ("actor", "triggering_actor"):
+        value = exact_object(run.get(role), "historical-native-actor")
+        actors[role] = {key: value.get(key) for key in ("login", "id", "type")}
+    binding = digest({
+        "repository": repository, "pull_request_number": pull_number,
+        "base_sha": base_sha, "head_sha": head_sha,
+        "merge_commit_sha": pull.get("merge_commit_sha"),
+        "merged_at": pull.get("merged_at"),
+        "check_id": check.get("id"), "producer_run_id": run.get("id"),
+        "summary_sha256": digest(summary), "run_attempt": run.get("run_attempt"),
+        **actors,
+    })
+    return binding if binding in HISTORICAL_RENOVATE_ACTOR_BINDINGS else None
+
 def validate_producer_run(
     check: JSON,
     *,
@@ -2896,12 +2925,22 @@ def validate_producer_run(
         run.get("triggering_actor"), "producer-run-triggering-actor"
     )
     attempt = integer(run.get("run_attempt"), "producer-run-attempt")
+    historical_actor = (
+        historical_renovate_actor_binding(
+            check, pull, run, summary, repository=repository,
+            pull_number=pull_number, base_sha=base_sha, head_sha=head_sha,
+        ) if evidence_kind == "renovate" and evidence_version == "v6" else None
+    )
+    expected_actor = ("litroc", 76040632, "User") if historical_actor else (
+        author, author_id, author_type,
+    )
     require(
-        actor.get("login") == author
-        and integer(actor.get("id"), "producer-run-actor-id") == author_id
-        and actor.get("type") == author_type,
+        (actor.get("login"), integer(actor.get("id"), "producer-run-actor-id"), actor.get("type"))
+        == expected_actor,
         "producer-run-actor-identity",
     )
+    if historical_actor and copilot_binding is not None:
+        copilot_binding["historical_actor_admission"] = historical_actor
     if evidence_kind == "copilot" and attempt == 2:
         require(
             triggering.get("login") == GITHUB_ACTIONS_LOGIN
@@ -2912,10 +2951,8 @@ def validate_producer_run(
         )
     else:
         require(
-            triggering.get("login") == author
-            and integer(triggering.get("id"), "producer-run-triggering-actor-id")
-            == author_id
-            and triggering.get("type") == author_type,
+            (triggering.get("login"), integer(triggering.get("id"), "producer-run-triggering-actor-id"),
+             triggering.get("type")) == expected_actor,
             "producer-run-triggering-actor-identity",
         )
     require(run.get("status") == "completed", "producer-run-status")
@@ -3690,7 +3727,10 @@ def bound_review_check(
                     "historical_findings_count": historical_findings_count,
                 }
                 if native_binding:
-                    match["copilot_binding"] = native_binding
+                    if expected_kind == "renovate":
+                        match["historical_exception"] = "native-historical-actor:" + native_binding["historical_actor_admission"]
+                    else:
+                        match["copilot_binding"] = native_binding
                 if historical_pr724:
                     match["historical_exception"] = "owner-authorized-pr724-three-timeouts-2026-10-13"
                 matches.append(match)

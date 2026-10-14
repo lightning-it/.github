@@ -162,7 +162,10 @@ def clean_review(review, comments, head):
 
 
 def recent_dispatch(runs, path, title, now=None):
-    matching = [run for run in runs if run.get("path") == f".github/workflows/{path}"
+    paths = {f".github/workflows/{path}"}
+    if path == REFRESH and title.startswith("First review PR #"):
+        paths.add(f".github/workflows/{CONTINUATION}")
+    matching = [run for run in runs if run.get("path") in paths
                 and run.get("event") == "workflow_dispatch"
                 and run.get("display_title") == title]
     # A failed locator may be revisited, but never in a rapid loop. The consumer's
@@ -374,6 +377,9 @@ def reconcile(repository, now):
                 if inputs is None:
                     continue
                 path, ref = CONTINUATION, inputs.pop("resume_ref")
+                if repository == "lightning-it/.github":
+                    path = REFRESH
+                    inputs["operation"] = "continue"
                 title = f"First review PR #{number} head {head} owner {inputs['owner_run']} old review {inputs['old_review']}"
             else:
                 review = max(usable, key=lambda item: item["id"])

@@ -19,6 +19,26 @@ PILOTS = {"lightning-it/.github", "lightning-it/shared-assets-lit",
           "lightning-it/ansible-collection-supplementary"}
 PRODUCER = ".github/workflows/copilot-review.yml"
 WORKFLOW = ".github/workflows/review-request-continuation.yml"
+CONSOLIDATED_WORKFLOW = ".github/workflows/copilot-review-refresh.yml"
+CONSOLIDATED_INACTIVE_NAMES = {
+    '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+    '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+    '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+    '$' + '{{ (github.repository == \'lightning-it/.github\' || (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository))) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+}
+CONSOLIDATED_INACTIVE_NAMES.update({key[3:-2].strip(): value
+                                    for key, value in list(CONSOLIDATED_INACTIVE_NAMES.items())})
+
+
+def continuation_workflow(repo):
+    return CONSOLIDATED_WORKFLOW if repo == "lightning-it/.github" else WORKFLOW
+
+
+def continuation_identity(repo, run, completed=True):
+    identity = (run.get("path"), run.get("name"))
+    current = (continuation_workflow(repo), "Refresh Copilot review gate" if repo == "lightning-it/.github"
+               else "Continue deferred first review request")
+    return identity == current or (completed and identity == (WORKFLOW, "Continue deferred first review request"))
 BOT = "copilot-pull-request-reviewer[bot]"
 REVIEWERS = frozenset({BOT, "copilot-pull-request-reviewer"})
 FAILURE_MARKERS = (
@@ -358,9 +378,12 @@ def native_job(repo, run, name, names):
     require(len(selected) == 1, "native job inventory")
     if names == RESUME_STEPS:
         others = [job for job in jobs if job["name"] != name]
-        require(len(others) == 1 and others[0]["name"] == "Locate deferred first review request"
-                and others[0]["conclusion"] == "skipped" and others[0].get("runner_id") is None
-                and others[0]["steps"] == [], "resume native job layout")
+        expected = {"Locate deferred first review request"}
+        if run["path"] == CONSOLIDATED_WORKFLOW:
+            expected |= {"Locate protected review refresh", "Refresh canonical Copilot review gate", "Inactive legacy writer"}
+        require(len(others) == len(expected) and {CONSOLIDATED_INACTIVE_NAMES.get(job["name"], job["name"]) for job in others} == expected
+                and all(job["conclusion"] == "skipped" and job.get("runner_id") is None
+                        and job["steps"] == [] for job in others), "resume native job layout")
     job = selected[0]
     require(job["conclusion"] == "success" and positive(job.get("runner_id")), "native job unsuccessful")
     steps = job["steps"]
@@ -567,9 +590,12 @@ def locate():
     clean_old_review(repo, pr_number, review_id, intent["head"], owner["created_at"])
     unconsumed(repo, intent, journal)
     # Locator only; no input below grants consumer mutation authority.
-    api(f"repos/{repo}/actions/workflows/review-request-continuation.yml/dispatches",
-        {"ref": intent["base_ref"], "inputs": {"pr_number": str(pr_number), "owner_run": str(owner["id"]),
-                                      "expected_head": intent["head"], "old_review": str(review_id)}})
+    inputs = {"pr_number": str(pr_number), "owner_run": str(owner["id"]),
+              "expected_head": intent["head"], "old_review": str(review_id)}
+    if repo == "lightning-it/.github":
+        inputs["operation"] = "continue"
+    api(f"repos/{repo}/actions/workflows/{continuation_workflow(repo).rsplit('/', 1)[1]}/dispatches",
+        {"ref": intent["base_ref"], "inputs": inputs})
 
 
 def resume():
@@ -589,7 +615,7 @@ def resume():
     resume_ref, resume_sha = intent["base_ref"], intent["base"]
     require(os.environ["GITHUB_REF"] == f"refs/heads/{resume_ref}"
             and os.environ["GITHUB_SHA"] == source == resume_sha
-            and os.environ["GITHUB_WORKFLOW_REF"] == f"{repo}/{WORKFLOW}@refs/heads/{resume_ref}", "resume protected source")
+            and os.environ["GITHUB_WORKFLOW_REF"] == f"{repo}/{continuation_workflow(repo)}@refs/heads/{resume_ref}", "resume protected source")
     require(repository(repo, repo_id, source, resume_ref) == source, "current resume controller")
     require(0 <= dt.datetime.now(dt.timezone.utc).timestamp() - epoch(owner["created_at"]) <= 604800, "expired intent")
     old = clean_old_review(repo, pr, review_id, intent["head"], owner["created_at"])
@@ -618,7 +644,7 @@ def native_resume_run(repo, run_id, source, intent, review_id, completed=True):
     if completed and intent["schema"] == 1 and run.get("head_branch") == "develop":
         resume_ref, resume_sha = "develop", source
     require(sha(source) and type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
-            and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
+            and run["event"] == "workflow_dispatch" and continuation_identity(repo, run, completed)
             and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
             and run["head_sha"] == source == resume_sha and run["head_branch"] == resume_ref
             and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"
