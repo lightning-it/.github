@@ -67,6 +67,9 @@ read-only metadata job, which authenticates an unchanged genuine native human
 authorization, reruns current technical checks and rebinds the final revision.
 It never requests human approval or AI inference. Queueing, checkout, container,
 API, timeout or cancellation failures leave the required native context blocking.
+The target-event slot uses the distinct name
+"Inactive metadata audit for target event"; it never publishes the required
+metadata name through a skipped job.
 No custom check-result publication or write token is needed.
 
 Candidate metadata job orchestration, global environment/defaults/permissions,

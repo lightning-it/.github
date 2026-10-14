@@ -168,7 +168,7 @@ class ReuseTests(unittest.TestCase):
                     "status": "completed", "conclusion": "success"}
         self.jobs = [{"id": i, "name": name, "run_id": 100, "run_attempt": 1,
                       "head_sha": "c" * 40, "status": "completed", "conclusion": "success"}
-                     for i, name in enumerate((MODULE.BINDING_JOB, MODULE.APPROVAL_JOB, MODULE.FINAL_JOB, MODULE.METADATA_JOB), 1)]
+                     for i, name in enumerate((MODULE.BINDING_JOB, MODULE.APPROVAL_JOB, MODULE.FINAL_JOB, MODULE.INACTIVE_METADATA_JOB), 1)]
         self.jobs[3]['conclusion'] = 'skipped'
 
     def client(self, changed_source=False):

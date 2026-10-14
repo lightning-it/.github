@@ -43,7 +43,8 @@ class MetadataControllerTests(unittest.TestCase):
         self.assertEqual(triggers['pull_request']['types'], ['edited','labeled','unlabeled'])
         self.assertEqual(triggers['pull_request_target']['branches-ignore'], ['**'])
         job = self.doc['jobs']['metadata']
-        self.assertEqual(job['name'], M.METADATA_JOB)
+        self.assertEqual(job['name'], "${{ github.event_name == 'pull_request' && 'dot-github / approved metadata' || 'Inactive metadata audit for target event' }}")
+        self.assertNotEqual(M.METADATA_JOB, M.INACTIVE_METADATA_JOB)
         self.assertNotIn('needs', job)
         self.assertEqual(job['steps'][0]['with']['ref'], 'refs/heads/main')
         self.assertTrue(job['steps'][-1]['run'].endswith(' audit-metadata'))

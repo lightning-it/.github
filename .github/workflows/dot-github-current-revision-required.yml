@@ -152,7 +152,7 @@ jobs:
         run: bash protected-source/scripts/dot-github-policy-devtools.sh verify
 
   metadata:
-    name: dot-github / approved metadata
+    name: "${{ github.event_name == 'pull_request' && 'dot-github / approved metadata' || 'Inactive metadata audit for target event' }}"
     if: github.repository == 'lightning-it/.github' && github.event_name == 'pull_request'
     permissions:
       actions: read
