@@ -293,3 +293,23 @@ identities, changed tuples, new attempts and all future ingress keep the ordinar
 strict author identity. The resulting promotion still needs every current
 technical gate and the genuine native one-person authorization. This is no
 synthetic check, retry grant, new review request or retrospective Required PASS.
+
+### Default-mode refresh source correction
+
+Native Copilot review 5524790626 completed on e698 with zero findings. The
+Root default-mode refresh then failed at its existing protected-source guard:
+the pull-request review event materialized the synthetic PR merge source,
+while the guard correctly required protected Develop and its exact Base SHA.
+No producer rerun or AI request occurred. The rejected native result remains.
+
+Root now forwards review locators in default mode as well as pilot mode. The
+Root default consumer accepts only a first-attempt protected branch dispatch
+from github-actions[bot], with the explicit continuation operation excluded.
+The existing live protected-branch/source, PR tuple, native review, actor,
+content/thread, original-producer and retry-budget guards are unchanged.
+Copilot's native event alias is admitted only at the read-only locator; the
+protected consumer still requires the canonical Copilot identity from API data.
+Non-Root default behavior remains unchanged. Neither activation flag is enabled,
+no new AI request entitlement is added, and the PR merge source is never admitted
+as a mutation authority. The original e698 acceptance evidence stays historical;
+the corrected final head requires normal fresh review and technical checks.

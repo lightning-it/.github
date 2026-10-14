@@ -60,7 +60,8 @@ jobs:
   forward-review-event:
     name: Locate protected review refresh
     if: >-
-      (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
+      (github.repository == 'lightning-it/.github' ||
+       (vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository))) &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.base.repo.full_name == github.repository && github.event.pull_request.head.repo.full_name == github.repository &&
       (
@@ -69,7 +70,7 @@ jobs:
           (
             (
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-              github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.event.review.user.login)
             ) ||
             (
               github.actor == 'litroc' &&
@@ -83,7 +84,7 @@ jobs:
           (
             (
               contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-              github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.event.comment.user.login)
             ) ||
             (
               github.actor == 'litroc' &&
@@ -1656,36 +1657,44 @@ jobs:
     if: >-
       inputs.operation != 'continue' &&
       !(vars.LI219_EVENT_MODE == 'enabled' && contains(fromJSON('["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]'), github.repository)) &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
       (
+        (github.repository == 'lightning-it/.github' && github.event_name == 'workflow_dispatch' &&
+         github.ref_protected && github.actor == 'github-actions[bot]' &&
+         github.triggering_actor == 'github-actions[bot]' && github.run_attempt == 1)
+        ||
+        (github.repository != 'lightning-it/.github' &&
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
         (
-          github.event_name == 'pull_request_review' &&
           (
+            github.event_name == 'pull_request_review' &&
             (
-              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-              github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
-            ) ||
-            (
-              github.actor == 'litroc' &&
-              github.event.review.user.login == 'litroc'
-            ) ||
-            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
-          )
-        ) ||
-        (
-          github.event_name == 'pull_request_review_comment' &&
+              (
+                contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+                github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+              ) ||
+              (
+                github.actor == 'litroc' &&
+                github.event.review.user.login == 'litroc'
+              ) ||
+              contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.review.author_association)
+            )
+          ) ||
           (
+            github.event_name == 'pull_request_review_comment' &&
             (
-              contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
-              github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
-            ) ||
-            (
-              github.actor == 'litroc' &&
-              github.event.comment.user.login == 'litroc'
-            ) ||
-            contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+              (
+                contains(fromJSON('["Copilot","copilot-pull-request-reviewer","copilot-pull-request-reviewer[bot]"]'), github.actor) &&
+                github.event.comment.user.login == 'copilot-pull-request-reviewer[bot]'
+              ) ||
+              (
+                github.actor == 'litroc' &&
+                github.event.comment.user.login == 'litroc'
+              ) ||
+              contains(fromJSON('["COLLABORATOR","MEMBER","OWNER"]'), github.event.comment.author_association)
+            )
           )
+        )
         )
       )
     permissions:

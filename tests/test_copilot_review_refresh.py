@@ -2512,14 +2512,14 @@ gh() {
             ),
         )
         self.assertEqual(
-            2,
+            1,
             workflow.count(
                 "github.event.review.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
             ),
         )
         self.assertEqual(
-            2,
+            1,
             workflow.count(
                 "github.event.comment.user.login == "
                 "'copilot-pull-request-reviewer[bot]'"
