@@ -77,7 +77,7 @@ elif '/compare/' in route:
     result = s.get('ancestry_by_route', {}).get(route, s.get('ancestry', {'status': 'identical'}))
 elif payload is not None:
     if route.endswith('/dispatches'):
-        assert route.endswith('/review-request-continuation.yml/dispatches')
+        assert route.endswith('/copilot-review-refresh.yml/dispatches') and payload['inputs']['operation'] == 'continue'
         s['dispatches'].append(payload)
     elif route.endswith('/requested_reviewers'):
         assert payload == {'reviewers': ['copilot-pull-request-reviewer[bot]']}
@@ -157,8 +157,8 @@ class ContinuationTests(unittest.TestCase):
                         prefix + '/pulls/23/reviews/17': review, prefix + '/pulls/23/reviews': [review],
                         prefix + '/pulls/23/reviews/17/comments': [], prefix + '/issues/23/comments': [],
                         prefix + '/pulls/23/requested_reviewers': {'users': []}}}
-        resume = {**owner, 'id': 88, 'event': 'workflow_dispatch', 'path': '.github/workflows/review-request-continuation.yml',
-                  'name': 'Continue deferred first review request', 'head_sha': SOURCE, 'head_branch': 'develop',
+        resume = {**owner, 'id': 88, 'event': 'workflow_dispatch', 'path': '.github/workflows/copilot-review-refresh.yml',
+                  'name': 'Refresh Copilot review gate', 'head_sha': SOURCE, 'head_branch': 'develop',
                   'actor': {'login': 'github-actions[bot]'}, 'triggering_actor': {'login': 'github-actions[bot]'},
                   'status': 'in_progress', 'conclusion': None,
                   'display_title': f'First review PR #23 head {HEAD} owner 77 old review 17'}
@@ -172,7 +172,7 @@ class ContinuationTests(unittest.TestCase):
                     'GITHUB_RUN_ID': '77', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'pull_request_target',
                     'GITHUB_ACTOR': 'litroc', 'GITHUB_TRIGGERING_ACTOR': 'litroc', 'LI219_EVENT_MODE': 'enabled',
                     'PR_NUMBER': '23', 'EXPECTED_HEAD': HEAD, 'EXPECTED_BASE': BASE}
-        self.workflow = yaml.safe_load((ROOT / '.github/workflows/review-request-continuation.yml').read_text())
+        self.workflow = yaml.safe_load((ROOT / '.github/workflows/copilot-review-refresh.yml').read_text())
         self.original = yaml.safe_load((ROOT / '.github/workflows/copilot-review.yml').read_text())
 
     def route(self, suffix):
@@ -202,7 +202,7 @@ class ContinuationTests(unittest.TestCase):
             {'inputs': {'pr_number': '23', 'expected_head': HEAD, 'owner_run': '77', 'old_review': '17'}},
             {'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_ACTOR': 'github-actions[bot]',
              'GITHUB_TRIGGERING_ACTOR': 'github-actions[bot]', 'GITHUB_RUN_ID': '88',
-             'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/review-request-continuation.yml@' + changes.get('GITHUB_REF', self.env['GITHUB_REF']), **changes})
+             'GITHUB_WORKFLOW_REF': REPO + '/.github/workflows/copilot-review-refresh.yml@' + changes.get('GITHUB_REF', self.env['GITHUB_REF']), **changes})
 
     def locator(self, companion=False):
         steps = self.workflow['jobs']['locate']['steps']
@@ -541,7 +541,7 @@ class ContinuationTests(unittest.TestCase):
     def test_embedded_helpers_match_canonical_source_and_narrow_job_guards(self):
         import textwrap
         helper = (ROOT / 'scripts/review_request_continuation.py').read_text().strip()
-        for path in ('.github/workflows/copilot-review.yml', '.github/workflows/review-request-continuation.yml'):
+        for path in ('.github/workflows/copilot-review.yml', '.github/workflows/copilot-review-refresh.yml'):
             text = (ROOT / path).read_text()
             chunks = text.split("<<'CONTINUATION'\n")[1:]
             self.assertTrue(chunks)
@@ -745,6 +745,7 @@ class ContinuationTests(unittest.TestCase):
         steps[3].update(started_at=at(58), completed_at=at(59))
         job["completed_at"] = at(59)
         run["updated_at"] = at(60)
+        run.update(path=".github/workflows/review-request-continuation.yml", name="Continue deferred first review request")
         locator = {
             "id": 181,
             "run_id": 88,
@@ -792,3 +793,35 @@ class ContinuationTests(unittest.TestCase):
             + "module.verify_receipt(json.loads(os.environ['CONTEXT']), json.loads(os.environ['RECEIPT']))\n"
         )
         return receipt, context, check
+
+    def test_consolidated_receipt_authenticates_exact_inert_companion_inventory(self):
+        for mode in ("valid", "raw native names", "active companion", "foreign companion", "missing companion", "foreign identity"):
+            with self.subTest(mode=mode):
+                self.setUp()
+                receipt, context, check = self.prepare_readonly_provenance()
+                run = self.route("/actions/runs/88/attempts/1")
+                run.update(path=".github/workflows/copilot-review-refresh.yml", name="Refresh Copilot review gate")
+                inventory = self.route("/actions/runs/88/attempts/1/jobs")
+                locator = inventory["jobs"][1]
+                names = ["Locate protected review refresh", "Refresh canonical Copilot review gate", "Inactive legacy writer"]
+                inventory["jobs"] += [{**locator, "id": 182 + index, "name": name} for index, name in enumerate(names)]
+                inventory["total_count"] = 5
+                if mode == "raw native names":
+                    workflow = yaml.safe_load((ROOT / ".github/workflows/copilot-review-refresh.yml").read_text())
+                    inventory["jobs"][3]["name"] = workflow["jobs"]["refresh-canonical-gate"]["name"]
+                    inventory["jobs"][4]["name"] = workflow["jobs"]["legacy-refresh"]["name"]
+                elif mode == "active companion":
+                    inventory["jobs"][3].update(conclusion="success", runner_id=8)
+                elif mode == "foreign companion":
+                    inventory["jobs"][3]["name"] = "Unbound writer"
+                elif mode == "missing companion":
+                    inventory["jobs"].pop(); inventory["total_count"] = 4
+                elif mode == "foreign identity":
+                    run["name"] = "Continue deferred first review request"
+                result = self.execute("python3 " + str(check), {}, {"CONTEXT": json.dumps(context), "RECEIPT": json.dumps(receipt)})
+                self.assertEqual(mode in {"valid", "raw native names"}, result.returncode == 0, result.stderr)
+
+    def test_historical_receipt_retains_original_native_identity(self):
+        receipt, context, check = self.prepare_readonly_provenance()
+        result = self.execute("python3 " + str(check), {}, {"CONTEXT": json.dumps(context), "RECEIPT": json.dumps(receipt)})
+        self.assertEqual(0, result.returncode, result.stderr)

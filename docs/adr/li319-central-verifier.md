@@ -262,3 +262,19 @@ fresh original native target plus independent metadata receipt before adoption.
 Keep that acceptance revision open throughout the distinct private enforce and
 cutover operations. Their approvals may all be performed by the same authorized
 person; current technical failures remain independently blocking.
+
+
+## First workflow consolidation package
+
+After native source cutover, Root's deferred first-request continuation moves
+into `copilot-review-refresh.yml`, using distinct locator and consumer jobs and
+an explicit `operation=continue` dispatch. The existing refresh jobs do not run
+for that dispatch. Credential scopes, protected-base/source binding, the original
+request CAS key, first-attempt restriction and one-request budget remain intact.
+The native evidence reader authenticates the new workflow identity and requires
+all unrelated jobs to be inert. Historical two-job continuation evidence retains
+its exact old identity and source; it is not rewritten as a new successful run.
+The delayed-event reconciler retains both old and current locator histories and
+the same ten-minute cooldown, preventing migration from restoring a dispatch slot.
+Other pilot repositories retain their adopted source path until template adoption.
+Pilot flags stay unchanged; publication alone does not activate a pilot.

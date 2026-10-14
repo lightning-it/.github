@@ -5856,6 +5856,22 @@ jobs:
 
 
           WORKFLOW = ".github/workflows/review-request-continuation.yml"
+          CONSOLIDATED_WORKFLOW = ".github/workflows/copilot-review-refresh.yml"
+          CONSOLIDATED_INACTIVE_NAMES = {
+              '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Refresh canonical Copilot review gate\' || \'Inactive event writer\' }}': 'Refresh canonical Copilot review gate',
+              '$' + '{{ (vars.LI219_EVENT_MODE == \'enabled\' && contains(fromJSON(\'["lightning-it/.github","lightning-it/shared-assets-lit","lightning-it/ansible-collection-supplementary"]\'), github.repository)) && \'Inactive legacy writer\' || \'Refresh canonical Copilot review gate\' }}': 'Inactive legacy writer',
+          }
+
+
+          def continuation_workflow(repo):
+              return CONSOLIDATED_WORKFLOW if repo == "lightning-it/.github" else WORKFLOW
+
+
+          def continuation_identity(repo, run, completed=True):
+              identity = (run.get("path"), run.get("name"))
+              current = (continuation_workflow(repo), "Refresh Copilot review gate" if repo == "lightning-it/.github"
+                         else "Continue deferred first review request")
+              return identity == current or (completed and identity == (WORKFLOW, "Continue deferred first review request"))
 
 
           BOT = "copilot-pull-request-reviewer[bot]"
@@ -6104,9 +6120,12 @@ jobs:
               require(len(selected) == 1, "native job inventory")
               if names == RESUME_STEPS:
                   others = [job for job in jobs if job["name"] != name]
-                  require(len(others) == 1 and others[0]["name"] == "Locate deferred first review request"
-                          and others[0]["conclusion"] == "skipped" and others[0].get("runner_id") is None
-                          and others[0]["steps"] == [], "resume native job layout")
+                  expected = {"Locate deferred first review request"}
+                  if run["path"] == CONSOLIDATED_WORKFLOW:
+                      expected |= {"Locate protected review refresh", "Refresh canonical Copilot review gate", "Inactive legacy writer"}
+                  require(len(others) == len(expected) and {CONSOLIDATED_INACTIVE_NAMES.get(job["name"], job["name"]) for job in others} == expected
+                          and all(job["conclusion"] == "skipped" and job.get("runner_id") is None
+                                  and job["steps"] == [] for job in others), "resume native job layout")
               job = selected[0]
               require(job["conclusion"] == "success" and positive(job.get("runner_id")), "native job unsuccessful")
               steps = job["steps"]
@@ -6183,7 +6202,7 @@ jobs:
               if completed and intent["schema"] == 1 and run.get("head_branch") == "develop":
                   resume_ref, resume_sha = "develop", source
               require(sha(source) and type(run["id"]) is int and str(run["id"]) == run_id and type(run["run_attempt"]) is int and run["run_attempt"] == 1
-                      and run["event"] == "workflow_dispatch" and run["path"] == WORKFLOW and run["name"] == "Continue deferred first review request"
+                      and run["event"] == "workflow_dispatch" and continuation_identity(repo, run, completed)
                       and run["repository"]["full_name"] == repo and run["head_repository"]["full_name"] == repo
                       and run["head_sha"] == source == resume_sha and run["head_branch"] == resume_ref
                       and run["actor"]["login"] == run["triggering_actor"]["login"] == "github-actions[bot]"

@@ -239,8 +239,9 @@ platform, protected-source, actor, Required-Workflow, or merge authority.
 ## LI-319 central verifier and single-person approval
 
 The owner-authorized 2026-10-13 amendment makes this public repository the
-canonical Required Workflow source. Supplementary's reciprocal verifier remains
-authoritative until the reviewed overlapping cutover is natively accepted.
+canonical Required Workflow source. The native LI-319 cutover was accepted on
+2026-10-14; rule 21200954 now binds protected .github/main and its native metadata
+check. Supplementary no longer supplies this repository's required verifier.
 The replacement dot-github verifier executes only protected main source; it
 retains the existing native current-revision evidence checks.
 
@@ -283,3 +284,19 @@ orchestration require a separately reviewed staged source-version transition,
 not candidate self-replacement. Changed metadata still requires fresh matching
 authorization; timeouts preserve a proven unchanged human authorization and
 never restore an AI opportunity. Neither route simulates a human review.
+
+
+## LI-319 review workflow consolidation
+
+The repository-owned deferred first-request locator and consumer now share
+`copilot-review-refresh.yml` with the existing refresh jobs. The explicit
+`operation=continue` dispatch selects only the continuation consumer; refresh
+jobs cannot consume it. Job credentials remain separate, and the same original
+repository/PR/head CAS request key retains its at-most-once funding boundary.
+Historical continuation receipts retain their original native path/name and
+are authenticated as history; their consumed request opportunity is never reset.
+The reconciler reads both historical and current locator families within its
+existing inventory budget and cooldown. Other repositories keep their currently
+adopted continuation path until a separately reviewed template adoption.
+LI219_EVENT_MODE and LI259_INFRA_RETRY activation are not changed by this package.
+The immutable dot-github Required Workflow orchestration is unchanged.
