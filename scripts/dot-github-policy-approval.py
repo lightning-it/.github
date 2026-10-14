@@ -199,12 +199,13 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                     or run.get("status") != "completed"
                     or run.get("conclusion") not in {"success", "failure", "cancelled"}):
                 continue
+            approval_error = None
             try:
                 native_approval(client, run_id, value["environment_id"])
             except EVIDENCE.VerificationError as exc:
                 if str(exc) == "native human approval is missing":
                     continue
-                raise
+                approval_error = exc
             jobs = []
             total = None
             for jobs_page in range(1, 11):
@@ -242,7 +243,6 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                        and type(j.get("run_attempt")) is int and j["run_attempt"] == 1
                        and j.get("head_sha") == value["head"] for j in approval_jobs):
                 raise EVIDENCE.VerificationError("native approval job identity is inconsistent")
-            native_approval(client, run_id, value["environment_id"])
             # Only a successful native Required-Workflow preflight owns this
             # receipt. It validates the actual workflow_sha against protected
             # main before emitting both source and exact-revision markers.
@@ -254,6 +254,9 @@ def reusable_approval(client: Any, value: dict[str, Any], digest: str, current_r
                 # it must neither reuse the old approval nor trap that revision.
                 continue
             if prior == digest:
+                if approval_error is not None:
+                    raise approval_error
+                native_approval(client, run_id, value["environment_id"])
                 return run_id
         if len(runs) < 100:
             return None

@@ -272,6 +272,15 @@ class ReuseTests(unittest.TestCase):
         final = document['jobs']['verify-dot-github-current-revision']
         self.assertGreaterEqual(final['timeout-minutes'], 18)
 
+    def test_rejected_other_revision_does_not_block_new_native_admission(self):
+        data = ('LI319_APPROVAL_BINDING=' + 'c' * 64 + '\n'
+                + 'LI319_PROTECTED_SOURCE=' + self.value['source'] + '\n').encode()
+        with mock.patch.object(MODULE, 'native_approval', side_effect=ERROR('native approval is rejected or unauthorized')), \
+             mock.patch.object(MODULE.subprocess, 'run', return_value=mock.Mock(stdout=data)):
+            self.assertIsNone(MODULE.reusable_approval(self.client(), self.value, 'd' * 64, 101))
+            with self.assertRaisesRegex(ERROR, 'rejected or unauthorized'):
+                MODULE.reusable_approval(self.client(), self.value, 'c' * 64, 101)
+
     def test_interruption_after_native_approval_does_not_request_reapproval(self):
         self.run["conclusion"] = "failure"
         self.jobs[1]["conclusion"] = "failure"
