@@ -85,7 +85,12 @@ closure occurred after the merge. Preserve the successful attempt reference and
 each later failed attempt explicitly. Unknown, semantic, pre-merge, provider,
 budget or metadata failures block; an open or pending change never uses this
 historical path. The full accepted binding must still equal the merged PR metadata;
-the entire second reported by merged_at is ambiguous and rejected. Re-read the
+the native merge and closure events must rule out draft conversion or manual
+closure since the successful attempt began. Runner timestamps alone do not
+establish the cause. The entire second reported by merged_at is ambiguous and
+rejected. Authenticate operation bindings before taking the final generation
+snapshot; its selector performs no further artifact I/O and rejects unseen
+unassociated generations. Re-read the
 referenced PR, its merge identity, the current native run and newest generation
 after all proof reads; changed metadata, attempts, origins or generations block.
 No failed attempt is relabeled successful.

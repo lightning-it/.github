@@ -330,7 +330,7 @@ class ControlTests(unittest.TestCase):
 
     def test_native_ingress_requires_exact_source_association_and_completed_gate(self):
         api = Mock(); source_run = run() | {'status': 'completed', 'conclusion': 'success'}
-        api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}], [source_run]]
+        api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}], [source_run], [source_run]]
         api.call.return_value = source_run
         with patch.object(control, 'artifact_record', return_value={'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull()), 'route': 'copilot'}):
             self.assertEqual(10, control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})['run'])
@@ -440,7 +440,7 @@ class ControlTests(unittest.TestCase):
         value = pull() | {'merged': True, 'merge_commit_sha': 'e' * 40}
         native = run() | {'status': 'completed', 'conclusion': 'success', 'pull_requests': []}
         api = Mock(); api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10,
-                                'name': 'Current revision review', 'conclusion': 'success'}], [native]]
+                                'name': 'Current revision review', 'conclusion': 'success'}], [native], [native]]
         api.call.side_effect = [value, native]
         record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(value), 'route': 'copilot'}
         with patch.object(control, 'operation_record', return_value=record), patch.object(control, 'artifact_record', return_value=record):

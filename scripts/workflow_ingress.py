@@ -22,6 +22,30 @@ def instant(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def merged_lifecycle(api, repo, pull, attempt):
+    """Rule out draft/manual-closure errors without trusting runner clock skew."""
+    started = instant(attempt.get("run_started_at"))
+    events = api.pages(f"repos/{repo}/issues/{pull['number']}/events")
+    merges = [event for event in events if event.get("event") == "merged"]
+    require(len(merges) == 1 and merges[0].get("commit_id") == pull["merge_commit_sha"]
+            and merges[0].get("created_at") == pull["merged_at"]
+            and type(merges[0].get("id")) is int, "ingress-native-merge-event-required")
+    merge = merges[0]
+    closed = []
+    for event in events:
+        kind = event.get("event")
+        if kind not in {"convert_to_draft", "converted_to_draft", "reopened", "closed"}:
+            continue
+        if instant(event.get("created_at")) < started:
+            continue
+        require(kind == "closed" and event.get("created_at") == pull["merged_at"]
+                and type(event.get("id")) is int and event["id"] > merge["id"],
+                "ingress-ambiguous-reviewability-history")
+        closed.append(event["id"])
+    require(len(closed) == 1, "ingress-native-merge-closure-required")
+    return {"merge_event": merge["id"], "closed_event": closed[0]}
+
+
 def merged_attempt(api, repo, pull, latest):
     """Distinguish a real pre-merge pass from a later closure-only invalidation.
 
@@ -54,6 +78,9 @@ def merged_attempt(api, repo, pull, latest):
             accepted = digest(operation)
             require(all(item == accepted for item in operations),
                     "ingress-metadata-changed-before-merge")
+            lifecycle = merged_lifecycle(api, repo, pull, attempt)
+            for item in ignored:
+                item.update(lifecycle)
             return attempt, ignored
         require(attempt.get("conclusion") == "failure" and instant(attempt.get("updated_at")) >= merged,
                 "ingress-semantic-failure-before-merge")

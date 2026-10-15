@@ -489,23 +489,31 @@ def check_renovate(api, repo, pull):
     return {"kind": "policy-bound-renovate", "label_events": [e["id"] for e in policy_events]}
 
 
-def ingress_candidates(api, repo, pull, sources, runs):
+def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operations=True):
     """Use the same PR binding for initial selection and final generation read."""
     candidates = []
     for run in runs:
         if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
             continue
         associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
+        key = (run["id"], run["run_attempt"])
         if associations:
             require(len(associations) == 1, "ingress-association-ambiguous")
             associated = associations[0]
             if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
+                bindings[key] = False
                 continue
+            bindings[key] = True
         elif run.get("pull_requests"):
+            bindings[key] = False
             continue
         elif pull.get("merged") is True and pull.get("merge_commit_sha"):
-            operation = operation_record(api, repo, run)
-            if operation["source_sha"] not in sources or not same_immutable_tuple(operation["binding"], binding(pull)):
+            if key not in bindings:
+                require(read_operations, "ingress-generation-binding-unavailable")
+                operation = operation_record(api, repo, run)
+                bindings[key] = (operation["source_sha"] in sources
+                                 and same_immutable_tuple(operation["binding"], binding(pull)))
+            if not bindings[key]:
                 continue
         else:
             continue
@@ -520,7 +528,8 @@ def check_native_control(api, repo, pull, config):
     for value in sources:
         sha(value)
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    candidates = ingress_candidates(api, repo, pull, sources, runs)
+    bindings = {}
+    candidates = ingress_candidates(api, repo, pull, sources, runs, bindings)
     require(candidates, "ingress-protected-run-missing")
     selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
     observed = selected
@@ -542,8 +551,12 @@ def check_native_control(api, repo, pull, config):
             "proof_sha256": digest(record)}
     # Every saved object above is a snapshot. Re-read all mutable decision
     # subjects after the evidence reads, for ordinary and historical passes.
+    # Authenticate newly discovered persisted bindings BEFORE the final native
+    # generation snapshot. Its selector performs no artifact/network reads.
+    warm_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    ingress_candidates(api, repo, pull, sources, warm_runs, bindings)
     latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    generations = ingress_candidates(api, repo, pull, sources, latest_runs)
+    generations = ingress_candidates(api, repo, pull, sources, latest_runs, bindings, read_operations=False)
     latest_generation = max(generations, key=lambda item: (item["id"], item["run_attempt"])) if generations else None
     fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
               "workflow_id", "workflow_url", "path")

@@ -16,7 +16,7 @@ MERGED = '2026-10-15T12:01:00Z'
 
 def native(attempt, conclusion, timestamp):
     return {'id': 10, 'run_attempt': attempt, 'head_sha': HEAD, 'status': 'completed',
-            'conclusion': conclusion, 'updated_at': timestamp, 'workflow_id': 77,
+            'conclusion': conclusion, 'updated_at': timestamp, 'run_started_at': '2026-10-15T12:00:00Z', 'workflow_id': 77,
             'workflow_url': f'https://api.github.com/repos/{REPO}/actions/required_workflows/77',
             'path': control.WORKFLOW}
 
@@ -34,6 +34,9 @@ class HistoricalIngressTests(unittest.TestCase):
         api = Mock(spec=control.API)
         api.call.side_effect = [failed, accepted]
         api.pages.return_value = [gate]
+        api.lifecycle = [{'id': 200, 'event': 'merged', 'created_at': MERGED, 'commit_id': pull['merge_commit_sha']},
+                         {'id': 201, 'event': 'closed', 'created_at': MERGED}]
+        api.pages.side_effect = lambda path, _key=None: api.lifecycle if path.endswith('/events') else api.pages.return_value
         api.native_job_log.return_value = '2026-10-15T12:01:02.1234567Z ' + ingress.CLOSED + '\n'
         return api, pull, accepted, failed, gate, operation
 
@@ -44,7 +47,7 @@ class HistoricalIngressTests(unittest.TestCase):
         self.assertEqual(accepted, actual)
         self.assertEqual([{'attempt': 2, 'job': 101, 'conclusion': 'failure',
                            'reason': 'pull-not-reviewable-after-merge',
-                           'completed_at': '2026-10-15T12:01:03Z'}], failures)
+                           'completed_at': '2026-10-15T12:01:03Z', 'merge_event': 200, 'closed_event': 201}], failures)
         self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
 
     def test_open_unmerged_pending_or_single_failed_attempt_cannot_fall_back(self):
@@ -116,7 +119,7 @@ class HistoricalIngressTests(unittest.TestCase):
                         {'merge_commit_sha': 'e' * 40}, {'state': 'open'}, {'merged': False}, {}):
             api = Mock(spec=control.API)
             api.call.side_effect = [subject | changes, observed]
-            api.pages.side_effect = [[observed], [observed] if changes else
+            api.pages.side_effect = [[observed], [observed], [observed] if changes else
                                      [observed, observed | {'id': 11, 'status': 'in_progress'}]]
             with self.subTest(changes=changes), \
                     patch.object(ingress, 'merged_attempt', return_value=(accepted, [{'attempt': 2}])), \
@@ -144,7 +147,55 @@ class HistoricalIngressTests(unittest.TestCase):
                     patch.object(control, 'operation_record', return_value=foreign_record) as operation, \
                     patch.object(control, 'artifact_record', return_value=proof):
                 self.assertEqual(10, control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})['run'])
-                self.assertEqual(0 if associated else 2, operation.call_count)
+                self.assertEqual(0 if associated else 1, operation.call_count)
+
+    def test_new_generation_during_operation_read_is_rejected_without_late_artifact_io(self):
+        from test_workflow_control import pull as ordinary_pull
+        from test_workflow_control import run
+        subject = ordinary_pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
+        bound = run() | {'status': 'completed', 'conclusion': 'success'}
+        foreign = bound | {'id': 11, 'pull_requests': []}
+        proof = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(subject), 'route': 'copilot'}
+        for associated in (True, False):
+            late = bound | {'id': 12, 'status': 'in_progress', 'conclusion': None}
+            if not associated:
+                late['pull_requests'] = []
+            phase = {'read': 0, 'discovered': False}
+            def pages(_path, _key=None, late=late, phase=phase):
+                phase['read'] += 1
+                if phase['read'] == 1:
+                    return [bound]
+                if phase['read'] == 2:
+                    return [bound, foreign]
+                self.assertTrue(phase['discovered'])
+                return [bound, foreign, late]
+            def operation(_api, _repo, source_run, phase=phase):
+                self.assertEqual(11, source_run['id'])
+                self.assertEqual(2, phase['read'], 'No operation I/O after final generation snapshot')
+                phase['discovered'] = True
+                return proof | {'binding': proof['binding'] | {'number': 44}}
+            api = Mock(spec=control.API); api.pages.side_effect = pages
+            with self.subTest(associated=associated), \
+                    patch.object(control, 'native_jobs', return_value=[{'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]), \
+                    patch.object(control, 'operation_record', side_effect=operation), \
+                    patch.object(control, 'artifact_record', return_value=proof), \
+                    self.assertRaisesRegex(control.ControlError, 'native-generation-changed' if associated else 'generation-binding-unavailable'):
+                control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+            api.call.assert_not_called()
+
+    def test_draft_or_manual_closure_cannot_be_misclassified_by_a_skewed_runner_clock(self):
+        for event in ({'id': 199, 'event': 'convert_to_draft', 'created_at': '2026-10-15T12:00:30Z'},
+                      {'id': 199, 'event': 'closed', 'created_at': MERGED},
+                      {'id': 199, 'event': 'reopened', 'created_at': MERGED}):
+            api, pull, _, failed, _, operation = self.fixture()
+            api.lifecycle.insert(0, event)
+            with self.subTest(event=event), patch.object(ingress, 'operation_record', return_value=operation), \
+                    self.assertRaisesRegex(control.ControlError, 'ambiguous-reviewability-history'):
+                ingress.merged_attempt(api, REPO, pull, failed)
+        api, pull, accepted, failed, _, operation = self.fixture()
+        api.lifecycle.insert(0, {'id': 199, 'event': 'convert_to_draft', 'created_at': '2026-10-15T11:59:59Z'})
+        with patch.object(ingress, 'operation_record', return_value=operation):
+            self.assertEqual(accepted, ingress.merged_attempt(api, REPO, pull, failed)[0])
 
     def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
         for field, changed in (('title', 'Changed title'), ('body', 'Changed body'),
