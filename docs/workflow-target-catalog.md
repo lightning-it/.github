@@ -104,8 +104,7 @@ code. Management still has to admit that immutable source as a Required
 Workflow; the existence of this file grants no production acceptance.
 
 The reference source implements the author matrix, native current-head Copilot
-verification, one native-run reservation before a funded request, the retained
-isolated complete-request-budget Codex gateway, strict Renovate provenance,
+verification, one native-run reservation before a funded request, strict Renovate provenance,
 exact ancestry checks and aggregated native ingress verification. The normal
 promotion job uses the one-person approval environment, followed by a fresh
 current-tuple and quality check. Unknown identity, stale metadata, findings,
@@ -114,7 +113,8 @@ failed checks and ambiguous request outcomes block.
 Distribution receipt verification requires the protected source-run-produced
 full file manifest. Existing distributors must be migrated jointly before that
 route is admitted; an App author or PR body alone never grants an exemption.
-The empty reference accepted-source list deliberately grants no promotion.
+The consumer configuration alone grants no promotion; the current native
+Required Workflow source is selected externally by management.
 Delivery operations, private wiring and native staged acceptance remain open
 until their actual implementation and observed results are recorded here.
 
@@ -169,3 +169,25 @@ explicit boundary replaces that unsafe coupling; it adds no review/retry chain.
 The reference source is still not production-admitted. Joint private caller
 migration, actual normal approval, promotion/archive jobs and staged acceptance
 remain required.
+
+
+### Bounded reference delivery
+
+The first reference package includes native Copilot, governed Renovate,
+ancestry and promotion-evidence verification. The Release-App Codex route
+remains explicitly blocked until its separately qualified protected transport
+is integrated. It never falls back to Copilot and cannot authorize a release
+in this state. Private distribution and release/archive operations also remain
+unadmitted. No scope may be declared production-ready from this partial source.
+
+The provider gateway was removed from this reference package to separate its
+complete-request binding, response framing and resource qualification from
+native event handling. Review body edits now also invalidate acceptance.
+Git object reads use the existing physical/cgroup/process memory contract,
+stream both output pipes and terminate the child group on overflow or deadline;
+they never truncate a large change into an acceptable smaller change.
+
+For already merged ingress, GitHub may no longer expose the live PR association
+on its old run. Only that native Required Workflow's persisted immutable
+operation/proof, matched to the actual merged PR, can replace the missing live
+association. An ordinary run or a matching check name cannot do so.

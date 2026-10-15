@@ -128,6 +128,7 @@ class ControlTests(unittest.TestCase):
         signal = yaml.safe_load((root / '.github/workflows/review-events.yml').read_text())
         receiver = yaml.safe_load((root / '.github/workflows/delivery-operations.yml').read_text())
         self.assertEqual({}, signal['permissions'])
+        self.assertIn('edited', signal.get('on', signal.get(True))['pull_request_review']['types'])
         self.assertEqual({}, signal['jobs']['signal']['permissions'])
         self.assertTrue(all('uses' not in step for step in signal['jobs']['signal']['steps']))
         triggers = receiver.get('on', receiver.get(True))
@@ -204,18 +205,6 @@ class ControlTests(unittest.TestCase):
         self.assertEqual('6532da1b9eadc0ccd56af2fd2646c6138d8d5c1f', control.source_identity(fixture))
         candidate = run() | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}
         self.assertFalse(control.native_required(candidate, REPO))
-
-    def test_materialization_cannot_charge_new_head_under_previous_reservation(self):
-        import workflow_subject as subject
-        value = pull(control.RELEASE)
-        expected = control.binding(value)
-        newer = pull(control.RELEASE)
-        newer['head']['sha'] = 'd' * 40
-        api = Mock(); api.call.return_value = newer
-        with self.assertRaisesRegex(control.ControlError, 'stale-not-applicable'):
-            subject.bound_pull(api, REPO, {'pull_request': value}, SOURCE,
-                               {'source_sha': SOURCE, 'binding': expected})
-        self.assertEqual(1, api.call.call_count)
 
     def test_label_change_between_review_and_finalization_is_stale(self):
         original = pull(control.RENOVATE)
@@ -358,23 +347,25 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(9, control.previous_approval(api, REPO, pull(), SOURCE))
             record.assert_called_once_with(api, REPO, previous, SOURCE)
 
-    def test_codex_reuse_requires_native_success_and_identical_complete_input(self):
-        import exact_revision_gateway as gateway
-        api = Mock()
-        producer = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'conclusion': 'success',
-                    'steps': [{'name': 'Collect and verify the protected model receipt', 'conclusion': 'success'}]}
-        metadata = {'base_sha': BASE, 'head_sha': HEAD, 'input_sha256': 'a' * 64}
-        receipt = {'metadata': metadata, 'result': {'verdict': 'PASS', 'findings': []}}
-        def history():
-            api.pages.side_effect = [[run()], [{'name': 'codex-receipt-1', 'expired': False}], [producer]]
-        history()
-        with patch.object(control, 'artifact_record', return_value=receipt), patch.object(gateway, 'validate_result') as validate:
-            self.assertEqual(10, control.reusable_codex(api, REPO, pull(), metadata)['run'])
-            validate.assert_called_once_with(receipt['result'], metadata)
-            history()
-            self.assertIsNone(control.reusable_codex(api, REPO, pull(), metadata | {'input_sha256': 'b' * 64}))
-            api.pages.side_effect = [[run()], [{'name': 'codex-receipt-1', 'expired': False}], [producer | {'conclusion': 'failure'}]]
-            self.assertIsNone(control.reusable_codex(api, REPO, pull(), metadata))
+    def test_unqualified_codex_route_is_explicitly_blocked_without_fallback(self):
+        with self.assertRaisesRegex(control.ControlError, 'protected-codex-runtime-pending-native-admission'):
+            control.verify_existing_route(Mock(), REPO, pull(control.RELEASE), {}, 'codex')
+
+    def test_merged_ingress_uses_native_operation_when_live_association_disappears(self):
+        value = pull() | {'merged': True, 'merge_commit_sha': 'e' * 40}
+        native = run() | {'status': 'completed', 'conclusion': 'success', 'pull_requests': []}
+        api = Mock(); api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10,
+                                'name': 'Current revision review', 'conclusion': 'success'}]]
+        record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(value)}
+        with patch.object(control, 'operation_record', return_value=record), patch.object(control, 'artifact_record', return_value=record):
+            self.assertEqual(10, control.check_native_control(api, REPO, value, {'accepted_sources': [SOURCE]})['run'])
+            api.pages.side_effect = [[native]]
+            with self.assertRaisesRegex(control.ControlError, 'ingress-protected-run-missing'):
+                control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})
+            api.pages.side_effect = [[native]]
+            with patch.object(control, 'operation_record', return_value=record | {'binding': control.binding(value) | {'number': 44}}), \
+                 self.assertRaisesRegex(control.ControlError, 'ingress-protected-run-missing'):
+                control.check_native_control(api, REPO, value, {'accepted_sources': [SOURCE]})
 
 
 if __name__ == '__main__':

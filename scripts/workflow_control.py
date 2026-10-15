@@ -313,7 +313,7 @@ def copilot_delivery_pending(api, repo, pull):
     return bool(deliveries)
 
 
-FUNDING_STEPS = {"Request current Copilot review", "Reserve protected Codex request"}
+FUNDING_STEPS = {"Request current Copilot review"}
 
 
 def request_slot_started(api, repo, run, *, attempt=None):
@@ -357,7 +357,7 @@ def reserve_request(api, repo, pull, source_sha, run_id, attempt):
     return run_id
 
 
-def operation_record(api, repo, run, source):
+def operation_record(api, repo, run, source=None):
     artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
     candidates = []
     for artifact in artifacts:
@@ -367,7 +367,8 @@ def operation_record(api, repo, run, source):
     require(candidates, "protected-operation-missing")
     _, name = max(candidates)
     record = artifact_record(api, repo, run, name, "control-operation.json")
-    require(record.get("version") == 1 and record.get("source_sha") == source, "protected-operation-source-drift")
+    require(record.get("version") == 1 and (source is None or record.get("source_sha") == source), "protected-operation-source-drift")
+    sha(record.get("source_sha"))
     return record
 
 
@@ -397,13 +398,19 @@ def check_native_control(api, repo, pull, config):
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     candidates = []
     for run in runs:
-        if not native_required(run, repo):
+        if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
             continue
         associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
-        if len(associations) != 1:
-            continue
-        associated = associations[0]
-        if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
+        if associations:
+            require(len(associations) == 1, "ingress-association-ambiguous")
+            associated = associations[0]
+            if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
+                continue
+        elif pull.get("merged") is True and pull.get("merge_commit_sha"):
+            operation = operation_record(api, repo, run)
+            if operation["source_sha"] not in sources or not same_immutable_tuple(operation["binding"], binding(pull)):
+                continue
+        else:
             continue
         candidates.append(run)
     require(candidates, "ingress-protected-run-missing")
@@ -529,40 +536,8 @@ def verify_existing_route(api, repo, pull, config, route):
     if route == "distribution":
         return distribution_evidence(api, repo, pull, config)
     if route == "codex":
-        from workflow_subject import materialize
-        with tempfile.TemporaryDirectory(prefix="codex-revalidation-") as temp:
-            metadata = materialize(api, repo, pull, source_identity(json.loads(os.environ["NATIVE_JOB"])), Path(temp) / "subject")
-            receipt = reusable_codex(api, repo, pull, metadata)
-        require(receipt is not None, "codex-native-producer-missing")
-        return receipt
+        raise ControlError("protected-codex-runtime-pending-native-admission")
     raise ControlError("unclassified-review-route")
-
-
-def reusable_codex(api, repo, pull, metadata):
-    """A successful protected producer and byte-identical full input, never a retry."""
-    import exact_revision_gateway as gateway
-    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    for run in sorted(runs, key=lambda item: item["id"], reverse=True):
-        if not native_required(run, repo):
-            continue
-        artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
-        names = [a["name"] for a in artifacts if re.fullmatch(r"codex-receipt-[1-9][0-9]*", a["name"]) and not a["expired"]]
-        for name in sorted(names, key=lambda value: int(value.rsplit("-", 1)[1]), reverse=True):
-            attempt = int(name.rsplit("-", 1)[1])
-            require(attempt <= run["run_attempt"], "codex-receipt-attempt")
-            jobs = api.pages(f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs", "jobs")
-            producer = [j for j in jobs if j.get("run_id") == run["id"] and j["name"] == "Protected current revision"
-                        and j.get("conclusion") == "success" and any(step["name"] == "Collect and verify the protected model receipt"
-                        and step.get("conclusion") == "success" for step in j.get("steps", []))]
-            if len(producer) != 1:
-                continue
-            record = artifact_record(api, repo, run, name, "codex-receipt.json")
-            if record.get("metadata") != metadata:
-                continue
-            gateway.validate_result(record["result"], metadata)
-            require(record["result"]["verdict"] == "PASS" and not record["result"]["findings"], "codex-findings-or-failure")
-            return {"run": run["id"], "attempt": attempt, "job": producer[0]["id"], "input_sha256": metadata["input_sha256"]}
-    return None
 
 
 def output(name, value):
@@ -573,7 +548,7 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "reserve-codex", "verify-codex", "request-copilot", "prepare-codex"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -598,6 +573,7 @@ def main():
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
     config = policy(api, repo, pull["base"]["sha"], source_sha)
     route = classify(pull, repo)
+    require(route != "codex", "protected-codex-runtime-pending-native-admission")
     if args.operation == "classify":
         if route == "promotion":
             normal_environment(api, repo)
@@ -622,30 +598,6 @@ def main():
         reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
         live_pull(api, repo, number, expected)
         api.call(f"repos/{repo}/pulls/{number}/requested_reviewers", method="POST", data={"reviewers": [COPILOT]})
-        return
-    if args.operation == "prepare-codex":
-        require(route == "codex", "codex-identity-required")
-        metadata = json.loads(Path("exact-revision-review/review-metadata.json").read_bytes())
-        output("needed", "false" if reusable_codex(api, repo, pull, metadata) else "true")
-        return
-    if args.operation == "reserve-codex":
-        require(route == "codex", "codex-identity-required")
-        reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
-        live_pull(api, repo, number, expected)
-        return
-    if args.operation == "verify-codex":
-        require(route == "codex", "codex-identity-required")
-        import exact_revision_gateway as gateway
-        directory = Path("exact-revision-review")
-        metadata = json.loads((directory / "review-metadata.json").read_text())
-        require(metadata["base_sha"] == expected["base"] and metadata["head_sha"] == expected["head"]
-                and metadata["central_source_sha"] == source_sha, "codex-subject-drift")
-        result = json.loads((directory / "result.json").read_text())
-        gateway.validate_result(result, metadata)
-        require(result["verdict"] == "PASS" and not result["findings"], "codex-findings-or-failure")
-        live_pull(api, repo, number, expected)
-        Path("codex-receipt.json").write_bytes(canonical({"metadata": metadata, "result": result}))
-        print("Protected exact-revision Codex result verified.")
         return
     if args.operation == "review":
         require(route != "codex", "codex-job-required")
@@ -673,12 +625,15 @@ def main():
         # Native job is the authoritative result; no synthetic successful check.
         print(f"Verified {route} for exact current revision; native evidence retained.")
         return
+    authorization = None
     if route == "promotion":
         normal_environment(api, repo)
         if os.environ.get("APPROVAL_RESULT") == "success":
-            native_approval(api, repo, int(os.environ["GITHUB_RUN_ID"]))
+            approval_run = int(os.environ["GITHUB_RUN_ID"])
         else:
-            require(previous_approval(api, repo, pull, source_sha) is not None, "native-human-approval-required")
+            approval_run = previous_approval(api, repo, pull, source_sha)
+            require(approval_run is not None, "native-human-approval-required")
+        authorization = {"run": approval_run, "approval": native_approval(api, repo, approval_run)}
         promotion_ingress(api, repo, pull, config)
     for observation in range(80):
         live_pull(api, repo, number, expected)
@@ -693,7 +648,7 @@ def main():
     evidence = verify_existing_route(api, repo, current, config, route)
     live_pull(api, repo, number, expected)
     Path("control-proof.json").write_bytes(canonical({"version": 1, "source_sha": source_sha,
-                "binding": expected, "route": route, "evidence": evidence}))
+                "binding": expected, "route": route, "evidence": evidence, "authorization": authorization}))
     print("Protected current-revision control passed.")
 
 
