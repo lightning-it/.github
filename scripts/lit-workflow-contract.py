@@ -80,7 +80,11 @@ def validate(data: object) -> None:
 
     for identifier in graph:
         visit(identifier)
-    require(graph["WF-03"] == ["WF-02"] and graph["WF-04"] == ["WF-02", "WF-03"] and graph["WF-05"] == ["WF-04"] and graph["WF-06"] == ["WF-05"] and graph["WF-07"] == ["WF-06"], "required-stage-dependency")
+    require(graph == {
+        "WF-01": [], "WF-02": ["WF-01"], "WF-03": ["WF-02"],
+        "WF-04": ["WF-02", "WF-03"], "WF-05": ["WF-04"],
+        "WF-06": ["WF-05"], "WF-07": ["WF-06"],
+    }, "required-stage-dependency")
     profiles = data["profiles"]
     require(isinstance(profiles, dict) and set(profiles) == PROFILES, "profile-coverage")
     for name, profile in profiles.items():
@@ -94,6 +98,7 @@ def validate(data: object) -> None:
         "release_app": "exact-revision-codex", "other_authors": "copilot-when-required-by-policy",
         "unclassified_input": "block", "local_ai_review": False, "dual_review": False,
         "budget_or_provider_failure": "block", "fallback": False, "reuse_stale_review": False,
+        "main_promotion_review": "verify-ingress-evidence-without-cumulative-ai-rereview",
         "request_identity": ["repository", "pull_request", "base_sha", "head_sha", "policy_sha", "input_digest"],
     }, "review-policy")
     exact(data["promotion"], {
@@ -115,7 +120,7 @@ def validate(data: object) -> None:
     }, "privacy-boundary")
     exact(data["evidence"], {
         "develop": "native-checks-and-reviews", "durable_package": "main-promotion-only",
-        "archive": "existing-private-s3-compatible-store", "retention_years": 7,
+        "archive": "existing-private-hetzner-s3-store", "retention_years": 7,
         "immutable_retention_required": True, "verify_artifact_before_release_acceptance": True,
         "archive_unavailable": "block-release-acceptance",
     }, "evidence-policy")

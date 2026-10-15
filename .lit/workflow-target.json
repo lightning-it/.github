@@ -38,6 +38,7 @@
     "budget_or_provider_failure": "block",
     "fallback": false,
     "reuse_stale_review": false,
+    "main_promotion_review": "verify-ingress-evidence-without-cumulative-ai-rereview",
     "request_identity": ["repository", "pull_request", "base_sha", "head_sha", "policy_sha", "input_digest"]
   },
   "promotion": {
@@ -69,7 +70,7 @@
   "evidence": {
     "develop": "native-checks-and-reviews",
     "durable_package": "main-promotion-only",
-    "archive": "existing-private-s3-compatible-store",
+    "archive": "existing-private-hetzner-s3-store",
     "retention_years": 7,
     "immutable_retention_required": true,
     "verify_artifact_before_release_acceptance": true,

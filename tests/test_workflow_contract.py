@@ -55,6 +55,21 @@ class WorkflowContractTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ContractError, "required-stage-dependency"):
             MODULE.validate(self.contract)
 
+    def test_local_preparation_cannot_be_disconnected_from_pr_quality(self):
+        self.contract["functions"][1]["depends_on"] = []
+        with self.assertRaisesRegex(MODULE.ContractError, "required-stage-dependency"):
+            MODULE.validate(self.contract)
+
+    def test_local_preparation_cannot_acquire_an_undeclared_dependency(self):
+        self.contract["functions"][0]["depends_on"] = ["WF-02"]
+        with self.assertRaisesRegex(MODULE.ContractError, "dependency-cycle"):
+            MODULE.validate(self.contract)
+
+    def test_main_promotion_cannot_request_duplicate_cumulative_ai_review(self):
+        self.contract["review"]["main_promotion_review"] = "request-new-cumulative-ai-review"
+        with self.assertRaisesRegex(MODULE.ContractError, "review-policy"):
+            MODULE.validate(self.contract)
+
     def test_review_failure_cannot_fallback_or_reuse_a_stale_result(self):
         for field, value in [("fallback", True), ("reuse_stale_review", True), ("budget_or_provider_failure", "pass")]:
             with self.subTest(field=field):

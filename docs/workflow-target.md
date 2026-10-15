@@ -17,7 +17,7 @@ permissions, environments or existing release workflows.
 | WF-04 | Promotion preparation | Automatically prepare or update one develop-to-main PR per repository and target branch; duplicate events do not create duplicate PRs or reviews |
 | WF-05 | Release authorization | One authorized person can approve their own normal operation; no second classic PR reviewer; the separately governed technical Security path remains reviewer-free |
 | WF-06 | Artifact assurance and publication | Applicable build/install tests, scans, SBOM, provenance and signatures; verify the actual published bytes before claiming release acceptance |
-| WF-07 | Release and audit archive | Native evidence for develop PRs; one durable package at main promotion; seven years of verified immutable retention in the existing private evidence store |
+| WF-07 | Release and audit archive | Native evidence for develop PRs; one durable package at main promotion; seven years of verified immutable retention in the existing private Hetzner S3 evidence store |
 
 These are process functions, not a requirement for seven independent workflow
 files. Non-publishing repository types do not acquire an artificial artifact
@@ -44,6 +44,11 @@ repository, PR, base, head, policy and complete input digest. A new head require
 new applicable checks; duplicate delivery of an unchanged request does not grant
 another request. Service or budget failures are visible blocking states without
 an automatic provider, identity or billing fallback.
+
+A pure develop-to-main promotion verifies the complete native ingress-review
+evidence under the existing lifecycle policy; it does not request a second AI
+review of the cumulative diff. New unreviewed ingress or changed input cannot
+be disguised as already reviewed promotion content.
 
 Public collaboration content must be checked before publication. Public
 definitions and messages contain no private tracker identifiers, private URLs,
