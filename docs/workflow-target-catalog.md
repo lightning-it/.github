@@ -235,19 +235,30 @@ no skipped-check acceptance and no candidate workflow-call authority.
 
 ## Preserve accepted proof lineage across source updates
 
-The reference's protected configuration explicitly retains the previously admitted
-immutable sources. The central source lineage independently allowlists those
-same predecessors. Both are required: a consumer cannot nominate an unknown
-source, and a new verifier must not invalidate authentic current-tuple ingress
-proofs merely because their previously selected producer was an earlier accepted
-version. Revision, native producer, route, complete evidence and success checks
-still apply; failed or stale results never become accepted predecessors.
+The externally selected central source explicitly retains its immutable proof
+predecessors in `.lit/workflow-source-lineage.json`. Its policy reader derives
+accepted native proof sources from that protected central list. The reference
+consumer's `accepted_sources` remains empty, so the previously selected immutable
+reader can still process a new base before cutover or during rollback. Legacy
+consumer entries, if present, must be a subset of the selected central allowlist;
+they cannot nominate an unknown source or select the current verifier.
+
+A new verifier must not invalidate authentic current-tuple ingress proofs merely
+because their previously selected producer was an earlier retained version.
+Revision, native producer, route, complete evidence and success checks still
+apply; failed or stale results never become accepted predecessors.
 
 A source update is reviewed and integrated through the prior selected source.
 Management then admits the new immutable source through its exact reviewed native
 plan. A candidate's lineage file has no effect on the authority judging that
 candidate. This two-stage transition preserves old valid evidence without letting
 a candidate select or authorize its own verifier.
+
+Management source-advance planning must validate this central lineage without
+requiring consumer entries to preselect it. The existing reference preparation
+still requires those redundant entries; that management reader must migrate
+before advancing the active main rule. Keeping the previous rule active while
+this coordination is incomplete preserves the current protection.
 
 
 A replay candidate is not current acceptance. An authenticated prior successful
