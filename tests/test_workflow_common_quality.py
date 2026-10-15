@@ -78,9 +78,36 @@ class CommonQualityTests(unittest.TestCase):
                     with self.assertRaisesRegex(control.ControlError, 'checkout-head'):
                         quality.validate(record)
                 (directory / '.lit/repository.yml').write_bytes(RAW.replace(b'repository_profile', b'other'))
-                with patch.object(quality.subprocess, 'check_output', return_value=HEAD):
+                with patch.object(quality.subprocess, 'check_output', side_effect=[HEAD, b'.lit/repository.yml\0']):
                     with self.assertRaisesRegex(control.ControlError, 'weaker-quality-profile'):
                         quality.validate(record)
+            finally:
+                os.chdir(previous)
+
+    def test_common_input_boundary_rejects_symlinks_before_all_legacy_readers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            subprocess.run(['git', 'init', '-q', temp], check=True)
+            previous = Path.cwd()
+            os.chdir(directory)
+            try:
+                (directory / 'plain.md').write_text('candidate-owned data\n')
+                subprocess.run(['git', 'add', 'plain.md'], check=True)
+                quality.candidate_inputs()
+                (directory / 'README.md').symlink_to(ROOT / 'README.md')
+                subprocess.run(['git', 'add', 'README.md'], check=True)
+                with self.assertRaisesRegex(control.ControlError, 'input-outside-checkout'):
+                    quality.candidate_inputs()
+                (directory / 'README.md').unlink()
+                (directory / 'README.md').symlink_to('plain.md')
+                with self.assertRaisesRegex(control.ControlError, 'symlink-input'):
+                    quality.candidate_inputs()
+                (directory / 'README.md').unlink()
+                (directory / 'README.md').write_text('ordinary candidate file\n')
+                (directory / '.lit').symlink_to(ROOT / '.lit', target_is_directory=True)
+                subprocess.run(['git', 'add', '.'], check=True)
+                with self.assertRaisesRegex(control.ControlError, 'input-outside-checkout'):
+                    quality.candidate_inputs()
             finally:
                 os.chdir(previous)
 

@@ -15,6 +15,9 @@ Both use the digest-pinned Devtools image in `scripts/run-common-quality.sh`.
 The immutable source supplies both the quality engine and Markdown code validator.
 A candidate cannot substitute its validator or select another repository type.
 Ansible examples use a source-owned configuration outside the candidate tree.
+One initial containment check rejects symlinks and paths escaping the checkout
+before any common legacy reader runs. The candidate cannot make those readers
+validate the immutable source's compliant documents instead of its own files.
 The final control requires the native common-quality job to succeed. Failure,
 skipping or cancellation cannot authorize a merge. A promotion's human approval
 also waits for this job. One person can still perform the native approval.

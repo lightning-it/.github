@@ -52,6 +52,27 @@ def prepare(api, env):
             "repository_type": protected["repository_type"]}
 
 
+def candidate_inputs():
+    """One containment boundary before any legacy reader sees candidate data."""
+    root = Path.cwd().resolve()
+    paths = subprocess.check_output(
+        ["git", "-c", f"safe.directory={root}", "ls-files", "-z"]
+    )
+    require(len(paths) <= 16 * 1024 * 1024, "common-quality-file-list-bound")
+    names = paths.decode("utf-8").split("\0")
+    require(len(names) <= 100001, "common-quality-file-count-bound")
+    for name in filter(None, names):
+        relative = Path(name)
+        require(not relative.is_absolute() and ".." not in relative.parts
+                and relative.as_posix() == name, "common-quality-file-path")
+        path = root / relative
+        require(root in path.resolve().parents, "common-quality-input-outside-checkout")
+        for item in (path, *path.parents):
+            if item == root:
+                break
+            require(not item.is_symlink(), "common-quality-symlink-input")
+
+
 def validate(record):
     require(type(record) is dict and set(record) == {
         "version", "repository", "source_sha", "head", "base", "repository_type"
@@ -63,6 +84,7 @@ def validate(record):
     current = subprocess.check_output(["git", "-c", f"safe.directory={Path.cwd()}",
                                        "rev-parse", "HEAD"], text=True).strip()
     require(current == record["head"], "common-quality-checkout-head")
+    candidate_inputs()
     path = Path(".lit/repository.yml")
     require(not path.is_symlink() and path.is_file()
             and Path.cwd().resolve() in path.resolve().parents,
