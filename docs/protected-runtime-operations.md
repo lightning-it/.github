@@ -90,7 +90,8 @@ closure since the successful attempt began. Runner timestamps alone do not
 establish the cause. The entire second reported by merged_at is ambiguous and
 rejected. Authenticate operation bindings before taking the final generation
 snapshot; its selector performs no further artifact I/O and rejects unseen
-unassociated generations. Re-read the
+unassociated generations. Take that snapshot as the final network read, after
+refreshing both referenced subjects. Re-read the
 referenced PR, its merge identity, the current native run and newest generation
 after all proof reads; changed metadata, attempts, origins or generations block.
 No failed attempt is relabeled successful.

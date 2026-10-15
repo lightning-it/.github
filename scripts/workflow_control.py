@@ -555,14 +555,8 @@ def check_native_control(api, repo, pull, config):
     # generation snapshot. Its selector performs no artifact/network reads.
     warm_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     ingress_candidates(api, repo, pull, sources, warm_runs, bindings)
-    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    generations = ingress_candidates(api, repo, pull, sources, latest_runs, bindings, read_operations=False)
-    latest_generation = max(generations, key=lambda item: (item["id"], item["run_attempt"])) if generations else None
     fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
               "workflow_id", "workflow_url", "path")
-    require(latest_generation is not None
-            and all(latest_generation.get(key) == observed.get(key) for key in fields),
-            "ingress-native-generation-changed")
     if pull.get("merged") is True:
         current_pull = api.call(f"repos/{repo}/pulls/{pull['number']}")
         require(binding(current_pull) == binding(pull)
@@ -573,6 +567,14 @@ def check_native_control(api, repo, pull, config):
     require(native_required(current, repo)
             and all(current.get(key) == observed.get(key) for key in fields),
             "ingress-current-run-changed")
+    # This is the final I/O: a run started during either subject refresh above
+    # must also be visible here. Selection below uses authenticated memory only.
+    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    generations = ingress_candidates(api, repo, pull, sources, latest_runs, bindings, read_operations=False)
+    latest_generation = max(generations, key=lambda item: (item["id"], item["run_attempt"])) if generations else None
+    require(latest_generation is not None
+            and all(latest_generation.get(key) == observed.get(key) for key in fields),
+            "ingress-native-generation-changed")
     if after_merge:
         result["post_merge_failed_attempts"] = after_merge
     return result
