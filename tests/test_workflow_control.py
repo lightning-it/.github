@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import workflow_control as control
+import workflow_events as events
 
 REPO = 'lightning-it/.github'
 BASE, HEAD, SOURCE = 'a' * 40, 'b' * 40, 'c' * 40
@@ -114,13 +115,28 @@ class ControlTests(unittest.TestCase):
                                            'status': 'completed', 'conclusion': 'success'},
                                           {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
                                            'status': 'completed', 'conclusion': 'success'}]]
-        with patch.dict(control.os.environ, {'GITHUB_EVENT_NAME': 'pull_request_review'}):
-            control.refresh(api, REPO, {'pull_request': {'number': 3}})
+        events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         writes = [call for call in api.call.call_args_list if call.kwargs.get('method') == 'POST']
         self.assertEqual(1, len(writes))
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', writes[0].args[0])
-        with patch.dict(control.os.environ, {'GITHUB_EVENT_NAME': 'pull_request'}), self.assertRaises(control.ControlError):
-            control.refresh(Mock(), REPO, {'pull_request': {'number': 3}})
+        with self.assertRaises(control.ControlError):
+            events.refresh(Mock(), REPO, 'pull_request', {'pull_request': {'number': 3}})
+
+    def test_failed_unprivileged_signal_still_invalidates_and_stale_signal_blocks(self):
+        producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
+                    'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'failure',
+                    'pull_requests': [{'number': 3, 'head': {'sha': HEAD}}]}
+        api = Mock(); api.call.side_effect = [producer, pull()]
+        self.assertEqual(3, events.event_pull(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})['number'])
+        for change in ({'path': '.github/workflows/untrusted.yml'}, {'name': 'Other signal'},
+                       {'event': 'pull_request'}, {'pull_requests': []}):
+            api.call.side_effect = [producer | change]
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                events.event_pull(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+        newer = pull(); newer['head']['sha'] = 'd' * 40
+        api.call.side_effect = [producer, newer]
+        with self.assertRaisesRegex(control.ControlError, 'stale-review-signal'):
+            events.event_pull(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
 
     def test_base_change_has_its_own_request_tuple(self):
         api = Mock()

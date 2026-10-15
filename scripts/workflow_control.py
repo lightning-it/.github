@@ -517,45 +517,6 @@ def verify_existing_route(api, repo, pull, config, route):
     raise ControlError("unclassified-review-route")
 
 
-def refresh(api, repo, event):
-    # This receiver has actions:write only in the consumer. It cannot publish
-    # success or invoke a provider. GitHub reruns the ORIGINAL immutable verifier
-    # job, whose source/proof checks remain the authority.
-    event_name = os.environ["GITHUB_EVENT_NAME"]
-    require(event_name in {"pull_request_target", "pull_request_review", "pull_request_review_comment", "issue_comment"},
-            "unsupported-refresh-event")
-    number = event.get("pull_request", {}).get("number", event.get("issue", {}).get("number"))
-    require(type(number) is int and number > 0, "refresh-pr-locator")
-    pull = api.call(f"repos/{repo}/pulls/{number}")
-    if pull["state"] != "open":
-        return
-    head = sha(pull["head"]["sha"])
-    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={head}", "workflow_runs")
-    matches = [run for run in runs if native_required(run, repo)
-               and any(pr.get("number") == number for pr in run.get("pull_requests", []))]
-    require(matches, "refresh-native-required-run-missing")
-    selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
-    jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
-    if event_name == "pull_request_target" and event.get("action") == "ready_for_review":
-        review = [job for job in jobs if job["name"] == "Protected current revision"]
-        require(len(review) == 1, "refresh-native-review-job-ambiguous")
-        if review[0]["status"] == "completed" and review[0]["conclusion"] != "success":
-            for version in range(1, selected["run_attempt"] + 1):
-                require(request_slot_started(api, repo, selected, attempt=version) is not True,
-                        "ready-does-not-retry-consumed-request")
-            require(api.call(f"repos/{repo}/pulls/{number}")["head"]["sha"] == head, "stale-refresh")
-            api.call(f"repos/{repo}/actions/jobs/{review[0]['id']}/rerun", method="POST", data={})
-            print("First ready review admitted after native proof of no earlier reservation.")
-            return
-    gate = [j for j in jobs if j["name"] == "Current revision review"]
-    require(len(gate) == 1, "refresh-native-verifier-job-ambiguous")
-    if gate[0]["status"] != "completed":
-        return
-    require(api.call(f"repos/{repo}/pulls/{number}")["head"]["sha"] == head, "stale-refresh")
-    api.call(f"repos/{repo}/actions/jobs/{gate[0]['id']}/rerun", method="POST", data={})
-    print("Original protected verifier refreshed; no provider request or synthetic success.")
-
-
 def output(name, value):
     require(re.fullmatch(r"[a-z_]+", name) and "\n" not in str(value), "output-shape")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
@@ -564,24 +525,20 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "reserve-codex", "verify-codex", "refresh", "request-copilot"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "reserve-codex", "verify-codex", "request-copilot"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
     require(re.fullmatch(r"lightning-it/[A-Za-z0-9_.-]+", repo), "consumer-repository")
-    expected_path = ".github/workflows/delivery-operations.yml" if args.operation == "refresh" else WORKFLOW
-    source_sha = source_identity(json.loads(os.environ["NATIVE_JOB"]), expected_path=expected_path)
+    source_sha = source_identity(json.loads(os.environ["NATIVE_JOB"]))
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    if args.operation == "refresh":
-        refresh(api, repo, event)
-        return
     native = api.call(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
     require(native_required(native, repo), "only-native-ruleset-workflow-may-authorize")
     number = event.get("pull_request", {}).get("number")
     require(type(number) is int and number > 0, "pull-event-required")
     pull = live_pull(api, repo, number)
     expected = binding(pull)
-    if args.operation not in {"classify", "refresh"}:
+    if args.operation != "classify":
         if args.operation == "finalize":
             expected = operation_record(api, repo, native, source_sha)["binding"]
         else:
