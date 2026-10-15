@@ -202,6 +202,17 @@ class ResponseBudget:
             output_cap = request.get("max_output_tokens", self.profile["max_output_tokens"])
             integer(output_cap, 1, self.profile["max_output_tokens"], "provider-output-bound")
             bounded = json.loads(canonical(request))
+            # Codex 0.160 assigns fresh UUID-based IDs to fully supplied input
+            # messages in every session. These are client history identifiers,
+            # not review content or server-state references. Omit them from
+            # BOTH the forwarded fresh message and its complete-request digest.
+            # Preserve roles, order, all content, assistant IDs and tool call IDs.
+            if type(bounded.get("input")) is list:
+                for item in bounded["input"]:
+                    if item.get("type", "message") == "message" and item.get("role") in {"user", "developer", "system"}:
+                        identifier = item.pop("id", None)
+                        require(identifier is None or type(identifier) is str and 0 < len(identifier) <= 128,
+                                "provider-client-message-id")
             # A client session cache hint is not model-visible review context.
             # Omit it from BOTH the actual forwarded request and its digest.
             # All instructions, tools and input remain exact and hash-bound.

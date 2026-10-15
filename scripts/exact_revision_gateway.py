@@ -211,7 +211,7 @@ class Reviewer:
     def deadline(self):
         return self.budget.deadline if self.budget else self.startup_deadline
 
-    def fail(self):
+    def fail(self, category="single-terminal-failure"):
         if self.done:
             return
         self.done = self.failed = True
@@ -222,6 +222,7 @@ class Reviewer:
             self.destination / "failure.json",
             {
                 "version": VERSION,
+                "category": category,
                 "state_sha256": review.sha(review.canonical(self.state)),
                 "provider_state": "settled" if settled else "unknown",
                 "request_sha256": sorted(self.budget.requests) if self.budget else [],
@@ -301,8 +302,8 @@ class Reviewer:
                 )
                 self.done = True
             return wire
-        except BaseException:
-            self.fail()
+        except BaseException as error:
+            self.fail(failure_category(error))
             raise
 
 
@@ -349,9 +350,22 @@ class ReplayReviewer(Reviewer):
                 "replayed": True, "new_provider_requests": 0})
             self.done = True
             return self.prior_wire
-        except BaseException:
-            self.fail()
+        except BaseException as error:
+            self.fail(failure_category(error))
             raise
+
+
+def failure_category(error):
+    """Only source-defined category codes may enter logs; never exception data."""
+    allowed = {"single-replay-complete-request-drift", "single-replay-result-drift",
+               "single-replay-prior-not-successful", "single-full-input", "single-terminal",
+               "provider-request-feature", "provider-model-drift", "provider-client-message-id",
+               "provider-client-metadata", "provider-cache-key", "provider-unbound-state",
+               "gateway-path", "gateway-encoding", "gateway-content-length", "gateway-memory-framing",
+               "gateway-content-type", "gateway-authorization", "gateway-incomplete-request", "gateway-timeout"}
+    if not isinstance(error, review.ReviewError):
+        return "single-unexpected-error"
+    return str(error) if str(error) in allowed else "single-contract-rejected"
 
 
 class DeadlineReader(io.RawIOBase):
@@ -439,8 +453,8 @@ def handler_for(reviewer: Reviewer):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(wire)
-            except Exception:  # noqa: BLE001 -- Every HTTP client fault must make the one-request boundary terminal.
-                reviewer.fail()
+            except Exception as error:  # noqa: BLE001 -- Every HTTP client fault makes the request boundary terminal.
+                reviewer.fail(failure_category(error))
                 try:
                     self.send_response(502)
                     self.send_header("Content-Length", "0")
@@ -882,9 +896,27 @@ def export_native(directory: Path, run_id: int):
     write_bytes(directory / "provider-response.bin", wire)
 
 
+def report_failure(run_id: int):
+    """Report a sealed category after client failure, without requests or secrets."""
+    root = root_for(run_id)
+    state, _ = context(root, run_id)
+    path = root / "public/failure.json"
+    if not path.exists():
+        print("Protected review failed without a gateway failure receipt.")
+        return
+    failure = transport.strict_json(read_owned(path, 0, MAX_STATE_BYTES))
+    review.require(failure.get("version") == VERSION
+                   and failure.get("state_sha256") == review.sha(review.canonical(state)),
+                   "single-failure-report-binding")
+    category = failure.get("category", "single-terminal-failure")
+    review.require(type(category) is str and re.fullmatch(r"[a-z][a-z0-9-]{1,95}", category),
+                   "single-failure-report-category")
+    print("Protected gateway failure category: " + category)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("install", "serve", "collect", "consume", "export-native"))
+    parser.add_argument("operation", choices=("install", "serve", "collect", "consume", "export-native", "report-failure"))
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--review-directory", type=Path, default=Path("exact-revision-review"))
     parser.add_argument("--owner-uid", type=int)
@@ -899,5 +931,7 @@ if __name__ == "__main__":
         consume(args.review_directory, args.run_id)
     elif args.operation == "export-native":
         export_native(args.review_directory, args.run_id)
+    elif args.operation == "report-failure":
+        report_failure(args.run_id)
     else:
         collect(args.review_directory, args.run_id, supervised=args.supervised)

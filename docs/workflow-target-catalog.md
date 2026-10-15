@@ -214,6 +214,21 @@ the real run ID remains in root-owned state. Session cache hints are omitted
 from both the forwarded request and its hash. Model-visible context, instructions,
 tools and input remain bound; any changed review context still blocks replay.
 
+Fresh user, developer and system messages also omit their client-generated
+history IDs from both the actual forwarded body and its hash. The pinned Codex
+0.160.0 client assigns UUID-based IDs to those messages in each session and
+retains prefixed IDs on the wire. Their roles, order and complete contents remain
+unchanged and hash-bound. Assistant IDs and tool-call/reference IDs are retained.
+Existing server conversations and previous-response references remain forbidden.
+See the pinned client's
+[history ID assignment](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/mod.rs#L3473)
+and [wire preparation](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/client.rs#L1010).
+
+A failed client step reports only a source-allowlisted category from the sealed
+gateway failure receipt. It exposes no request, response, headers, credentials or
+arbitrary exception text. This diagnostic cannot change the failed conclusion,
+perform a provider request or authorize a retry.
+
 Git fetch preserves ancestry while filtering historical blobs; only needed
 current diff and instruction blobs load lazily. A non-UTF-8 textual patch is
 represented reversibly as a JSON string mapping code points to original bytes.
