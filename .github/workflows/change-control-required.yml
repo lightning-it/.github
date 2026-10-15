@@ -5,10 +5,6 @@ name: Protected change control
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
-  workflow_call:
-    secrets:
-      OPENAI_API_KEY:
-        required: false
 permissions:
   contents: read
   actions: read
@@ -29,6 +25,7 @@ jobs:
       pull-requests: write
     outputs:
       route: ${{ steps.classify.outputs.route }}
+      approval_needed: ${{ steps.classify.outputs.approval_needed }}
     steps:
       - name: Resolve native defining source
         id: source
@@ -56,6 +53,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: python3 -B scripts/workflow_control.py classify
+      - name: Persist protected operation binding
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-operation-${{ github.run_attempt }}
+          path: control-operation.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Request current Copilot review
+        if: steps.classify.outputs.request_needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_control.py request-copilot
       - name: Verify applicable native review or governed exemption
         if: steps.classify.outputs.route != 'codex'
         env:
@@ -116,7 +126,7 @@ jobs:
   normal-approval:
     name: Approve exact main promotion
     needs: review
-    if: needs.review.outputs.route == 'promotion'
+    if: needs.review.outputs.route == 'promotion' && needs.review.outputs.approval_needed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -158,3 +168,10 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           APPROVAL_RESULT: ${{ needs.normal-approval.result }}
         run: python3 -B scripts/workflow_control.py finalize
+      - name: Persist exact native acceptance proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-proof-${{ github.run_attempt }}
+          path: control-proof.json
+          if-no-files-found: error
+          retention-days: 90

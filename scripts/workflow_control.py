@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -59,6 +60,8 @@ class API:
         result = subprocess.run(command, input=canonical(data) if data is not None else None,
                                 capture_output=True, timeout=60, check=False)
         require(result.returncode == 0, "native-api-unavailable")
+        if method != "GET" and not result.stdout.strip():
+            return {}
         try:
             return json.loads(result.stdout)
         except ValueError as error:
@@ -104,7 +107,7 @@ def binding(pull):
     return {"number": pull["number"], "base": sha(pull["base"]["sha"]),
             "head": sha(pull["head"]["sha"]), "base_ref": pull["base"]["ref"],
             "head_ref": pull["head"]["ref"], "head_repository": (pull["head"].get("repo") or {}).get("full_name"),
-            "author": identity(pull["user"]), "title": pull["title"], "body": pull.get("body"),
+            "author": list(identity(pull["user"])), "title": pull["title"], "body": pull.get("body"),
             "labels": sorted(label["name"] for label in pull["labels"]), "draft": pull["draft"]}
 
 
@@ -124,6 +127,7 @@ def classify(pull, repo):
     head, base = pull["head"]["ref"], pull["base"]["ref"]
     if author == RELEASE and same and head == "develop" and base == "main":
         return "promotion"
+    require(base != "main", "main-requires-exact-protected-promotion")
     if (same and base == "develop" and head.startswith("backmerge/") and head.endswith("-main")
             and (author == RELEASE or repo == SOURCE and author == SYNC)):
         return "ancestry"
@@ -132,7 +136,8 @@ def classify(pull, repo):
         return "codex"
     if author == RENOVATE:
         labels = {label["name"] for label in pull["labels"]}
-        if same and base == "develop" and head.startswith("renovate/") and {"renovate", "dependencies", "safe-automerge"} <= labels and "breaking-update" not in labels:
+        if (same and base == "develop" and head.startswith("renovate/")
+                and {"renovate", "dependencies", "safe-automerge"} <= labels and "breaking-update" not in labels):
             return "renovate"
         return "copilot"
     if author == SYNC:
@@ -157,11 +162,78 @@ def policy(api, repo, base, source_sha):
     return value
 
 
-def native_run_source(run, source_sha, *, path=WORKFLOW):
-    refs = run.get("referenced_workflows", [])
-    wanted = f"{SOURCE}/{path}@"
-    return any(type(ref) is dict and ref.get("path", "").startswith(wanted)
-               and ref.get("sha") == source_sha for ref in refs)
+def native_required(run, repo):
+    workflow = run.get("workflow_id")
+    return (type(workflow) is int and workflow > 0
+            and run.get("workflow_url") == f"https://api.github.com/repos/{repo}/actions/required_workflows/{workflow}"
+            and run.get("path", "").split("@", 1)[0] in {WORKFLOW, f"{SOURCE}/{WORKFLOW}"})
+
+
+def artifact_record(api, repo, run, name, filename):
+    artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
+    matches = [a for a in artifacts if a["name"] == name and not a["expired"]]
+    require(len(matches) == 1, "protected-native-artifact-missing-or-ambiguous")
+    with tempfile.TemporaryDirectory(prefix="native-control-proof-") as temp:
+        result = subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
+                                 "--name", name, "--dir", temp], capture_output=True, timeout=60, check=False)
+        require(result.returncode == 0, "protected-native-artifact-unavailable")
+        file = Path(temp) / filename
+        require(file.is_file() and not file.is_symlink() and file.stat().st_size <= 262144,
+                "protected-native-artifact-shape")
+        return json.loads(file.read_bytes())
+
+
+def same_immutable_tuple(left, right):
+    keys = {"number", "base", "head", "base_ref", "head_ref", "head_repository", "author"}
+    return all(canonical(left.get(key)) == canonical(right.get(key)) for key in keys)
+
+
+def normal_environment(api, repo):
+    env = api.call(f"repos/{repo}/environments/normal-release-promotion-approval")
+    require(env.get("name") == "normal-release-promotion-approval" and env.get("can_admins_bypass") is False,
+            "normal-environment-bypass-or-missing")
+    rules = [r for r in env.get("protection_rules", []) if r.get("type") == "required_reviewers"]
+    require(len(rules) == 1 and rules[0].get("prevent_self_review") is False
+            and rules[0].get("reviewers"), "one-person-native-approval-not-configured")
+    # GitHub requires ONE member of this reviewer set, not one per listed team.
+    require(all(r.get("type") in {"User", "Team", "BusinessTeam"} for r in rules[0]["reviewers"]),
+            "native-approver-shape")
+    return env
+
+
+def native_approval(api, repo, run_id):
+    history = api.call(f"repos/{repo}/actions/runs/{run_id}/approvals")
+    require(type(history) is list, "native-approval-history-shape")
+    matches = [entry for entry in history if entry.get("state") == "approved"
+               and entry.get("user", {}).get("type") == "User"
+               and any(e.get("name") == "normal-release-promotion-approval" for e in entry.get("environments", []))]
+    require(len(matches) == 1, "one-native-human-approval-required")
+    return matches[0]
+
+
+def previous_approval(api, repo, pull, source):
+    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    expected = binding(pull)
+    for run in sorted(runs, key=lambda r: r["id"], reverse=True):
+        if run["id"] == int(os.environ["GITHUB_RUN_ID"]) or not native_required(run, repo):
+            continue
+        if not any(pr.get("number") == pull["number"] and pr.get("base", {}).get("sha") == expected["base"]
+                   and pr.get("head", {}).get("sha") == expected["head"] for pr in run.get("pull_requests", [])):
+            continue
+        # A run without a persisted operation or approval is not a new approval.
+        artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
+        name = f"control-operation-{run['run_attempt']}"
+        if not any(a["name"] == name and not a["expired"] for a in artifacts):
+            continue
+        record = artifact_record(api, repo, run, name, "control-operation.json")
+        if record.get("source_sha") != source or not same_immutable_tuple(record.get("binding", {}), expected):
+            continue
+        history = api.call(f"repos/{repo}/actions/runs/{run['id']}/approvals")
+        if any(a.get("state") == "approved" and any(e.get("name") == "normal-release-promotion-approval"
+               for e in a.get("environments", [])) for a in history):
+            native_approval(api, repo, run["id"])
+            return run["id"]
+    return None
 
 
 def native_jobs(api, repo, run):
@@ -214,17 +286,73 @@ def copilot_review(api, repo, pull):
     return {"id": review["id"], "head": review["commit_id"], "state": review["state"]}
 
 
-def reserve_request(api, repo, pull, source_sha, run_id, attempt):
-    require(attempt == 1, "funded-effect-rerun-forbidden")
-    run = api.call(f"repos/{repo}/actions/runs/{run_id}")
-    require(native_run_source(run, source_sha) and run["head_sha"] == pull["head"]["sha"], "request-origin")
+def copilot_delivery_pending(api, repo, pull):
+    requested = api.call(f"repos/{repo}/pulls/{pull['number']}/requested_reviewers")
+    if any(user.get("id") == 175728472 for user in requested["users"]):
+        return True
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    owners = [r for r in runs if native_run_source(r, source_sha)
-              and any(pr.get("number") == pull["number"] for pr in r.get("pull_requests", []))]
-    require(owners and min(r["id"] for r in owners) == run_id, "request-slot-already-consumed")
-    # The first native workflow run is the durable reservation, before POST.
-    # A failed or lost POST response never leads to another automatic request.
+    deliveries = [run for run in runs if run.get("path") == "dynamic/agents/copilot-pull-request-reviewer"]
+    require(not any(run.get("status") == "completed" and run.get("conclusion") != "success" for run in deliveries),
+            "native-copilot-delivery-failed-no-automatic-retry")
+    return bool(deliveries)
+
+
+FUNDING_STEPS = {"Request current Copilot review", "Reserve protected Codex request"}
+
+
+def request_slot_started(api, repo, run, *, attempt=None):
+    version = run["run_attempt"] if attempt is None else attempt
+    jobs = api.pages(f"repos/{repo}/actions/runs/{run['id']}/attempts/{version}/jobs", "jobs")
+    review = [job for job in jobs if job["name"] == "Protected current revision"]
+    # A verifier-only attempt does not create a new provider reservation.
+    if not review:
+        return None
+    require(len(review) == 1 and review[0].get("run_id") == run["id"], "request-job-provenance")
+    steps = [step for step in review[0].get("steps", []) if step["name"] in FUNDING_STEPS]
+    require(len(steps) == len(FUNDING_STEPS), "request-boundary-history-unavailable")
+    return any(step.get("conclusion") != "skipped" and step.get("status") != "queued" for step in steps)
+
+
+def slot_consumed_before(api, repo, run, attempt):
+    for previous in range(1, attempt):
+        require(request_slot_started(api, repo, run, attempt=previous) is not True, "funded-effect-rerun-forbidden")
+
+
+def reserve_request(api, repo, pull, source_sha, run_id, attempt):
+    run = api.call(f"repos/{repo}/actions/runs/{run_id}")
+    require(run.get("id") == run_id and native_required(run, repo)
+            and run["head_sha"] == pull["head"]["sha"], "request-origin")
+    require(run["run_attempt"] == attempt, "request-attempt-drift")
+    slot_consumed_before(api, repo, run, attempt)
+    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    owners = [r for r in runs if native_required(r, repo) and r["workflow_id"] == run["workflow_id"]
+              and any(pr.get("number") == pull["number"]
+                      and pr.get("base", {}).get("sha") == pull["base"]["sha"]
+                      and pr.get("head", {}).get("sha") == pull["head"]["sha"]
+                      for pr in r.get("pull_requests", []))]
+    require(any(owner["id"] == run_id for owner in owners), "request-native-association-missing")
+    for owner in owners:
+        if owner["id"] == run_id:
+            continue
+        for version in range(1, owner["run_attempt"] + 1):
+            require(request_slot_started(api, repo, owner, attempt=version) is not True, "request-slot-already-consumed")
+    # The current native funding step is the reservation BEFORE the POST/model.
+    # A known skipped earlier step is not a claim; unknown history blocks.
     return run_id
+
+
+def operation_record(api, repo, run, source):
+    artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
+    candidates = []
+    for artifact in artifacts:
+        match = re.fullmatch(r"control-operation-([1-9][0-9]*)", artifact["name"])
+        if match and not artifact["expired"] and int(match[1]) <= run["run_attempt"]:
+            candidates.append((int(match[1]), artifact["name"]))
+    require(candidates, "protected-operation-missing")
+    _, name = max(candidates)
+    record = artifact_record(api, repo, run, name, "control-operation.json")
+    require(record.get("version") == 1 and record.get("source_sha") == source, "protected-operation-source-drift")
+    return record
 
 
 def check_renovate(api, repo, pull):
@@ -246,7 +374,7 @@ def check_native_control(api, repo, pull, config):
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     candidates = []
     for run in runs:
-        if not any(native_run_source(run, source) for source in sources):
+        if not native_required(run, repo):
             continue
         associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
         if len(associations) != 1:
@@ -261,7 +389,11 @@ def check_native_control(api, repo, pull, config):
     jobs = native_jobs(api, repo, selected)
     gate = [j for j in jobs if j["name"] == "Current revision review"]
     require(len(gate) == 1 and gate[0]["conclusion"] == "success", "ingress-protected-job-missing")
-    return {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"], "head": pull["head"]["sha"]}
+    record = artifact_record(api, repo, selected, f"control-proof-{selected['run_attempt']}", "control-proof.json")
+    require(record.get("version") == 1 and record.get("source_sha") in sources
+            and same_immutable_tuple(record.get("binding", {}), binding(pull)), "ingress-protected-proof-binding")
+    return {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
+            "head": pull["head"]["sha"], "source_sha": record["source_sha"], "proof": record}
 
 
 def promotion_ingress(api, repo, pull, config):
@@ -359,6 +491,71 @@ def distribution_evidence(api, repo, pull, config):
     return {"source_run": run["id"], "source_sha": receipt["source_sha"], "manifest_sha256": digest(manifest)}
 
 
+def verify_existing_route(api, repo, pull, config, route):
+    if route == "copilot":
+        result = copilot_review(api, repo, pull)
+        require(result is not None, "current-copilot-review-missing")
+        return result
+    if route == "renovate":
+        return check_renovate(api, repo, pull)
+    if route == "promotion":
+        return promotion_ingress(api, repo, pull, config)
+    if route == "ancestry":
+        return ancestry_evidence(api, repo, pull, config)
+    if route == "distribution":
+        return distribution_evidence(api, repo, pull, config)
+    if route == "codex":
+        # The protected prior native review job must still have a successful
+        # source-bound model collection step in the same immutable run.
+        run = api.call(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
+        jobs = api.pages(f"repos/{repo}/actions/runs/{run['id']}/jobs?filter=latest", "jobs")
+        review = [j for j in jobs if j["name"] == "Protected current revision"]
+        require(len(review) == 1 and review[0]["conclusion"] == "success"
+                and any(step["name"] == "Collect and verify the protected model receipt"
+                        and step["conclusion"] == "success" for step in review[0]["steps"]), "codex-native-producer-missing")
+        return {"job": review[0]["id"], "head": pull["head"]["sha"]}
+    raise ControlError("unclassified-review-route")
+
+
+def refresh(api, repo, event):
+    # This receiver has actions:write only in the consumer. It cannot publish
+    # success or invoke a provider. GitHub reruns the ORIGINAL immutable verifier
+    # job, whose source/proof checks remain the authority.
+    event_name = os.environ["GITHUB_EVENT_NAME"]
+    require(event_name in {"pull_request_target", "pull_request_review", "pull_request_review_comment", "issue_comment"},
+            "unsupported-refresh-event")
+    number = event.get("pull_request", {}).get("number", event.get("issue", {}).get("number"))
+    require(type(number) is int and number > 0, "refresh-pr-locator")
+    pull = api.call(f"repos/{repo}/pulls/{number}")
+    if pull["state"] != "open":
+        return
+    head = sha(pull["head"]["sha"])
+    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={head}", "workflow_runs")
+    matches = [run for run in runs if native_required(run, repo)
+               and any(pr.get("number") == number for pr in run.get("pull_requests", []))]
+    require(matches, "refresh-native-required-run-missing")
+    selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
+    jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
+    if event_name == "pull_request_target" and event.get("action") == "ready_for_review":
+        review = [job for job in jobs if job["name"] == "Protected current revision"]
+        require(len(review) == 1, "refresh-native-review-job-ambiguous")
+        if review[0]["status"] == "completed" and review[0]["conclusion"] != "success":
+            for version in range(1, selected["run_attempt"] + 1):
+                require(request_slot_started(api, repo, selected, attempt=version) is not True,
+                        "ready-does-not-retry-consumed-request")
+            require(api.call(f"repos/{repo}/pulls/{number}")["head"]["sha"] == head, "stale-refresh")
+            api.call(f"repos/{repo}/actions/jobs/{review[0]['id']}/rerun", method="POST", data={})
+            print("First ready review admitted after native proof of no earlier reservation.")
+            return
+    gate = [j for j in jobs if j["name"] == "Current revision review"]
+    require(len(gate) == 1, "refresh-native-verifier-job-ambiguous")
+    if gate[0]["status"] != "completed":
+        return
+    require(api.call(f"repos/{repo}/pulls/{number}")["head"]["sha"] == head, "stale-refresh")
+    api.call(f"repos/{repo}/actions/jobs/{gate[0]['id']}/rerun", method="POST", data={})
+    print("Original protected verifier refreshed; no provider request or synthetic success.")
+
+
 def output(name, value):
     require(re.fullmatch(r"[a-z_]+", name) and "\n" not in str(value), "output-shape")
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
@@ -367,25 +564,59 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "reserve-codex", "verify-codex"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "reserve-codex", "verify-codex", "refresh", "request-copilot"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
     require(re.fullmatch(r"lightning-it/[A-Za-z0-9_.-]+", repo), "consumer-repository")
-    source_sha = source_identity(json.loads(os.environ["NATIVE_JOB"]))
+    expected_path = ".github/workflows/delivery-operations.yml" if args.operation == "refresh" else WORKFLOW
+    source_sha = source_identity(json.loads(os.environ["NATIVE_JOB"]), expected_path=expected_path)
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    if args.operation == "refresh":
+        refresh(api, repo, event)
+        return
+    native = api.call(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
+    require(native_required(native, repo), "only-native-ruleset-workflow-may-authorize")
     number = event.get("pull_request", {}).get("number")
     require(type(number) is int and number > 0, "pull-event-required")
     pull = live_pull(api, repo, number)
     expected = binding(pull)
+    if args.operation not in {"classify", "refresh"}:
+        if args.operation == "finalize":
+            expected = operation_record(api, repo, native, source_sha)["binding"]
+        else:
+            record = json.loads(Path("control-operation.json").read_bytes())
+            require(record.get("version") == 1 and record.get("source_sha") == source_sha, "operation-source-drift")
+            expected = record["binding"]
+        live_pull(api, repo, number, expected)
     require(pull["head"]["sha"] == event["pull_request"]["head"]["sha"]
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
     config = policy(api, repo, pull["base"]["sha"], source_sha)
     route = classify(pull, repo)
     if args.operation == "classify":
+        if route == "promotion":
+            normal_environment(api, repo)
+            prior = previous_approval(api, repo, pull, source_sha)
+            output("approval_needed", "false" if prior else "true")
+        else:
+            output("approval_needed", "false")
+        request_needed = False
+        if route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User") and copilot_review(api, repo, pull) is None:
+            request_needed = not copilot_delivery_pending(api, repo, pull)
+        output("request_needed", "true" if request_needed else "false")
+        Path("control-operation.json").write_bytes(canonical({"version": 1, "source_sha": source_sha, "binding": expected}))
         output("route", route)
         output("base", pull["base"]["sha"])
         output("head", pull["head"]["sha"])
+        return
+    if args.operation == "request-copilot":
+        require(route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User"), "funded-author-not-allowed")
+        require(copilot_review(api, repo, pull) is None, "current-head-already-reviewed")
+        if copilot_delivery_pending(api, repo, pull):
+            return
+        reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
+        live_pull(api, repo, number, expected)
+        api.call(f"repos/{repo}/pulls/{number}/requested_reviewers", method="POST", data={"reviewers": [COPILOT]})
         return
     if args.operation == "reserve-codex":
         require(route == "codex", "codex-identity-required")
@@ -410,12 +641,6 @@ def main():
         review = None
         if route == "copilot":
             review = copilot_review(api, repo, pull)
-            if review is None and identity(pull["user"]) == ("litroc", 76040632, "User"):
-                requested = api.call(f"repos/{repo}/pulls/{number}/requested_reviewers")
-                if not any(u.get("login") in {COPILOT, COPILOT.removesuffix("[bot]")} for u in requested["users"]):
-                    reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
-                    live_pull(api, repo, number, expected)
-                    api.call(f"repos/{repo}/pulls/{number}/requested_reviewers", method="POST", data={"reviewers": [COPILOT]})
             for _ in range(80):
                 live_pull(api, repo, number, expected)
                 review = copilot_review(api, repo, pull)
@@ -439,7 +664,11 @@ def main():
         return
     require(os.environ.get("REVIEW_RESULT") == "success", "review-job-not-successful")
     if route == "promotion":
-        require(os.environ.get("APPROVAL_RESULT") == "success", "native-human-approval-required")
+        normal_environment(api, repo)
+        if os.environ.get("APPROVAL_RESULT") == "success":
+            native_approval(api, repo, int(os.environ["GITHUB_RUN_ID"]))
+        else:
+            require(previous_approval(api, repo, pull, source_sha) is not None, "native-human-approval-required")
         promotion_ingress(api, repo, pull, config)
     for observation in range(80):
         live_pull(api, repo, number, expected)
@@ -450,7 +679,11 @@ def main():
             if str(error) not in {"quality-check-missing-or-ambiguous", "quality-pending"} or observation == 79:
                 raise
             time.sleep(15)
+    current = live_pull(api, repo, number, expected)
+    evidence = verify_existing_route(api, repo, current, config, route)
     live_pull(api, repo, number, expected)
+    Path("control-proof.json").write_bytes(canonical({"version": 1, "source_sha": source_sha,
+                "binding": expected, "route": route, "evidence": evidence}))
     print("Protected current-revision control passed.")
 
 

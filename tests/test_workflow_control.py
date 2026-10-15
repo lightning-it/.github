@@ -1,8 +1,11 @@
 """Trust boundaries and paid-effect admission; no live credentials or model calls."""
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import workflow_control as control
@@ -22,7 +25,8 @@ def pull(author=('litroc', 76040632, 'User'), **changes):
 
 def run(number=10, source=SOURCE):
     return {'id': number, 'run_attempt': 1, 'head_sha': HEAD,
-            'referenced_workflows': [{'path': REPO + '/' + control.WORKFLOW + '@refs/heads/main', 'sha': source}],
+            'path': control.WORKFLOW, 'workflow_id': 77,
+            'workflow_url': f'https://api.github.com/repos/{REPO}/actions/required_workflows/77',
             'pull_requests': [{'number': 3, 'base': {'sha': BASE}, 'head': {'sha': HEAD}}]}
 
 
@@ -38,6 +42,20 @@ class ControlTests(unittest.TestCase):
         api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
         with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
             control.policy(api, REPO, BASE, SOURCE)
+
+    def test_serialized_operation_keeps_identical_native_binding(self):
+        original = pull()
+        restored = json.loads(control.canonical(control.binding(original)))
+        api = Mock(); api.call.return_value = original
+        self.assertEqual(original, control.live_pull(api, REPO, 3, restored))
+
+    def test_native_copilot_delivery_prevents_duplicate_automatic_request(self):
+        api = Mock(); api.call.return_value = {'users': []}
+        api.pages.return_value = [{'path': 'dynamic/agents/copilot-pull-request-reviewer', 'status': 'in_progress', 'conclusion': None}]
+        self.assertTrue(control.copilot_delivery_pending(api, REPO, pull()))
+        api.pages.return_value[0].update(status='completed', conclusion='failure')
+        with self.assertRaisesRegex(control.ControlError, 'no-automatic-retry'):
+            control.copilot_delivery_pending(api, REPO, pull())
 
     def test_native_defining_source_required_not_caller_context(self):
         job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
@@ -61,6 +79,57 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(control.ControlError):
             control.classify(promotion, REPO)
 
+    def test_direct_main_cannot_bypass_promotion(self):
+        value = pull()
+        value['base']['ref'] = 'main'
+        with self.assertRaisesRegex(control.ControlError, 'main-requires-exact-protected-promotion'):
+            control.classify(value, REPO)
+
+    def test_native_human_approval_and_self_approval_are_both_enforced(self):
+        api = Mock()
+        env = {'name': 'normal-release-promotion-approval', 'can_admins_bypass': False,
+               'protection_rules': [{'type': 'required_reviewers', 'prevent_self_review': False,
+                                     'reviewers': [{'type': 'User', 'reviewer': {'id': 76040632}}]}]}
+        api.call.return_value = env
+        self.assertEqual(env, control.normal_environment(api, REPO))
+        for change in ({'protection_rules': []}, {'can_admins_bypass': True},
+                       {'protection_rules': [env['protection_rules'][0] | {'prevent_self_review': True}]}):
+            api.call.return_value = env | change
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                control.normal_environment(api, REPO)
+        approval = {'state': 'approved', 'user': {'type': 'User', 'id': 76040632},
+                    'environments': [{'name': 'normal-release-promotion-approval'}]}
+        api.call.return_value = [approval]
+        self.assertEqual(approval, control.native_approval(api, REPO, 10))
+        for history in ([], [approval, approval], [approval | {'state': 'rejected'}],
+                        [approval | {'user': {'type': 'Bot'}}]):
+            api.call.return_value = history
+            with self.subTest(history=history), self.assertRaises(control.ControlError):
+                control.native_approval(api, REPO, 10)
+
+    def test_refresh_can_only_rerun_native_final_job_without_funding_or_success_write(self):
+        api = Mock()
+        api.call.side_effect = [pull(), pull(), {}]
+        api.pages.side_effect = [[run()], [{'id': 100, 'run_id': 10, 'name': 'Current revision review',
+                                           'status': 'completed', 'conclusion': 'success'},
+                                          {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
+                                           'status': 'completed', 'conclusion': 'success'}]]
+        with patch.dict(control.os.environ, {'GITHUB_EVENT_NAME': 'pull_request_review'}):
+            control.refresh(api, REPO, {'pull_request': {'number': 3}})
+        writes = [call for call in api.call.call_args_list if call.kwargs.get('method') == 'POST']
+        self.assertEqual(1, len(writes))
+        self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', writes[0].args[0])
+        with patch.dict(control.os.environ, {'GITHUB_EVENT_NAME': 'pull_request'}), self.assertRaises(control.ControlError):
+            control.refresh(Mock(), REPO, {'pull_request': {'number': 3}})
+
+    def test_base_change_has_its_own_request_tuple(self):
+        api = Mock()
+        previous = run(9)
+        previous['pull_requests'][0]['base']['sha'] = 'd' * 40
+        api.call.return_value = run()
+        api.pages.return_value = [previous, run()]
+        self.assertEqual(10, control.reserve_request(api, REPO, pull(), SOURCE, 10, 1))
+
     def test_renovate_is_narrow_and_other_renovate_still_requires_review(self):
         value = pull(control.RENOVATE)
         value['head']['ref'] = 'renovate/dependency'
@@ -69,20 +138,73 @@ class ControlTests(unittest.TestCase):
         value['labels'].append({'name': 'breaking-update'})
         self.assertEqual('copilot', control.classify(value, REPO))
 
-    def test_native_run_is_request_reservation_and_rerun_or_later_event_cannot_fund(self):
+    def test_native_request_reservation_rejects_spent_run_or_attempt(self):
         api = Mock()
         api.call.return_value = run()
         api.pages.return_value = [run()]
         self.assertEqual(10, control.reserve_request(api, REPO, pull(), SOURCE, 10, 1))
+        api.call.return_value = run(11)
         api.pages.return_value = [run(), run(11)]
-        for number, attempt in ((11, 1), (10, 2)):
-            with self.subTest(number=number, attempt=attempt), self.assertRaises(control.ControlError):
-                control.reserve_request(api, REPO, pull(), SOURCE, number, attempt)
+        with patch.object(control, 'request_slot_started', return_value=True), self.assertRaisesRegex(control.ControlError, 'already-consumed'):
+            control.reserve_request(api, REPO, pull(), SOURCE, 11, 1)
+        api.call.return_value = run() | {'run_attempt': 2}
+        with patch.object(control, 'request_slot_started', return_value=True), self.assertRaisesRegex(control.ControlError, 'rerun-forbidden'):
+            control.reserve_request(api, REPO, pull(), SOURCE, 10, 2)
         self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET' for call in api.call.call_args_list))
+
+    def test_draft_to_ready_does_not_consume_a_never_started_request(self):
+        api = Mock()
+        api.call.return_value = run(11)
+        api.pages.return_value = [run(9), run(11)]
+        with patch.object(control, 'request_slot_started', return_value=False):
+            self.assertEqual(11, control.reserve_request(api, REPO, pull(), SOURCE, 11, 1))
+        api.call.return_value = run(11) | {'run_attempt': 2}
+        api.pages.return_value = [run(11) | {'run_attempt': 2}]
+        with patch.object(control, 'request_slot_started', return_value=False):
+            self.assertEqual(11, control.reserve_request(api, REPO, pull(), SOURCE, 11, 2))
+        api.pages.return_value = [{'name': 'Protected current revision', 'run_id': 11, 'steps': []}]
+        with self.assertRaisesRegex(control.ControlError, 'boundary-history-unavailable'):
+            control.request_slot_started(api, REPO, run(11))
+
+    def test_observed_cloud_context_exists_but_does_not_authorize_a_candidate(self):
+        fixture = json.loads((Path(__file__).parent / 'fixtures/native-job-pr871.json').read_bytes())
+        self.assertEqual('6532da1b9eadc0ccd56af2fd2646c6138d8d5c1f', control.source_identity(fixture))
+        candidate = run() | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}
+        self.assertFalse(control.native_required(candidate, REPO))
+
+    def test_materialization_cannot_charge_new_head_under_previous_reservation(self):
+        import workflow_subject as subject
+        value = pull(control.RELEASE)
+        expected = control.binding(value)
+        newer = pull(control.RELEASE)
+        newer['head']['sha'] = 'd' * 40
+        api = Mock(); api.call.return_value = newer
+        with self.assertRaisesRegex(control.ControlError, 'stale-not-applicable'):
+            subject.bound_pull(api, REPO, {'pull_request': value}, SOURCE,
+                               {'source_sha': SOURCE, 'binding': expected})
+        self.assertEqual(1, api.call.call_count)
+
+    def test_label_change_between_review_and_finalization_is_stale(self):
+        original = pull(control.RENOVATE)
+        original['head']['ref'] = 'renovate/dependency'
+        original['labels'] = [{'name': name} for name in ('renovate', 'dependencies', 'safe-automerge')]
+        changed = original | {'labels': original['labels'] + [{'name': 'breaking-update'}]}
+        api = Mock(); api.call.side_effect = [run(), changed, changed]
+        job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
+               'workflow_sha': SOURCE, 'check_run_id': 123}
+        with tempfile.TemporaryDirectory() as temp:
+            event = Path(temp) / 'event.json'; event.write_text(json.dumps({'pull_request': original}))
+            env = {'GITHUB_REPOSITORY': REPO, 'GITHUB_RUN_ID': '10', 'NATIVE_JOB': json.dumps(job),
+                   'GITHUB_EVENT_PATH': str(event), 'REVIEW_RESULT': 'success'}
+            with patch.dict(os.environ, env), patch.object(sys, 'argv', ['control', 'finalize']), \
+                 patch.object(control, 'API', return_value=api), \
+                 patch.object(control, 'operation_record', return_value={'binding': control.binding(original)}), \
+                 self.assertRaisesRegex(control.ControlError, 'stale-not-applicable'):
+                control.main()
 
     def test_candidate_authored_run_and_check_name_are_not_reservations(self):
         api = Mock()
-        api.call.return_value = run() | {'referenced_workflows': []}
+        api.call.return_value = run() | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}
         with self.assertRaisesRegex(control.ControlError, 'request-origin'):
             control.reserve_request(api, REPO, pull(), SOURCE, 10, 1)
 
@@ -120,8 +242,9 @@ class ControlTests(unittest.TestCase):
     def test_native_ingress_requires_exact_source_association_and_completed_gate(self):
         api = Mock(); source_run = run() | {'status': 'completed', 'conclusion': 'success'}
         api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}]]
-        self.assertEqual(10, control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})['run'])
-        for changed in (source_run | {'referenced_workflows': []}, source_run | {'conclusion': 'failure'},
+        with patch.object(control, 'artifact_record', return_value={'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull())}):
+            self.assertEqual(10, control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})['run'])
+        for changed in (source_run | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}, source_run | {'conclusion': 'failure'},
                         source_run | {'pull_requests': [{'number': 3, 'base': {'sha': 'f' * 40}, 'head': {'sha': HEAD}}]}):
             api.pages.side_effect = [[changed]]
             with self.subTest(changed=changed), self.assertRaises(control.ControlError):

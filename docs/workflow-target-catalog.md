@@ -13,7 +13,7 @@ The target uses these four source workflow files in `lightning-it/.github`:
 | `.github/workflows/repository-quality.yml` | Validate this source repository; WF-01/02 | PR, protected push or manual run; deterministic profile result | Existing and active |
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
 | `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Reference implementation delivered in source; native admission pending |
-| `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | To implement; no file or registration installed |
+| `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | Metadata receiver implemented for reference; promotion/archive jobs pending |
 
 This is the initial implementation assignment. A necessary additional entry
 point requires an explained function, caller and ownership change in the
@@ -116,3 +116,31 @@ route is admitted; an App author or PR body alone never grants an exemption.
 The empty reference accepted-source list deliberately grants no promotion.
 Delivery operations, private wiring and native staged acceptance remain open
 until their actual implementation and observed results are recorded here.
+
+The reference also includes the metadata-only job in `delivery-operations.yml`.
+It refreshes the original native Required Workflow's final verifier after review
+or PR metadata activity. It cannot publish acceptance or retry a consumed model
+request. A draft-to-ready event may start an original review job only after the
+complete native attempt history proves that no funding step ever started.
+Promotion creation and archive finalization in this entry point remain pending.
+
+Only the top-level native Required Workflow namespace may authorize a change;
+`change-control-required.yml` has no reusable candidate-callable entry point.
+The native defining-job context is supported on GitHub.com and was observed in
+run 38684126267; a sanitized fixture records that observation. These context
+fields alone do not make a candidate source trusted. Native source/run origin,
+exact associations and the accepted central lineage remain independent guards.
+
+Classification persists one operation snapshot in native GitHub Actions state.
+Every later review step, subject materialization and final verifier must match
+that complete snapshot. A changed head cannot be reviewed under an older
+reservation. The final gate revalidates the applicable review after quality and
+requires a configured self-approvable native environment plus an actual human
+approval for promotion. The same unchanged operation can reuse its verified
+native approval without demanding a second person or duplicate approval.
+
+These small native controller records stay within GitHub's check/run history;
+they are not a second develop release package or a WORM archive. The one durable
+seven-year release package still belongs exclusively to accepted main promotion.
+Native proof availability and private consumer behavior remain actual rollout
+acceptance criteria; reference code and local tests do not establish them.

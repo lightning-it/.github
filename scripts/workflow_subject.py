@@ -92,10 +92,19 @@ def materialize(api, repo, pull, source, destination):
     return metadata
 
 
+def bound_pull(api, repo, event, source, operation):
+    require(operation.get("source_sha") == source, "materialization-operation-source")
+    expected = operation["binding"]
+    require(expected["base"] == event["pull_request"]["base"]["sha"]
+            and expected["head"] == event["pull_request"]["head"]["sha"], "stale-materialization-event")
+    return live_pull(api, repo, event["pull_request"]["number"], expected)
+
+
 if __name__ == "__main__":
     api = API()
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     repo = os.environ["GITHUB_REPOSITORY"]
-    pull = live_pull(api, repo, event["pull_request"]["number"])
     source = source_identity(json.loads(os.environ["NATIVE_JOB"]))
+    operation = json.loads(Path("control-operation.json").read_bytes())
+    pull = bound_pull(api, repo, event, source, operation)
     materialize(api, repo, pull, source, Path("exact-revision-review"))
