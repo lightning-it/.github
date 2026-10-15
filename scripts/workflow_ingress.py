@@ -5,16 +5,12 @@ import re
 from datetime import datetime, timedelta
 
 from workflow_control import (
-    SOURCE,
     binding,
-    classify,
     digest,
     native_jobs,
     native_required,
     operation_record,
-    promotion_ingress,
     require,
-    sha,
 )
 
 FINAL_STEP = "Enforce native review and quality on the still-current tuple"
@@ -53,7 +49,9 @@ def merged_attempt(api, repo, pull, latest):
         if attempt.get("conclusion") == "success":
             require(instant(attempt.get("updated_at")) < merged and ignored,
                     "ingress-success-not-before-merge")
-            accepted = digest(operation_record(api, repo, attempt))
+            operation = operation_record(api, repo, attempt)
+            require(operation.get("binding") == binding(pull), "ingress-current-metadata-drift")
+            accepted = digest(operation)
             require(all(item == accepted for item in operations),
                     "ingress-metadata-changed-before-merge")
             return attempt, ignored
@@ -78,27 +76,3 @@ def merged_attempt(api, repo, pull, latest):
         ignored.append({"attempt": version, "job": gate["id"], "conclusion": "failure",
                         "reason": "pull-not-reviewable-after-merge", "completed_at": gate["completed_at"]})
     raise ValueError("ingress-successful-native-attempt-missing")
-
-
-def reference_ingress(api, repo, pull, config, source):
-    """Exercise actual protected ingress before a reference's funded review.
-
-    This read-only probe grants no main promotion, human approval or release
-    acceptance. Its subjects are the actual current protected branch tips.
-    """
-    require(repo == SOURCE and config.get("mode") == "reference" and classify(pull, repo) == "codex"
-            and pull["head"]["ref"].startswith("qualification/"), "reference-ingress-scope")
-    def tips():
-        result = {}
-        for branch in ("main", "develop"):
-            value = api.call(f"repos/{repo}/branches/{branch}")
-            require(value.get("protected") is True, "reference-unprotected-tip")
-            result[branch] = sha(value["commit"]["sha"])
-        return result
-    before = tips()
-    require(before["develop"] == pull["base"]["sha"], "reference-ingress-develop-drift")
-    evidence = promotion_ingress(api, repo, {"base": {"sha": before["main"]},
-                                         "head": {"sha": before["develop"]}}, config)
-    require(tips() == before, "reference-ingress-tip-drift")
-    return {"version": 1, "scope": "reference-ingress-only", "source_sha": sha(source),
-            "binding": binding(pull), "refs": before, "evidence": evidence, "release_authorized": False}

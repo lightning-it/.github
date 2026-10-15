@@ -84,13 +84,10 @@ the sole failed native job/step and its bounded native log must establish that
 closure occurred after the merge. Preserve the successful attempt reference and
 each later failed attempt explicitly. Unknown, semantic, pre-merge, provider,
 budget or metadata failures block; an open or pending change never uses this
-historical path. No failed attempt is relabeled successful.
-
-An exact Release-App qualification in this reference may also read and verify
-the actual protected main/develop ingress before funding its review. The native
-probe records its subjects and proof references but grants no main promotion,
-human approval or release acceptance. It is not used in private or production
-consumer scopes. Source admission still requires independent management control.
+historical path. The full accepted binding must still equal the merged PR metadata;
+the entire second reported by merged_at is ambiguous and rejected. Re-read the
+current native run after all proof reads; a new attempt or changed origin blocks.
+No failed attempt is relabeled successful.
 
 ## Keep consumer information in its proper context
 

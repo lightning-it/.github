@@ -23,13 +23,14 @@ def native(attempt, conclusion, timestamp):
 
 class HistoricalIngressTests(unittest.TestCase):
     def fixture(self):
-        pull = {'state': 'closed', 'merged': True, 'merge_commit_sha': 'c' * 40, 'merged_at': MERGED}
+        from test_workflow_control import pull as ordinary_pull
+        pull = ordinary_pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
         accepted = native(1, 'success', '2026-10-15T12:00:40Z')
         failed = native(2, 'failure', '2026-10-15T12:01:04Z')
         gate = {'id': 101, 'run_id': 10, 'run_attempt': 2, 'name': 'Current revision review',
                 'status': 'completed', 'conclusion': 'failure', 'completed_at': '2026-10-15T12:01:03Z',
                 'steps': [{'name': ingress.FINAL_STEP, 'conclusion': 'failure'}]}
-        operation = {'version': 1, 'source_sha': SOURCE, 'binding': {'head': HEAD, 'body': 'Original metadata'}}
+        operation = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull)}
         api = Mock(spec=control.API)
         api.call.side_effect = [failed, accepted]
         api.pages.return_value = [gate]
@@ -102,6 +103,13 @@ class HistoricalIngressTests(unittest.TestCase):
                 api.call.assert_called_once_with(f"repos/{REPO}/actions/runs/10")
 
     def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
+        for field, changed in (('title', 'Changed title'), ('body', 'Changed body'),
+                               ('labels', [{'name': 'changed-label'}])):
+            api, pull, _, failed, _, operation = self.fixture()
+            pull[field] = changed
+            with self.subTest(field=field), patch.object(ingress, 'operation_record', return_value=operation), \
+                    self.assertRaisesRegex(control.ControlError, 'current-metadata-drift'):
+                ingress.merged_attempt(api, REPO, pull, failed)
         api, pull, _, failed, _, operation = self.fixture()
         changed = copy.deepcopy(operation); changed['binding']['body'] = 'Changed operation'
         with patch.object(ingress, 'operation_record', side_effect=[changed, operation]), \
@@ -125,43 +133,6 @@ class HistoricalIngressTests(unittest.TestCase):
             api.pages.return_value = [gate | change]
             with self.subTest(change=change), self.assertRaises(control.ControlError):
                 ingress.merged_attempt(api, REPO, pull, failed)
-
-
-class ReferenceIngressTests(unittest.TestCase):
-    def fixture(self):
-        pull = {'number': 3, 'title': 'Update the reviewed helper', 'body': '', 'labels': [], 'draft': False,
-                'user': dict(zip(('login', 'id', 'type'), control.RELEASE)),
-                'base': {'sha': 'c' * 40, 'ref': 'develop'},
-                'head': {'sha': HEAD, 'ref': 'qualification/helper', 'repo': {'full_name': REPO}}}
-        main = {'protected': True, 'commit': {'sha': 'd' * 40}}
-        develop = {'protected': True, 'commit': {'sha': pull['base']['sha']}}
-        api = Mock(spec=control.API); api.call.side_effect = [main, develop, main, develop]
-        return api, pull, main, develop
-
-    def test_real_tip_probe_has_no_promotion_or_human_approval_authority(self):
-        api, pull, _, _ = self.fixture()
-        with patch.object(ingress, 'promotion_ingress', return_value={'ingress': ['native reference']}) as check:
-            record = ingress.reference_ingress(api, REPO, pull, {'mode': 'reference'}, SOURCE)
-        self.assertFalse(record['release_authorized'])
-        self.assertEqual('reference-ingress-only', record['scope'])
-        self.assertEqual({'main': 'd' * 40, 'develop': 'c' * 40}, record['refs'])
-        self.assertEqual(record['refs']['main'], check.call_args.args[2]['base']['sha'])
-        self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
-
-    def test_probe_rejects_private_production_or_unprotected_and_drifted_subjects(self):
-        for repo, config in (('lightning-it/private', {'mode': 'reference'}), (REPO, {'mode': 'enforce'})):
-            api, pull, _, _ = self.fixture()
-            with self.subTest(repo=repo, config=config), self.assertRaisesRegex(control.ControlError, 'scope'):
-                ingress.reference_ingress(api, repo, pull, config, SOURCE)
-            api.call.assert_not_called()
-        api, pull, main, develop = self.fixture()
-        for values in ([main | {'protected': False}],
-                       [main, develop | {'commit': {'sha': 'e' * 40}}],
-                       [main, develop, main | {'commit': {'sha': 'e' * 40}}, develop]):
-            api.call.side_effect = values
-            with self.subTest(values=values), patch.object(ingress, 'promotion_ingress', return_value={}), \
-                    self.assertRaises(control.ControlError):
-                ingress.reference_ingress(api, REPO, pull, {'mode': 'reference'}, SOURCE)
 
 
 if __name__ == '__main__':

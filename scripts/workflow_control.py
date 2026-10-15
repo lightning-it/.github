@@ -673,7 +673,7 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot", "prepare-codex", "reserve-codex", "verify-codex", "reference-ingress"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot", "prepare-codex", "reserve-codex", "verify-codex"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -714,21 +714,10 @@ def main():
                 import workflow_funding
                 require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
         output("request_needed", "true" if request_needed else "false")
-        reference = (repo == SOURCE and config.get("mode") == "reference" and route == "codex"
-                     and pull["head"]["ref"].startswith("qualification/"))
-        output("reference_ingress", "true" if reference else "false")
         Path("control-operation.json").write_bytes(snapshot)
         output("route", route)
         output("base", pull["base"]["sha"])
         output("head", pull["head"]["sha"])
-        return
-    if args.operation == "reference-ingress":
-        from workflow_ingress import reference_ingress
-        result = reference_ingress(api, repo, pull, config, source_sha)
-        live_pull(api, repo, number, expected)
-        payload = canonical(result)
-        require(len(payload) <= MAX_PROOF_BYTES, "reference-ingress-size")
-        Path("reference-ingress.json").write_bytes(payload)
         return
     if args.operation == "request-copilot":
         require(route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User"), "funded-author-not-allowed")

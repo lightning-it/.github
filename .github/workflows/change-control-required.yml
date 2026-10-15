@@ -62,20 +62,6 @@ jobs:
           path: control-operation.json
           if-no-files-found: error
           retention-days: 90
-      - name: Verify actual reference ingress before funded review
-        if: steps.classify.outputs.reference_ingress == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NATIVE_JOB: ${{ toJSON(job) }}
-        run: python3 -B scripts/workflow_control.py reference-ingress
-      - name: Preserve non-authorizing reference ingress probe
-        if: steps.classify.outputs.reference_ingress == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: reference-ingress-${{ github.run_attempt }}
-          path: reference-ingress.json
-          if-no-files-found: error
-          retention-days: 90
       - name: Request current Copilot review
         if: steps.classify.outputs.request_needed == 'true'
         env:
