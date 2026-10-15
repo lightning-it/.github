@@ -70,6 +70,32 @@ Codex route, a native provider receipt must still bind the complete actual reque
 and its response. Copilot instead requires its authenticated native GitHub service
 run, current App review and review comments. These are distinct evidence formats.
 
+Ordinary issue comments are not acceptance inputs and no longer trigger the
+receiver. Actual pull-request metadata and unprivileged review signals still
+refresh the protected control. Before a merge, wait for the complete current
+required run and relevant receivers to finish; individual older green checks do
+not prove that a newly started verifier has finished.
+
+Historical ingress has a separate merge boundary. A genuine completed native
+success before the merge may be referenced if every later failed attempt is
+independently proven to have failed only because that same pull request was
+already merged and closed. The exact full operation snapshots must match, and
+the sole failed native job/step and its bounded native log must establish that
+closure occurred after the merge. Preserve the successful attempt reference and
+each later failed attempt explicitly. Unknown, semantic, pre-merge, provider,
+budget or metadata failures block; an open or pending change never uses this
+historical path. The full accepted binding must still equal the merged PR metadata;
+the native merge and closure events must rule out draft conversion or manual
+closure since the successful attempt began. Runner timestamps alone do not
+establish the cause. The entire second reported by merged_at is ambiguous and
+rejected. Authenticate operation bindings before taking the final generation
+snapshot; its selector performs no further artifact I/O and rejects unseen
+unassociated generations. Take that snapshot as the final network read, after
+refreshing both referenced subjects. Re-read the
+referenced PR, its merge identity, the current native run and newest generation
+after all proof reads; changed metadata, attempts, origins or generations block.
+No failed attempt is relabeled successful.
+
 ## Keep consumer information in its proper context
 
 Common source definitions are public. Private repository contents, explicit

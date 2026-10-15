@@ -98,6 +98,19 @@ class API:
         require(blob == value["sha"], "protected-file-digest")
         return data
 
+    def native_job_log(self, repo, job):
+        require(re.fullmatch(r"lightning-it/[A-Za-z0-9_.-]+", repo)
+                and type(job) is int and job > 0, "native-log-locator")
+        with tempfile.TemporaryFile() as stream:
+            result = subprocess.run(["gh", "api", "--allow-escape-sequences",
+                                     f"repos/{repo}/actions/jobs/{job}/logs"],
+                                    stdout=stream, stderr=subprocess.PIPE, timeout=60, check=False)
+            require(result.returncode == 0, "native-log-unavailable")
+            stream.seek(0)
+            payload = stream.read(MAX_OPERATION_BYTES + 1)
+        require(len(payload) <= MAX_OPERATION_BYTES, "native-log-size")
+        return payload.decode("utf-8")
+
 
 def source_identity(job, expected_path=WORKFLOW):
     require(job.get("workflow_repository") == SOURCE, "untrusted-source-repository")
@@ -476,6 +489,38 @@ def check_renovate(api, repo, pull):
     return {"kind": "policy-bound-renovate", "label_events": [e["id"] for e in policy_events]}
 
 
+def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operations=True):
+    """Use the same PR binding for initial selection and final generation read."""
+    candidates = []
+    for run in runs:
+        if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
+            continue
+        associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
+        key = (run["id"], run["run_attempt"])
+        if associations:
+            require(len(associations) == 1, "ingress-association-ambiguous")
+            associated = associations[0]
+            if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
+                bindings[key] = False
+                continue
+            bindings[key] = True
+        elif run.get("pull_requests"):
+            bindings[key] = False
+            continue
+        elif pull.get("merged") is True and pull.get("merge_commit_sha"):
+            if key not in bindings:
+                require(read_operations, "ingress-generation-binding-unavailable")
+                operation = operation_record(api, repo, run)
+                bindings[key] = (operation["source_sha"] in sources
+                                 and same_immutable_tuple(operation["binding"], binding(pull)))
+            if not bindings[key]:
+                continue
+        else:
+            continue
+        candidates.append(run)
+    return candidates
+
+
 def check_native_control(api, repo, pull, config):
     """Authenticate the entire native required run, not a caller-authored name."""
     sources = config.get("accepted_sources", [])
@@ -483,38 +528,56 @@ def check_native_control(api, repo, pull, config):
     for value in sources:
         sha(value)
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    candidates = []
-    for run in runs:
-        if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
-            continue
-        associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
-        if associations:
-            require(len(associations) == 1, "ingress-association-ambiguous")
-            associated = associations[0]
-            if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
-                continue
-        elif pull.get("merged") is True and pull.get("merge_commit_sha"):
-            operation = operation_record(api, repo, run)
-            if operation["source_sha"] not in sources or not same_immutable_tuple(operation["binding"], binding(pull)):
-                continue
-        else:
-            continue
-        candidates.append(run)
+    bindings = {}
+    candidates = ingress_candidates(api, repo, pull, sources, runs, bindings)
     require(candidates, "ingress-protected-run-missing")
     selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
-    require(selected["status"] == "completed" and selected["conclusion"] == "success", "ingress-protected-run-not-successful")
+    observed = selected
+    after_merge = []
+    if selected["status"] != "completed" or selected["conclusion"] != "success":
+        from workflow_ingress import merged_attempt
+        selected, after_merge = merged_attempt(api, repo, pull, selected)
     jobs = native_jobs(api, repo, selected)
     gate = [j for j in jobs if j["name"] == "Current revision review"]
     require(len(gate) == 1 and gate[0]["conclusion"] == "success", "ingress-protected-job-missing")
     record = artifact_record(api, repo, selected, f"control-proof-{selected['run_attempt']}", "control-proof.json")
     require(record.get("version") == 1 and record.get("source_sha") in sources
-            and same_immutable_tuple(record.get("binding", {}), binding(pull))
+            and record.get("binding") == binding(pull)
             and record.get("route") in {"copilot", "renovate", "ancestry", "distribution", "codex"},
             "ingress-protected-proof-binding")
-    return {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
+    result = {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
             "head": pull["head"]["sha"], "source_sha": record["source_sha"],
             "route": record.get("route"), "artifact": f"control-proof-{selected['run_attempt']}",
             "proof_sha256": digest(record)}
+    # Every saved object above is a snapshot. Re-read all mutable decision
+    # subjects after the evidence reads, for ordinary and historical passes.
+    # Authenticate newly discovered persisted bindings BEFORE the final native
+    # generation snapshot. Its selector performs no artifact/network reads.
+    warm_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    ingress_candidates(api, repo, pull, sources, warm_runs, bindings)
+    fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
+              "workflow_id", "workflow_url", "path")
+    if pull.get("merged") is True:
+        current_pull = api.call(f"repos/{repo}/pulls/{pull['number']}")
+        require(binding(current_pull) == binding(pull)
+                and all(current_pull.get(key) == pull.get(key)
+                        for key in ("state", "merged", "merged_at", "merge_commit_sha")),
+                "ingress-referenced-pull-changed")
+    current = api.call(f"repos/{repo}/actions/runs/{observed['id']}")
+    require(native_required(current, repo)
+            and all(current.get(key) == observed.get(key) for key in fields),
+            "ingress-current-run-changed")
+    # This is the final I/O: a run started during either subject refresh above
+    # must also be visible here. Selection below uses authenticated memory only.
+    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    generations = ingress_candidates(api, repo, pull, sources, latest_runs, bindings, read_operations=False)
+    latest_generation = max(generations, key=lambda item: (item["id"], item["run_attempt"])) if generations else None
+    require(latest_generation is not None
+            and all(latest_generation.get(key) == observed.get(key) for key in fields),
+            "ingress-native-generation-changed")
+    if after_merge:
+        result["post_merge_failed_attempts"] = after_merge
+    return result
 
 
 def promotion_ingress(api, repo, pull, config):
