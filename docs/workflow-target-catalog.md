@@ -6,7 +6,7 @@ assigns its functions to concrete entry points; it does not activate them.
 
 ## Common source
 
-The target uses these four source workflow files in `lightning-it/.github`:
+The target uses these five source workflow files in `lightning-it/.github`:
 
 | Source path | Purpose and functions | Trigger and result | Delivery state |
 | --- | --- | --- | --- |
@@ -14,6 +14,7 @@ The target uses these four source workflow files in `lightning-it/.github`:
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
 | `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Reference implementation delivered in source; native admission pending |
 | `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | Metadata receiver implemented for reference; promotion/archive jobs pending |
+| `.github/workflows/review-events.yml` | Unprivileged review-event signal; WF-03 support | Native review/comment activity; checkout-free signal only | Reference implementation; no acceptance authority |
 
 This is the initial implementation assignment. A necessary additional entry
 point requires an explained function, caller and ownership change in the
@@ -144,3 +145,27 @@ they are not a second develop release package or a WORM archive. The one durable
 seven-year release package still belongs exclusively to accepted main promotion.
 Native proof availability and private consumer behavior remain actual rollout
 acceptance criteria; reference code and local tests do not establish them.
+
+
+### Protected review-event boundary
+
+Review events require one additional small source entry point.
+`review-events.yml` has no repository permissions, secrets or checkout and
+cannot accept a change. Its native completion invokes the protected/default
+branch `delivery-operations.yml` receiver. The receiver verifies the actual
+producer path, event and exact PR/head association before refreshing the original
+native job. A stale or ambiguous signal blocks. A failed signal still invalidates
+stale evidence; its status never serves as acceptance.
+
+The receiver loads helper code from the fixed, targeted-tested module commit
+`6132f56db2d1228aaf5675d4d15897a69dd21ce5`. The public defining workflow remains
+independently pinned by each private caller. No candidate checkout or moving
+helper branch is executed in the privileged event context. The extra signal
+entry point is necessary because native review events execute in the PR context,
+while their `workflow_run` receiver executes from the protected default branch.
+Using a receiver that triggers on its own completion would create a loop. This
+explicit boundary replaces that unsafe coupling; it adds no review/retry chain.
+
+The reference source is still not production-admitted. Joint private caller
+migration, actual normal approval, promotion/archive jobs and staged acceptance
+remain required.

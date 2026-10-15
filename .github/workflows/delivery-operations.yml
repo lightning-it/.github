@@ -1,32 +1,30 @@
-# Common delivery entry point. The metadata job can only refresh the ORIGINAL
-# ruleset verifier. A ready event may start a demonstrably unclaimed review.
-# It cannot retry a consumed provider slot, publish success or approve a release.
+# Protected/default-branch receiver. Review events arrive only through the
+# checkout-free, unprivileged signal workflow; no candidate code executes here.
 # yamllint disable rule:truthy
 ---
 name: Protected delivery operations
 on:
   pull_request_target:
     types: [edited, labeled, unlabeled, ready_for_review, converted_to_draft]
-  pull_request_review:
-    types: [submitted, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
   issue_comment:
     types: [created, edited, deleted]
+  workflow_run:
+    workflows: [Repository review events]
+    types: [completed]
   workflow_call:
 permissions:
   contents: read
   actions: read
   pull-requests: read
 concurrency:
-  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
   cancel-in-progress: false
 jobs:
   refresh:
     name: Refresh protected verifier
     if: >-
-      contains(fromJSON('["pull_request_target","pull_request_review","pull_request_review_comment","issue_comment"]'), github.event_name) &&
-      (github.event.pull_request.number || github.event.issue.pull_request)
+      github.event_name == 'workflow_run' ||
+      github.event.pull_request.number || github.event.issue.pull_request
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -34,28 +32,14 @@ jobs:
       actions: write
       pull-requests: read
     steps:
-      - name: Resolve native defining source
-        id: source
-        env:
-          NATIVE_JOB: ${{ toJSON(job) }}
-        run: |
-          python3 - <<'PY'
-          import json, os, re
-          job = json.loads(os.environ['NATIVE_JOB'])
-          assert job['workflow_repository'] == 'lightning-it/.github'
-          assert job['workflow_file_path'] == '.github/workflows/delivery-operations.yml'
-          assert re.fullmatch('[0-9a-f]{40}', job['workflow_sha'])
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('sha=' + job['workflow_sha'] + '\n')
-          PY
-      - name: Load immutable common source
+      - name: Load immutable reviewed event helper
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: ${{ steps.source.outputs.sha }}
+          ref: 6132f56db2d1228aaf5675d4d15897a69dd21ce5
           persist-credentials: false
-      - name: Refresh only the native final verifier job
+      - name: Refresh original native job from current state
         env:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
-        run: python3 -B scripts/workflow_control.py refresh
+        run: python3 -B scripts/workflow_events.py

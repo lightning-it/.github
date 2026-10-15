@@ -122,6 +122,23 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(control.ControlError):
             events.refresh(Mock(), REPO, 'pull_request', {'pull_request': {'number': 3}})
 
+    def test_review_signal_is_unprivileged_and_receiver_loads_frozen_helper(self):
+        import yaml
+        root = Path(__file__).resolve().parents[1]
+        signal = yaml.safe_load((root / '.github/workflows/review-events.yml').read_text())
+        receiver = yaml.safe_load((root / '.github/workflows/delivery-operations.yml').read_text())
+        self.assertEqual({}, signal['permissions'])
+        self.assertEqual({}, signal['jobs']['signal']['permissions'])
+        self.assertTrue(all('uses' not in step for step in signal['jobs']['signal']['steps']))
+        triggers = receiver.get('on', receiver.get(True))
+        self.assertNotIn('pull_request_review', triggers)
+        self.assertNotIn('pull_request_review_comment', triggers)
+        self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
+        checkout = next(step for step in receiver['jobs']['refresh']['steps'] if 'uses' in step)
+        self.assertEqual('6132f56db2d1228aaf5675d4d15897a69dd21ce5', checkout['with']['ref'])
+        self.assertFalse(checkout['with']['persist-credentials'])
+        self.assertNotIn('${{', str(checkout['with']['ref']))
+
     def test_failed_unprivileged_signal_still_invalidates_and_stale_signal_blocks(self):
         producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
                     'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'failure',
