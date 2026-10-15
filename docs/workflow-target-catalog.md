@@ -196,6 +196,16 @@ read-only client execution, prestarted deterministic collection and privilege
 removal preserve the existing SINGLE boundary. No engine or sudo is restored
 after the client drops privileges.
 
+SINGLE binds a complete inline review to one model response. The gateway sets
+`tool_choice: none` in the actual counted and forwarded request, and uses the
+same policy when authenticating replay. It retains the complete client tool
+schemas in the request identity. An unexpected provider tool-call response is
+terminal and is never delivered to the agent for execution. The general bounded
+transport keeps its separately governed tool-capable behavior; this restriction
+applies explicitly to the protected SINGLE caller. No second request is granted.
+The [Responses API tool-choice contract](https://developers.openai.com/api/docs/guides/function-calling#tool-choice)
+defines this mode independently of prompt wording.
+
 A native successful producer may supply a cached response only for identical
 complete metadata and the same immutable central source. The protected gateway
 also compares the actual normalized client request, including instructions and
