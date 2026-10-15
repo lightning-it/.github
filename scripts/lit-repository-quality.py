@@ -464,7 +464,7 @@ def check_markdown() -> None:
             raise AssertionError(f"{path.name} must end with a newline")
 
 
-def check_embedded_code() -> None:
+def check_embedded_code(*, source_owned: bool = False) -> None:
     result = subprocess.run(
         ["git", "-c", f"safe.directory={ROOT}", "ls-files", "-z"],
         cwd=ROOT,
@@ -486,14 +486,18 @@ def check_embedded_code() -> None:
         if path and Path(path).suffix.lower() == ".md"
     )
     if markdown_paths:
-        validator = ROOT / "scripts" / "validate-embedded-code.py"
-        shared_validator = ROOT / "default" / "scripts" / "validate-embedded-code.py"
-        if not validator.is_file() and shared_validator.is_file():
-            validator = shared_validator
-        command_prefix = [
-            sys.executable,
-            validator.relative_to(ROOT).as_posix(),
-        ]
+        if source_owned:
+            validator = Path(__file__).resolve().with_name("validate-embedded-code.py")
+            if validator.is_symlink() or not validator.is_file():
+                raise AssertionError("immutable embedded validator is missing")
+            command_prefix = [sys.executable, "-I", str(validator),
+                              "--repository-root", str(ROOT), "--isolated", "--"]
+        else:
+            validator = ROOT / "scripts" / "validate-embedded-code.py"
+            shared_validator = ROOT / "default" / "scripts" / "validate-embedded-code.py"
+            if not validator.is_file() and shared_validator.is_file():
+                validator = shared_validator
+            command_prefix = [sys.executable, validator.relative_to(ROOT).as_posix()]
         batch: list[str] = []
         batch_bytes = 0
         for path in markdown_paths:
@@ -617,14 +621,13 @@ def check_managed_assets() -> None:
         raise AssertionError(f"stale provenance inventory entries: {', '.join(stale)}")
 
 
-def main() -> int:
+def run_checks(meta: dict, *, source_owned: bool = False) -> int:
     try:
-        meta = metadata()
         check_python_dependency_lock()
         check_generated_docs(meta)
         check_secret_safe_generated_docs()
         check_markdown()
-        check_embedded_code()
+        check_embedded_code(source_owned=source_owned)
         check_managed_assets()
         repo_type = meta.get("repository_type", "")
         check_terraform(repo_type)
@@ -637,6 +640,15 @@ def main() -> int:
         return 1
     print("Lightning IT repository quality checks passed.")
     return 0
+
+
+def main() -> int:
+    try:
+        meta = metadata()
+    except AssertionError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return run_checks(meta)
 
 
 if __name__ == "__main__":

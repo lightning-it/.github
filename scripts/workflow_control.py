@@ -829,6 +829,7 @@ def main():
         # Native job is the authoritative result; no synthetic successful check.
         print(f"Verified {route} for exact current revision; native evidence retained.")
         return
+    require(os.environ.get("COMMON_QUALITY_RESULT") == "success", "source-common-quality-not-successful")
     authorization = None
     if route == "codex":
         require(os.environ.get("REVIEW_RESULT") in {"success", "skipped"}, "codex-review-job-not-successful")

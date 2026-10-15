@@ -56,8 +56,13 @@ def validator_candidate(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--repository-root", type=Path)
+    parser.add_argument("--isolated", action="store_true")
     parser.add_argument("paths", nargs="+")
     args = parser.parse_args()
+    root = args.repository_root if args.repository_root is not None else ROOT
+    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
+        parser.error("repository root must be an absolute regular directory")
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as temporary:
         temp = Path(temporary)
@@ -73,7 +78,7 @@ def main() -> int:
                     f"{name}: Markdown path must be normalized and repository-relative"
                 )
                 continue
-            path = ROOT / relative_path
+            path = root / relative_path
             if not path.is_file() or path.suffix.lower() != ".md":
                 continue
             try:
@@ -106,10 +111,15 @@ def main() -> int:
                             "yml",
                         )
                         candidate.write_text(content, encoding="utf-8")
+                        command = [ansible_lint, str(candidate)]
+                        if args.isolated:
+                            lint_config = temp / "source-owned-ansible-lint.yml"
+                            lint_config.write_text("{}\n", encoding="utf-8")
+                            command = [ansible_lint, "--offline", "-c", str(lint_config), str(candidate)]
                         try:
                             result = subprocess.run(
-                                [ansible_lint, str(candidate)],
-                                cwd=ROOT,
+                                command,
+                                cwd=temp if args.isolated else root,
                                 text=True,
                                 encoding="utf-8",
                                 errors="replace",
@@ -153,7 +163,7 @@ def main() -> int:
                     try:
                         result = subprocess.run(
                             [shellcheck, "-x", str(candidate)],
-                            cwd=ROOT,
+                            cwd=root,
                             text=True,
                             encoding="utf-8",
                             errors="replace",

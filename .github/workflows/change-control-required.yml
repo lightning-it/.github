@@ -16,6 +16,52 @@ concurrency:
   group: protected-control-${{ github.repository_id }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 jobs:
+  common-quality:
+    name: Source common quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - name: Resolve native defining source
+        id: source
+        env:
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          job = json.loads(os.environ['NATIVE_JOB'])
+          assert job['workflow_repository'] == 'lightning-it/.github'
+          assert job['workflow_file_path'] == '.github/workflows/change-control-required.yml'
+          assert re.fullmatch('[0-9a-f]{40}', job['workflow_sha'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('sha=' + job['workflow_sha'] + '\n')
+          PY
+      - name: Load immutable common source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: ${{ steps.source.outputs.sha }}
+          path: common-source
+          persist-credentials: false
+      - name: Check out candidate as isolated data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run source-owned common quality in pinned Devtools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+          NATIVE_PULL_NUMBER: ${{ github.event.pull_request.number }}
+          NATIVE_HEAD: ${{ github.event.pull_request.head.sha }}
+          NATIVE_BASE: ${{ github.event.pull_request.base.sha }}
+        run: common-source/scripts/run-common-quality.sh "$GITHUB_WORKSPACE/candidate"
   review:
     name: Protected current revision
     runs-on: ubuntu-latest
@@ -155,7 +201,7 @@ jobs:
           retention-days: 90
   normal-approval:
     name: Approve exact main promotion
-    needs: review
+    needs: [review, common-quality]
     if: needs.review.outputs.route == 'promotion' && needs.review.outputs.approval_needed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -166,7 +212,7 @@ jobs:
         run: echo 'Native approval granted; final control rechecks the current tuple.'
   required:
     name: Current revision review
-    needs: [review, normal-approval]
+    needs: [review, normal-approval, common-quality]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -197,6 +243,7 @@ jobs:
           NATIVE_JOB: ${{ toJSON(job) }}
           REVIEW_RESULT: ${{ needs.review.result }}
           APPROVAL_RESULT: ${{ needs.normal-approval.result }}
+          COMMON_QUALITY_RESULT: ${{ needs.common-quality.result }}
         run: python3 -B scripts/workflow_control.py finalize
       - name: Persist exact native acceptance proof
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
