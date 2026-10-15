@@ -485,6 +485,26 @@ class ControlTests(unittest.TestCase):
         api = Mock(); api.pages.side_effect = [[native_review()], [delivery()], []]
         self.assertEqual(20, control.copilot_review(api, REPO, pull(changed_files=30))['service_run'])
 
+    def test_native_nonzero_findings_keep_prose_coverage_separate_from_container(self):
+        findings = ('<details open>\n<summary><strong>1 open finding</strong></summary>\n\n'
+                    '- [Correct the parser](https://github.com/lightning-it/.github/pull/3#discussion_r123) · New\n'
+                    '</details>')
+        comment = {'id': 123, 'pull_request_review_id': 9, 'original_commit_id': HEAD,
+                   'user': native_review()['user'], 'body': 'Correct the parser.'}
+        for assessment in ('The parser needs a correction.', 'Copilot reviewed 2 out of 2 changed files.'):
+            body = NATIVE_BODY.replace('🟢 Approval recommended', '🟡 Changes recommended').replace(
+                'The complete proposed source has no actionable findings.', assessment).replace(
+                '**0 open findings**', findings)
+            api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()], [comment], [comment]]
+            with self.subTest(assessment=assessment):
+                proof = control.copilot_review(api, REPO, pull(changed_files=2))
+                self.assertEqual([123], proof['finding_comment_ids'])
+                self.assertEqual(1, proof['frame']['historical_findings_count'])
+            partial = body.replace(assessment, 'Copilot reviewed 1 out of 2 changed files.')
+            api = Mock(); api.pages.side_effect = [[native_review(body=partial)], [delivery()]]
+            with self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
+                control.copilot_review(api, REPO, pull(changed_files=2))
+
     def test_aggregate_proof_larger_than_operation_limit_is_still_readable(self):
         from types import SimpleNamespace
         payload = {'version': 1, 'ingress': [{'body': 'x' * 300000}]}

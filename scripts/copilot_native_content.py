@@ -1530,7 +1530,7 @@ def bind_copilot_review_findings(
         summary = f"<summary><strong>{count} open {'finding' if count == 1 else 'findings'}</strong></summary>"
         start = lines.index(summary) + 1
         entries = lines[start:lines.index("</details>", start)]
-        if any("discussion_r" in line or "https://github.com/" in line
+        if any("discussion_r" in line or "](" in line
                for line in entries):
             targets = []
             for line in entries:
@@ -1568,8 +1568,8 @@ def validate_reported_file_coverage(body: str, changed_files: Any) -> None:
     invented. Explicit partial or contradictory file-count reports fail closed.
     """
     lines, _ = copilot_frame_control_lines(body)
-    boundary = next((i for i, line in enumerate(lines) if line == "**0 open findings**"
-                     or re.fullmatch(r"<summary><strong>[1-9][0-9]* open findings?</strong></summary>", line)), len(lines))
+    boundary = next((i for i, line in enumerate(lines)
+                     if line in {"**0 open findings**", "<details open>"}), len(lines))
     intro = assessment_visible_text("\n".join(lines[2:boundary]))
     for reviewed, total in re.findall(r"\bCopilot reviewed ([0-9]+) out of ([0-9]+) changed files\b", intro, re.IGNORECASE):
         require(type(changed_files) is int and changed_files > 0
