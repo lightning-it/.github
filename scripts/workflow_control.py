@@ -26,6 +26,8 @@ SYNC = ("lightning-it-shared-assets-sync[bot]", 307342877, "Bot")
 RENOVATE = ("renovate[bot]", 29139614, "Bot")
 COPILOT = "copilot-pull-request-reviewer[bot]"
 VERSION = "workflow-control/v1"
+MAX_OPERATION_BYTES = 262144
+MAX_PROOF_BYTES = 50 * 1024 * 1024
 
 
 class ControlError(RuntimeError):
@@ -55,6 +57,8 @@ class API:
     def call(self, path, *, method="GET", data=None):
         require(not path.startswith(("/", "http")), "api-path")
         command = ["gh", "api", "--method", method, path]
+        if re.fullmatch(r"repos/lightning-it/[A-Za-z0-9_.-]+/pulls/[1-9][0-9]*/reviews(?:\?.*)?", path):
+            command += ["--header", "Accept: application/vnd.github-commitcomment.full+json"]
         if data is not None:
             command += ["--input", "-"]
         result = subprocess.run(command, input=canonical(data) if data is not None else None,
@@ -181,7 +185,8 @@ def artifact_record(api, repo, run, name, filename):
                                  "--name", name, "--dir", temp], capture_output=True, timeout=60, check=False)
         require(result.returncode == 0, "protected-native-artifact-unavailable")
         file = Path(temp) / filename
-        require(file.is_file() and not file.is_symlink() and file.stat().st_size <= 262144,
+        maximum = MAX_OPERATION_BYTES if filename == "control-operation.json" else MAX_PROOF_BYTES
+        require(file.is_file() and not file.is_symlink() and file.stat().st_size <= maximum,
                 "protected-native-artifact-shape")
         return json.loads(file.read_bytes())
 
@@ -226,7 +231,7 @@ def previous_approval(api, repo, pull, source):
         artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
         if not any(re.fullmatch(r"control-operation-[1-9][0-9]*", a["name"]) and not a["expired"] for a in artifacts):
             continue
-        record = operation_record(api, repo, run, source)
+        record = operation_record(api, repo, run)
         if record.get("source_sha") != source or not same_immutable_tuple(record.get("binding", {}), expected):
             continue
         history = api.call(f"repos/{repo}/actions/runs/{run['id']}/approvals")
@@ -282,77 +287,97 @@ def validate_signal(api, repo, pull):
     require(api.file(repo, path, pull["head"]["sha"]) == trusted, "candidate-review-signal-missing-or-modified")
 
 
-def resolved_findings(api, repo, pull, review, comments):
-    """Only native resolved threads, with maintainer resolution for AI findings."""
-    owner, name = repo.split("/", 1)
-    query = """query($owner:String!,$name:String!,$number:Int!,$after:String){
-      repository(owner:$owner,name:$name){pullRequest(number:$number){
-        reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}
-          nodes{id isResolved resolvedBy{login databaseId}
-            comments(first:1){nodes{databaseId pullRequestReview{databaseId}}}}}}}}"""
-    threads, after = [], None
-    for _ in range(100):
-        result = api.call("graphql", method="POST", data={"query": query, "variables": {
-            "owner": owner, "name": name, "number": pull["number"], "after": after}})
-        require(not result.get("errors"), "review-thread-query-failed")
-        connection = result["data"]["repository"]["pullRequest"]["reviewThreads"]
-        threads.extend(connection["nodes"])
-        if not connection["pageInfo"]["hasNextPage"]:
-            break
-        cursor = connection["pageInfo"]["endCursor"]
-        require(cursor and cursor != after, "review-thread-pagination-drift")
-        after = cursor
-    else:
-        raise ControlError("review-thread-pagination-incomplete")
-    require(all(t.get("isResolved") is True for t in threads), "unresolved-review-thread")
-    roots = {}
-    for thread in threads:
-        nodes = thread["comments"]["nodes"]
-        require(len(nodes) == 1, "review-thread-root-missing")
-        root = nodes[0]
-        require(root["databaseId"] not in roots, "duplicate-review-thread-root")
-        roots[root["databaseId"]] = (thread, root)
-    for comment in comments:
-        require(comment.get("original_commit_id") == pull["head"]["sha"]
-                and comment.get("pull_request_review_id") == review["id"], "copilot-finding-head-drift")
-        require(comment["id"] in roots, "copilot-finding-thread-missing")
-        thread, root = roots[comment["id"]]
-        require(root.get("pullRequestReview", {}).get("databaseId") == review["id"], "copilot-finding-review-drift")
-        resolver = thread.get("resolvedBy") or {}
-        require(type(resolver.get("login")) is str and type(resolver.get("databaseId")) is int,
-                "copilot-finding-maintainer-resolution-required")
-        permission = api.call(f"repos/{repo}/collaborators/{quote(resolver['login'], safe='')}/permission")
-        require(permission.get("permission") in {"write", "maintain", "admin"}
-                and permission.get("user", {}).get("id") == resolver["databaseId"]
-                and permission["user"].get("type") == "User"
-                and permission["user"].get("permissions", {}).get("push") is True,
-                "copilot-finding-maintainer-resolution-required")
-    return [t["id"] for t in threads]
+def native_conversation_guard(api, repo, pull):
+    # This live GitHub merge condition handles resolve/unresolve atomically;
+    # no comment-event or a cached successful Actions job can substitute for it.
+    rules = api.call(f"repos/{repo}/rules/branches/{quote(pull['base']['ref'], safe='')}")
+    require(type(rules) is list and all(type(r) is dict for r in rules), "native-rule-shape")
+    pulls = [r for r in rules if r.get("type") == "pull_request"]
+    require(all(r.get("parameters", {}).get("required_approving_review_count") == 0
+                and r.get("parameters", {}).get("require_code_owner_review") is False
+                and r.get("parameters", {}).get("require_last_push_approval") is False for r in pulls),
+            "native-extra-human-review-policy")
+    guards = [r for r in pulls if r.get("type") == "pull_request"
+              and (r.get("ruleset_source_type"), r.get("ruleset_source"))
+                  in {("Organization", "lightning-it"), ("Repository", repo)}
+              and r.get("parameters", {}).get("required_review_thread_resolution") is True
+              and r.get("parameters", {}).get("required_approving_review_count") == 0
+              and r.get("parameters", {}).get("require_code_owner_review") is False
+              and r.get("parameters", {}).get("require_last_push_approval") is False]
+    require(guards, "native-one-person-conversation-guard-missing")
+    return sorted({r["ruleset_id"] for r in guards})
+
+
+def associated_delivery(run, pull):
+    require(type(run.get("pull_requests")) is list and run["pull_requests"], "native-copilot-pr-association-unavailable")
+    matches = [p for p in run["pull_requests"] if p.get("number") == pull["number"]]
+    require(len(matches) <= 1, "native-copilot-pr-association-ambiguous")
+    if not matches:
+        return False
+    return (matches[0].get("head", {}).get("sha") == pull["head"]["sha"]
+            and matches[0].get("base", {}).get("sha") == pull["base"]["sha"])
 
 
 def copilot_review(api, repo, pull):
+    import copilot_native_content as content
     reviews = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews")
-    selected = [r for r in reviews if r.get("commit_id") == pull["head"]["sha"]
-                and r.get("user", {}).get("id") == 175728472
-                and r.get("user", {}).get("type") == "Bot"
-                and r.get("user", {}).get("login") in {COPILOT, COPILOT.removesuffix("[bot]"), "Copilot"}]
-    if not selected:
+    current = [r for r in reviews if r.get("commit_id") == pull["head"]["sha"]
+               and r.get("user", {}).get("id") == 175728472
+               and r.get("user", {}).get("type") == "Bot"
+               and r.get("user", {}).get("login") in {COPILOT, COPILOT.removesuffix("[bot]"), "Copilot"}]
+    if not current:
         return None
-    require(len(selected) == 1, "copilot-review-ambiguous")
-    review = selected[0]
+    require(not any(r.get("state") == "DISMISSED" for r in current), "copilot-review-not-accepted")
+    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    deliveries = [r for r in runs if r.get("path") == "dynamic/agents/copilot-pull-request-reviewer"
+                  and associated_delivery(r, pull)]
+    eligible = []
+    for review in current:
+        producers = [r for r in deliveries if r.get("status") == "completed" and r.get("conclusion") == "success"
+                     and r.get("event") == "dynamic" and r.get("head_sha") == pull["head"]["sha"]
+                     and r.get("run_started_at", "~") <= review.get("submitted_at", "") <= r.get("updated_at", "")]
+        if len(producers) == 1:
+            eligible.append((review, producers[0]))
+    if not eligible:
+        return None
+    require(len(eligible) == 1, "copilot-review-ambiguous")
+    review, producer = eligible[0]
     require(review["state"] in {"COMMENTED", "APPROVED"}, "copilot-review-not-accepted")
+    # Preserve the admitted native frame protocol, including rendered-body and
+    # body-only finding checks. A native v2 frame does not assert a file count.
+    # Never fabricate that metric or accept an unknown/partial text response.
+    filtered = [r for r in reviews if r["commit_id"] != pull["head"]["sha"] or r["id"] == review["id"]]
+    try:
+        content.validate_reported_file_coverage(review.get("body") or "", pull.get("changed_files"))
+        frame = content.bind_copilot_review_findings([filtered], repository=repo,
+                    pull_number=pull["number"], head_sha=pull["head"]["sha"])
+    except content.EvidenceError as error:
+        raise ControlError("copilot-native-frame-not-accepted") from error
     comments = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews/{review['id']}/comments")
-    body = review.get("body") or ""
-    require(type(body) is str and all(type(c.get("body")) is str for c in comments), "copilot-provider-failure")
-    body = "\n".join([body, *(c["body"] for c in comments)])
-    expanded = body.lower().replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not")
-    normalized = "".join(char for char in expanded if not char.isspace())
-    require(normalized and not any(marker in normalized for marker in (
-        "unabletoreview", "cannotreview", "nofileswerereviewed", "encounteredanerror",
-        "quotaexceed", "quotaexhaust", "premiumrequest", "suppressedcomment",
-        "notabletoreview", "nofilestoreview")), "copilot-provider-failure")
-    threads = resolved_findings(api, repo, pull, review, comments)
-    return {"id": review["id"], "head": review["commit_id"], "state": review["state"], "resolved_threads": threads}
+    targets = frame["finding_comment_ids"]
+    if targets is None:
+        require(len(comments) == frame["historical_findings_count"], "copilot-native-finding-coverage")
+        targets = [c["id"] for c in comments]
+    needed = set(targets) | {c["id"] for c in comments}
+    all_comments = api.pages(f"repos/{repo}/pulls/{pull['number']}/comments") if needed else []
+    native_reviews = {r["id"]: r for r in filtered if r.get("node_id") in frame["native_reviews"]}
+    linked = {c["id"]: c for c in all_comments}
+    require(len(linked) == len(all_comments), "copilot-native-comment-duplicate")
+    for identifier in needed:
+        require(identifier in linked, "copilot-native-finding-coverage")
+        comment = linked[identifier]
+        owner = native_reviews.get(comment["pull_request_review_id"])
+        require(owner is not None and owner["submitted_at"] <= review["submitted_at"]
+                and comment.get("user", {}).get("id") == 175728472
+                and comment.get("user", {}).get("type") == "Bot"
+                and not comment.get("in_reply_to_id")
+                and comment.get("original_commit_id") == owner.get("commit_id")
+                and type(comment.get("body")) is str and bool(comment["body"].strip()), "copilot-native-finding-origin")
+        require(not any(marker in content.normalized_review_text(comment.get("body") or "")
+                        for marker in content.COPILOT_REVIEW_FAILURE_MARKERS), "copilot-provider-failure")
+    return {"id": review["id"], "head": review["commit_id"], "state": review["state"],
+            "service_run": producer["id"], "frame": {k: v for k, v in frame.items() if k != "native_reviews"},
+            "finding_comment_ids": sorted(needed)}
 
 
 def copilot_delivery_pending(api, repo, pull):
@@ -360,7 +385,8 @@ def copilot_delivery_pending(api, repo, pull):
     if any(user.get("id") == 175728472 for user in requested["users"]):
         return True
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    deliveries = [run for run in runs if run.get("path") == "dynamic/agents/copilot-pull-request-reviewer"]
+    deliveries = [run for run in runs if run.get("path") == "dynamic/agents/copilot-pull-request-reviewer"
+                  and associated_delivery(run, pull)]
     require(not any(run.get("status") == "completed" and run.get("conclusion") != "success" for run in deliveries),
             "native-copilot-delivery-failed-no-automatic-retry")
     return bool(deliveries)
@@ -628,6 +654,8 @@ def main():
     config = policy(api, repo, pull["base"]["sha"], source_sha)
     route = classify(pull, repo)
     require(route != "codex", "protected-codex-runtime-pending-native-admission")
+    snapshot = canonical({"version": 1, "source_sha": source_sha, "binding": expected})
+    require(len(snapshot) <= MAX_OPERATION_BYTES, "operation-snapshot-size-before-funding")
     if args.operation == "classify":
         if route == "promotion":
             normal_environment(api, repo)
@@ -639,7 +667,7 @@ def main():
         if route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User") and copilot_review(api, repo, pull) is None:
             request_needed = not copilot_delivery_pending(api, repo, pull)
         output("request_needed", "true" if request_needed else "false")
-        Path("control-operation.json").write_bytes(canonical({"version": 1, "source_sha": source_sha, "binding": expected}))
+        Path("control-operation.json").write_bytes(snapshot)
         output("route", route)
         output("base", pull["base"]["sha"])
         output("head", pull["head"]["sha"])
@@ -675,6 +703,7 @@ def main():
             review = distribution_evidence(api, repo, pull, config)
         else:
             raise ControlError("unclassified-review-route")
+        require(len(canonical(review)) <= MAX_PROOF_BYTES, "native-proof-resource-bound")
         live_pull(api, repo, number, expected)
         # Native job is the authoritative result; no synthetic successful check.
         print(f"Verified {route} for exact current revision; native evidence retained.")
@@ -700,10 +729,14 @@ def main():
             time.sleep(15)
     current = live_pull(api, repo, number, expected)
     validate_signal(api, repo, current)
+    conversation_guard = native_conversation_guard(api, repo, current)
     evidence = verify_existing_route(api, repo, current, config, route)
     live_pull(api, repo, number, expected)
-    Path("control-proof.json").write_bytes(canonical({"version": 1, "source_sha": source_sha,
-                "binding": expected, "route": route, "evidence": evidence, "authorization": authorization}))
+    proof = canonical({"version": 1, "source_sha": source_sha, "binding": expected, "route": route,
+                       "evidence": evidence, "authorization": authorization,
+                       "native_conversation_guard": conversation_guard})
+    require(len(proof) <= MAX_PROOF_BYTES, "native-proof-resource-bound")
+    Path("control-proof.json").write_bytes(proof)
     print("Protected current-revision control passed.")
 
 

@@ -96,118 +96,71 @@ published-artifact verification and immutable archive retention. Then require
 three real changes without necessary correction, a bounded canary and waves.
 The POC transition ends only for the accepted scope.
 
-## Implementation boundary: protected change control
+## Implementation boundary: protected reference control
 
-`change-control-required.yml` now supplies the common reference runtime. It
-loads code from the native defining workflow SHA, never consumer candidate
-code. Management still has to admit that immutable source as a Required
-Workflow; the existence of this file grants no production acceptance.
+The initial source implements native Copilot, governed Renovate, ancestry and
+promotion-evidence verification. The Release-App Codex route remains explicitly
+blocked until its separate complete-request transport qualification is integrated.
+It never falls back to Copilot. Promotion preparation, release/archive operations
+and private distribution remain unadmitted; this is no production-ready scope.
 
-The reference source implements the author matrix, native current-head Copilot
-verification, one native-run reservation before a funded request, strict Renovate provenance,
-exact ancestry checks and aggregated native ingress verification. The normal
-promotion job uses the one-person approval environment, followed by a fresh
-current-tuple and quality check. Unknown identity, stale metadata, findings,
-failed checks and ambiguous request outcomes block.
+Only the native Required Workflow namespace may authorize. The defining-job SHA
+selects the independently admitted source; an ordinary candidate workflow or a
+check name cannot replace it. Classification persists one complete immutable
+operation binding. Later steps must still match; oversized serialized metadata
+is rejected before any funded effect. A source cutover skips older approval
+records rather than mistaking them for the current source.
 
-Distribution receipt verification requires the protected source-run-produced
-full file manifest. Existing distributors must be migrated jointly before that
-route is admitted; an App author or PR body alone never grants an exemption.
-The consumer configuration alone grants no promotion; the current native
-Required Workflow source is selected externally by management.
-Delivery operations, private wiring and native staged acceptance remain open
-until their actual implementation and observed results are recorded here.
+### Separate native review evidence and live conversation enforcement
 
-The reference also includes the metadata-only job in `delivery-operations.yml`.
-It refreshes the original native Required Workflow's final verifier after review
-or PR metadata activity. It cannot publish acceptance or retry a consumed model
-request. Metadata changes reclassify the original operation; draft-to-ready can start a
-never-funded request. Existing delivered reviews skip funding, and the native
-attempt history rejects a consumed or unknown request whenever new funding
-would otherwise be needed.
-Promotion creation and archive finalization in this entry point remain pending.
+The pure Copilot frame/finding validator is retained from protected source
+`e698e4313c0aa9de39403788aab2566005200365`; no retired controllers are restored.
+It validates the actual native raw and rendered report, rejects unknown/error
+frames and body-only previously missed findings, and binds counted findings to
+authenticated native comments. The completed native service run must identify
+the exact PR/base/head; another PR sharing a head cannot consume this request.
 
-Only the top-level native Required Workflow namespace may authorize a change;
-`change-control-required.yml` has no reusable candidate-callable entry point.
-The native defining-job context is supported on GitHub.com and was observed in
-run 38684126267; a sanitized fixture records that observation. These context
-fields alone do not make a candidate source trusted. Native source/run origin,
-exact associations and the accepted central lineage remain independent guards.
+The admitted native CCR v2 frame does not publish a file counter. Do not claim
+100% file coverage or invent that metric. An explicit file-count report must
+match the actual changed-file count; partial or contradictory reports block.
+The [Copilot service excludes some file types](https://docs.github.com/en/copilot/reference/review-excluded-files); product quality and
+security checks still cover their applicable functions. Complete materialized
+Codex input remains its separate protected review contract.
 
-Classification persists one operation snapshot in native GitHub Actions state.
-Every later review step, subject materialization and final verifier must match
-that complete snapshot. A changed head cannot be reviewed under an older
-reservation. The final gate revalidates the applicable review after quality and
-requires a configured self-approvable native environment plus an actual human
-approval for promotion. The same unchanged operation can reuse its verified
-native approval without demanding a second person or duplicate approval.
+GitHub's active native PR rule enforces resolved conversations directly at
+merge time. This handles resolve and unresolve without a missing Actions thread
+event, a custom human permission engine or a new repair/polling chain. The
+common verifier requires that live native guard and zero mandatory classic
+human/CODEOWNER/last-push approvals. Native GitHub permissions control who can
+resolve a conversation. One authorized person can perform all human actions.
+The AI evidence job does not falsely claim that a cached thread state is current.
 
-These small native controller records stay within GitHub's check/run history;
-they are not a second develop release package or a WORM archive. The one durable
-seven-year release package still belongs exclusively to accepted main promotion.
-Native proof availability and private consumer behavior remain actual rollout
-acceptance criteria; reference code and local tests do not establish them.
+### Events, funding and promotion evidence
 
+The checkout-free, permission-free `review-events.yml` signals supported review,
+body-edit and comment activity to the protected/default-branch receiver. Before
+acceptance, the candidate must retain that exact independently frozen signal.
+Queued receiver concurrency includes the native producer workflow ID, so a
+same-display-name candidate workflow cannot replace a trusted invalidation.
+The receiver loads one literal immutable helper and refreshes only original
+native jobs; it cannot publish acceptance or retry an unknown funded request.
 
-### Protected review-event boundary
+Metadata changes reclassify the original snapshot. Delivered reviews skip
+funding; draft-to-ready may start a never-funded request. Native attempt history
+rejects consumed or unknown funding slots. The final verifier rereads applicable
+review evidence after quality. An unchanged promotion may reuse the actual
+native approval from an earlier attempt of the same run, with no second person
+or duplicate approval. Failed, missing or changed inputs remain blocking.
 
-Review events require one additional small source entry point.
-`review-events.yml` has no repository permissions, secrets or checkout and
-cannot accept a change. Its native completion invokes the protected/default
-branch `delivery-operations.yml` receiver. The receiver verifies the actual
-producer path, event and exact PR/head association before refreshing the original
-native job. A stale or ambiguous signal blocks. A failed signal still invalidates
-stale evidence; its status never serves as acceptance.
+For merged ingress, GitHub may remove its old live PR association. Only the
+native Required Workflow's persisted operation/proof matched to the actual
+merged PR may replace that association. Git object reads stream both pipes under
+the existing physical/cgroup/process memory contract and kill child groups on
+overflow/deadline; a large change is never truncated into an admissible change.
+Distribution file listings must equal the live changed-file count before a
+manifest can be accepted; API truncation cannot grant an exemption.
 
-The receiver loads helper code from the fixed, targeted-tested module commit
-`6132f56db2d1228aaf5675d4d15897a69dd21ce5`. The public defining workflow remains
-independently pinned by each private caller. No candidate checkout or moving
-helper branch is executed in the privileged event context. The extra signal
-entry point is necessary because native review events execute in the PR context,
-while their `workflow_run` receiver executes from the protected default branch.
-Using a receiver that triggers on its own completion would create a loop. This
-explicit boundary replaces that unsafe coupling; it adds no review/retry chain.
-
-The reference source is still not production-admitted. Joint private caller
-migration, actual normal approval, promotion/archive jobs and staged acceptance
-remain required.
-
-
-### Bounded reference delivery
-
-The first reference package includes native Copilot, governed Renovate,
-ancestry and promotion-evidence verification. The Release-App Codex route
-remains explicitly blocked until its separately qualified protected transport
-is integrated. It never falls back to Copilot and cannot authorize a release
-in this state. Private distribution and release/archive operations also remain
-unadmitted. No scope may be declared production-ready from this partial source.
-
-The provider gateway was removed from this reference package to separate its
-complete-request binding, response framing and resource qualification from
-native event handling. Review body edits now also invalidate acceptance.
-Git object reads use the existing physical/cgroup/process memory contract,
-stream both output pipes and terminate the child group on overflow or deadline;
-they never truncate a large change into an acceptable smaller change.
-
-For already merged ingress, GitHub may no longer expose the live PR association
-on its old run. Only that native Required Workflow's persisted immutable
-operation/proof, matched to the actual merged PR, can replace the missing live
-association. An ordinary run or a matching check name cannot do so.
-
-
-A candidate must retain the review-event signal byte-for-byte from the externally
-selected immutable source before the final gate may pass. Removing triggers or
-adding conditional signal suppression cannot leave stale acceptance behind.
-Changing that event contract requires a separately admitted source migration.
-
-Native resolved Copilot findings remain admissible under the existing maintainer
-resolution contract: exact current-head review/comment/thread identity, complete
-native thread inventory and current write/maintain/admin authority of the human
-resolver. One authorized person can perform that resolution. Unresolved threads,
-provider-error content, dismissed reviews and missing coverage remain blocking.
-The distribution verifier also compares the API's complete returned file count
-with the live PR's changed-file count, rejecting truncated listings.
-
-The receiver's queued concurrency group also includes the native producer
-workflow ID. A different candidate workflow with the same display name cannot
-replace a pending invalidation from the exact trusted signal workflow.
+These small records remain native Actions evidence, not a second durable develop
+release package. The one seven-year package belongs to accepted main promotion.
+Actual private behavior, native source admission and positive/negative staged
+acceptance remain required. Local tests and source presence alone grant none.

@@ -31,6 +31,32 @@ def run(number=10, source=SOURCE):
             'pull_requests': [{'number': 3, 'base': {'sha': BASE}, 'head': {'sha': HEAD}}]}
 
 
+NATIVE_BODY = """<!-- ccr-overview-v2 -->
+
+### 🟢 Approval recommended
+
+The complete proposed source has no actionable findings.
+
+**0 open findings**
+
+🧠 **Review effort:** Balanced
+"""
+
+
+def native_review(**changes):
+    return {'id': 9, 'node_id': 'PRR_native_review9', 'commit_id': HEAD,
+            'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'},
+            'state': 'COMMENTED', 'submitted_at': '2026-10-15T00:00:05Z',
+            'body': NATIVE_BODY, 'body_html': '<p>Native source assessment.</p>'} | changes
+
+
+def delivery(**changes):
+    return {'id': 20, 'run_attempt': 1, 'path': 'dynamic/agents/copilot-pull-request-reviewer',
+            'event': 'dynamic', 'status': 'completed', 'conclusion': 'success', 'head_sha': HEAD,
+            'run_started_at': '2026-10-15T00:00:00Z', 'updated_at': '2026-10-15T00:00:10Z',
+            'pull_requests': run()['pull_requests']} | changes
+
+
 class ControlTests(unittest.TestCase):
     def test_consumer_policy_cannot_select_unadmitted_source(self):
         api = Mock()
@@ -52,7 +78,7 @@ class ControlTests(unittest.TestCase):
 
     def test_native_copilot_delivery_prevents_duplicate_automatic_request(self):
         api = Mock(); api.call.return_value = {'users': []}
-        api.pages.return_value = [{'path': 'dynamic/agents/copilot-pull-request-reviewer', 'status': 'in_progress', 'conclusion': None}]
+        api.pages.return_value = [delivery(status='in_progress', conclusion=None)]
         self.assertTrue(control.copilot_delivery_pending(api, REPO, pull()))
         api.pages.return_value[0].update(status='completed', conclusion='failure')
         with self.assertRaisesRegex(control.ControlError, 'no-automatic-retry'):
@@ -241,26 +267,24 @@ class ControlTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaisesRegex(control.ControlError, 'stale'):
                 control.live_pull(api, REPO, 3, expected)
 
-    def test_copilot_review_needs_current_head_and_useful_error_free_content(self):
-        review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'}, 'state': 'COMMENTED',
-                  'body': 'Reviewed all changes; no actionable issues found.'}
-        api = Mock(); api.pages.side_effect = [[review], []]
-        api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}}}}
+    def test_copilot_review_needs_current_head_and_admitted_native_frame(self):
+        review = native_review()
+        api = Mock(); api.pages.side_effect = [[review], [delivery()], []]
         self.assertEqual(9, control.copilot_review(api, REPO, pull())['id'])
-        for body in ('', 'Unable to review this pull request', 'Quota exceeded', 'No files were reviewed', "Copilot wasn’t able to review this pull request", "Copilot wasn't able to review any files"):
-            api.pages.side_effect = [[review | {'body': body}], []]
-            with self.subTest(body=body), self.assertRaises(control.ControlError):
+        for body in ('', 'Unable to review this pull request', 'Quota exceeded', 'No files were reviewed',
+                     "Copilot wasn’t able to review this pull request", "Copilot wasn't able to review any files",
+                     'Copilot reviewed 1 out of 2 changed files', 'Reviewed all changes with no findings.'):
+            api.pages.side_effect = [[review | {'body': body}], [delivery()]]
+            with self.subTest(body=body), self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
                 control.copilot_review(api, REPO, pull())
         api.pages.side_effect = [[review | {'commit_id': 'd' * 40}]]
         self.assertIsNone(control.copilot_review(api, REPO, pull()))
 
-    def test_unresolved_findings_and_dismissed_review_never_pass(self):
-        review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'}, 'state': 'COMMENTED', 'body': 'Reviewed'}
-        for reviews, comments in (([review], [{'id': 1, 'body': 'Fix this'}]), ([review | {'state': 'DISMISSED'}], []),
-                                  ([review, review | {'id': 10}], [])):
-            api = Mock(); api.pages.side_effect = [reviews, comments]
-            api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [{'id': 'thread', 'isResolved': False}], 'pageInfo': {'hasNextPage': False}}}}}}
-            with self.subTest(reviews=reviews, comments=comments), self.assertRaises(control.ControlError):
+    def test_dismissed_or_ambiguous_current_reviews_never_pass(self):
+        review = native_review()
+        for reviews in ([review | {'state': 'DISMISSED'}], [review, review | {'id': 10}]):
+            api = Mock(); api.pages.side_effect = [reviews, [delivery()]]
+            with self.subTest(reviews=reviews), self.assertRaises(control.ControlError):
                 control.copilot_review(api, REPO, pull())
 
     def test_native_ingress_requires_exact_source_association_and_completed_gate(self):
@@ -333,11 +357,7 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(f'repos/{REPO}/actions/jobs/101/rerun', api.call.call_args.args[0])
         # A delivered review makes classify request_needed false; a failed or
         # unknown paid reservation remains terminal through reserve_request().
-        review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'},
-                  'state': 'COMMENTED', 'body': 'All files reviewed; no findings.'}
-        api.pages.side_effect = [[review], []]
-        api.call.side_effect = None
-        api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}}}}
+        api.pages.side_effect = [[native_review()], [delivery()], []]
         self.assertIsNotNone(control.copilot_review(api, REPO, pull()))
 
     def test_previous_approval_reuses_operation_before_verifier_only_attempt(self):
@@ -349,7 +369,7 @@ class ControlTests(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '10'}), \
              patch.object(control, 'operation_record', return_value={'source_sha': SOURCE, 'binding': control.binding(pull())}) as record:
             self.assertEqual(9, control.previous_approval(api, REPO, pull(), SOURCE))
-            record.assert_called_once_with(api, REPO, previous, SOURCE)
+            record.assert_called_once_with(api, REPO, previous)
 
     def test_unqualified_codex_route_is_explicitly_blocked_without_fallback(self):
         with self.assertRaisesRegex(control.ControlError, 'protected-codex-runtime-pending-native-admission'):
@@ -401,20 +421,80 @@ class ControlTests(unittest.TestCase):
         with self.assertRaisesRegex(control.ControlError, 'distribution-native-file-list-incomplete'):
             control.distribution_evidence(api, REPO, value, {'distribution_sources': [SOURCE]})
 
-    def test_resolved_current_findings_require_one_authorized_maintainer(self):
-        review = {'id': 9}
-        comment = {'id': 8, 'original_commit_id': HEAD, 'pull_request_review_id': 9}
-        thread = {'id': 't1', 'isResolved': True, 'resolvedBy': {'login': 'litroc', 'databaseId': 76040632},
-                  'comments': {'nodes': [{'databaseId': 8, 'pullRequestReview': {'databaseId': 9}}]}}
-        query = {'data': {'repository': {'pullRequest': {'reviewThreads': {
-                 'nodes': [thread], 'pageInfo': {'hasNextPage': False}}}}}}
-        permission = {'permission': 'admin', 'user': {'id': 76040632, 'type': 'User', 'permissions': {'push': True}}}
-        api = Mock(); api.call.side_effect = [query, permission]
-        self.assertEqual(['t1'], control.resolved_findings(api, REPO, pull(), review, [comment]))
-        for changed in (permission | {'permission': 'read'}, permission | {'user': {'id': 2, 'type': 'User', 'permissions': {'push': True}}}):
-            api.call.side_effect = [query, changed]
-            with self.subTest(permission=changed), self.assertRaisesRegex(control.ControlError, 'maintainer-resolution'):
-                control.resolved_findings(api, REPO, pull(), review, [comment])
+    def test_native_conversation_guard_keeps_zero_human_approvals(self):
+        guard = {'type': 'pull_request', 'ruleset_source_type': 'Repository', 'ruleset_source': REPO,
+                 'ruleset_id': 42, 'parameters': {'required_review_thread_resolution': True,
+                 'required_approving_review_count': 0, 'require_code_owner_review': False,
+                 'require_last_push_approval': False}}
+        api = Mock(); api.call.return_value = [guard]
+        self.assertEqual([42], control.native_conversation_guard(api, REPO, pull()))
+        for changes in ({'required_review_thread_resolution': False}, {'required_approving_review_count': 1},
+                        {'require_code_owner_review': True}, {'require_last_push_approval': True}):
+            api.call.return_value = [guard | {'parameters': guard['parameters'] | changes}]
+            with self.subTest(changes=changes), self.assertRaises(control.ControlError):
+                control.native_conversation_guard(api, REPO, pull())
+        api.call.return_value = []
+        with self.assertRaises(control.ControlError):
+            control.native_conversation_guard(api, REPO, pull())
+
+    def test_copilot_delivery_for_other_pr_cannot_consume_this_pr_request(self):
+        other = delivery(pull_requests=[{'number': 44, 'base': {'sha': BASE}, 'head': {'sha': HEAD}}], conclusion='failure')
+        api = Mock(); api.call.return_value = {'users': []}; api.pages.return_value = [other]
+        self.assertFalse(control.copilot_delivery_pending(api, REPO, pull()))
+        api.pages.return_value = [delivery(pull_requests=[])]
+        with self.assertRaisesRegex(control.ControlError, 'pr-association-unavailable'):
+            control.copilot_delivery_pending(api, REPO, pull())
+
+    def test_old_base_review_cannot_cover_new_base_at_same_head(self):
+        api = Mock(); api.pages.side_effect = [[native_review()], [delivery(pull_requests=[{
+            'number': 3, 'base': {'sha': 'e' * 40}, 'head': {'sha': HEAD}}])]]
+        self.assertIsNone(control.copilot_review(api, REPO, pull()))
+
+    def test_older_source_approval_is_skipped_not_raised(self):
+        previous = run(9)
+        api = Mock(); api.pages.side_effect = [[previous], [{'name': 'control-operation-1', 'expired': False}]]
+        with patch.object(control, 'operation_record', return_value={'source_sha': 'd' * 40, 'binding': control.binding(pull())}):
+            self.assertIsNone(control.previous_approval(api, REPO, pull(), SOURCE))
+        api.call.assert_not_called()
+
+    def test_unicode_operation_is_rejected_before_any_funded_effect(self):
+        value = pull(body='界' * 50000)
+        job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
+               'workflow_sha': SOURCE, 'check_run_id': 123}
+        api = Mock(); api.call.side_effect = [run(), value]
+        with tempfile.TemporaryDirectory() as temp:
+            event = Path(temp) / 'event.json'; event.write_text(json.dumps({'pull_request': value}))
+            env = {'GITHUB_REPOSITORY': REPO, 'GITHUB_RUN_ID': '10', 'NATIVE_JOB': json.dumps(job),
+                   'GITHUB_EVENT_PATH': str(event)}
+            with patch.dict(os.environ, env), patch.object(sys, 'argv', ['control', 'classify']), \
+                 patch.object(control, 'API', return_value=api), patch.object(control, 'policy', return_value={}), \
+                 patch.object(control, 'copilot_review') as review, \
+                 self.assertRaisesRegex(control.ControlError, 'snapshot-size-before-funding'):
+                control.main()
+            review.assert_not_called()
+        self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET' for call in api.call.call_args_list))
+
+    def test_explicit_partial_native_frame_cannot_claim_complete_review(self):
+        body = NATIVE_BODY.replace('The complete proposed source has no actionable findings.',
+                                   'Copilot reviewed 1 out of 2 changed files.')
+        api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()]]
+        with self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
+            control.copilot_review(api, REPO, pull(changed_files=2))
+
+    def test_native_frame_without_synthetic_file_counter_remains_admitted(self):
+        api = Mock(); api.pages.side_effect = [[native_review()], [delivery()], []]
+        self.assertEqual(20, control.copilot_review(api, REPO, pull(changed_files=30))['service_run'])
+
+    def test_aggregate_proof_larger_than_operation_limit_is_still_readable(self):
+        from types import SimpleNamespace
+        payload = {'version': 1, 'ingress': [{'body': 'x' * 300000}]}
+        api = Mock(); api.pages.return_value = [{'name': 'control-proof-1', 'expired': False}]
+        def download(command, **_kwargs):
+            destination = Path(command[command.index('--dir') + 1])
+            (destination / 'control-proof.json').write_bytes(control.canonical(payload))
+            return SimpleNamespace(returncode=0)
+        with patch.object(control.subprocess, 'run', side_effect=download):
+            self.assertEqual(payload, control.artifact_record(api, REPO, run(), 'control-proof-1', 'control-proof.json'))
 
 
 if __name__ == '__main__':
