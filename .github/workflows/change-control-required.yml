@@ -56,7 +56,7 @@ jobs:
           NATIVE_JOB: ${{ toJSON(job) }}
         run: python3 -B scripts/workflow_control.py classify
       - name: Persist protected operation binding
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: control-operation-${{ github.run_attempt }}
           path: control-operation.json
@@ -108,7 +108,7 @@ jobs:
         run: python3 -B scripts/workflow_control.py reserve-codex
       - name: Protected exact-revision Codex review
         if: steps.classify.outputs.route == 'codex'
-        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           responses-api-endpoint: ${{ steps.gateway.outputs.endpoint }}
@@ -124,6 +124,10 @@ jobs:
           codex-args: '["--ephemeral","-c","web_search=\"disabled\""]'
           allow-bots: 'true'
           allow-bot-users: lightning-it-release-automation
+      - name: Report protected gateway failure category
+        if: failure() && steps.classify.outputs.route == 'codex' && steps.gateway.outcome == 'success'
+        run: |
+          python3 -B -E -s "/run/exact-review/code/exact_revision_gateway.py" report-failure --run-id "$GITHUB_RUN_ID"
       - name: Collect and verify the protected model receipt
         if: steps.classify.outputs.route == 'codex'
         env:
@@ -141,7 +145,7 @@ jobs:
           python3 -B scripts/workflow_control.py verify-codex
       - name: Persist protected Codex receipt
         if: steps.classify.outputs.route == 'codex'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codex-receipt-${{ github.run_attempt }}
           path: |
@@ -195,7 +199,7 @@ jobs:
           APPROVAL_RESULT: ${{ needs.normal-approval.result }}
         run: python3 -B scripts/workflow_control.py finalize
       - name: Persist exact native acceptance proof
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: control-proof-${{ github.run_attempt }}
           path: control-proof.json

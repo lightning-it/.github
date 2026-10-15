@@ -58,6 +58,29 @@ def delivery(**changes):
 
 
 class ControlTests(unittest.TestCase):
+    def test_old_selected_source_accepts_new_consumer_base_during_cutover(self):
+        config = (Path(__file__).resolve().parents[1] / '.lit/workflow-control.json').read_bytes()
+        api = Mock(); api.file.return_value = config
+        # Both immutable old sources have no predecessor allowlist. Simulate
+        # their policy reader against the newly integrated consumer base.
+        old_lineage = json.dumps({'version': 1, 'accepted_predecessors': []})
+        with patch.object(Path, 'read_text', return_value=old_lineage):
+            for source in ('6c569721323d24cabad43f8caa162be60a7afdcb',
+                           'f1bd4951288b1ce52a6cb30ab6432e201cf45507'):
+                with self.subTest(source=source):
+                    self.assertEqual([source], control.policy(api, REPO, BASE, source)['accepted_sources'])
+
+    def test_selected_central_source_retains_predecessors_without_consumer_cutover(self):
+        api = Mock()
+        api.file.return_value = json.dumps({
+            'version': 1, 'repository': REPO, 'mode': 'reference',
+            'quality': [{'workflow': '.github/workflows/repository-quality.yml', 'job': 'repository / quality'}],
+            'accepted_sources': []}).encode()
+        lineage = json.dumps({'version': 1, 'accepted_predecessors': ['d' * 40]})
+        with patch.object(Path, 'read_text', return_value=lineage):
+            self.assertEqual(sorted([SOURCE, 'd' * 40]),
+                             control.policy(api, REPO, BASE, SOURCE)['accepted_sources'])
+
     def test_consumer_policy_cannot_select_unadmitted_source(self):
         api = Mock()
         config = {"version": 1, "repository": REPO, "mode": "reference",
@@ -65,10 +88,11 @@ class ControlTests(unittest.TestCase):
                   "accepted_sources": [SOURCE]}
         import json
         api.file.return_value = json.dumps(config).encode()
-        self.assertEqual([SOURCE], control.policy(api, REPO, BASE, SOURCE)["accepted_sources"])
-        api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
-        with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
-            control.policy(api, REPO, BASE, SOURCE)
+        with patch.object(Path, 'read_text', return_value=json.dumps({'version': 1, 'accepted_predecessors': []})):
+            self.assertEqual([SOURCE], control.policy(api, REPO, BASE, SOURCE)["accepted_sources"])
+            api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
+            with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
+                control.policy(api, REPO, BASE, SOURCE)
 
     def test_serialized_operation_keeps_identical_native_binding(self):
         original = pull()
@@ -160,9 +184,10 @@ class ControlTests(unittest.TestCase):
         triggers = receiver.get('on', receiver.get(True))
         self.assertNotIn('pull_request_review', triggers)
         self.assertNotIn('pull_request_review_comment', triggers)
+        self.assertNotIn('issue_comment', triggers)
         self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
         checkout = next(step for step in receiver['jobs']['refresh']['steps'] if 'uses' in step)
-        self.assertEqual('5185c40794e9ab2828696b05a8e9229f7255d353', checkout['with']['ref'])
+        self.assertEqual('8a96861b663a994a6dfd77ced2e984f65cc7d436', checkout['with']['ref'])
         self.assertFalse(checkout['with']['persist-credentials'])
         self.assertNotIn('${{', str(checkout['with']['ref']))
 
@@ -305,7 +330,8 @@ class ControlTests(unittest.TestCase):
 
     def test_native_ingress_requires_exact_source_association_and_completed_gate(self):
         api = Mock(); source_run = run() | {'status': 'completed', 'conclusion': 'success'}
-        api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}]]
+        api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}], [source_run], [source_run]]
+        api.call.return_value = source_run
         with patch.object(control, 'artifact_record', return_value={'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull()), 'route': 'copilot'}):
             self.assertEqual(10, control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})['run'])
         for changed in (source_run | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}, source_run | {'conclusion': 'failure'},
@@ -355,14 +381,24 @@ class ControlTests(unittest.TestCase):
                 control.check_renovate(api, REPO, value)
 
     def test_inflight_invalidation_is_retained_then_reruns_original_job(self):
-        api = Mock(); api.call.side_effect = [pull(), pull(), {}]
+        producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
+                    'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'success',
+                    'pull_requests': [{'number': 3, 'head': {'sha': HEAD}}]}
+        api = Mock(); api.call.side_effect = [producer, pull(), pull(), {}]
         review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
         gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
         api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
         with patch.object(events.time, 'sleep') as wait:
-            events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {"url": "native"}}})
+            events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
+
+    def test_generic_comments_cannot_refresh_or_fund_a_protected_review(self):
+        api = Mock()
+        with self.assertRaisesRegex(control.ControlError, 'unsupported-refresh-event'):
+            events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {'url': 'native'}}})
+        api.call.assert_not_called()
+        api.pages.assert_not_called()
 
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
         api = Mock(); api.call.side_effect = [pull(), pull(), {}]
@@ -404,7 +440,8 @@ class ControlTests(unittest.TestCase):
         value = pull() | {'merged': True, 'merge_commit_sha': 'e' * 40}
         native = run() | {'status': 'completed', 'conclusion': 'success', 'pull_requests': []}
         api = Mock(); api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10,
-                                'name': 'Current revision review', 'conclusion': 'success'}]]
+                                'name': 'Current revision review', 'conclusion': 'success'}], [native], [native]]
+        api.call.side_effect = [value, native]
         record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(value), 'route': 'copilot'}
         with patch.object(control, 'operation_record', return_value=record), patch.object(control, 'artifact_record', return_value=record):
             self.assertEqual(10, control.check_native_control(api, REPO, value, {'accepted_sources': [SOURCE]})['run'])

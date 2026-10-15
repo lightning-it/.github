@@ -171,7 +171,8 @@ class SingleReviewGatewayTests(unittest.TestCase):
             gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10}),
             gateway.review.canonical(response),
         ]) as worker:
-            self.reviewer.submit(self.request(), 'fixture')
+            with self.assertRaisesRegex(gateway.review.ReviewError, 'single-tool-output-forbidden'):
+                self.reviewer.submit(self.request(), 'fixture')
             request = self.request()
             request['instructions'] += ' second turn'
             with self.assertRaises(gateway.review.ReviewError):
@@ -201,6 +202,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertEqual(calls[0][1], gateway.transport.count_request(calls[1][1]))
         self.assertIn(self.payload.decode(), calls[0][1]["input"])
         self.assertEqual(calls[1][1]["truncation"], "disabled")
+        self.assertEqual(calls[1][1]["tool_choice"], "none")
         (self.directory / "result.json").write_text('{"verdict":"forged"}')
         original = gateway.read_owned
         with patch.object(gateway, "root_for", return_value=self.root), patch.object(gateway, "read_owned", wraps=gateway.read_owned) as read:

@@ -41,6 +41,57 @@ class CompleteReplayTests(unittest.TestCase):
         self.assertTrue(stored['replayed'])
         self.assertEqual(receipt['provider']['request_sha256'], stored['provider']['request_sha256'])
 
+    def test_fresh_client_message_ids_are_absent_from_forwarded_and_replayed_requests(self):
+        request = self.request() | {'input': [
+            {'type': 'message', 'role': 'developer', 'id': 'msg_019a1111-1111-7111-8111-111111111111',
+             'content': [{'type': 'input_text', 'text': 'Fixed protected client instructions'}]},
+            {'type': 'message', 'role': 'user', 'id': 'msg_019a2222-2222-7222-8222-222222222222',
+             'content': [{'type': 'input_text', 'text': self.prompt}]}]}
+        wire = gateway.review.canonical(self.response())
+        count = gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10})
+        with patch.object(transport, 'run_worker', side_effect=[count, wire]) as upstream:
+            self.reviewer.submit(request, 'fixture')
+        for call in upstream.call_args_list:
+            self.assertTrue(all('id' not in item for item in call.args[0]['input']))
+            self.assertEqual(['developer', 'user'], [item['role'] for item in call.args[0]['input']])
+            self.assertEqual(request['input'][1]['content'], call.args[0]['input'][1]['content'])
+        receipt = json.loads((self.root / 'public/receipt.json').read_text())
+        reviewer = self.replay(receipt, wire)
+        replay = json.loads(json.dumps(request))
+        for item in replay['input']:
+            item['id'] = 'msg_019b3333-3333-7333-8333-333333333333'
+        with patch.object(transport, 'run_worker') as upstream:
+            self.assertEqual(wire, reviewer.submit(replay, 'unused-fixture'))
+        upstream.assert_not_called()
+        self.assertEqual(0, json.loads((self.root / 'replay/receipt.json').read_text())['new_provider_requests'])
+
+    def test_message_id_normalization_retains_assistant_and_tool_call_identity(self):
+        request = self.request() | {'input': [
+            {'type': 'message', 'role': 'user', 'id': 'msg_client', 'content': self.prompt},
+            {'type': 'message', 'role': 'assistant', 'id': 'msg_assistant', 'content': 'Full prior text'},
+            {'type': 'function_call', 'id': 'fc_original', 'call_id': 'call_original', 'name': 'local', 'arguments': '{}'},
+            {'type': 'function_call_output', 'call_id': 'call_original', 'output': 'Complete tool output'}]}
+        budget = gateway.ResponseBudget(gateway.config.profile(), max_cost_microusd=1_000_000,
+                                        start_ms=10, timeout_ms=100_000, max_requests=1)
+        _, forwarded = budget.reserve(request, now_ms=10)
+        self.assertNotIn('id', forwarded['input'][0])
+        self.assertEqual(request['input'][1:], forwarded['input'][1:])
+
+    def test_only_known_failure_categories_can_expose_a_diagnostic(self):
+        self.assertEqual('single-unexpected-error', gateway.failure_category(ValueError('secret-token-value')))
+        self.assertEqual('single-contract-rejected', gateway.failure_category(gateway.review.ReviewError('secret-token-value')))
+        self.assertEqual('single-replay-complete-request-drift',
+                         gateway.failure_category(gateway.review.ReviewError('single-replay-complete-request-drift')))
+
+    def test_invalid_client_message_ids_never_reach_the_provider(self):
+        for identifier in ([], {}, 7, '', 'x' * 129):
+            request = self.request() | {'input': [{'role': 'user', 'id': identifier, 'content': self.prompt}]}
+            budget = gateway.ResponseBudget(gateway.config.profile(), max_cost_microusd=1_000_000,
+                                            start_ms=10, timeout_ms=100_000, max_requests=1)
+            with self.subTest(identifier=identifier), self.assertRaisesRegex(gateway.review.ReviewError, 'provider-client-message-id'):
+                budget.reserve(request, now_ms=10)
+            self.assertFalse(budget.requests)
+
     def test_changed_instructions_or_tools_never_reuse_metadata_only_match(self):
         receipt, wire = self.original()
         for change in ({'instructions': 'different trusted context'},

@@ -89,6 +89,26 @@ class NativeCodexTests(unittest.TestCase):
                 native.current_evidence(api, REPO, pull, self.metadata, SOURCE, run)
             download.assert_not_called()
 
+    def test_replay_can_prepare_from_real_success_while_current_producer_is_not_yet_accepted(self):
+        pull, run, artifacts, job, record, wire = self.native_fixture()
+        run['run_attempt'] = 3
+        operation = {'source_sha': SOURCE, 'binding': native.binding(pull)}
+        pending = job | {'id': 300, 'conclusion': None, 'steps': [{'name': 'Classify protected current revision', 'conclusion': 'success'}]}
+        draft_failure = job | {'id': 200, 'conclusion': 'failure', 'steps': [{'name': 'Classify protected current revision', 'conclusion': 'failure'}]}
+        api = Mock(); api.pages.side_effect = [[run], artifacts, [pending], [draft_failure], [job]]
+        with patch.object(native, 'operation_record', return_value=operation), \
+             patch.object(native, 'download', return_value=(record, wire)):
+            self.assertTrue(native.prepare(api, REPO, pull, self.metadata, SOURCE, self.directory))
+        candidate = json.loads((self.directory / 'reuse-candidate.json').read_bytes())
+        self.assertEqual(1, candidate['producer']['attempt'])
+        # A candidate is data for the complete-request gateway, never a pass.
+        current = Mock(); current.pages.side_effect = [artifacts, [pending]]
+        with patch.object(native, 'operation_record', return_value=operation), \
+             patch.object(native, 'download') as download, self.assertRaises(ControlError):
+            native.current_evidence(current, REPO, pull, self.metadata, SOURCE, run)
+        download.assert_not_called()
+
+
     def test_verifier_only_rerun_inherits_the_latest_actual_successful_producer(self):
         pull, run, artifacts, job, record, wire = self.native_fixture()
         run['run_attempt'] = 2

@@ -67,7 +67,14 @@ def download(api, repo, run, name, artifacts):
         return record, path.read_bytes()
 
 
-def native_evidence(api, repo, pull, metadata, source, *, only_run=None):
+def successful_producer(job):
+    return (job.get("conclusion") == "success"
+            and all(any(step.get("name") == name and step.get("conclusion") == "success"
+                        for step in job.get("steps", [])) for name in (EXPORT_STEP, COLLECT_STEP)))
+
+
+def native_evidence(api, repo, pull, metadata, source, *, only_run=None, for_replay=False):
+    require(not (only_run is not None and for_replay), "replay-candidate-is-not-current-acceptance")
     if only_run is None:
         runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     else:
@@ -97,14 +104,18 @@ def native_evidence(api, repo, pull, metadata, source, *, only_run=None):
                                   and all(s.get("conclusion") == "skipped" for s in j.get("steps", [])))]
             require(len(producers) <= 1, "codex-native-producer-ambiguous")
             if producers:
+                # A prior successful response may be input to a new replay,
+                # never the acceptance of a failed/pending current producer.
+                # The gateway must compare the actual complete new request;
+                # current_evidence below independently requires fresh success.
+                if for_replay and not successful_producer(producers[0]):
+                    continue
                 latest = (attempt, producers[0])
                 break
         if latest is None:
             continue
         attempt, job = latest
-        successful = (job.get("conclusion") == "success"
-                      and all(any(s.get("name") == step and s.get("conclusion") == "success"
-                                  for s in job.get("steps", [])) for step in (EXPORT_STEP, COLLECT_STEP)))
+        successful = successful_producer(job)
         if only_run is not None:
             require(successful, "codex-latest-native-producer-not-successful")
         if not successful:
@@ -123,7 +134,7 @@ def native_evidence(api, repo, pull, metadata, source, *, only_run=None):
 
 
 def prepare(api, repo, pull, metadata, source, directory):
-    cached = native_evidence(api, repo, pull, metadata, source)
+    cached = native_evidence(api, repo, pull, metadata, source, for_replay=True)
     if cached is None:
         return False
     record, wire = cached
