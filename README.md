@@ -1,5 +1,15 @@
 # .github
 
+Safe long-term specification: [workflow target](docs/workflow-target.md).
+It is defined and inactive; current POC operation remains separate until the
+new source, consumer and management paths pass their actual acceptance.
+
+Current operation: [process and workflow purpose during the POC](docs/poc-workflows.md).
+The owner decision in [LI-319](https://lit.atlassian.net/browse/LI-319) temporarily
+supersedes the former mandatory AI review, evidence and automatic promotion
+requirements in the historical governance references below. Repository quality,
+security checks and applicable product release functions remain necessary.
+
 These organization-wide controls implement the accepted
 [repository topology ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878636297),
 [branching and release governance ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878603438),
