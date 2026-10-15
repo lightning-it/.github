@@ -207,3 +207,7 @@ resolver. One authorized person can perform that resolution. Unresolved threads,
 provider-error content, dismissed reviews and missing coverage remain blocking.
 The distribution verifier also compares the API's complete returned file count
 with the live PR's changed-file count, rejecting truncated listings.
+
+The receiver's queued concurrency group also includes the native producer
+workflow ID. A different candidate workflow with the same display name cannot
+replace a pending invalidation from the exact trusted signal workflow.

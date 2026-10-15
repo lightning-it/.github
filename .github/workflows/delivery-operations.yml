@@ -17,7 +17,7 @@ permissions:
   actions: read
   pull-requests: read
 concurrency:
-  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
+  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}-${{ github.event.workflow_run.workflow_id || 'metadata' }}
   cancel-in-progress: false
 jobs:
   refresh:
