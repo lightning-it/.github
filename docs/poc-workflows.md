@@ -1,5 +1,9 @@
 # Process and workflow purpose during the POC
 
+The [safe workflow target](workflow-target.md) retains the governed AI-review
+requirement and automatically prepared promotion PRs. It is a separate, inactive
+target; this POC remains the operating transition until actual acceptance.
+
 Owner decision: LI-319, 2026-10-15. This supersedes the former mandatory
 AI review and historical evidence process while a replacement is developed.
 
