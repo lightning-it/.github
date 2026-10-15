@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: 5185c40794e9ab2828696b05a8e9229f7255d353
+          ref: deac3b1cb99fd9b2d0a2a321e0a4cccaa2222c31
           persist-credentials: false
       - name: Refresh original native job from current state
         env:
