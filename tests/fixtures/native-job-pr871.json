@@ -1,0 +1,8 @@
+{
+  "check_run_id": 116254994472,
+  "workflow_ref": "lightning-it/.github/.github/workflows/change-control-required.yml@refs/pull/871/merge",
+  "workflow_sha": "6532da1b9eadc0ccd56af2fd2646c6138d8d5c1f",
+  "workflow_repository": "lightning-it/.github",
+  "workflow_file_path": ".github/workflows/change-control-required.yml",
+  "status": "success"
+}

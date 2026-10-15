@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repository": "lightning-it/.github",
+  "mode": "reference",
+  "quality": [
+    {"workflow": ".github/workflows/repository-quality.yml", "job": "repository / quality"}
+  ],
+  "accepted_sources": [],
+  "distribution_sources": [],
+  "artifact_publication": false
+}

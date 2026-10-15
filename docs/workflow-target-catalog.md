@@ -6,14 +6,15 @@ assigns its functions to concrete entry points; it does not activate them.
 
 ## Common source
 
-The target uses these four source workflow files in `lightning-it/.github`:
+The target uses these five source workflow files in `lightning-it/.github`:
 
 | Source path | Purpose and functions | Trigger and result | Delivery state |
 | --- | --- | --- | --- |
 | `.github/workflows/repository-quality.yml` | Validate this source repository; WF-01/02 | PR, protected push or manual run; deterministic profile result | Existing and active |
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
-| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | To implement; no file or registration installed |
-| `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | To implement; no file or registration installed |
+| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Reference implementation delivered in source; native admission pending |
+| `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | Metadata receiver implemented for reference; promotion/archive jobs pending |
+| `.github/workflows/review-events.yml` | Unprivileged review-event signal; WF-03 support | Native review/comment activity; checkout-free signal only | Reference implementation; no acceptance authority |
 
 This is the initial implementation assignment. A necessary additional entry
 point requires an explained function, caller and ownership change in the
@@ -94,3 +95,89 @@ request/PR prevention, private output boundaries, no dependency cycles, exact
 published-artifact verification and immutable archive retention. Then require
 three real changes without necessary correction, a bounded canary and waves.
 The POC transition ends only for the accepted scope.
+
+## Implementation boundary: protected reference control
+
+The initial source implements native Copilot, governed Renovate, ancestry and
+promotion-evidence verification. The Release-App Codex route remains explicitly
+blocked until its separate complete-request transport qualification is integrated.
+It never falls back to Copilot. Promotion preparation, release/archive operations
+and private distribution remain unadmitted; this is no production-ready scope.
+
+Only the native Required Workflow namespace may authorize. The defining-job SHA
+selects the independently admitted source; an ordinary candidate workflow or a
+check name cannot replace it. Classification persists one complete immutable
+operation binding. Later steps must still match; oversized serialized metadata
+is rejected before any funded effect. A source cutover skips older approval
+records rather than mistaking them for the current source.
+
+### Separate native review evidence and live conversation enforcement
+
+The pure Copilot frame/finding validator is retained from protected source
+`e698e4313c0aa9de39403788aab2566005200365`; no retired controllers are restored.
+It validates the actual native raw and rendered report, rejects unknown/error
+frames and body-only previously missed findings, and binds counted findings to
+authenticated native comments. The completed native service run must identify
+the exact PR/base/head; another PR sharing a head cannot consume this request.
+
+The admitted native CCR v2 frame does not publish a file counter. Do not claim
+100% file coverage or invent that metric. An explicit file-count report must
+match the actual changed-file count; partial or contradictory reports block.
+The [Copilot service excludes some file types](https://docs.github.com/en/copilot/reference/review-excluded-files); product quality and
+security checks still cover their applicable functions. Complete materialized
+Codex input remains its separate protected review contract.
+
+GitHub's active native PR rule enforces resolved conversations directly at
+merge time. This handles resolve and unresolve without a missing Actions thread
+event, a custom human permission engine or a new repair/polling chain. The
+common verifier requires that live native guard and zero mandatory classic
+human/CODEOWNER/last-push approvals. Native GitHub permissions control who can
+resolve a conversation. One authorized person can perform all human actions.
+The AI evidence job does not falsely claim that a cached thread state is current.
+
+Native report publication may finish after its service run: the observed run
+38705673721 ended four seconds before review 5530268361 was submitted. Its
+`updated_at` is therefore not a review-publication deadline. The verifier still
+requires one successful same-PR/current-head native service producer and one
+authenticated complete App review. The observed blue native verdict can carry
+nonzero findings; those findings remain bound to their native conversations.
+Explicit file-coverage prose is normalized for rendered whitespace, so wrapping
+a partial report cannot turn it into an absent report.
+
+### Events, funding and promotion evidence
+
+The checkout-free, permission-free `review-events.yml` signals supported review,
+body-edit and comment activity to the protected/default-branch receiver. Before
+acceptance, the candidate must retain that exact independently frozen signal.
+Queued receiver concurrency includes the native producer workflow ID, so a
+same-display-name candidate workflow cannot replace a trusted invalidation.
+The receiver loads one literal immutable helper and refreshes only original
+native jobs; it cannot publish acceptance or retry an unknown funded request.
+
+Metadata changes reclassify the original snapshot. Delivered reviews skip
+funding; draft-to-ready may start a never-funded request. Native attempt history
+rejects consumed or unknown funding slots. The final verifier rereads applicable
+review evidence after quality. An unchanged promotion may reuse the actual
+native approval from an earlier attempt of the same run, with no second person
+or duplicate approval. Failed, missing or changed inputs remain blocking.
+
+For merged ingress, GitHub may remove its old live PR association. Only the
+native Required Workflow's persisted operation/proof matched to the actual
+merged PR may replace that association. Git object reads stream both pipes under
+the existing physical/cgroup/process memory contract and kill child groups on
+overflow/deadline; a large change is never truncated into an admissible change.
+Distribution file listings must equal the live changed-file count before a
+manifest can be accepted; API truncation cannot grant an exemption.
+
+The promotion verifier reads and authenticates one native ingress proof at a
+time under fresh physical/cgroup/JSON admission. It discards the full decoded
+proof and retains its source, run, attempt, artifact name, route and SHA-256.
+The compact references share a remaining byte/node reservation. Full release
+packaging is a separate producer: it must retrieve the exact referenced bytes,
+verify their digests and stream them into the one final package. References are
+not a substitute for that package or its seven-year archive acceptance.
+
+These small records remain native Actions evidence, not a second durable develop
+release package. The one seven-year package belongs to accepted main promotion.
+Actual private behavior, native source admission and positive/negative staged
+acceptance remain required. Local tests and source presence alone grant none.
