@@ -91,3 +91,27 @@ or prove live acceptance. Its output reports safe diagnostic categories only.
 The contract deliberately remains `defined` and `inactive`. Actual rollout
 requires separately implemented and tested source, consumer, management and
 native acceptance paths. Changing a JSON status field is not activation.
+
+## Release archive adapter
+
+`scripts/lit-release-archive.py` stores a protected caller's already assembled
+release package in the existing private Hetzner S3 store. It checks the expected
+SHA-256 before upload, sets seven calendar years of per-version COMPLIANCE
+retention and verifies the exact returned version through separate read and
+retention-review credentials. A duplicate conditional upload may reuse only an
+identical version with its original full retention still intact. The adapter
+never changes bucket policy/defaults, deletes objects, retries uncertain writes
+or grants release authorization.
+
+The private consumer supplies `LIT_ARCHIVE_ENDPOINT`, `LIT_ARCHIVE_BUCKET`,
+`LIT_ARCHIVE_SSE_C_KEY_B64` and distinct `LIT_ARCHIVE_{WRITER,READER,REVIEWER}_ACCESS_KEY_ID`
+and `LIT_ARCHIVE_{WRITER,READER,REVIEWER}_SECRET_ACCESS_KEY` values. Credentials stay
+in process memory. The receipt contains the private object/version locator and
+must remain in the consumer's private execution context. Standard output reports
+safe categories only. Do not inherit all consumer secrets.
+
+This storage adapter does not establish native review, approval, package
+completeness, artifact authenticity or long-term encryption-key recovery. The
+protected promotion producer must verify these before accepting a release.
+No workflow invokes this adapter yet; adding its source does not activate the
+target or qualify a repository for rollout.
