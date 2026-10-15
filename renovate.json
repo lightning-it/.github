@@ -7,8 +7,13 @@
     ":semanticCommitType(chore)",
     ":semanticCommitScope(deps)"
   ],
-  "labels": ["dependencies", "renovate"],
-  "baseBranchPatterns": ["develop"],
+  "labels": [
+    "dependencies",
+    "renovate"
+  ],
+  "baseBranchPatterns": [
+    "develop"
+  ],
   "timezone": "UTC",
   "schedule": [],
   "rebaseWhen": "behind-base-branch",
@@ -16,7 +21,9 @@
   "packageRules": [
     {
       "description": "Do not update Renovate configuration presets as dependencies",
-      "matchManagers": ["renovate-config"],
+      "matchManagers": [
+        "renovate-config"
+      ],
       "enabled": false
     },
     {
@@ -29,41 +36,52 @@
         "pinDigest",
         "lockFileMaintenance"
       ],
-      "addLabels": ["safe-automerge"],
+      "addLabels": [
+        "safe-automerge"
+      ],
       "automerge": true,
       "automergeType": "pr"
     },
     {
       "description": "Require manual approval for major updates",
-      "matchUpdateTypes": ["major"],
-      "addLabels": ["breaking-update"],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "addLabels": [
+        "breaking-update"
+      ],
       "automerge": false,
       "dependencyDashboardApproval": true
     },
     {
       "description": "Keep every component of the GitHub Actions toolchain on one version",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github-actions"
     },
     {
       "description": "Keep repository checks aligned with their lockfile",
-      "matchManagers": ["github-actions"],
-      "matchFileNames": [".github/workflows/repository-quality.yml"],
-      "matchDepNames": ["python"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchFileNames": [
+        ".github/workflows/repository-quality.yml"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
       "allowedVersions": "/^3\\.14(?:\\.\\d+)?$/",
       "groupName": "python 3.14 lockfile runtimes"
     },
     {
       "description": "Do not update shared-assets-owned workflow files downstream",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "matchFileNames": [
-        ".github/workflows/codex-copilot-remediation.yml",
         ".github/workflows/openssf-scorecard.yml",
-        ".github/workflows/release-bot-exact-head-review.yml",
-        ".github/workflows/renovate-guarded-automerge.yml",
-        ".github/workflows/repository-quality.yml",
-        ".github/workflows/shared-assets-guarded-automerge.yml",
-        ".github/workflows/sync-main-to-develop.yml"
+        ".github/workflows/repository-quality.yml"
       ],
       "enabled": false
     }
