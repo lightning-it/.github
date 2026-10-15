@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from workflow_control import (
@@ -76,10 +77,24 @@ def refresh(api, repo, name, event):
                 require(request_slot_started(api, repo, selected, attempt=version) is not True,
                         "ready-does-not-retry-consumed-request")
             target = "Protected current revision"
+    # Keep the invalidation signal until an in-flight gate finishes. Returning
+    # here would allow a dismissal during finalization to leave a stale success.
+    for _ in range(120):
+        active = [job for job in jobs if job["name"] in {"Current revision review", "Protected current revision"}
+                  and job["status"] != "completed"]
+        if not active:
+            break
+        time.sleep(15)
+        jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
+    require(not active, "refresh-inflight-timeout")
+    review = [job for job in jobs if job["name"] == "Protected current revision"]
+    require(len(review) == 1, "refresh-native-review-job-ambiguous")
+    # A completed failed review may now have received provider evidence. Its
+    # original job reclassifies and skips already-delivered funded effects.
+    if review[0]["conclusion"] != "success":
+        target = "Protected current revision"
     gate = [job for job in jobs if job["name"] == target]
     require(len(gate) == 1, "refresh-native-job-ambiguous")
-    if gate[0]["status"] != "completed":
-        return
     current = api.call(f"repos/{repo}/pulls/{number}")
     require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
     api.call(f"repos/{repo}/actions/jobs/{gate[0]['id']}/rerun", method="POST", data={})

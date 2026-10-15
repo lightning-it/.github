@@ -30,7 +30,8 @@ authorizes implementing the new common control and delivery entry points; it
 does not authorize reactivating the retired controller chains.
 
 The initial `.lit/workflow-control.json` is a reference-scope configuration.
-Its empty accepted-source lineage grants no promotion or release acceptance.
+Its configuration alone grants no promotion or release acceptance; current
+authority comes only from the externally selected native Required Workflow source.
 Management admits an immutable source only after its native positive and
 negative reference checks. The existing POC remains the operating transition
 until that scoped cutover is actually accepted. Preserve all existing quality,

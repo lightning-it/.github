@@ -257,7 +257,7 @@ class ControlTests(unittest.TestCase):
                   'body': 'Reviewed all changes; no actionable issues found.'}
         api = Mock(); api.pages.side_effect = [[review], []]
         self.assertEqual(9, control.copilot_review(api, REPO, pull())['id'])
-        for body in ('', 'Unable to review this pull request', 'Quota exceeded', 'No files were reviewed'):
+        for body in ('', 'Unable to review this pull request', 'Quota exceeded', 'No files were reviewed', "Copilot wasn’t able to review this pull request", "Copilot wasn't able to review any files"):
             api.pages.side_effect = [[review | {'body': body}], []]
             with self.subTest(body=body), self.assertRaises(control.ControlError):
                 control.copilot_review(api, REPO, pull())
@@ -286,6 +286,95 @@ class ControlTests(unittest.TestCase):
     def test_missing_distribution_proof_never_uses_actor_as_bypass(self):
         with self.assertRaisesRegex(control.ControlError, 'distribution-receipt-missing'):
             control.distribution_evidence(Mock(), REPO, pull(control.SYNC), {})
+
+    def test_quality_selects_exact_pr_base_head_and_newest_attempt(self):
+        value = pull()
+        def check(i):
+            return {'id': i, 'name': 'repository / quality', 'app': {'id': 15368},
+                    'status': 'completed', 'conclusion': 'success',
+                    'details_url': f'https://github.com/{REPO}/actions/runs/{i}/job/{i}'}
+        native = run(10) | {'path': '.github/workflows/repository-quality.yml', 'event': 'pull_request'}
+        api = Mock()
+        api.pages.side_effect = [[check(9), check(10)], [{'id': 10, 'run_id': 10,
+                                'check_run_url': 'https://api.github.com/check-runs/10', 'conclusion': 'success'}]]
+        api.call.side_effect = [native | {'id': 9, 'event': 'push'}, native]
+        config = {'quality': [{'job': 'repository / quality', 'workflow': '.github/workflows/repository-quality.yml'}]}
+        self.assertEqual(10, control.check_quality(api, REPO, value, config)[0]['run'])
+        for change, error in (({'status': 'in_progress'}, 'quality-pending'),
+                              ({'conclusion': 'failure'}, 'quality-not-successful')):
+            api.pages.side_effect = [[check(9), check(10) | change]]
+            api.call.side_effect = [native | {'id': 9}, native]
+            with self.subTest(change=change), self.assertRaisesRegex(control.ControlError, error):
+                control.check_quality(api, REPO, value, config)
+        old = native | {'pull_requests': [{'number': 3, 'base': {'sha': 'f' * 40}, 'head': {'sha': HEAD}}]}
+        api.pages.side_effect = [[check(10)]]; api.call.side_effect = [old]
+        with self.assertRaisesRegex(control.ControlError, 'quality-check-missing'):
+            control.check_quality(api, REPO, value, config)
+
+    def test_renovate_exemption_rejects_human_pushed_commit(self):
+        value = pull(control.RENOVATE)
+        label = {'id': 1, 'event': 'labeled', 'label': {'name': 'safe-automerge'}, 'actor': value['user']}
+        commit = {'sha': HEAD, 'author': value['user'], 'committer': {'login': 'web-flow', 'id': 19864447, 'type': 'User'},
+                  'commit': {'verification': {'verified': True}}}
+        api = Mock(); api.pages.side_effect = [[label], [commit]]
+        self.assertEqual('policy-bound-renovate', control.check_renovate(api, REPO, value)['kind'])
+        for change in ({'author': pull()['user']}, {'sha': 'd' * 40}, {'commit': {'verification': {'verified': False}}}):
+            api.pages.side_effect = [[label], [commit | change]]
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                control.check_renovate(api, REPO, value)
+
+    def test_inflight_invalidation_is_retained_then_reruns_original_job(self):
+        api = Mock(); api.call.side_effect = [pull(), pull(), {}]
+        review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
+        gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
+        api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
+        with patch.object(events.time, 'sleep') as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_called_once_with(15)
+        self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
+
+    def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
+        api = Mock(); api.call.side_effect = [pull(), pull(), {}]
+        api.pages.side_effect = [[run()], [
+            {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'failure'},
+            {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'completed', 'conclusion': 'failure'}]]
+        events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual(f'repos/{REPO}/actions/jobs/101/rerun', api.call.call_args.args[0])
+        # A delivered review makes classify request_needed false; a failed or
+        # unknown paid reservation remains terminal through reserve_request().
+        review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'},
+                  'state': 'COMMENTED', 'body': 'All files reviewed; no findings.'}
+        api.pages.side_effect = [[review], []]
+        self.assertIsNotNone(control.copilot_review(api, REPO, pull()))
+
+    def test_previous_approval_reuses_operation_before_verifier_only_attempt(self):
+        previous = run(9) | {'run_attempt': 2}
+        api = Mock(); api.pages.side_effect = [[previous], [{'name': 'control-operation-1', 'expired': False}]]
+        approval = {'state': 'approved', 'user': {'type': 'User'},
+                    'environments': [{'name': 'normal-release-promotion-approval'}]}
+        api.call.return_value = [approval]
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '10'}), \
+             patch.object(control, 'operation_record', return_value={'source_sha': SOURCE, 'binding': control.binding(pull())}) as record:
+            self.assertEqual(9, control.previous_approval(api, REPO, pull(), SOURCE))
+            record.assert_called_once_with(api, REPO, previous, SOURCE)
+
+    def test_codex_reuse_requires_native_success_and_identical_complete_input(self):
+        import exact_revision_gateway as gateway
+        api = Mock()
+        producer = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'conclusion': 'success',
+                    'steps': [{'name': 'Collect and verify the protected model receipt', 'conclusion': 'success'}]}
+        metadata = {'base_sha': BASE, 'head_sha': HEAD, 'input_sha256': 'a' * 64}
+        receipt = {'metadata': metadata, 'result': {'verdict': 'PASS', 'findings': []}}
+        def history():
+            api.pages.side_effect = [[run()], [{'name': 'codex-receipt-1', 'expired': False}], [producer]]
+        history()
+        with patch.object(control, 'artifact_record', return_value=receipt), patch.object(gateway, 'validate_result') as validate:
+            self.assertEqual(10, control.reusable_codex(api, REPO, pull(), metadata)['run'])
+            validate.assert_called_once_with(receipt['result'], metadata)
+            history()
+            self.assertIsNone(control.reusable_codex(api, REPO, pull(), metadata | {'input_sha256': 'b' * 64}))
+            api.pages.side_effect = [[run()], [{'name': 'codex-receipt-1', 'expired': False}], [producer | {'conclusion': 'failure'}]]
+            self.assertIsNone(control.reusable_codex(api, REPO, pull(), metadata))
 
 
 if __name__ == '__main__':
