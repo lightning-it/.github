@@ -98,11 +98,12 @@ The POC transition ends only for the accepted scope.
 
 ## Implementation boundary: protected reference control
 
-The initial source implements native Copilot, governed Renovate, ancestry and
-promotion-evidence verification. The Release-App Codex route remains explicitly
-blocked until its separate complete-request transport qualification is integrated.
-It never falls back to Copilot. Promotion preparation, release/archive operations
-and private distribution remain unadmitted; this is no production-ready scope.
+The source implements native Copilot, governed Renovate, ancestry and
+promotion-evidence verification. The next reference includes the exact
+Release-App Codex route with its isolated complete-request gateway. That source
+still requires separate native qualification and admission; it never falls back
+to Copilot. Promotion preparation, release/archive operations and private
+distribution remain unadmitted; this is no production-ready scope.
 
 Only the native Required Workflow namespace may authorize. The defining-job SHA
 selects the independently admitted source; an ordinary candidate workflow or a
@@ -181,3 +182,35 @@ These small records remain native Actions evidence, not a second durable develop
 release package. The one seven-year package belongs to accepted main promotion.
 Actual private behavior, native source admission and positive/negative staged
 acceptance remain required. Local tests and source presence alone grant none.
+
+### Protected exact-revision runtime
+
+The common source materializes the complete Git integration and protected base
+instructions as data. Candidate code is never imported or executed by the
+review controller. The existing pinned Codex Action uses the bounded loopback
+gateway and protected model/token/cost profile. Root-owned source and receipts,
+read-only client execution, prestarted deterministic collection and privilege
+removal preserve the existing SINGLE boundary. No engine or sudo is restored
+after the client drops privileges.
+
+A native successful producer may supply a cached response only for identical
+complete metadata and the same immutable central source. The protected gateway
+also compares the actual normalized client request, including instructions and
+tools, before replaying the original real response bytes. That path performs
+zero new counting or inference calls. Changed inputs, failed/unknown reservations
+or unauthenticated producers block. Native evidence carries digests and real
+response bytes separately, without duplicating the full instruction bundle.
+Finalization requires the current native run's successful collection/export;
+an arbitrary earlier metadata match cannot authorize it.
+
+Opening or reopening a nondraft final head can request its one paid review.
+Intermediate synchronization cannot fund review until a native ready transition
+after that head's run explicitly finalizes it. A stale native generation cannot
+spend a later ready event. Draft-to-ready refreshes the original classification;
+attempt history still forbids a second consumed request.
+
+The authorizing YAML excludes ordinary branch-triggered invocations while
+remaining active for the native ruleset source. GitHub documents that ruleset
+execution ignores event filters, including `branches-ignore`. Native reference
+testing must confirm this behavior before source admission; the filter grants
+no skipped-check acceptance and no candidate workflow-call authority.

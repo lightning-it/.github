@@ -19,6 +19,9 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
+if __name__ == "__main__":
+    sys.modules.setdefault("workflow_control", sys.modules[__name__])
+
 SOURCE = "lightning-it/.github"
 WORKFLOW = ".github/workflows/change-control-required.yml"
 RELEASE = ("lightning-it-release-automation[bot]", 307565056, "Bot")
@@ -395,7 +398,7 @@ def copilot_delivery_pending(api, repo, pull):
     return bool(deliveries)
 
 
-FUNDING_STEPS = {"Request current Copilot review"}
+FUNDING_STEPS = {"Request current Copilot review", "Reserve protected Codex request"}
 
 
 def request_slot_started(api, repo, run, *, attempt=None):
@@ -407,7 +410,7 @@ def request_slot_started(api, repo, run, *, attempt=None):
         return None
     require(len(review) == 1 and review[0].get("run_id") == run["id"], "request-job-provenance")
     steps = [step for step in review[0].get("steps", []) if step["name"] in FUNDING_STEPS]
-    require(len(steps) == len(FUNDING_STEPS), "request-boundary-history-unavailable")
+    require(steps and len({s["name"] for s in steps}) == len(steps), "request-boundary-history-unavailable")
     return any(step.get("conclusion") != "skipped" and step.get("status") != "queued" for step in steps)
 
 
@@ -429,6 +432,7 @@ def reserve_request(api, repo, pull, source_sha, run_id, attempt):
                       and pr.get("head", {}).get("sha") == pull["head"]["sha"]
                       for pr in r.get("pull_requests", []))]
     require(any(owner["id"] == run_id for owner in owners), "request-native-association-missing")
+    require(run_id == max(owner["id"] for owner in owners), "funding-current-native-generation-required")
     for owner in owners:
         if owner["id"] == run_id:
             continue
@@ -626,7 +630,13 @@ def verify_existing_route(api, repo, pull, config, route):
     if route == "distribution":
         return distribution_evidence(api, repo, pull, config)
     if route == "codex":
-        raise ControlError("protected-codex-runtime-pending-native-admission")
+        import workflow_codex
+        from workflow_subject import materialize
+        source = source_identity(json.loads(os.environ["NATIVE_JOB"]))
+        native = api.call(f"repos/{repo}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
+        with tempfile.TemporaryDirectory(prefix="codex-final-input-") as temp:
+            metadata = materialize(api, repo, pull, source, Path(temp) / "subject")
+            return workflow_codex.current_evidence(api, repo, pull, metadata, source, native)
     raise ControlError("unclassified-review-route")
 
 
@@ -638,7 +648,7 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot", "prepare-codex", "reserve-codex", "verify-codex"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -663,7 +673,6 @@ def main():
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
     config = policy(api, repo, pull["base"]["sha"], source_sha)
     route = classify(pull, repo)
-    require(route != "codex", "protected-codex-runtime-pending-native-admission")
     snapshot = canonical({"version": 1, "source_sha": source_sha, "binding": expected})
     require(len(snapshot) <= MAX_OPERATION_BYTES, "operation-snapshot-size-before-funding")
     if args.operation == "classify":
@@ -676,6 +685,9 @@ def main():
         request_needed = False
         if route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User") and copilot_review(api, repo, pull) is None:
             request_needed = not copilot_delivery_pending(api, repo, pull)
+            if request_needed:
+                import workflow_funding
+                require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
         output("request_needed", "true" if request_needed else "false")
         Path("control-operation.json").write_bytes(snapshot)
         output("route", route)
@@ -687,9 +699,48 @@ def main():
         require(copilot_review(api, repo, pull) is None, "current-head-already-reviewed")
         if copilot_delivery_pending(api, repo, pull):
             return
+        import workflow_funding
+        require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
         reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
         live_pull(api, repo, number, expected)
         api.call(f"repos/{repo}/pulls/{number}/requested_reviewers", method="POST", data={"reviewers": [COPILOT]})
+        return
+    if args.operation == "prepare-codex":
+        require(route == "codex", "codex-identity-required")
+        import workflow_codex
+        import workflow_funding
+        from workflow_proofs import read_native_json
+        directory = Path("exact-revision-review")
+        metadata = read_native_json(directory / "review-metadata.json", 1_000_000)
+        replay = workflow_codex.prepare(api, repo, pull, metadata, source_sha, directory)
+        if not replay:
+            require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
+        output("replay", "true" if replay else "false")
+        return
+    if args.operation == "reserve-codex":
+        require(route == "codex", "codex-identity-required")
+        import workflow_funding
+        require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
+        reserve_request(api, repo, pull, source_sha, int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
+        live_pull(api, repo, number, expected)
+        return
+    if args.operation == "verify-codex":
+        require(route == "codex", "codex-identity-required")
+        import workflow_codex
+        from workflow_proofs import read_native_json
+        directory = Path("exact-revision-review")
+        metadata = read_native_json(directory / "review-metadata.json", 1_000_000)
+        require(metadata.get("base_sha") == expected["base"] and metadata.get("head_sha") == expected["head"]
+                and metadata.get("repository") == repo and metadata.get("pull_request") == number,
+                "codex-current-subject-binding")
+        record = read_native_json(directory / "provider-native.json", MAX_PROOF_BYTES)
+        path = directory / "provider-response.bin"
+        import bounded_review_transport as transport
+        require(path.is_file() and not path.is_symlink() and 0 < path.stat().st_size <= transport.MAX_RESPONSE_BYTES,
+                "codex-current-wire-bound")
+        workflow_codex.validate_record(record, path.read_bytes(), metadata, source_sha)
+        live_pull(api, repo, number, expected)
+        print("Protected actual model response and complete native request receipt verified.")
         return
     if args.operation == "review":
         require(route != "codex", "codex-job-required")
