@@ -100,6 +100,17 @@ class WorkflowContractTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ContractError, "function-identity"):
             MODULE.validate(self.contract)
 
+    def test_each_profile_rejects_disabled_or_unconditional_publication_drift(self):
+        for name, profile in self.contract["profiles"].items():
+            with self.subTest(profile=name):
+                candidate = copy.deepcopy(self.contract)
+                declared = profile["artifact_publication"]
+                candidate["profiles"][name]["artifact_publication"] = (
+                    not declared if type(declared) is bool else True
+                )
+                with self.assertRaisesRegex(MODULE.ContractError, "profile-publication"):
+                    MODULE.validate(candidate)
+
     def test_integer_fields_reject_boolean_substitutes(self):
         self.contract["authorization"]["normal_human_approvals"] = True
         with self.assertRaisesRegex(MODULE.ContractError, "single-person-authorization"):

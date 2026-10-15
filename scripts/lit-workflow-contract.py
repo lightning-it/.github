@@ -27,10 +27,13 @@ EXPECTED_FUNCTIONS = {
     "WF-06": "artifact-assurance-publication",
     "WF-07": "release-audit-archive",
 }
-PROFILES = {
-    "repository_profile", "shared_assets", "generic_managed", "private_infrastructure",
-    "ansible_collection", "container_image", "terraform_module", "terraform_policy",
-    "helm_chart", "packer_template", "playbook_runbook", "documentation",
+PROFILE_PUBLICATION = {
+    "repository_profile": False, "shared_assets": False,
+    "generic_managed": "repository-policy", "private_infrastructure": "repository-policy",
+    "ansible_collection": True, "container_image": True,
+    "terraform_module": "repository-policy", "terraform_policy": "repository-policy",
+    "helm_chart": True, "packer_template": True,
+    "playbook_runbook": "repository-policy", "documentation": "repository-policy",
 }
 
 
@@ -86,13 +89,9 @@ def validate(data: object) -> None:
         "WF-06": ["WF-05"], "WF-07": ["WF-06"],
     }, "required-stage-dependency")
     profiles = data["profiles"]
-    require(isinstance(profiles, dict) and set(profiles) == PROFILES, "profile-coverage")
+    require(isinstance(profiles, dict) and set(profiles) == set(PROFILE_PUBLICATION), "profile-coverage")
     for name, profile in profiles.items():
-        require(isinstance(profile, dict) and set(profile) == {"artifact_publication"}, "profile-shape")
-        value = profile["artifact_publication"]
-        require(type(value) is bool or value == "repository-policy", "profile-publication")
-        if name in {"repository_profile", "shared_assets"}:
-            require(value is False, "non-publishing-profile")
+        exact(profile, {"artifact_publication": PROFILE_PUBLICATION[name]}, "profile-publication")
     exact(data["review"], {
         "authority": "protected-base", "matrix": "existing-author-and-risk-policy",
         "release_app": "exact-revision-codex", "other_authors": "copilot-when-required-by-policy",
