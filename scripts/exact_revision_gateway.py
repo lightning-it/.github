@@ -255,6 +255,7 @@ class Reviewer:
                     timeout_ms=min(100_000, self.startup_deadline - self.started),
                     max_requests=1,
                     request_byte_limit=wire_limit,
+                    allow_tool_calls=False,
                 )
             wire = transport.exchange(
                 self.budget,
@@ -278,6 +279,7 @@ class Reviewer:
                 ),
                 json_limits=json_limits,
             )
+            review.require(packet is not None, "single-tool-output-forbidden")
             if packet is not None:
                 validate_result(packet, self.state["metadata"])
                 write_bytes(self.destination / "response.bin", wire)
@@ -332,7 +334,7 @@ class ReplayReviewer(Reviewer):
             # Pure local normalization; this object never reaches exchange().
             budget = ResponseBudget(config.profile(), max_cost_microusd=1_000_000,
                                     start_ms=transport.monotonic_ms(), timeout_ms=100_000,
-                                    max_requests=1, request_byte_limit=wire_limit)
+                                    max_requests=1, request_byte_limit=wire_limit, allow_tool_calls=False)
             request_digest, _ = budget.reserve(request, now_ms=transport.monotonic_ms())
             provider = self.prior_receipt.get("provider", {})
             review.require(provider.get("request_count") == 1 and provider.get("request_sha256") == [request_digest],
@@ -358,7 +360,8 @@ class ReplayReviewer(Reviewer):
 def failure_category(error):
     """Only source-defined category codes may enter logs; never exception data."""
     allowed = {"single-replay-complete-request-drift", "single-replay-result-drift",
-               "single-replay-prior-not-successful", "single-full-input", "single-terminal",
+               "single-replay-prior-not-successful", "single-full-input", "single-terminal", "single-tool-output-forbidden",
+               "provider-request-budget",
                "provider-request-feature", "provider-model-drift", "provider-client-message-id",
                "provider-client-metadata", "provider-cache-key", "provider-unbound-state",
                "gateway-path", "gateway-encoding", "gateway-content-length", "gateway-memory-framing",
