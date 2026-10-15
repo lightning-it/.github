@@ -1,0 +1,139 @@
+"""Historical closure races never substitute for current or failed review."""
+import copy
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import workflow_control as control
+import workflow_ingress as ingress
+
+REPO = 'lightning-it/.github'
+HEAD, SOURCE = 'a' * 40, 'b' * 40
+MERGED = '2026-10-15T12:01:00Z'
+
+
+def native(attempt, conclusion, timestamp):
+    return {'id': 10, 'run_attempt': attempt, 'head_sha': HEAD, 'status': 'completed',
+            'conclusion': conclusion, 'updated_at': timestamp, 'workflow_id': 77,
+            'workflow_url': f'https://api.github.com/repos/{REPO}/actions/required_workflows/77',
+            'path': control.WORKFLOW}
+
+
+class HistoricalIngressTests(unittest.TestCase):
+    def fixture(self):
+        pull = {'state': 'closed', 'merged': True, 'merge_commit_sha': 'c' * 40, 'merged_at': MERGED}
+        accepted = native(1, 'success', '2026-10-15T12:00:40Z')
+        failed = native(2, 'failure', '2026-10-15T12:01:04Z')
+        gate = {'id': 101, 'run_id': 10, 'run_attempt': 2, 'name': 'Current revision review',
+                'status': 'completed', 'conclusion': 'failure', 'completed_at': '2026-10-15T12:01:03Z',
+                'steps': [{'name': ingress.FINAL_STEP, 'conclusion': 'failure'}]}
+        operation = {'version': 1, 'source_sha': SOURCE, 'binding': {'head': HEAD, 'body': 'Original metadata'}}
+        api = Mock(spec=control.API)
+        api.call.side_effect = [failed, accepted]
+        api.pages.return_value = [gate]
+        api.native_job_log.return_value = '2026-10-15T12:01:02.1234567Z ' + ingress.CLOSED + '\n'
+        return api, pull, accepted, failed, gate, operation
+
+    def test_real_premerge_success_is_returned_with_later_failure_preserved(self):
+        api, pull, accepted, failed, _, operation = self.fixture()
+        with patch.object(ingress, 'operation_record', return_value=operation):
+            actual, failures = ingress.merged_attempt(api, REPO, pull, failed)
+        self.assertEqual(accepted, actual)
+        self.assertEqual([{'attempt': 2, 'job': 101, 'conclusion': 'failure',
+                           'reason': 'pull-not-reviewable-after-merge',
+                           'completed_at': '2026-10-15T12:01:03Z'}], failures)
+        self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
+
+    def test_open_unmerged_pending_or_single_failed_attempt_cannot_fall_back(self):
+        for change in ({'state': 'open'}, {'merged': False}, {'merge_commit_sha': None}):
+            api, pull, _, failed, _, _ = self.fixture()
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, pull | change, failed)
+            api.call.assert_not_called()
+        for change in ({'status': 'in_progress'}, {'conclusion': 'cancelled'}, {'run_attempt': 1}):
+            api, pull, _, failed, _, _ = self.fixture()
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, pull, failed | change)
+
+    def test_semantic_premerge_and_unknown_failures_are_terminal(self):
+        for text in ('2026-10-15T12:00:59Z ' + ingress.CLOSED,
+                     '2026-10-15T12:01:02Z Protected control blocked: ControlError: quality-not-successful',
+                     'Unknown provider failure',
+                     '2026-10-15T12:01:02Z ' + ingress.CLOSED + '\n2026-10-15T12:01:03Z ' + ingress.CLOSED):
+            api, pull, _, failed, _, operation = self.fixture()
+            api.native_job_log.return_value = text
+            with self.subTest(text=text), patch.object(ingress, 'operation_record', return_value=operation), \
+                    self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, pull, failed)
+        api, pull, _, failed, _, _ = self.fixture()
+        api.call.side_effect = [failed | {'updated_at': '2026-10-15T12:00:59Z'}]
+        with self.assertRaisesRegex(control.ControlError, 'semantic-failure-before-merge'):
+            ingress.merged_attempt(api, REPO, pull, failed)
+
+    def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
+        api, pull, _, failed, _, operation = self.fixture()
+        changed = copy.deepcopy(operation); changed['binding']['body'] = 'Changed operation'
+        with patch.object(ingress, 'operation_record', side_effect=[changed, operation]), \
+                self.assertRaisesRegex(control.ControlError, 'metadata-changed'):
+            ingress.merged_attempt(api, REPO, pull, failed)
+        api, pull, accepted, failed, _, operation = self.fixture()
+        api.call.side_effect = [failed, accepted | {'updated_at': '2026-10-15T12:01:05Z'}]
+        with patch.object(ingress, 'operation_record', return_value=operation), \
+                self.assertRaisesRegex(control.ControlError, 'success-not-before-merge'):
+            ingress.merged_attempt(api, REPO, pull, failed)
+
+    def test_wrong_run_source_or_failed_step_cannot_be_called_closure_only(self):
+        for change in ({'head_sha': 'd' * 40}, {'workflow_id': 78}, {'path': 'candidate.yml'}):
+            api, pull, _, failed, _, _ = self.fixture()
+            api.call.side_effect = [failed | change]
+            with self.subTest(change=change), self.assertRaisesRegex(control.ControlError, 'attempt-origin'):
+                ingress.merged_attempt(api, REPO, pull, failed)
+        for change in ({'name': 'Protected current revision'}, {'run_attempt': 1},
+                       {'steps': [{'name': 'Request current Copilot review', 'conclusion': 'failure'}]}):
+            api, pull, _, failed, gate, _ = self.fixture()
+            api.pages.return_value = [gate | change]
+            with self.subTest(change=change), self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, pull, failed)
+
+
+class ReferenceIngressTests(unittest.TestCase):
+    def fixture(self):
+        pull = {'number': 3, 'title': 'Update the reviewed helper', 'body': '', 'labels': [], 'draft': False,
+                'user': dict(zip(('login', 'id', 'type'), control.RELEASE)),
+                'base': {'sha': 'c' * 40, 'ref': 'develop'},
+                'head': {'sha': HEAD, 'ref': 'qualification/helper', 'repo': {'full_name': REPO}}}
+        main = {'protected': True, 'commit': {'sha': 'd' * 40}}
+        develop = {'protected': True, 'commit': {'sha': pull['base']['sha']}}
+        api = Mock(spec=control.API); api.call.side_effect = [main, develop, main, develop]
+        return api, pull, main, develop
+
+    def test_real_tip_probe_has_no_promotion_or_human_approval_authority(self):
+        api, pull, _, _ = self.fixture()
+        with patch.object(ingress, 'promotion_ingress', return_value={'ingress': ['native reference']}) as check:
+            record = ingress.reference_ingress(api, REPO, pull, {'mode': 'reference'}, SOURCE)
+        self.assertFalse(record['release_authorized'])
+        self.assertEqual('reference-ingress-only', record['scope'])
+        self.assertEqual({'main': 'd' * 40, 'develop': 'c' * 40}, record['refs'])
+        self.assertEqual(record['refs']['main'], check.call_args.args[2]['base']['sha'])
+        self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
+
+    def test_probe_rejects_private_production_or_unprotected_and_drifted_subjects(self):
+        for repo, config in (('lightning-it/private', {'mode': 'reference'}), (REPO, {'mode': 'enforce'})):
+            api, pull, _, _ = self.fixture()
+            with self.subTest(repo=repo, config=config), self.assertRaisesRegex(control.ControlError, 'scope'):
+                ingress.reference_ingress(api, repo, pull, config, SOURCE)
+            api.call.assert_not_called()
+        api, pull, main, develop = self.fixture()
+        for values in ([main | {'protected': False}],
+                       [main, develop | {'commit': {'sha': 'e' * 40}}],
+                       [main, develop, main | {'commit': {'sha': 'e' * 40}}, develop]):
+            api.call.side_effect = values
+            with self.subTest(values=values), patch.object(ingress, 'promotion_ingress', return_value={}), \
+                    self.assertRaises(control.ControlError):
+                ingress.reference_ingress(api, REPO, pull, {'mode': 'reference'}, SOURCE)
+
+
+if __name__ == '__main__':
+    unittest.main()

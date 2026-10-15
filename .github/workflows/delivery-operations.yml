@@ -6,8 +6,6 @@ name: Protected delivery operations
 on:
   pull_request_target:
     types: [edited, labeled, unlabeled, ready_for_review, converted_to_draft]
-  issue_comment:
-    types: [created, edited, deleted]
   workflow_run:
     workflows: [Repository review events]
     types: [completed]
@@ -17,14 +15,14 @@ permissions:
   actions: read
   pull-requests: read
 concurrency:
-  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}-${{ github.event.workflow_run.workflow_id || 'metadata' }}
+  group: delivery-metadata-${{ github.repository_id }}-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number }}-${{ github.event.workflow_run.workflow_id || 'metadata' }}
   cancel-in-progress: false
 jobs:
   refresh:
     name: Refresh protected verifier
     if: >-
       github.event_name == 'workflow_run' ||
-      github.event.pull_request.number || github.event.issue.pull_request
+      github.event.pull_request.number
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:

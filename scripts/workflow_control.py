@@ -98,6 +98,19 @@ class API:
         require(blob == value["sha"], "protected-file-digest")
         return data
 
+    def native_job_log(self, repo, job):
+        require(re.fullmatch(r"lightning-it/[A-Za-z0-9_.-]+", repo)
+                and type(job) is int and job > 0, "native-log-locator")
+        with tempfile.TemporaryFile() as stream:
+            result = subprocess.run(["gh", "api", "--allow-escape-sequences",
+                                     f"repos/{repo}/actions/jobs/{job}/logs"],
+                                    stdout=stream, stderr=subprocess.PIPE, timeout=60, check=False)
+            require(result.returncode == 0, "native-log-unavailable")
+            stream.seek(0)
+            payload = stream.read(MAX_OPERATION_BYTES + 1)
+        require(len(payload) <= MAX_OPERATION_BYTES, "native-log-size")
+        return payload.decode("utf-8")
+
 
 def source_identity(job, expected_path=WORKFLOW):
     require(job.get("workflow_repository") == SOURCE, "untrusted-source-repository")
@@ -502,7 +515,10 @@ def check_native_control(api, repo, pull, config):
         candidates.append(run)
     require(candidates, "ingress-protected-run-missing")
     selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
-    require(selected["status"] == "completed" and selected["conclusion"] == "success", "ingress-protected-run-not-successful")
+    after_merge = []
+    if selected["status"] != "completed" or selected["conclusion"] != "success":
+        from workflow_ingress import merged_attempt
+        selected, after_merge = merged_attempt(api, repo, pull, selected)
     jobs = native_jobs(api, repo, selected)
     gate = [j for j in jobs if j["name"] == "Current revision review"]
     require(len(gate) == 1 and gate[0]["conclusion"] == "success", "ingress-protected-job-missing")
@@ -511,10 +527,13 @@ def check_native_control(api, repo, pull, config):
             and same_immutable_tuple(record.get("binding", {}), binding(pull))
             and record.get("route") in {"copilot", "renovate", "ancestry", "distribution", "codex"},
             "ingress-protected-proof-binding")
-    return {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
+    result = {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
             "head": pull["head"]["sha"], "source_sha": record["source_sha"],
             "route": record.get("route"), "artifact": f"control-proof-{selected['run_attempt']}",
             "proof_sha256": digest(record)}
+    if after_merge:
+        result["post_merge_failed_attempts"] = after_merge
+    return result
 
 
 def promotion_ingress(api, repo, pull, config):
@@ -645,7 +664,7 @@ def output(name, value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot", "prepare-codex", "reserve-codex", "verify-codex"))
+    parser.add_argument("operation", choices=("classify", "review", "finalize", "request-copilot", "prepare-codex", "reserve-codex", "verify-codex", "reference-ingress"))
     args = parser.parse_args()
     api = API()
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -686,10 +705,21 @@ def main():
                 import workflow_funding
                 require(workflow_funding.finalized(api, repo, pull, native, event), "head-not-finalized-for-funded-review")
         output("request_needed", "true" if request_needed else "false")
+        reference = (repo == SOURCE and config.get("mode") == "reference" and route == "codex"
+                     and pull["head"]["ref"].startswith("qualification/"))
+        output("reference_ingress", "true" if reference else "false")
         Path("control-operation.json").write_bytes(snapshot)
         output("route", route)
         output("base", pull["base"]["sha"])
         output("head", pull["head"]["sha"])
+        return
+    if args.operation == "reference-ingress":
+        from workflow_ingress import reference_ingress
+        result = reference_ingress(api, repo, pull, config, source_sha)
+        live_pull(api, repo, number, expected)
+        payload = canonical(result)
+        require(len(payload) <= MAX_PROOF_BYTES, "reference-ingress-size")
+        Path("reference-ingress.json").write_bytes(payload)
         return
     if args.operation == "request-copilot":
         require(route == "copilot" and identity(pull["user"]) == ("litroc", 76040632, "User"), "funded-author-not-allowed")

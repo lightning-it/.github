@@ -184,6 +184,7 @@ class ControlTests(unittest.TestCase):
         triggers = receiver.get('on', receiver.get(True))
         self.assertNotIn('pull_request_review', triggers)
         self.assertNotIn('pull_request_review_comment', triggers)
+        self.assertNotIn('issue_comment', triggers)
         self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
         checkout = next(step for step in receiver['jobs']['refresh']['steps'] if 'uses' in step)
         self.assertEqual('5185c40794e9ab2828696b05a8e9229f7255d353', checkout['with']['ref'])
@@ -379,14 +380,24 @@ class ControlTests(unittest.TestCase):
                 control.check_renovate(api, REPO, value)
 
     def test_inflight_invalidation_is_retained_then_reruns_original_job(self):
-        api = Mock(); api.call.side_effect = [pull(), pull(), {}]
+        producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
+                    'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'success',
+                    'pull_requests': [{'number': 3, 'head': {'sha': HEAD}}]}
+        api = Mock(); api.call.side_effect = [producer, pull(), pull(), {}]
         review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
         gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
         api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
         with patch.object(events.time, 'sleep') as wait:
-            events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {"url": "native"}}})
+            events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
+
+    def test_generic_comments_cannot_refresh_or_fund_a_protected_review(self):
+        api = Mock()
+        with self.assertRaisesRegex(control.ControlError, 'unsupported-refresh-event'):
+            events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {'url': 'native'}}})
+        api.call.assert_not_called()
+        api.pages.assert_not_called()
 
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
         api = Mock(); api.call.side_effect = [pull(), pull(), {}]

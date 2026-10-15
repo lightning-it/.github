@@ -70,6 +70,28 @@ Codex route, a native provider receipt must still bind the complete actual reque
 and its response. Copilot instead requires its authenticated native GitHub service
 run, current App review and review comments. These are distinct evidence formats.
 
+Ordinary issue comments are not acceptance inputs and no longer trigger the
+receiver. Actual pull-request metadata and unprivileged review signals still
+refresh the protected control. Before a merge, wait for the complete current
+required run and relevant receivers to finish; individual older green checks do
+not prove that a newly started verifier has finished.
+
+Historical ingress has a separate merge boundary. A genuine completed native
+success before the merge may be referenced if every later failed attempt is
+independently proven to have failed only because that same pull request was
+already merged and closed. The exact full operation snapshots must match, and
+the sole failed native job/step and its bounded native log must establish that
+closure occurred after the merge. Preserve the successful attempt reference and
+each later failed attempt explicitly. Unknown, semantic, pre-merge, provider,
+budget or metadata failures block; an open or pending change never uses this
+historical path. No failed attempt is relabeled successful.
+
+An exact Release-App qualification in this reference may also read and verify
+the actual protected main/develop ingress before funding its review. The native
+probe records its subjects and proof references but grants no main promotion,
+human approval or release acceptance. It is not used in private or production
+consumer scopes. Source admission still requires independent management control.
+
 ## Keep consumer information in its proper context
 
 Common source definitions are public. Private repository contents, explicit

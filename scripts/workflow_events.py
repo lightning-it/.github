@@ -41,12 +41,10 @@ def event_pull(api, repo, name, event):
         require(type(number) is int and number > 0, "signal-pr-number")
         expected_head = sha(pulls[0].get("head", {}).get("sha"))
     else:
-        require(name in {"pull_request_target", "issue_comment"}, "unsupported-refresh-event")
-        if name == "pull_request_target":
-            require(event.get("action") in {"edited", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"}, "unsupported-metadata-action")
-        number = event.get("pull_request", {}).get("number", event.get("issue", {}).get("number"))
+        require(name == "pull_request_target", "unsupported-refresh-event")
+        require(event.get("action") in {"edited", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"}, "unsupported-metadata-action")
+        number = event.get("pull_request", {}).get("number")
         require(type(number) is int and number > 0, "refresh-pr-locator")
-        require(name != "issue_comment" or event.get("issue", {}).get("pull_request"), "issue-is-not-pull-request")
         expected_head = None
     pull = api.call(f"repos/{repo}/pulls/{number}")
     require(pull.get("number") == number, "refresh-pull-identity")
