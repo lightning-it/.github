@@ -116,6 +116,9 @@ run_devtools none \
 printf '==> Run repository quality in the pinned Devtool\n'
 run_devtools "$quality_network" python3 scripts/lit-repository-quality.py
 
+printf '==> Validate the inactive workflow target specification\n'
+run_devtools none python3 scripts/lit-workflow-contract.py .lit/workflow-target.json
+
 run_unit_tests() {
   # Tests may execute temporary command shims. Keep their temporary files on
   # the fresh executable HOME tmpfs instead of the generic /tmp mount.

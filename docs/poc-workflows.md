@@ -1,5 +1,9 @@
 # Process and workflow purpose during the POC
 
+The [safe workflow target](workflow-target.md) retains the governed AI-review
+requirement and automatically prepared promotion PRs. It is a separate, inactive
+target; this POC remains the operating transition until actual acceptance.
+
 Owner decision: LI-319, 2026-10-15. This supersedes the former mandatory
 AI review and historical evidence process while a replacement is developed.
 
@@ -55,7 +59,8 @@ removal does not mean they were never needed.
 | `dot-github-current-revision-required.yml`, `supplementary-current-revision-required.yml` | Enforce central current-revision evidence | Former organization requirements retired for the POC; ordinary repository CI remains |
 | `current-revision-rerun.yml`, `review-event-reconcile.yml`, `review-infrastructure-retry.yml` | Recover and reconcile the former evidence chain | Retired with that chain; actual CI failures are still investigated |
 | `codex-copilot-remediation.yml` | Automatically repair review findings | Contributor fixes actual findings through an ordinary PR |
-| `renovate-guarded-automerge.yml`, `shared-assets-guarded-automerge.yml` | Automatically merge dependency and shared-file updates | One authorized person handles ordinary PRs with applicable CI |
+| `renovate-guarded-automerge.yml` | Separate guarded merge helper for dependency updates | The helper is retired. Native Renovate automerge remains configured for minor, patch, pin, digest and lockfile updates after applicable CI; major updates require dashboard approval and manual handling |
+| `shared-assets-guarded-automerge.yml` | Separate guarded merge helper for shared-file updates | The helper is retired; shared-file changes use ordinary PRs with applicable CI |
 | `promote-develop-to-main.yml`, `sync-main-to-develop.yml` | Automatic promotion and branch synchronization | Ordinary PRs handled by one authorized person |
 
 Outside this repository, retired files and generator templates are not yet all
