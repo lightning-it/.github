@@ -6,7 +6,7 @@ import argparse
 import base64
 import calendar
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 import hmac
@@ -144,7 +144,9 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
     require(SHA256.fullmatch(expected_digest) is not None, "package-digest-shape")
     require(0 < len(package) <= MAX_PACKAGE_BYTES, "package-size")
     require(hashlib.sha256(package).hexdigest() == expected_digest, "package-digest-mismatch")
-    required_until = seven_years_after(now).replace(microsecond=0)
+    # Cover upload latency/provider clock granularity. Repeated writes verify
+    # seven years from the provider's immutable version creation time below.
+    required_until = (seven_years_after(now) + timedelta(days=1)).replace(microsecond=0)
     key = f"runs/github-release/v1/{repository}/{promotion}/{head}/{expected_digest}.json"
     headers = {**store.encryption, "content-type": "application/json", "content-md5": base64.b64encode(hashlib.md5(package).digest()).decode(),
                "if-none-match": "*", "x-amz-object-lock-mode": "COMPLIANCE", "x-amz-object-lock-retain-until-date": required_until.strftime("%Y-%m-%dT%H:%M:%SZ")}

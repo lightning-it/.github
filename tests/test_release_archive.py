@@ -18,7 +18,7 @@ NOW = datetime(2026, 10, 14, 12, 0, 0, tzinfo=timezone.utc)
 PACKAGE = b'{"qualification_only":true}\n'
 DIGEST = hashlib.sha256(PACKAGE).hexdigest()
 HEAD = "a" * 40
-UNTIL = MODULE.seven_years_after(NOW)
+UNTIL = MODULE.seven_years_after(NOW) + timedelta(days=1)
 
 
 class FakeStore:
