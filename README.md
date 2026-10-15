@@ -1,6 +1,7 @@
 # .github
 
-Safe long-term specification: [workflow target](docs/workflow-target.md).
+Safe long-term specification: [workflow target](docs/workflow-target.md) and
+[concrete entry-point catalog](docs/workflow-target-catalog.md).
 It is defined and inactive; current POC operation remains separate until the
 new source, consumer and management paths pass their actual acceptance.
 

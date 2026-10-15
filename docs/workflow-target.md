@@ -2,6 +2,9 @@
 
 Contract version: **1.0.0**. Status: **defined, inactive**.
 
+Concrete entry points and their delivery states are assigned in the
+[workflow target catalog](workflow-target-catalog.md).
+
 The owner adopted a safe long-term target. The POC operating procedure remains
 in force until each migration scope passes its actual acceptance. Publishing
 this specification neither enables mandatory AI review nor changes rulesets,
