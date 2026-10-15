@@ -16,7 +16,6 @@ from workflow_control import (
     API,
     ControlError,
     native_required,
-    request_slot_started,
     require,
     sha,
     source_identity,
@@ -69,14 +68,11 @@ def refresh(api, repo, name, event):
     selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
     jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
     target = "Current revision review"
-    if name == "pull_request_target" and event.get("action") == "ready_for_review":
-        reviews = [job for job in jobs if job["name"] == "Protected current revision"]
-        require(len(reviews) == 1, "refresh-native-review-job-ambiguous")
-        if reviews[0]["status"] == "completed" and reviews[0]["conclusion"] != "success":
-            for version in range(1, selected["run_attempt"] + 1):
-                require(request_slot_started(api, repo, selected, attempt=version) is not True,
-                        "ready-does-not-retry-consumed-request")
-            target = "Protected current revision"
+    if name == "pull_request_target":
+        # Metadata changes require a fresh operation snapshot/classification.
+        # Re-running the original review does not authorize a second provider
+        # effect: only its source-bound funding step may reserve one.
+        target = "Protected current revision"
     # Keep the invalidation signal until an in-flight gate finishes. Returning
     # here would allow a dismissal during finalization to leave a stale success.
     for _ in range(120):

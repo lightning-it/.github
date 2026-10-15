@@ -218,7 +218,7 @@ def previous_approval(api, repo, pull, source):
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     expected = binding(pull)
     for run in sorted(runs, key=lambda r: r["id"], reverse=True):
-        if run["id"] == int(os.environ["GITHUB_RUN_ID"]) or not native_required(run, repo):
+        if not native_required(run, repo):
             continue
         if not any(pr.get("number") == pull["number"] and pr.get("base", {}).get("sha") == expected["base"]
                    and pr.get("head", {}).get("sha") == expected["head"] for pr in run.get("pull_requests", [])):
@@ -276,6 +276,60 @@ def check_quality(api, repo, pull, config):
     return proof
 
 
+def validate_signal(api, repo, pull):
+    path = ".github/workflows/review-events.yml"
+    trusted = (Path(__file__).resolve().parents[1] / path).read_bytes()
+    require(api.file(repo, path, pull["head"]["sha"]) == trusted, "candidate-review-signal-missing-or-modified")
+
+
+def resolved_findings(api, repo, pull, review, comments):
+    """Only native resolved threads, with maintainer resolution for AI findings."""
+    owner, name = repo.split("/", 1)
+    query = """query($owner:String!,$name:String!,$number:Int!,$after:String){
+      repository(owner:$owner,name:$name){pullRequest(number:$number){
+        reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}
+          nodes{id isResolved resolvedBy{login databaseId}
+            comments(first:1){nodes{databaseId pullRequestReview{databaseId}}}}}}}}"""
+    threads, after = [], None
+    for _ in range(100):
+        result = api.call("graphql", method="POST", data={"query": query, "variables": {
+            "owner": owner, "name": name, "number": pull["number"], "after": after}})
+        require(not result.get("errors"), "review-thread-query-failed")
+        connection = result["data"]["repository"]["pullRequest"]["reviewThreads"]
+        threads.extend(connection["nodes"])
+        if not connection["pageInfo"]["hasNextPage"]:
+            break
+        cursor = connection["pageInfo"]["endCursor"]
+        require(cursor and cursor != after, "review-thread-pagination-drift")
+        after = cursor
+    else:
+        raise ControlError("review-thread-pagination-incomplete")
+    require(all(t.get("isResolved") is True for t in threads), "unresolved-review-thread")
+    roots = {}
+    for thread in threads:
+        nodes = thread["comments"]["nodes"]
+        require(len(nodes) == 1, "review-thread-root-missing")
+        root = nodes[0]
+        require(root["databaseId"] not in roots, "duplicate-review-thread-root")
+        roots[root["databaseId"]] = (thread, root)
+    for comment in comments:
+        require(comment.get("original_commit_id") == pull["head"]["sha"]
+                and comment.get("pull_request_review_id") == review["id"], "copilot-finding-head-drift")
+        require(comment["id"] in roots, "copilot-finding-thread-missing")
+        thread, root = roots[comment["id"]]
+        require(root.get("pullRequestReview", {}).get("databaseId") == review["id"], "copilot-finding-review-drift")
+        resolver = thread.get("resolvedBy") or {}
+        require(type(resolver.get("login")) is str and type(resolver.get("databaseId")) is int,
+                "copilot-finding-maintainer-resolution-required")
+        permission = api.call(f"repos/{repo}/collaborators/{quote(resolver['login'], safe='')}/permission")
+        require(permission.get("permission") in {"write", "maintain", "admin"}
+                and permission.get("user", {}).get("id") == resolver["databaseId"]
+                and permission["user"].get("type") == "User"
+                and permission["user"].get("permissions", {}).get("push") is True,
+                "copilot-finding-maintainer-resolution-required")
+    return [t["id"] for t in threads]
+
+
 def copilot_review(api, repo, pull):
     reviews = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews")
     selected = [r for r in reviews if r.get("commit_id") == pull["head"]["sha"]
@@ -288,18 +342,17 @@ def copilot_review(api, repo, pull):
     review = selected[0]
     require(review["state"] in {"COMMENTED", "APPROVED"}, "copilot-review-not-accepted")
     comments = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews/{review['id']}/comments")
-    # No finding is silently waved through. A changed revision gets a new review;
-    # a resolved finding requires the documented maintainer evidence contract.
-    require(not comments, "copilot-findings-require-resolution")
     body = review.get("body") or ""
-    require(type(body) is str, "copilot-provider-failure")
+    require(type(body) is str and all(type(c.get("body")) is str for c in comments), "copilot-provider-failure")
+    body = "\n".join([body, *(c["body"] for c in comments)])
     expanded = body.lower().replace("can't", "cannot").replace("can’t", "cannot").replace("n't", " not").replace("n’t", " not")
     normalized = "".join(char for char in expanded if not char.isspace())
     require(normalized and not any(marker in normalized for marker in (
         "unabletoreview", "cannotreview", "nofileswerereviewed", "encounteredanerror",
         "quotaexceed", "quotaexhaust", "premiumrequest", "suppressedcomment",
         "notabletoreview", "nofilestoreview")), "copilot-provider-failure")
-    return {"id": review["id"], "head": review["commit_id"], "state": review["state"]}
+    threads = resolved_findings(api, repo, pull, review, comments)
+    return {"id": review["id"], "head": review["commit_id"], "state": review["state"], "resolved_threads": threads}
 
 
 def copilot_delivery_pending(api, repo, pull):
@@ -500,6 +553,7 @@ def distribution_evidence(api, repo, pull, config):
             and run["path"] == ".github/workflows/sync-repository-quality-repos.yml", "distribution-native-source")
     files = api.pages(f"repos/{repo}/pulls/{pull['number']}/files")
     manifest = receipt["files"]
+    require(type(pull.get("changed_files")) is int and len(files) == pull["changed_files"], "distribution-native-file-list-incomplete")
     require(type(manifest) is list and len(manifest) == len(files), "distribution-full-coverage")
     actual = []
     for file in files:
@@ -645,6 +699,7 @@ def main():
                 raise
             time.sleep(15)
     current = live_pull(api, repo, number, expected)
+    validate_signal(api, repo, current)
     evidence = verify_existing_route(api, repo, current, config, route)
     live_pull(api, repo, number, expected)
     Path("control-proof.json").write_bytes(canonical({"version": 1, "source_sha": source_sha,

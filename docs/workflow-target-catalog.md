@@ -121,8 +121,10 @@ until their actual implementation and observed results are recorded here.
 The reference also includes the metadata-only job in `delivery-operations.yml`.
 It refreshes the original native Required Workflow's final verifier after review
 or PR metadata activity. It cannot publish acceptance or retry a consumed model
-request. A draft-to-ready event may start an original review job only after the
-complete native attempt history proves that no funding step ever started.
+request. Metadata changes reclassify the original operation; draft-to-ready can start a
+never-funded request. Existing delivered reviews skip funding, and the native
+attempt history rejects a consumed or unknown request whenever new funding
+would otherwise be needed.
 Promotion creation and archive finalization in this entry point remain pending.
 
 Only the top-level native Required Workflow namespace may authorize a change;
@@ -191,3 +193,17 @@ For already merged ingress, GitHub may no longer expose the live PR association
 on its old run. Only that native Required Workflow's persisted immutable
 operation/proof, matched to the actual merged PR, can replace the missing live
 association. An ordinary run or a matching check name cannot do so.
+
+
+A candidate must retain the review-event signal byte-for-byte from the externally
+selected immutable source before the final gate may pass. Removing triggers or
+adding conditional signal suppression cannot leave stale acceptance behind.
+Changing that event contract requires a separately admitted source migration.
+
+Native resolved Copilot findings remain admissible under the existing maintainer
+resolution contract: exact current-head review/comment/thread identity, complete
+native thread inventory and current write/maintain/admin authority of the human
+resolver. One authorized person can perform that resolution. Unresolved threads,
+provider-error content, dismissed reviews and missing coverage remain blocking.
+The distribution verifier also compares the API's complete returned file count
+with the live PR's changed-file count, rejecting truncated listings.

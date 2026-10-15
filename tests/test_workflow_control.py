@@ -108,7 +108,7 @@ class ControlTests(unittest.TestCase):
             with self.subTest(history=history), self.assertRaises(control.ControlError):
                 control.native_approval(api, REPO, 10)
 
-    def test_refresh_can_only_rerun_native_final_job_without_funding_or_success_write(self):
+    def test_metadata_refresh_reruns_original_classification_without_granting_funding_or_success(self):
         api = Mock()
         api.call.side_effect = [pull(), pull(), {}]
         api.pages.side_effect = [[run()], [{'id': 100, 'run_id': 10, 'name': 'Current revision review',
@@ -118,7 +118,7 @@ class ControlTests(unittest.TestCase):
         events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         writes = [call for call in api.call.call_args_list if call.kwargs.get('method') == 'POST']
         self.assertEqual(1, len(writes))
-        self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', writes[0].args[0])
+        self.assertEqual(f'repos/{REPO}/actions/jobs/101/rerun', writes[0].args[0])
         with self.assertRaises(control.ControlError):
             events.refresh(Mock(), REPO, 'pull_request', {'pull_request': {'number': 3}})
 
@@ -245,6 +245,7 @@ class ControlTests(unittest.TestCase):
         review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'}, 'state': 'COMMENTED',
                   'body': 'Reviewed all changes; no actionable issues found.'}
         api = Mock(); api.pages.side_effect = [[review], []]
+        api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}}}}
         self.assertEqual(9, control.copilot_review(api, REPO, pull())['id'])
         for body in ('', 'Unable to review this pull request', 'Quota exceeded', 'No files were reviewed', "Copilot wasn’t able to review this pull request", "Copilot wasn't able to review any files"):
             api.pages.side_effect = [[review | {'body': body}], []]
@@ -258,6 +259,7 @@ class ControlTests(unittest.TestCase):
         for reviews, comments in (([review], [{'id': 1, 'body': 'Fix this'}]), ([review | {'state': 'DISMISSED'}], []),
                                   ([review, review | {'id': 10}], [])):
             api = Mock(); api.pages.side_effect = [reviews, comments]
+            api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [{'id': 'thread', 'isResolved': False}], 'pageInfo': {'hasNextPage': False}}}}}}
             with self.subTest(reviews=reviews, comments=comments), self.assertRaises(control.ControlError):
                 control.copilot_review(api, REPO, pull())
 
@@ -318,7 +320,7 @@ class ControlTests(unittest.TestCase):
         gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
         api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
         with patch.object(events.time, 'sleep') as wait:
-            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {"url": "native"}}})
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
 
@@ -334,6 +336,8 @@ class ControlTests(unittest.TestCase):
         review = {'id': 9, 'commit_id': HEAD, 'user': {'login': control.COPILOT, 'id': 175728472, 'type': 'Bot'},
                   'state': 'COMMENTED', 'body': 'All files reviewed; no findings.'}
         api.pages.side_effect = [[review], []]
+        api.call.side_effect = None
+        api.call.return_value = {'data': {'repository': {'pullRequest': {'reviewThreads': {'nodes': [], 'pageInfo': {'hasNextPage': False}}}}}}
         self.assertIsNotNone(control.copilot_review(api, REPO, pull()))
 
     def test_previous_approval_reuses_operation_before_verifier_only_attempt(self):
@@ -366,6 +370,51 @@ class ControlTests(unittest.TestCase):
             with patch.object(control, 'operation_record', return_value=record | {'binding': control.binding(value) | {'number': 44}}), \
                  self.assertRaisesRegex(control.ControlError, 'ingress-protected-run-missing'):
                 control.check_native_control(api, REPO, value, {'accepted_sources': [SOURCE]})
+
+    def test_current_run_previous_attempt_reuses_same_native_approval(self):
+        native = run(10) | {'run_attempt': 2}
+        api = Mock(); api.pages.side_effect = [[native], [{'name': 'control-operation-1', 'expired': False}]]
+        approval = {'state': 'approved', 'user': {'type': 'User'},
+                    'environments': [{'name': 'normal-release-promotion-approval'}]}
+        api.call.return_value = [approval]
+        with patch.dict(os.environ, {'GITHUB_RUN_ID': '10'}), \
+             patch.object(control, 'operation_record', return_value={'source_sha': SOURCE, 'binding': control.binding(pull())}):
+            self.assertEqual(10, control.previous_approval(api, REPO, pull(), SOURCE))
+
+    def test_signal_cannot_be_removed_or_changed_by_candidate(self):
+        path = Path(__file__).resolve().parents[1] / '.github/workflows/review-events.yml'
+        api = Mock(); api.file.return_value = path.read_bytes()
+        control.validate_signal(api, REPO, pull())
+        for payload in (b'', path.read_bytes().replace(b'dismissed', b'opened'), path.read_bytes() + b'\njobs: {}'):
+            api.file.return_value = payload
+            with self.subTest(payload=payload[-20:]), self.assertRaisesRegex(control.ControlError, 'candidate-review-signal'):
+                control.validate_signal(api, REPO, pull())
+
+    def test_distribution_requires_full_native_changed_file_count(self):
+        value = pull(control.SYNC)
+        value['body'] = '<!-- lit-distribution/v1 ' + json.dumps({'source': 'lightning-it/shared-assets-lit',
+                      'source_sha': SOURCE, 'run': 20, 'files': []}) + ' -->'
+        value['changed_files'] = 3001
+        api = Mock(); api.call.return_value = {'id': 20, 'head_sha': SOURCE, 'head_branch': 'main',
+                    'status': 'completed', 'conclusion': 'success', 'path': '.github/workflows/sync-repository-quality-repos.yml'}
+        api.pages.return_value = [{'filename': f'file-{i}', 'status': 'modified'} for i in range(3000)]
+        with self.assertRaisesRegex(control.ControlError, 'distribution-native-file-list-incomplete'):
+            control.distribution_evidence(api, REPO, value, {'distribution_sources': [SOURCE]})
+
+    def test_resolved_current_findings_require_one_authorized_maintainer(self):
+        review = {'id': 9}
+        comment = {'id': 8, 'original_commit_id': HEAD, 'pull_request_review_id': 9}
+        thread = {'id': 't1', 'isResolved': True, 'resolvedBy': {'login': 'litroc', 'databaseId': 76040632},
+                  'comments': {'nodes': [{'databaseId': 8, 'pullRequestReview': {'databaseId': 9}}]}}
+        query = {'data': {'repository': {'pullRequest': {'reviewThreads': {
+                 'nodes': [thread], 'pageInfo': {'hasNextPage': False}}}}}}
+        permission = {'permission': 'admin', 'user': {'id': 76040632, 'type': 'User', 'permissions': {'push': True}}}
+        api = Mock(); api.call.side_effect = [query, permission]
+        self.assertEqual(['t1'], control.resolved_findings(api, REPO, pull(), review, [comment]))
+        for changed in (permission | {'permission': 'read'}, permission | {'user': {'id': 2, 'type': 'User', 'permissions': {'push': True}}}):
+            api.call.side_effect = [query, changed]
+            with self.subTest(permission=changed), self.assertRaisesRegex(control.ControlError, 'maintainer-resolution'):
+                control.resolved_findings(api, REPO, pull(), review, [comment])
 
 
 if __name__ == '__main__':
