@@ -142,13 +142,18 @@ def classify(pull, repo):
     return "copilot"
 
 
-def policy(api, repo, base):
+def policy(api, repo, base, source_sha):
     value = json.loads(api.file(repo, ".lit/workflow-control.json", base))
     require(value.get("version") == 1 and value.get("repository") == repo, "protected-policy-shape")
     require(value.get("mode") in {"reference", "enforce"}, "scope-not-admitted")
     require(type(value.get("quality")) is list and value["quality"], "quality-policy-missing")
     for item in value["quality"]:
         require(set(item) == {"workflow", "job"} and item["workflow"].startswith(".github/workflows/"), "quality-policy-entry")
+    lineage = json.loads((Path(__file__).resolve().parents[1] / ".lit/workflow-source-lineage.json").read_text())
+    require(lineage.get("version") == 1 and type(lineage.get("accepted_predecessors")) is list, "central-lineage-shape")
+    allowed = {sha(source_sha), *(sha(item) for item in lineage["accepted_predecessors"])}
+    requested = value.get("accepted_sources", [])
+    require(type(requested) is list and set(requested) <= allowed, "consumer-cannot-admit-central-source")
     return value
 
 
@@ -204,7 +209,8 @@ def copilot_review(api, repo, pull):
     normalized = re.sub(r"\s+", "", (review.get("body") or "").lower()).replace("can't", "cannot")
     require(normalized and not any(marker in normalized for marker in (
         "unabletoreview", "cannotreview", "nofileswerereviewed", "encounteredanerror",
-        "quotaexceed", "quotaexhaust", "premiumrequest", "suppressedcomment")), "copilot-provider-failure")
+        "quotaexceed", "quotaexhaust", "premiumrequest", "suppressedcomment",
+        "notabletoreview", "nofilestoreview", "cannotreviewanyfiles")), "copilot-provider-failure")
     return {"id": review["id"], "head": review["commit_id"], "state": review["state"]}
 
 
@@ -374,7 +380,7 @@ def main():
     expected = binding(pull)
     require(pull["head"]["sha"] == event["pull_request"]["head"]["sha"]
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
-    config = policy(api, repo, pull["base"]["sha"])
+    config = policy(api, repo, pull["base"]["sha"], source_sha)
     route = classify(pull, repo)
     if args.operation == "classify":
         output("route", route)

@@ -27,6 +27,18 @@ def run(number=10, source=SOURCE):
 
 
 class ControlTests(unittest.TestCase):
+    def test_consumer_policy_cannot_select_unadmitted_source(self):
+        api = Mock()
+        config = {"version": 1, "repository": REPO, "mode": "reference",
+                  "quality": [{"workflow": ".github/workflows/repository-quality.yml", "job": "repository / quality"}],
+                  "accepted_sources": [SOURCE]}
+        import json
+        api.file.return_value = json.dumps(config).encode()
+        self.assertEqual([SOURCE], control.policy(api, REPO, BASE, SOURCE)["accepted_sources"])
+        api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
+        with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
+            control.policy(api, REPO, BASE, SOURCE)
+
     def test_native_defining_source_required_not_caller_context(self):
         job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
                'workflow_sha': SOURCE, 'check_run_id': 123}
