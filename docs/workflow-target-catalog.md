@@ -57,6 +57,9 @@ result, stale tuple or exhausted provider budget blocks the applicable path.
 A new head invalidates the relevant results. Duplicate events cannot reserve
 another funded request for the same finalized head.
 
+The [operator runbook](protected-runtime-operations.md) explains finalization,
+normal one-person approval, blocked operations and consumer privacy.
+
 ## Promotion and archive lifecycle
 
 Delivery operations prepare or update one develop-to-main PR. They grant no
