@@ -57,6 +57,9 @@ result, stale tuple or exhausted provider budget blocks the applicable path.
 A new head invalidates the relevant results. Duplicate events cannot reserve
 another funded request for the same finalized head.
 
+The [operator runbook](protected-runtime-operations.md) explains finalization,
+normal one-person approval, blocked operations and consumer privacy.
+
 ## Promotion and archive lifecycle
 
 Delivery operations prepare or update one develop-to-main PR. They grant no
@@ -245,3 +248,12 @@ Management then admits the new immutable source through its exact reviewed nativ
 plan. A candidate's lineage file has no effect on the authority judging that
 candidate. This two-stage transition preserves old valid evidence without letting
 a candidate select or authorize its own verifier.
+
+
+A replay candidate is not current acceptance. An authenticated prior successful
+provider response may be installed while the new producer is pending or after a
+pre-provider metadata failure. The gateway still compares the entire actual new
+client request before returning those exact original bytes, without another
+provider call. Final acceptance separately requires the latest actual native
+producer to finish collection and export successfully; a failed or pending
+current producer cannot fall back to an older successful acceptance.
