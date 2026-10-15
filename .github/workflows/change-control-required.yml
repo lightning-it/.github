@@ -87,12 +87,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: python3 -B scripts/workflow_control.py prepare-codex
-      - name: Reserve protected Codex request
-        if: steps.classify.outputs.route == 'codex' && steps.codex.outputs.replay != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NATIVE_JOB: ${{ toJSON(job) }}
-        run: python3 -B scripts/workflow_control.py reserve-codex
       - name: Install complete-request budget gateway
         if: steps.classify.outputs.route == 'codex'
         id: gateway
@@ -100,12 +94,18 @@ jobs:
           sudo -n python3 -E -s scripts/exact_revision_gateway.py install --run-id "$GITHUB_RUN_ID"
           python3 - <<'PY'
           import json, os
-          root = '/run/exact-review-' + os.environ['GITHUB_RUN_ID'] + '/public'
+          root = '/run/exact-review/public'
           port = json.load(open(root + '/port.json'))['port']
           assert type(port) is int and port > 0
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'endpoint=http://127.0.0.1:{port}/responses\ndirectory={root}\n')
           PY
+      - name: Reserve protected Codex request
+        if: steps.classify.outputs.route == 'codex' && steps.codex.outputs.replay != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_control.py reserve-codex
       - name: Protected exact-revision Codex review
         if: steps.classify.outputs.route == 'codex'
         uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
@@ -130,14 +130,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: |
-          python3 -B -E -s "/run/exact-review-$GITHUB_RUN_ID/code/exact_revision_gateway.py" consume --run-id "$GITHUB_RUN_ID"
+          python3 -B -E -s "/run/exact-review/code/exact_revision_gateway.py" consume --run-id "$GITHUB_RUN_ID"
       - name: Export protected native Codex evidence
         if: steps.classify.outputs.route == 'codex'
         env:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: |
-          python3 -B -E -s "/run/exact-review-$GITHUB_RUN_ID/code/exact_revision_gateway.py" export-native --run-id "$GITHUB_RUN_ID"
+          python3 -B -E -s "/run/exact-review/code/exact_revision_gateway.py" export-native --run-id "$GITHUB_RUN_ID"
           python3 -B scripts/workflow_control.py verify-codex
       - name: Persist protected Codex receipt
         if: steps.classify.outputs.route == 'codex'

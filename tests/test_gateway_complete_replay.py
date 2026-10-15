@@ -59,6 +59,33 @@ class CompleteReplayTests(unittest.TestCase):
         with self.assertRaisesRegex(gateway.review.ReviewError, 'single-replay-response-binding'):
             self.replay(receipt, wire + b' ')
 
+    def test_session_cache_hints_are_absent_from_forwarded_and_replayed_request(self):
+        original = self.request() | {'prompt_cache_key': 'session-one'}
+        wire = gateway.review.canonical(self.response())
+        count = gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10})
+        with patch.object(transport, 'run_worker', side_effect=[count, wire]) as provider:
+            self.reviewer.submit(original, 'fixture')
+        self.assertTrue(all('prompt_cache_key' not in call.args[0] for call in provider.call_args_list))
+        receipt = json.loads((self.root / 'public/receipt.json').read_text())
+        reviewer = self.replay(receipt, wire)
+        with patch.object(transport, 'run_worker') as provider:
+            self.assertEqual(wire, reviewer.submit(self.request() | {'prompt_cache_key': 'session-two'}, 'fixture'))
+        provider.assert_not_called()
+
+    def test_cross_run_environment_uses_stable_workspace_but_still_binds_context(self):
+        self.assertEqual(gateway.root_for(42), gateway.root_for(99))
+        context = f'<environment_context><cwd>{gateway.root_for(42) / "public"}</cwd><current_date>2026-10-15</current_date></environment_context>'
+        request = self.request() | {'input': self.prompt + '\n' + context}
+        wire = gateway.review.canonical(self.response())
+        count = gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10})
+        with patch.object(transport, 'run_worker', side_effect=[count, wire]):
+            self.reviewer.submit(request, 'fixture')
+        receipt = json.loads((self.root / 'public/receipt.json').read_text())
+        reviewer = self.replay(receipt, wire)
+        with patch.object(transport, 'run_worker') as provider:
+            self.assertEqual(wire, reviewer.submit(request, 'fixture'))
+        provider.assert_not_called()
+
     def test_large_valid_instruction_metadata_survives_receipt_and_replay(self):
         import hashlib
         import shutil

@@ -202,6 +202,11 @@ class ResponseBudget:
             output_cap = request.get("max_output_tokens", self.profile["max_output_tokens"])
             integer(output_cap, 1, self.profile["max_output_tokens"], "provider-output-bound")
             bounded = json.loads(canonical(request))
+            # A client session cache hint is not model-visible review context.
+            # Omit it from BOTH the actual forwarded request and its digest.
+            # All instructions, tools and input remain exact and hash-bound.
+            cache_key = bounded.pop("prompt_cache_key", None)
+            require(cache_key is None or type(cache_key) is str, "provider-cache-key")
             # Codex 0.160.0 emits a string map even for the ordinary HTTP
             # Responses provider. Strip this client telemetry before forwarding;
             # it grants no routing, guardian, access-program or billing authority.

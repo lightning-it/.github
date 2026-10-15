@@ -336,9 +336,12 @@ class SingleReviewGatewayTests(unittest.TestCase):
         steps = workflow['jobs']['review']['steps']
         install = next(i for i, step in enumerate(steps) if step.get('id') == 'gateway')
         action = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('openai/codex-action@'))
+        reserve = next(i for i, step in enumerate(steps) if step['name'] == 'Reserve protected Codex request')
         collect = next(i for i, step in enumerate(steps) if step['name'] == 'Collect and verify the protected model receipt')
         export = next(i for i, step in enumerate(steps) if step['name'] == 'Export protected native Codex evidence')
         self.assertLess(install, action)
+        self.assertLess(install, reserve)
+        self.assertLess(reserve, action)
         self.assertLess(action, collect)
         self.assertIn('exact_revision_gateway.py install', steps[install]['run'])
         self.assertEqual('drop-sudo', steps[action]['with']['safety-strategy'])
@@ -351,3 +354,19 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertIn('scripts/workflow_control.py verify-codex', steps[export]['run'])
         self.assertNotIn('sudo', steps[export]['run'])
         self.assertNotIn('docker', steps[export]['run'])
+
+    def test_non_utf8_patch_preserves_exact_bytes_before_any_provider_request(self):
+        import shutil
+        self.payload = b'diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+caf\xe9 literal \\xff byte \xff\n'
+        self.metadata.update(diff_sha256=gateway.review.sha(self.payload), review_bytes=len(self.payload))
+        (self.directory / 'change.patch').write_bytes(self.payload)
+        (self.directory / 'review-metadata.json').write_bytes(gateway.review.canonical(self.metadata))
+        shutil.rmtree(self.root)
+        with patch.object(gateway.transport, 'run_worker') as provider:
+            gateway.prepare(self.root, self.directory, 42, os.getuid())
+        provider.assert_not_called()
+        state, prompt = gateway.context(self.root, 42, uid=os.getuid())
+        marker = 'all original bytes are preserved. Fail review if source semantics cannot be evaluated.\n'
+        representation = prompt.split(marker, 1)[1]
+        self.assertEqual(self.payload, json.loads(representation).encode('latin-1'))
+        self.assertEqual(gateway.review.sha(self.payload), state['metadata']['diff_sha256'])

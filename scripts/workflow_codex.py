@@ -88,24 +88,37 @@ def native_evidence(api, repo, pull, metadata, source, *, only_run=None):
         operation = operation_record(api, repo, run)
         if operation.get("source_sha") != source or operation.get("binding") != binding(pull):
             continue
-        for name in sorted(names, key=lambda n: int(n.rsplit("-", 1)[1]), reverse=True):
-            attempt = int(name.rsplit("-", 1)[1])
-            require(attempt <= run["run_attempt"], "codex-native-artifact-attempt")
+        latest = None
+        for attempt in range(run["run_attempt"], 0, -1):
             jobs = api.pages(f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs", "jobs")
             producers = [j for j in jobs if j.get("run_id") == run["id"]
-                         and j.get("name") == "Protected current revision" and j.get("conclusion") == "success"
-                         and all(any(s.get("name") == step and s.get("conclusion") == "success"
-                                     for s in j.get("steps", [])) for step in (EXPORT_STEP, COLLECT_STEP))]
-            if len(producers) != 1:
-                continue
-            record, wire = download(api, repo, run, name, artifacts)
-            # Different full metadata cannot be reused, even for the same head.
-            if record.get("source_sha") != source or record.get("metadata_sha256") != digest(metadata):
-                continue
-            validate_record(record, wire, metadata, source)
-            producer = {"repository": repo, "pull_request": pull["number"],
-                        "run": run["id"], "attempt": attempt, "job": producers[0]["id"]}
-            return record | {"producer": producer}, wire
+                         and j.get("name") == "Protected current revision"
+                         and not (j.get("conclusion") == "skipped"
+                                  and all(s.get("conclusion") == "skipped" for s in j.get("steps", [])))]
+            require(len(producers) <= 1, "codex-native-producer-ambiguous")
+            if producers:
+                latest = (attempt, producers[0])
+                break
+        if latest is None:
+            continue
+        attempt, job = latest
+        successful = (job.get("conclusion") == "success"
+                      and all(any(s.get("name") == step and s.get("conclusion") == "success"
+                                  for s in job.get("steps", [])) for step in (EXPORT_STEP, COLLECT_STEP)))
+        if only_run is not None:
+            require(successful, "codex-latest-native-producer-not-successful")
+        if not successful:
+            continue
+        name = f"codex-receipt-{attempt}"
+        if name not in names:
+            continue
+        record, wire = download(api, repo, run, name, artifacts)
+        if record.get("source_sha") != source or record.get("metadata_sha256") != digest(metadata):
+            continue
+        validate_record(record, wire, metadata, source)
+        producer = {"repository": repo, "pull_request": pull["number"],
+                    "run": run["id"], "attempt": attempt, "job": job["id"]}
+        return record | {"producer": producer}, wire
     return None
 
 

@@ -522,15 +522,13 @@ def promotion_ingress(api, repo, pull, config):
     import tempfile
 
     from workflow_proofs import References
-    from workflow_subject import git
+    from workflow_subject import fetch_objects, git
     base, head = pull["base"]["sha"], pull["head"]["sha"]
     with tempfile.TemporaryDirectory(prefix="promotion-objects-", dir=os.environ.get("RUNNER_TEMP")) as temp:
         objects = Path(temp) / "objects.git"
         result = subprocess.run(["git", "init", "--bare", str(objects)], capture_output=True, timeout=30, check=False)
         require(result.returncode == 0, "promotion-git-init")
-        git(objects, "config", "credential.helper", "!gh auth git-credential")
-        git(objects, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
-            f"https://github.com/{repo}.git", f"{base}:refs/review/base", f"{head}:refs/review/head")
+        fetch_objects(objects, repo, f"{base}:refs/review/base", f"{head}:refs/review/head")
         ancestor = git(objects, "merge-base", "--all", base, head)
         require(ancestor == base, "promotion-needs-main-ancestry")
         commits = git(objects, "rev-list", "--reverse", "--first-parent", f"{base}..{head}").splitlines()
@@ -558,7 +556,7 @@ def promotion_ingress(api, repo, pull, config):
 def ancestry_evidence(api, repo, pull, config):
     import tempfile
 
-    from workflow_subject import git
+    from workflow_subject import fetch_objects, git
     base, head = pull["base"]["sha"], pull["head"]["sha"]
     current_main = sha(api.call(f"repos/{repo}/git/ref/heads/main")["object"]["sha"])
     component = repo.split("/", 1)[1].lstrip(".")
@@ -568,9 +566,7 @@ def ancestry_evidence(api, repo, pull, config):
         objects = Path(temp) / "objects.git"
         result = subprocess.run(["git", "init", "--bare", str(objects)], capture_output=True, timeout=30, check=False)
         require(result.returncode == 0, "ancestry-git-init")
-        git(objects, "config", "credential.helper", "!gh auth git-credential")
-        git(objects, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
-            f"https://github.com/{repo}.git", base, head, current_main)
+        fetch_objects(objects, repo, base, head, current_main)
         require(git(objects, "show", "-s", "--format=%P", head).split() == [base, current_main], "ancestry-parent-shape")
         require(git(objects, "rev-parse", f"{head}^{{tree}}") == git(objects, "rev-parse", f"{base}^{{tree}}"), "ancestry-content-change")
     return {"main": current_main, "head": head, "unchanged_tree": True}
@@ -770,6 +766,8 @@ def main():
         print(f"Verified {route} for exact current revision; native evidence retained.")
         return
     authorization = None
+    if route == "codex":
+        require(os.environ.get("REVIEW_RESULT") in {"success", "skipped"}, "codex-review-job-not-successful")
     if route == "promotion":
         normal_environment(api, repo)
         if os.environ.get("APPROVAL_RESULT") == "success":

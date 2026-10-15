@@ -77,6 +77,32 @@ class NativeCodexTests(unittest.TestCase):
         with self.assertRaisesRegex(ControlError, 'codex-native-wire-binding'):
             native.validate_record(record, wire + b' ', self.metadata, SOURCE)
 
+    def test_latest_failed_or_incomplete_producer_cannot_fall_back_to_attempt_one(self):
+        pull, run, artifacts, job, _record, _wire = self.native_fixture()
+        run['run_attempt'] = 2
+        operation = {'source_sha': SOURCE, 'binding': native.binding(pull)}
+        for latest in (job | {'conclusion': 'failure'}, job | {'conclusion': None}, job):
+            api = Mock(); api.pages.side_effect = [artifacts, [latest]]
+            with patch.object(native, 'operation_record', return_value=operation), \
+                 patch.object(native, 'download') as download, \
+                 self.assertRaises(ControlError):
+                native.current_evidence(api, REPO, pull, self.metadata, SOURCE, run)
+            download.assert_not_called()
+
+    def test_verifier_only_rerun_inherits_the_latest_actual_successful_producer(self):
+        pull, run, artifacts, job, record, wire = self.native_fixture()
+        run['run_attempt'] = 2
+        verifier = {'id': 101, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}
+        skipped = {'id': 102, 'run_id': 10, 'name': 'Protected current revision', 'conclusion': 'skipped', 'steps': []}
+        for latest_jobs in ([verifier], [skipped, verifier]):
+            api = Mock(); api.pages.side_effect = [artifacts, latest_jobs, [job]]
+            with self.subTest(latest_jobs=latest_jobs), \
+                 patch.object(native, 'operation_record', return_value={'source_sha': SOURCE, 'binding': native.binding(pull)}), \
+                 patch.object(native, 'download', return_value=(record, wire)):
+                result = native.current_evidence(api, REPO, pull, self.metadata, SOURCE, run)
+            self.assertEqual(1, result['producer']['attempt'])
+            self.assertEqual(100, result['producer']['job'])
+
     def test_native_export_preserves_wire_and_rejects_changed_provider_bytes(self):
         receipt, wire = self.original()
         self.state['metadata']['central_source_sha'] = SOURCE

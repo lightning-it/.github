@@ -203,6 +203,20 @@ response bytes separately, without duplicating the full instruction bundle.
 Finalization requires the current native run's successful collection/export;
 an arbitrary earlier metadata match cannot authorize it.
 
+Finalization selects the latest actually executed producer attempt. A newer
+failure, cancellation, pending execution or missing receipt cannot fall back to
+an earlier success. A verifier-only rerun may inherit the last actual successful
+producer. The model-visible workspace is constant across isolated hosted jobs;
+the real run ID remains in root-owned state. Session cache hints are omitted
+from both the forwarded request and its hash. Model-visible context, instructions,
+tools and input remain bound; any changed review context still blocks replay.
+
+Git fetch preserves ancestry while filtering historical blobs; only needed
+current diff and instruction blobs load lazily. A non-UTF-8 textual patch is
+represented reversibly as a JSON string mapping code points to original bytes.
+Its original byte length/digest remains bound. Gateway installation and these
+preflight checks complete before reserving an inference slot.
+
 Opening or reopening a nondraft final head can request its one paid review.
 Intermediate synchronization cannot fund review until a native ready transition
 after that head's run explicitly finalizes it. A stale native generation cannot

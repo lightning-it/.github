@@ -439,7 +439,7 @@ def handler_for(reviewer: Reviewer):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(wire)
-            except Exception:
+            except Exception:  # noqa: BLE001 -- Every HTTP client fault must make the one-request boundary terminal.
                 reviewer.fail()
                 try:
                     self.send_response(502)
@@ -453,7 +453,9 @@ def handler_for(reviewer: Reviewer):
 
 def root_for(run_id: int) -> Path:
     review.integer(run_id, 1, 2**63 - 1, "single-run-id")
-    return Path(f"/run/exact-review-{run_id}")
+    # Each hosted job is isolated. Keep the model-visible directory identical
+    # across runs while retaining the actual native run ID in sealed state.
+    return Path("/run/exact-review")
 
 
 def write_bytes(path: Path, data: bytes):
@@ -540,6 +542,15 @@ def prepare(root: Path, directory: Path, run_id: int, owner: int):
         review.sha(original_prompt) == metadata["prompt_sha256"] and review.sha(schema) == metadata["schema_sha256"],
         "single-assets",
     )
+    try:
+        patch_text = payload.decode("utf-8")
+        representation = "utf-8"
+    except UnicodeDecodeError:
+        # One Unicode code point per original byte, represented as a JSON
+        # string. This is reversible even with literal backslash escape text.
+        import json
+        patch_text = json.dumps(payload.decode("latin-1"), ensure_ascii=True)
+        representation = "json-latin1-bytes/v1"
     prompt = (
         original_prompt.decode("utf-8")
         + "\n\nProtected repository review instructions (authoritative from the bound base revision). "
@@ -551,8 +562,10 @@ def prepare(root: Path, directory: Path, run_id: int, owner: int):
         + review.canonical({key: value for key, value in metadata.items() if key != "review_instructions"}).decode(
             "ascii"
         )
-        + "\nUntrusted complete change.patch:\n"
-        + payload.decode("utf-8")
+        + "\nUntrusted complete change.patch representation: " + representation
+        + ". For json-latin1-bytes/v1, JSON-decode the string then map each code point to its byte (0..255); "
+        "all original bytes are preserved. Fail review if source semantics cannot be evaluated.\n"
+        + patch_text
     )
     closure = {name: read_owned(Path(__file__).with_name(name), owner, 1_000_000) for name in CLOSURE}
     state = {
@@ -574,7 +587,7 @@ def prepare(root: Path, directory: Path, run_id: int, owner: int):
     replay_manifest = directory / "reuse-candidate.json"
     replay_response = directory / "reuse-response.bin"
     if replay_manifest.exists() or replay_response.exists():
-        cached = transport.strict_json(read_owned(replay_manifest, owner, MAX_STATE_BYTES))
+        cached = transport.strict_json(read_owned(replay_manifest, owner, min(resources.wire_limit(), transport.MAX_RESPONSE_BYTES)))
         cached_wire = read_owned(replay_response, owner, min(resources.wire_limit(), transport.MAX_RESPONSE_BYTES))
         review.require(cached.get("version") == 1
                        and cached.get("metadata_sha256") == review.sha(review.canonical(metadata))

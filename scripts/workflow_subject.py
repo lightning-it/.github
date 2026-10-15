@@ -75,6 +75,16 @@ def git(directory, *args, binary=False):
     return payload if binary else payload.decode().strip()
 
 
+def fetch_objects(directory, repo, *refs):
+    # Keep commit/tree ancestry without downloading every reachable historical
+    # blob. Git lazily obtains only the blobs the full diff/instructions need.
+    git(directory, "config", "credential.helper", "!gh auth git-credential")
+    git(directory, "remote", "add", "origin", f"https://github.com/{repo}.git")
+    git(directory, "config", "remote.origin.promisor", "true")
+    git(directory, "config", "remote.origin.partialclonefilter", "blob:none")
+    git(directory, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--filter=blob:none", "origin", *refs)
+
+
 def instructions(directory, base):
     entries = git(directory, "ls-tree", "-rz", "--full-tree", base, binary=True).split(b"\0")
     files = []
@@ -102,9 +112,7 @@ def materialize(api, repo, pull, source, destination):
         objects = Path(temp) / "objects.git"
         result = subprocess.run(["git", "init", "--bare", str(objects)], capture_output=True, check=False, timeout=30)
         require(result.returncode == 0, "git-init-failed")
-        git(objects, "config", "credential.helper", "!gh auth git-credential")
-        git(objects, "fetch", "--quiet", "--no-tags", "--no-recurse-submodules",
-            f"https://github.com/{repo}.git", f"{base}:refs/review/base", f"{head}:refs/review/head")
+        fetch_objects(objects, repo, f"{base}:refs/review/base", f"{head}:refs/review/head")
         require(git(objects, "rev-parse", "refs/review/base") == base
                 and git(objects, "rev-parse", "refs/review/head") == head, "git-fetch-drift")
         merge_base = sha(git(objects, "merge-base", "--all", base, head))
