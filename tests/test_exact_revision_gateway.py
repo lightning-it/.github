@@ -347,4 +347,3 @@ class SingleReviewGatewayTests(unittest.TestCase):
         self.assertNotIn('sudo', steps[collect]['run'])
         self.assertNotIn('docker', steps[collect]['run'])
         self.assertIn('scripts/workflow_control.py verify-codex', steps[collect]['run'])
-
