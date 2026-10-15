@@ -3,9 +3,15 @@
   "repository": "lightning-it/.github",
   "mode": "reference",
   "quality": [
-    {"workflow": ".github/workflows/repository-quality.yml", "job": "repository / quality"}
+    {
+      "workflow": ".github/workflows/repository-quality.yml",
+      "job": "repository / quality"
+    }
   ],
-  "accepted_sources": [],
+  "accepted_sources": [
+    "6c569721323d24cabad43f8caa162be60a7afdcb",
+    "f1bd4951288b1ce52a6cb30ab6432e201cf45507"
+  ],
   "distribution_sources": [],
   "artifact_publication": false
 }

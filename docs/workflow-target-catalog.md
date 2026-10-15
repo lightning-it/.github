@@ -228,3 +228,20 @@ remaining active for the native ruleset source. GitHub documents that ruleset
 execution ignores event filters, including `branches-ignore`. Native reference
 testing must confirm this behavior before source admission; the filter grants
 no skipped-check acceptance and no candidate workflow-call authority.
+
+
+## Preserve accepted proof lineage across source updates
+
+The reference's protected configuration explicitly retains the previously admitted
+immutable sources. The central source lineage independently allowlists those
+same predecessors. Both are required: a consumer cannot nominate an unknown
+source, and a new verifier must not invalidate authentic current-tuple ingress
+proofs merely because their previously selected producer was an earlier accepted
+version. Revision, native producer, route, complete evidence and success checks
+still apply; failed or stale results never become accepted predecessors.
+
+A source update is reviewed and integrated through the prior selected source.
+Management then admits the new immutable source through its exact reviewed native
+plan. A candidate's lineage file has no effect on the authority judging that
+candidate. This two-stage transition preserves old valid evidence without letting
+a candidate select or authorize its own verifier.
