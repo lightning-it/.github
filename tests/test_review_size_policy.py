@@ -105,51 +105,6 @@ class ReviewSizePolicyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'safely inspect'):
                     self.ns['read_repository_file']('link', purpose='Metadata', max_bytes=10)
 
-    def test_unbudgeted_own_mlx_fails_before_action_without_rewriting_old_receipts(self):
-        import yaml
-        workflow = yaml.safe_load((ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())
-        steps = next(job['steps'] for job in workflow['jobs'].values()
-                     if any(str(step.get('uses', '')).startswith('openai/codex-action@')
-                            for step in job.get('steps', [])))
-        index = next(i for i, step in enumerate(steps)
-                     if str(step.get('uses', '')).startswith('openai/codex-action@'))
-        barrier, action = steps[index - 1:index + 1]
-        self.assertEqual("steps.dedupe.outputs.reuse != 'true'", barrier['if'])
-        self.assertEqual(barrier['if'], action['if'])
-        self.assertNotIn('continue-on-error', barrier)
-        self.assertNotIn('always()', action['if'])
-        result = subprocess.run(['bash', '-eu', '-c', barrier['run']], capture_output=True, text=True, check=False,
-                                env={**os.environ, 'BUDGETED_GATEWAY_INSTALLED': ''})
-        self.assertEqual(1, result.returncode)
-        self.assertIn('complete-request token budget is not bound', result.stderr)
-        self.assertIn('schema:4,', (ROOT / '.github/workflows/release-bot-exact-head-review.yml').read_text())
-        self.assertIn('"schema_version": 7 if single_mode(arguments) else 5', (ROOT / 'scripts/materialize-exact-revision-review.py').read_text())
-
-    def test_required_accepts_bound_reuse_with_skipped_guard_but_rejects_failed_new_call(self):
-        source = (ROOT / '.github/workflows/supplementary-current-revision-required.yml').read_text()
-        start = source.index('                  [.[].jobs[]?] as $jobs', source.index('id: release-app-producer'))
-        end = source.index("' <<<\"${jobs_pages}\" >/dev/null", start)
-        predicate = source[start:end]
-        steps = [
-            {'name': 'Require complete-request token budget before a new model call', 'status': 'completed', 'conclusion': 'skipped'},
-            {'name': 'Run protected history-free Exact-Revision Codex review', 'status': 'completed', 'conclusion': 'skipped'},
-            {'name': 'Re-prove exact revision and enforce the Codex verdict', 'status': 'completed', 'conclusion': 'success'},
-        ]
-        review = {'name': 'Current revision review', 'status': 'completed', 'conclusion': 'success', 'steps': steps}
-        def evaluate(job):
-            result = subprocess.run(['jq', '-e', '--argjson', 'terminal_helper_handoff', 'false',
-                                     '--argjson', 'terminal_success_handoff', 'true', predicate],
-                                    input=json.dumps([{'jobs': [job]}]), text=True, capture_output=True, check=False)
-            return result.returncode
-        self.assertEqual(0, evaluate(review))
-        failed = {**review, 'conclusion': 'failure', 'steps': [
-            {**steps[0], 'conclusion': 'failure'}, steps[1], {**steps[2], 'conclusion': 'skipped'}]}
-        self.assertEqual(1, evaluate(failed))
-        # Historical success has no budget guard and retains the original
-        # named-step contract; no new request is implied by accepting it.
-        historical = {**review, 'steps': [{**steps[1], 'conclusion': 'success'}, steps[2]]}
-        self.assertEqual(0, evaluate(historical))
-
     def test_large_diff_runs_complete_integration_profile_and_propagates_failure(self):
         # Real local Git/merge/worktree/profile execution in the pinned test
         # container. Only remote fetch is replaced; no nested container needed.

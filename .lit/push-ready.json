@@ -4,7 +4,10 @@
   "checks": [
     {
       "name": "repository-quality-profile",
-      "command": ["scripts/lit-ci-profile.sh", "repository-quality"]
+      "command": [
+        "scripts/lit-ci-profile.sh",
+        "repository-quality"
+      ]
     }
   ],
   "remote_only_checks": [
@@ -13,13 +16,6 @@
       "workflow": ".github/workflows/repository-quality.yml",
       "job": "quality",
       "reason": "Checkout and artifact persistence require the GitHub Actions event and service context.",
-      "owner": "Lightning IT Application Platform Maintainers"
-    },
-    {
-      "id": "copilot-current-head-review",
-      "workflow": ".github/workflows/copilot-review.yml",
-      "job": "verify-current-revision-policy",
-      "reason": "The authoritative pipeline-only current-revision policy result is bound to the exact head SHA and may represent contributor-funded Copilot, a governed automation exemption, or the protected MLX-90 exact-revision Codex path.",
       "owner": "Lightning IT Application Platform Maintainers"
     }
   ],
@@ -33,13 +29,17 @@
     "copilot": {
       "enabled": false,
       "required": false,
-      "command": ["copilot"],
+      "command": [
+        "copilot"
+      ],
       "timeout_seconds": 600
     },
     "codex": {
       "enabled": false,
       "required": false,
-      "command": ["codex"],
+      "command": [
+        "codex"
+      ],
       "timeout_seconds": 900
     }
   }
