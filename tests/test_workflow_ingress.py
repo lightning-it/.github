@@ -59,6 +59,8 @@ class HistoricalIngressTests(unittest.TestCase):
 
     def test_semantic_premerge_and_unknown_failures_are_terminal(self):
         for text in ('2026-10-15T12:00:59Z ' + ingress.CLOSED,
+                     '2026-10-15T12:01:00.1000000Z ' + ingress.CLOSED,
+                     '2026-10-15T12:01:00.9999999Z ' + ingress.CLOSED,
                      '2026-10-15T12:01:02Z Protected control blocked: ControlError: quality-not-successful',
                      'Unknown provider failure',
                      '2026-10-15T12:01:02Z ' + ingress.CLOSED + '\n2026-10-15T12:01:03Z ' + ingress.CLOSED):
@@ -67,10 +69,37 @@ class HistoricalIngressTests(unittest.TestCase):
             with self.subTest(text=text), patch.object(ingress, 'operation_record', return_value=operation), \
                     self.assertRaises(control.ControlError):
                 ingress.merged_attempt(api, REPO, pull, failed)
+
         api, pull, _, failed, _, _ = self.fixture()
         api.call.side_effect = [failed | {'updated_at': '2026-10-15T12:00:59Z'}]
         with self.assertRaisesRegex(control.ControlError, 'semantic-failure-before-merge'):
             ingress.merged_attempt(api, REPO, pull, failed)
+
+    def test_historical_proof_read_must_not_hide_a_concurrent_rerun(self):
+        from test_workflow_control import pull as ordinary_pull
+        from test_workflow_control import run
+        subject = ordinary_pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
+        observed = run() | {'status': 'completed', 'conclusion': 'failure', 'run_attempt': 2}
+        accepted = observed | {'conclusion': 'success', 'run_attempt': 1}
+        proof = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(subject), 'route': 'copilot'}
+        gate = {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}
+        for change in ({}, {'run_attempt': 3, 'status': 'in_progress', 'conclusion': None},
+                       {'run_attempt': 3}, {'workflow_id': 78}, {'head_sha': 'e' * 40},
+                       {'path': 'untrusted.yml'}, {'workflow_url': 'https://untrusted.invalid'}):
+            api = Mock(spec=control.API)
+            api.pages.return_value = [observed]
+            api.call.return_value = observed | change
+            with self.subTest(change=change), \
+                    patch.object(ingress, 'merged_attempt', return_value=(accepted, [{'attempt': 2}])), \
+                    patch.object(control, 'native_jobs', return_value=[gate]), \
+                    patch.object(control, 'artifact_record', return_value=proof):
+                if change:
+                    with self.assertRaisesRegex(control.ControlError, 'ingress-current-run-changed'):
+                        control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+                else:
+                    result = control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+                    self.assertEqual(1, result['attempt'])
+                api.call.assert_called_once_with(f"repos/{REPO}/actions/runs/10")
 
     def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
         api, pull, _, failed, _, operation = self.fixture()

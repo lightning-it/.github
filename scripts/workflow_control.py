@@ -515,6 +515,7 @@ def check_native_control(api, repo, pull, config):
         candidates.append(run)
     require(candidates, "ingress-protected-run-missing")
     selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
+    observed = selected
     after_merge = []
     if selected["status"] != "completed" or selected["conclusion"] != "success":
         from workflow_ingress import merged_attempt
@@ -532,6 +533,14 @@ def check_native_control(api, repo, pull, config):
             "route": record.get("route"), "artifact": f"control-proof-{selected['run_attempt']}",
             "proof_sha256": digest(record)}
     if after_merge:
+        # Attempt endpoints are immutable snapshots, even after a new rerun
+        # starts. Revalidate the live run after ALL log/artifact reads.
+        current = api.call(f"repos/{repo}/actions/runs/{observed['id']}")
+        fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
+                  "workflow_id", "workflow_url", "path")
+        require(native_required(current, repo)
+                and all(current.get(key) == observed.get(key) for key in fields),
+                "ingress-current-run-changed")
         result["post_merge_failed_attempts"] = after_merge
     return result
 

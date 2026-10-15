@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from workflow_control import (
     SOURCE,
@@ -36,6 +36,9 @@ def merged_attempt(api, repo, pull, latest):
     require(pull.get("merged") is True and pull.get("state") == "closed"
             and pull.get("merge_commit_sha"), "ingress-protected-run-not-successful")
     merged = instant(pull.get("merged_at"))
+    # GitHub truncates merged_at to seconds. The entire reported second is
+    # ambiguous: a draft rejection could precede a merge within that second.
+    after_merge = merged + timedelta(seconds=1)
     require(latest.get("status") == "completed" and latest.get("conclusion") == "failure"
             and type(latest.get("run_attempt")) is int and 1 < latest["run_attempt"] <= 100,
             "ingress-protected-run-not-successful")
@@ -70,7 +73,7 @@ def merged_attempt(api, repo, pull, latest):
         errors = [line for line in log.splitlines() if "Protected control blocked:" in line]
         require(len(errors) == 1, "ingress-closure-error-unavailable")
         match = re.fullmatch(r"(\S+Z) " + re.escape(CLOSED), errors[0])
-        require(match is not None and instant(match[1]) >= merged, "ingress-not-closure-only")
+        require(match is not None and instant(match[1]) >= after_merge, "ingress-not-closure-only")
         operations.append(digest(operation_record(api, repo, attempt)))
         ignored.append({"attempt": version, "job": gate["id"], "conclusion": "failure",
                         "reason": "pull-not-reviewable-after-merge", "completed_at": gate["completed_at"]})
