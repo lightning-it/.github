@@ -86,7 +86,8 @@ each later failed attempt explicitly. Unknown, semantic, pre-merge, provider,
 budget or metadata failures block; an open or pending change never uses this
 historical path. The full accepted binding must still equal the merged PR metadata;
 the entire second reported by merged_at is ambiguous and rejected. Re-read the
-current native run after all proof reads; a new attempt or changed origin blocks.
+referenced PR, its merge identity, the current native run and newest generation
+after all proof reads; changed metadata, attempts, origins or generations block.
 No failed attempt is relabeled successful.
 
 ## Keep consumer information in its proper context

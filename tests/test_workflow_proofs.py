@@ -44,7 +44,8 @@ class ProofResourceTests(unittest.TestCase):
         import workflow_control as control
         from test_workflow_control import BASE, HEAD, REPO, SOURCE, pull, run
         api = Mock(); native = run() | {'status': 'completed', 'conclusion': 'success'}
-        api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}]]
+        api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}], [native]]
+        api.call.return_value = native
         record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull()),
                   'route': 'copilot', 'evidence': {'large': 'x' * 300000}}
         with patch.object(control, 'artifact_record', return_value=record):

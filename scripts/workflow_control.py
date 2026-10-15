@@ -525,22 +525,35 @@ def check_native_control(api, repo, pull, config):
     require(len(gate) == 1 and gate[0]["conclusion"] == "success", "ingress-protected-job-missing")
     record = artifact_record(api, repo, selected, f"control-proof-{selected['run_attempt']}", "control-proof.json")
     require(record.get("version") == 1 and record.get("source_sha") in sources
-            and same_immutable_tuple(record.get("binding", {}), binding(pull))
+            and record.get("binding") == binding(pull)
             and record.get("route") in {"copilot", "renovate", "ancestry", "distribution", "codex"},
             "ingress-protected-proof-binding")
     result = {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
             "head": pull["head"]["sha"], "source_sha": record["source_sha"],
             "route": record.get("route"), "artifact": f"control-proof-{selected['run_attempt']}",
             "proof_sha256": digest(record)}
+    # Every saved object above is a snapshot. Re-read all mutable decision
+    # subjects after the evidence reads, for ordinary and historical passes.
+    if pull.get("merged") is True:
+        current_pull = api.call(f"repos/{repo}/pulls/{pull['number']}")
+        require(binding(current_pull) == binding(pull)
+                and all(current_pull.get(key) == pull.get(key)
+                        for key in ("state", "merged", "merged_at", "merge_commit_sha")),
+                "ingress-referenced-pull-changed")
+    current = api.call(f"repos/{repo}/actions/runs/{observed['id']}")
+    fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
+              "workflow_id", "workflow_url", "path")
+    require(native_required(current, repo)
+            and all(current.get(key) == observed.get(key) for key in fields),
+            "ingress-current-run-changed")
+    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    generations = [item for item in latest_runs if native_required(item, repo)
+                   and item.get("head_sha") == pull["head"]["sha"]]
+    latest_generation = max(generations, key=lambda item: item["id"]) if generations else None
+    require(latest_generation is not None
+            and all(latest_generation.get(key) == observed.get(key) for key in fields),
+            "ingress-native-generation-changed")
     if after_merge:
-        # Attempt endpoints are immutable snapshots, even after a new rerun
-        # starts. Revalidate the live run after ALL log/artifact reads.
-        current = api.call(f"repos/{repo}/actions/runs/{observed['id']}")
-        fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
-                  "workflow_id", "workflow_url", "path")
-        require(native_required(current, repo)
-                and all(current.get(key) == observed.get(key) for key in fields),
-                "ingress-current-run-changed")
         result["post_merge_failed_attempts"] = after_merge
     return result
 

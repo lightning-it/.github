@@ -89,7 +89,7 @@ class HistoricalIngressTests(unittest.TestCase):
                        {'path': 'untrusted.yml'}, {'workflow_url': 'https://untrusted.invalid'}):
             api = Mock(spec=control.API)
             api.pages.return_value = [observed]
-            api.call.return_value = observed | change
+            api.call.side_effect = [subject, observed | change]
             with self.subTest(change=change), \
                     patch.object(ingress, 'merged_attempt', return_value=(accepted, [{'attempt': 2}])), \
                     patch.object(control, 'native_jobs', return_value=[gate]), \
@@ -100,7 +100,30 @@ class HistoricalIngressTests(unittest.TestCase):
                 else:
                     result = control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
                     self.assertEqual(1, result['attempt'])
-                api.call.assert_called_once_with(f"repos/{REPO}/actions/runs/10")
+                self.assertEqual([f"repos/{REPO}/pulls/3", f"repos/{REPO}/actions/runs/10"],
+                                 [call.args[0] for call in api.call.call_args_list])
+
+    def test_proof_read_cannot_hide_referenced_metadata_or_new_generation(self):
+        from test_workflow_control import pull as ordinary_pull
+        from test_workflow_control import run
+        subject = ordinary_pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
+        observed = run() | {'status': 'completed', 'conclusion': 'failure', 'run_attempt': 2}
+        accepted = observed | {'conclusion': 'success', 'run_attempt': 1}
+        proof = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(subject), 'route': 'copilot'}
+        gate = {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}
+        for changes in ({'title': 'Edited during proof read'}, {'body': 'New metadata'},
+                        {'labels': [{'name': 'changed'}]}, {'merged_at': '2026-10-15T12:01:01Z'},
+                        {'merge_commit_sha': 'e' * 40}, {'state': 'open'}, {'merged': False}, {}):
+            api = Mock(spec=control.API)
+            api.call.side_effect = [subject | changes, observed]
+            api.pages.side_effect = [[observed], [observed, observed | {'id': 11, 'status': 'in_progress'}]]
+            with self.subTest(changes=changes), \
+                    patch.object(ingress, 'merged_attempt', return_value=(accepted, [{'attempt': 2}])), \
+                    patch.object(control, 'native_jobs', return_value=[gate]), \
+                    patch.object(control, 'artifact_record', return_value=proof), \
+                    self.assertRaisesRegex(control.ControlError,
+                                           'referenced-pull-changed' if changes else 'native-generation-changed'):
+                control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
 
     def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
         for field, changed in (('title', 'Changed title'), ('body', 'Changed body'),
