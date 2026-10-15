@@ -124,6 +124,10 @@ jobs:
           codex-args: '["--ephemeral","-c","web_search=\"disabled\""]'
           allow-bots: 'true'
           allow-bot-users: lightning-it-release-automation
+      - name: Report protected gateway failure category
+        if: failure() && steps.classify.outputs.route == 'codex' && steps.gateway.outcome == 'success'
+        run: |
+          python3 -B -E -s "/run/exact-review/code/exact_revision_gateway.py" report-failure --run-id "$GITHUB_RUN_ID"
       - name: Collect and verify the protected model receipt
         if: steps.classify.outputs.route == 'codex'
         env:
