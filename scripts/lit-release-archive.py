@@ -31,10 +31,6 @@ class ArchiveError(ValueError):
     """Safe category only: no credentials, endpoint, payload or resource locator."""
 
 
-class ObjectAbsent(ArchiveError):
-    pass
-
-
 def require(condition: bool, category: str) -> None:
     if not condition:
         raise ArchiveError(category)
@@ -101,8 +97,6 @@ class Store:
                 return {k.lower(): v for k, v in response.headers.items()}, payload
         except urllib.error.HTTPError as error:
             # Response bodies may contain private resource identifiers. Do not log them.
-            if error.code == 404:
-                raise ObjectAbsent("object-absent") from None
             raise ArchiveError("provider-http-" + str(error.code)) from None
         except (OSError, TimeoutError):
             raise ArchiveError("provider-transport-failure") from None
@@ -136,26 +130,30 @@ def retention_date(payload: bytes) -> datetime:
         raise ArchiveError("retention-response") from None
 
 
-def archive(store: Store, package: bytes, *, repository: str, promotion: int, head: str, expected_digest: str, now: datetime) -> dict:
+def archive(store: Store, package: bytes, *, repository: str, promotion: int, head: str, expected_digest: str, reservation: str, operation: str, now: datetime) -> dict:
     """Storage only. A protected caller must serialize this entire operation.
 
     Hetzner does not support conditional PUT on versioned buckets. The caller
     must enforce one shared repository/target concurrency group across all
-    archive entry points. This module is not an atomic multi-writer lock.
+    archive entry points and persist one reservation before a single create.
+    Repeated events may only verify that existing reservation. This module
+    cannot reserve an operation or determine absence without bucket-list rights.
     """
     require(REPOSITORY.fullmatch(repository) is not None, "repository-shape")
     require(type(promotion) is int and promotion > 0, "promotion-shape")
     require(SHA.fullmatch(head) is not None, "head-shape")
     require(SHA256.fullmatch(expected_digest) is not None, "package-digest-shape")
+    require(re.fullmatch(r"[0-9a-f]{32}", reservation) is not None, "reservation-shape")
+    require(operation in {"create", "verify-existing"}, "operation-shape")
     require(0 < len(package) <= MAX_PACKAGE_BYTES, "package-size")
     require(hashlib.sha256(package).hexdigest() == expected_digest, "package-digest-mismatch")
     # Cover upload latency/provider clock granularity. Repeated writes verify
     # seven years from the provider's immutable version creation time below.
     required_until = (seven_years_after(now) + timedelta(days=1)).replace(microsecond=0)
-    key = f"runs/github-release/v1/{repository}/{promotion}/{head}/{expected_digest}.json"
+    key = f"runs/github-release/v1/{repository}/{promotion}/{head}/{reservation}/{expected_digest}.json"
     headers = {**store.encryption, "content-type": "application/json", "content-md5": base64.b64encode(hashlib.md5(package).digest()).decode(),
                "x-amz-object-lock-mode": "COMPLIANCE", "x-amz-object-lock-retain-until-date": required_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
-    try:
+    if operation == "verify-existing":
         response, _ = store.request("reader", "HEAD", key, headers=store.encryption)
         version = response.get("x-amz-version-id")
         try:
@@ -164,7 +162,7 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
             raise ArchiveError("object-creation-time-missing") from None
         require(created.tzinfo is not None and created <= now, "object-creation-time-invalid")
         required_until = seven_years_after(created).replace(microsecond=0)
-    except ObjectAbsent:
+    else:
         response, _ = store.request("writer", "PUT", key, headers=headers, body=package)
         version = response.get("x-amz-version-id")
     require(isinstance(version, str) and bool(version) and len(version) <= 1024 and version != "null", "object-version-missing")
@@ -175,6 +173,7 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
     until = retention_date(locked)
     require(until >= required_until and until > now, "retention-too-short")
     return {"schema_version": 1, "repository": repository, "promotion": promotion, "head_sha": head,
+            "reservation": reservation,
             "package_sha256": expected_digest, "key": key, "version_id": version,
             "retention_mode": "COMPLIANCE", "retain_until": until.isoformat(), "release_authorized": False}
 
@@ -186,6 +185,8 @@ def main() -> int:
     parser.add_argument("--promotion", type=int, required=True)
     parser.add_argument("--head", required=True)
     parser.add_argument("--expected-sha256", required=True)
+    parser.add_argument("--reservation", required=True, help="Unique immutable reservation already persisted by the protected caller")
+    parser.add_argument("--operation", required=True, choices=("create", "verify-existing"))
     parser.add_argument("--receipt", type=Path, required=True, help="Private consumer-local receipt, never stdout")
     args = parser.parse_args()
     try:
@@ -194,7 +195,7 @@ def main() -> int:
         require(args.package.is_file() and not args.package.is_symlink(), "package-regular-file")
         with args.package.open("rb") as stream:
             package = stream.read(MAX_PACKAGE_BYTES + 1)
-        result = archive(store, package, repository=args.repository, promotion=args.promotion, head=args.head, expected_digest=args.expected_sha256, now=datetime.now(timezone.utc))
+        result = archive(store, package, repository=args.repository, promotion=args.promotion, head=args.head, expected_digest=args.expected_sha256, reservation=args.reservation, operation=args.operation, now=datetime.now(timezone.utc))
         # Exclusive creation prevents overwriting/following an attacker-selected receipt.
         descriptor = os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as stream:

@@ -98,8 +98,8 @@ native acceptance paths. Changing a JSON status field is not activation.
 release package in the existing private Hetzner S3 store. It checks the expected
 SHA-256 before upload, sets seven calendar years of per-version COMPLIANCE
 retention and verifies the exact returned version through separate read and
-retention-review credentials. A repeated serialized call may reuse only an
-identical version with its original full retention still intact. The adapter
+retention-review credentials. A repeated serialized call may verify only the
+existing reserved object with its original full retention still intact. The adapter
 never changes bucket policy/defaults, deletes objects, retries uncertain writes
 or grants release authorization.
 
@@ -117,10 +117,16 @@ No workflow invokes this adapter yet; adding its source does not activate the
 target or qualify a repository for rollout.
 
 Hetzner does not guarantee conditional PUT/DELETE on versioned buckets. The
-adapter therefore uses supported HEAD/PUT/GET operations and immutable version
-IDs. The protected caller must serialize the complete archive operation in one
-shared concurrency group per consumer repository and target branch, including
-all recovery paths. A matching existing object is read and verified without a
-write; an unavailable/ambiguous lookup blocks. An uncertain upload is not retried
-automatically. The adapter alone is not an atomic multi-writer coordinator and
-cannot satisfy rollout acceptance before that caller boundary is implemented.
+adapter therefore uses normal PUT plus exact-version GET; `verify-existing`
+uses HEAD/GET and never writes. Without bucket-list rights, a nonexistent object
+returns 403 rather than a reliable absence signal. No failed lookup is treated
+as permission to upload.
+
+The protected caller must persist one unique `--reservation` before invoking
+`--operation create` exactly once, and serialize the whole operation in one
+shared concurrency group per consumer repository and target branch. Duplicate
+or interrupted deliveries use `--operation verify-existing` with that same
+reservation. Missing/ambiguous state or uncertain writes block; they never
+trigger another create automatically. The adapter is only a storage primitive,
+not a reservation authority or atomic multi-writer coordinator. The native
+reservation/serialization producer remains an explicit rollout prerequisite.

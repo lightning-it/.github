@@ -34,8 +34,6 @@ class FakeStore:
         if method == "PUT":
             return {"x-amz-version-id": self.version}, b""
         if method == "HEAD":
-            if not self.duplicate:
-                raise MODULE.ObjectAbsent("object-absent")
             return {"x-amz-version-id": self.version, "last-modified": format_datetime(NOW)}, b""
         if "retention" in kwargs.get("query", {}):
             return {}, f'<Retention><Mode>{self.mode}</Mode><RetainUntilDate>{self.until.isoformat()}</RetainUntilDate></Retention>'.encode()
@@ -44,7 +42,7 @@ class FakeStore:
 
 class ReleaseArchiveTests(unittest.TestCase):
     def archive(self, store=None, **changes):
-        args = dict(repository="lightning-it/.github", promotion=123, head=HEAD, expected_digest=DIGEST, now=NOW)
+        args = dict(repository="lightning-it/.github", promotion=123, head=HEAD, expected_digest=DIGEST, reservation="b" * 32, operation="create", now=NOW)
         args.update(changes)
         return MODULE.archive(store or FakeStore(), PACKAGE, **args)
 
@@ -53,16 +51,16 @@ class ReleaseArchiveTests(unittest.TestCase):
         receipt = self.archive(store)
         self.assertFalse(receipt["release_authorized"])
         self.assertEqual("immutable-version", receipt["version_id"])
-        self.assertEqual([("reader", "HEAD"), ("writer", "PUT"), ("reader", "GET"), ("reviewer", "GET")], [(a, b) for a, b, _, _ in store.calls])
-        put = store.calls[1][3]
+        self.assertEqual([("writer", "PUT"), ("reader", "GET"), ("reviewer", "GET")], [(a, b) for a, b, _, _ in store.calls])
+        put = store.calls[0][3]
         self.assertNotIn("if-none-match", put["headers"])
         self.assertEqual("COMPLIANCE", put["headers"]["x-amz-object-lock-mode"])
         self.assertEqual(PACKAGE, put["body"])
-        self.assertTrue(all(item[3]["query"]["versionId"] == "immutable-version" for item in store.calls[2:]))
+        self.assertTrue(all(item[3]["query"]["versionId"] == "immutable-version" for item in store.calls[1:]))
 
     def test_duplicate_reuses_only_matching_still_locked_original_version(self):
         store = FakeStore(duplicate=True)
-        result = self.archive(store, now=NOW + timedelta(hours=1))
+        result = self.archive(store, operation="verify-existing", now=NOW + timedelta(hours=1))
         self.assertEqual("immutable-version", result["version_id"])
         self.assertEqual(["HEAD", "GET", "GET"], [item[1] for item in store.calls])
         self.assertEqual(0, sum(item[1] == "PUT" for item in store.calls))
@@ -71,9 +69,16 @@ class ReleaseArchiveTests(unittest.TestCase):
         store = FakeStore()
         store.request = Mock(side_effect=MODULE.ArchiveError("provider-http-403"))
         with self.assertRaisesRegex(MODULE.ArchiveError, "provider-http-403"):
-            self.archive(store)
+            self.archive(store, operation="verify-existing")
         self.assertEqual(1, store.request.call_count)
         self.assertEqual(("reader", "HEAD"), store.request.call_args.args[:2])
+
+    def test_missing_reservation_or_unknown_operation_stops_before_any_cloud_call(self):
+        for changes in ({"reservation": ""}, {"reservation": "../../escape"}, {"operation": "retry-create"}):
+            store = FakeStore()
+            with self.subTest(changes=changes), self.assertRaises(MODULE.ArchiveError):
+                self.archive(store, **changes)
+            self.assertEqual([], store.calls)
 
     def test_digest_mismatch_stops_before_cloud_write(self):
         store = FakeStore()
@@ -84,7 +89,7 @@ class ReleaseArchiveTests(unittest.TestCase):
     def test_readback_cannot_substitute_other_package(self):
         for duplicate in (False, True):
             with self.subTest(duplicate=duplicate), self.assertRaisesRegex(MODULE.ArchiveError, "archived-digest-mismatch"):
-                self.archive(FakeStore(duplicate=duplicate, body=b"different"))
+                self.archive(FakeStore(duplicate=duplicate, body=b"different"), operation="verify-existing" if duplicate else "create")
 
     def test_governance_short_or_expired_retention_cannot_pass(self):
         for changes in ({"mode": "GOVERNANCE"}, {"until": UNTIL - timedelta(seconds=1)}, {"until": NOW}):
