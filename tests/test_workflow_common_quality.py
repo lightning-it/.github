@@ -46,11 +46,18 @@ class CommonQualityTests(unittest.TestCase):
         with self.assertRaisesRegex(control.ControlError, 'native-required-origin'):
             self.prepare(native=run() | {'workflow_url': 'https://api.github.com/repos/x/actions/workflows/77'})
 
-    def test_changed_head_or_base_and_draft_block_preparation(self):
-        for value in (pull(draft=True), pull(head=pull()['head'] | {'sha': 'd' * 40}),
+    def test_changed_head_base_or_closed_subject_blocks_preparation(self):
+        for value in (pull(state='closed'), pull(head=pull()['head'] | {'sha': 'd' * 40}),
                       pull(base=pull()['base'] | {'sha': 'd' * 40})):
             with self.subTest(value=value), self.assertRaises(control.ControlError):
                 self.prepare(subject=value)
+
+    def test_quality_runs_on_draft_while_review_stays_blocked(self):
+        self.assertEqual(self.prepare(), self.prepare(subject=pull(draft=True)))
+        api = Mock()
+        api.call.return_value = pull(draft=True)
+        with self.assertRaisesRegex(control.ControlError, 'pull-not-reviewable'):
+            control.live_pull(api, REPO, 3)
 
     def test_metadata_identity_and_resource_bounds(self):
         for raw in (b'', b'x' * 16385, b'[]', RAW.replace(b'.github', b'other'),

@@ -19,6 +19,12 @@ The final control requires the native common-quality job to succeed. Failure,
 skipping or cancellation cannot authorize a merge. A promotion's human approval
 also waits for this job. One person can still perform the native approval.
 
+Common quality also runs for draft PRs, just as product CI does. It authenticates
+the open current head/base but grants no review or merge approval. The independent
+review and finalization paths still reject drafts. Moving a draft to ready can
+therefore refresh those metadata-sensitive jobs without leaving a failed sibling
+quality job behind or requesting another paid review for the same subject.
+
 Product tests continue in their repository; these common checks do not replace
 them. Terraform profiles that need provider downloads remain blocked by this
 offline common entry point until their applicable isolated dependency supply is

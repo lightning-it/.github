@@ -13,7 +13,7 @@ from pathlib import Path
 # Isolated Python never imports from the candidate working directory.
 SOURCE_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE_DIRECTORY))
-from workflow_control import API, ControlError, canonical, live_pull, native_required, policy, require, sha, source_identity
+from workflow_control import API, ControlError, canonical, native_required, policy, require, sha, source_identity
 
 
 def metadata(raw, repository):
@@ -36,7 +36,13 @@ def prepare(api, env):
     run = api.call(f"repos/{repository}/actions/runs/{env['GITHUB_RUN_ID']}")
     require(native_required(run, repository), "common-quality-native-required-origin")
     number = int(env["NATIVE_PULL_NUMBER"])
-    pull = live_pull(api, repository, number)
+    # Like product CI, common quality also runs on drafts. It grants no review
+    # or merge authority. The independent review/finalization path keeps its
+    # strict live_pull() draft rejection, including after metadata refresh.
+    pull = api.call(f"repos/{repository}/pulls/{number}")
+    require(pull["number"] == number and pull["state"] == "open"
+            and pull["base"]["repo"]["full_name"] == repository
+            and pull["base"]["ref"] in {"develop", "main"}, "common-quality-open-subject-required")
     require(pull["head"]["sha"] == sha(env["NATIVE_HEAD"])
             and pull["base"]["sha"] == sha(env["NATIVE_BASE"]), "common-quality-stale-event")
     policy(api, repository, pull["base"]["sha"], source)
