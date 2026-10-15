@@ -166,9 +166,10 @@ def policy(api, repo, base, source_sha):
     allowed = {sha(source_sha), *(sha(item) for item in lineage["accepted_predecessors"])}
     requested = value.get("accepted_sources", [])
     require(type(requested) is list and set(requested) <= allowed, "consumer-cannot-admit-central-source")
-    # Only the externally selected native defining source grants current authority.
-    # Consumer configuration may retain explicitly admitted predecessors, never choose a candidate.
-    value["accepted_sources"] = sorted({source_sha, *requested})
+    # The externally selected native defining source owns its proof lineage.
+    # Keep consumer configuration compatible with the previous immutable reader
+    # throughout cutover; it cannot add sources or select candidate authority.
+    value["accepted_sources"] = sorted(allowed)
     return value
 
 

@@ -1,4 +1,7 @@
 {
   "version": 1,
-  "accepted_predecessors": []
+  "accepted_predecessors": [
+    "6c569721323d24cabad43f8caa162be60a7afdcb",
+    "f1bd4951288b1ce52a6cb30ab6432e201cf45507"
+  ]
 }

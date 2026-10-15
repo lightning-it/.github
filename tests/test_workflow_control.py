@@ -58,6 +58,29 @@ def delivery(**changes):
 
 
 class ControlTests(unittest.TestCase):
+    def test_old_selected_source_accepts_new_consumer_base_during_cutover(self):
+        config = (Path(__file__).resolve().parents[1] / '.lit/workflow-control.json').read_bytes()
+        api = Mock(); api.file.return_value = config
+        # Both immutable old sources have no predecessor allowlist. Simulate
+        # their policy reader against the newly integrated consumer base.
+        old_lineage = json.dumps({'version': 1, 'accepted_predecessors': []})
+        with patch.object(Path, 'read_text', return_value=old_lineage):
+            for source in ('6c569721323d24cabad43f8caa162be60a7afdcb',
+                           'f1bd4951288b1ce52a6cb30ab6432e201cf45507'):
+                with self.subTest(source=source):
+                    self.assertEqual([source], control.policy(api, REPO, BASE, source)['accepted_sources'])
+
+    def test_selected_central_source_retains_predecessors_without_consumer_cutover(self):
+        api = Mock()
+        api.file.return_value = json.dumps({
+            'version': 1, 'repository': REPO, 'mode': 'reference',
+            'quality': [{'workflow': '.github/workflows/repository-quality.yml', 'job': 'repository / quality'}],
+            'accepted_sources': []}).encode()
+        lineage = json.dumps({'version': 1, 'accepted_predecessors': ['d' * 40]})
+        with patch.object(Path, 'read_text', return_value=lineage):
+            self.assertEqual(sorted([SOURCE, 'd' * 40]),
+                             control.policy(api, REPO, BASE, SOURCE)['accepted_sources'])
+
     def test_consumer_policy_cannot_select_unadmitted_source(self):
         api = Mock()
         config = {"version": 1, "repository": REPO, "mode": "reference",
@@ -65,10 +88,11 @@ class ControlTests(unittest.TestCase):
                   "accepted_sources": [SOURCE]}
         import json
         api.file.return_value = json.dumps(config).encode()
-        self.assertEqual([SOURCE], control.policy(api, REPO, BASE, SOURCE)["accepted_sources"])
-        api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
-        with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
-            control.policy(api, REPO, BASE, SOURCE)
+        with patch.object(Path, 'read_text', return_value=json.dumps({'version': 1, 'accepted_predecessors': []})):
+            self.assertEqual([SOURCE], control.policy(api, REPO, BASE, SOURCE)["accepted_sources"])
+            api.file.return_value = json.dumps(config | {"accepted_sources": ['d' * 40]}).encode()
+            with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
+                control.policy(api, REPO, BASE, SOURCE)
 
     def test_serialized_operation_keeps_identical_native_binding(self):
         original = pull()

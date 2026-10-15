@@ -57,6 +57,9 @@ result, stale tuple or exhausted provider budget blocks the applicable path.
 A new head invalidates the relevant results. Duplicate events cannot reserve
 another funded request for the same finalized head.
 
+The [operator runbook](protected-runtime-operations.md) explains finalization,
+normal one-person approval, blocked operations and consumer privacy.
+
 ## Promotion and archive lifecycle
 
 Delivery operations prepare or update one develop-to-main PR. They grant no
@@ -228,3 +231,40 @@ remaining active for the native ruleset source. GitHub documents that ruleset
 execution ignores event filters, including `branches-ignore`. Native reference
 testing must confirm this behavior before source admission; the filter grants
 no skipped-check acceptance and no candidate workflow-call authority.
+
+
+## Preserve accepted proof lineage across source updates
+
+The externally selected central source explicitly retains its immutable proof
+predecessors in `.lit/workflow-source-lineage.json`. Its policy reader derives
+accepted native proof sources from that protected central list. The reference
+consumer's `accepted_sources` remains empty, so the previously selected immutable
+reader can still process a new base before cutover or during rollback. Legacy
+consumer entries, if present, must be a subset of the selected central allowlist;
+they cannot nominate an unknown source or select the current verifier.
+
+A new verifier must not invalidate authentic current-tuple ingress proofs merely
+because their previously selected producer was an earlier retained version.
+Revision, native producer, route, complete evidence and success checks still
+apply; failed or stale results never become accepted predecessors.
+
+A source update is reviewed and integrated through the prior selected source.
+Management then admits the new immutable source through its exact reviewed native
+plan. A candidate's lineage file has no effect on the authority judging that
+candidate. This two-stage transition preserves old valid evidence without letting
+a candidate select or authorize its own verifier.
+
+Management source-advance planning must validate this central lineage without
+requiring consumer entries to preselect it. The existing reference preparation
+still requires those redundant entries; that management reader must migrate
+before advancing the active main rule. Keeping the previous rule active while
+this coordination is incomplete preserves the current protection.
+
+
+A replay candidate is not current acceptance. An authenticated prior successful
+provider response may be installed while the new producer is pending or after a
+pre-provider metadata failure. The gateway still compares the entire actual new
+client request before returning those exact original bytes, without another
+provider call. Final acceptance separately requires the latest actual native
+producer to finish collection and export successfully; a failed or pending
+current producer cannot fall back to an older successful acceptance.
