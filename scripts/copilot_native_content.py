@@ -1285,7 +1285,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             "producer-review-binding",
         )
     require(
-        (verdict == "### 🟡 Changes recommended") == (count > 0),
+        (verdict != "### 🟢 Approval recommended" or count == 0)
+        and (verdict != "### 🟡 Changes recommended" or count > 0),
         "producer-review-binding",
     )
     # Both observed current renderings include an introductory assessment and
@@ -1570,7 +1571,7 @@ def validate_reported_file_coverage(body: str, changed_files: Any) -> None:
     lines, _ = copilot_frame_control_lines(body)
     boundary = next((i for i, line in enumerate(lines)
                      if line in {"**0 open findings**", "<details open>"}), len(lines))
-    intro = assessment_visible_text("\n".join(lines[2:boundary]))
+    intro = " ".join(assessment_visible_text("\n".join(lines[2:boundary])).split())
     for reviewed, total in re.findall(r"\bCopilot reviewed ([0-9]+) out of ([0-9]+) changed files\b", intro, re.IGNORECASE):
         require(type(changed_files) is int and changed_files > 0
                 and int(reviewed) == int(total) == changed_files, "copilot-explicit-file-coverage-incomplete")

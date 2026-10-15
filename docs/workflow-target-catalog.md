@@ -135,6 +135,15 @@ human/CODEOWNER/last-push approvals. Native GitHub permissions control who can
 resolve a conversation. One authorized person can perform all human actions.
 The AI evidence job does not falsely claim that a cached thread state is current.
 
+Native report publication may finish after its service run: the observed run
+38705673721 ended four seconds before review 5530268361 was submitted. Its
+`updated_at` is therefore not a review-publication deadline. The verifier still
+requires one successful same-PR/current-head native service producer and one
+authenticated complete App review. The observed blue native verdict can carry
+nonzero findings; those findings remain bound to their native conversations.
+Explicit file-coverage prose is normalized for rendered whitespace, so wrapping
+a partial report cannot turn it into an absent report.
+
 ### Events, funding and promotion evidence
 
 The checkout-free, permission-free `review-events.yml` signals supported review,
@@ -159,6 +168,14 @@ the existing physical/cgroup/process memory contract and kill child groups on
 overflow/deadline; a large change is never truncated into an admissible change.
 Distribution file listings must equal the live changed-file count before a
 manifest can be accepted; API truncation cannot grant an exemption.
+
+The promotion verifier reads and authenticates one native ingress proof at a
+time under fresh physical/cgroup/JSON admission. It discards the full decoded
+proof and retains its source, run, attempt, artifact name, route and SHA-256.
+The compact references share a remaining byte/node reservation. Full release
+packaging is a separate producer: it must retrieve the exact referenced bytes,
+verify their digests and stream them into the one final package. References are
+not a substitute for that package or its seven-year archive acceptance.
 
 These small records remain native Actions evidence, not a second durable develop
 release package. The one seven-year package belongs to accepted main promotion.

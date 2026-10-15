@@ -287,10 +287,20 @@ class ControlTests(unittest.TestCase):
             with self.subTest(reviews=reviews), self.assertRaises(control.ControlError):
                 control.copilot_review(api, REPO, pull())
 
+    def test_native_publication_after_service_completion_still_requires_unique_successful_producer(self):
+        review = native_review(submitted_at='2026-10-15T00:00:14Z')
+        api = Mock(); api.pages.side_effect = [[review], [delivery()], []]
+        self.assertEqual(20, control.copilot_review(api, REPO, pull())['service_run'])
+        for runs in ([delivery(conclusion='failure')], [delivery(status='in_progress', conclusion=None)],
+                     [delivery(), delivery(id=21)], [delivery(run_started_at='2026-10-15T00:00:15Z')]):
+            api = Mock(); api.pages.side_effect = [[review], runs]
+            with self.subTest(runs=runs):
+                self.assertIsNone(control.copilot_review(api, REPO, pull()))
+
     def test_native_ingress_requires_exact_source_association_and_completed_gate(self):
         api = Mock(); source_run = run() | {'status': 'completed', 'conclusion': 'success'}
         api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10, 'name': 'Current revision review', 'conclusion': 'success'}]]
-        with patch.object(control, 'artifact_record', return_value={'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull())}):
+        with patch.object(control, 'artifact_record', return_value={'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull()), 'route': 'copilot'}):
             self.assertEqual(10, control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})['run'])
         for changed in (source_run | {'workflow_url': f'https://api.github.com/repos/{REPO}/actions/workflows/77'}, source_run | {'conclusion': 'failure'},
                         source_run | {'pull_requests': [{'number': 3, 'base': {'sha': 'f' * 40}, 'head': {'sha': HEAD}}]}):
@@ -380,7 +390,7 @@ class ControlTests(unittest.TestCase):
         native = run() | {'status': 'completed', 'conclusion': 'success', 'pull_requests': []}
         api = Mock(); api.pages.side_effect = [[native], [{'id': 100, 'run_id': 10,
                                 'name': 'Current revision review', 'conclusion': 'success'}]]
-        record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(value)}
+        record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(value), 'route': 'copilot'}
         with patch.object(control, 'operation_record', return_value=record), patch.object(control, 'artifact_record', return_value=record):
             self.assertEqual(10, control.check_native_control(api, REPO, value, {'accepted_sources': [SOURCE]})['run'])
             api.pages.side_effect = [[native]]
@@ -475,11 +485,13 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET' for call in api.call.call_args_list))
 
     def test_explicit_partial_native_frame_cannot_claim_complete_review(self):
-        body = NATIVE_BODY.replace('The complete proposed source has no actionable findings.',
-                                   'Copilot reviewed 1 out of 2 changed files.')
-        api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()]]
-        with self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
-            control.copilot_review(api, REPO, pull(changed_files=2))
+        for report in ('Copilot reviewed 1 out of 2 changed files.',
+                       'Copilot reviewed 1 out of\n2 changed files.',
+                       'Copilot\nreviewed\t1 out of 2 changed\nfiles.'):
+            body = NATIVE_BODY.replace('The complete proposed source has no actionable findings.', report)
+            api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()]]
+            with self.subTest(report=report), self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
+                control.copilot_review(api, REPO, pull(changed_files=2))
 
     def test_native_frame_without_synthetic_file_counter_remains_admitted(self):
         api = Mock(); api.pages.side_effect = [[native_review()], [delivery()], []]

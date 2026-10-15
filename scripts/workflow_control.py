@@ -177,6 +177,7 @@ def native_required(run, repo):
 
 
 def artifact_record(api, repo, run, name, filename):
+    from workflow_proofs import read_native_json
     artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
     matches = [a for a in artifacts if a["name"] == name and not a["expired"]]
     require(len(matches) == 1, "protected-native-artifact-missing-or-ambiguous")
@@ -186,9 +187,7 @@ def artifact_record(api, repo, run, name, filename):
         require(result.returncode == 0, "protected-native-artifact-unavailable")
         file = Path(temp) / filename
         maximum = MAX_OPERATION_BYTES if filename == "control-operation.json" else MAX_PROOF_BYTES
-        require(file.is_file() and not file.is_symlink() and file.stat().st_size <= maximum,
-                "protected-native-artifact-shape")
-        return json.loads(file.read_bytes())
+        return read_native_json(file, maximum)
 
 
 def same_immutable_tuple(left, right):
@@ -333,9 +332,13 @@ def copilot_review(api, repo, pull):
                   and associated_delivery(r, pull)]
     eligible = []
     for review in current:
+        # Native publication is asynchronous: observed run 38705673721 ended
+        # four seconds BEFORE review 5530268361 was submitted. The native App,
+        # current commit, unique successful same-PR service run and complete
+        # frame provide authority; run.updated_at is not a publication deadline.
         producers = [r for r in deliveries if r.get("status") == "completed" and r.get("conclusion") == "success"
                      and r.get("event") == "dynamic" and r.get("head_sha") == pull["head"]["sha"]
-                     and r.get("run_started_at", "~") <= review.get("submitted_at", "") <= r.get("updated_at", "")]
+                     and r.get("run_started_at", "~") <= review.get("submitted_at", "")]
         if len(producers) == 1:
             eligible.append((review, producers[0]))
     if not eligible:
@@ -500,9 +503,13 @@ def check_native_control(api, repo, pull, config):
     require(len(gate) == 1 and gate[0]["conclusion"] == "success", "ingress-protected-job-missing")
     record = artifact_record(api, repo, selected, f"control-proof-{selected['run_attempt']}", "control-proof.json")
     require(record.get("version") == 1 and record.get("source_sha") in sources
-            and same_immutable_tuple(record.get("binding", {}), binding(pull)), "ingress-protected-proof-binding")
+            and same_immutable_tuple(record.get("binding", {}), binding(pull))
+            and record.get("route") in {"copilot", "renovate", "ancestry", "distribution", "codex"},
+            "ingress-protected-proof-binding")
     return {"run": selected["id"], "attempt": selected["run_attempt"], "job": gate[0]["id"],
-            "head": pull["head"]["sha"], "source_sha": record["source_sha"], "proof": record}
+            "head": pull["head"]["sha"], "source_sha": record["source_sha"],
+            "route": record.get("route"), "artifact": f"control-proof-{selected['run_attempt']}",
+            "proof_sha256": digest(record)}
 
 
 def promotion_ingress(api, repo, pull, config):
@@ -510,6 +517,7 @@ def promotion_ingress(api, repo, pull, config):
     # duplicate PR attribution of feature commits. Every integration has one PR.
     import tempfile
 
+    from workflow_proofs import References
     from workflow_subject import git
     base, head = pull["base"]["sha"], pull["head"]["sha"]
     with tempfile.TemporaryDirectory(prefix="promotion-objects-", dir=os.environ.get("RUNNER_TEMP")) as temp:
@@ -523,7 +531,7 @@ def promotion_ingress(api, repo, pull, config):
         require(ancestor == base, "promotion-needs-main-ancestry")
         commits = git(objects, "rev-list", "--reverse", "--first-parent", f"{base}..{head}").splitlines()
         require(commits and len(commits) <= 10000, "promotion-ingress-empty-or-unbounded")
-        proof = []
+        proof = References(MAX_PROOF_BYTES)
         for commit in commits:
             pulls = api.pages(f"repos/{repo}/commits/{commit}/pulls")
             matches = [p for p in pulls if p.get("merged_at") and p.get("merge_commit_sha") == commit
@@ -531,14 +539,16 @@ def promotion_ingress(api, repo, pull, config):
             require(len(matches) == 1, "promotion-unattributed-ingress")
             ingress = api.call(f"repos/{repo}/pulls/{matches[0]['number']}")
             require(ingress["merged_at"] and ingress["merge_commit_sha"] == commit, "ingress-association-drift")
+            # Verify one native proof under fresh process/cgroup admission,
+            # discard its full decoded content and retain only its digest/ref.
             proof.append({"pull": ingress["number"], "merge": commit,
                           "control": check_native_control(api, repo, ingress, config)})
         tree = sha(git(objects, "merge-tree", "--write-tree", base, head))
         payload = git(objects, "diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv",
                       f"{base}^{{tree}}", tree, binary=True)
-    require(payload and any(item["control"]["proof"].get("route") != "ancestry" for item in proof), "promotion-no-reviewed-change")
+    require(payload and any(item["control"]["route"] != "ancestry" for item in proof.items), "promotion-no-reviewed-change")
     return {"base": base, "head": head, "integration_tree": tree,
-            "diff_sha256": hashlib.sha256(payload).hexdigest(), "ingress": proof}
+            "diff_sha256": hashlib.sha256(payload).hexdigest(), "ingress": proof.items}
 
 
 def ancestry_evidence(api, repo, pull, config):

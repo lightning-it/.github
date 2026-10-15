@@ -109,7 +109,7 @@ class NativeFrameTests(unittest.TestCase):
         functions = (
             MODULE.copilot_reference_text, MODULE.copilot_inline_emphasis,
             lambda text: MODULE.assessment_visible_text(text, strict_links=False, references=set()),
-            MODULE.copilot_has_missed_heading,
+            lambda text: MODULE.copilot_has_missed_heading([text]),
         )
         for count in (128, 1024):
             for source in ('[' * count, '[a](' * count, '[' * count + ']' * count,
@@ -135,8 +135,7 @@ class NativeFrameTests(unittest.TestCase):
                             result = function(source)
                         finally:
                             sys.settrace(previous)
-                        self.assertEqual(False if function is MODULE.copilot_has_missed_heading
-                                         else source, result)
+                        self.assertEqual(False if type(result) is bool else source, result)
                         self.assertLessEqual(events, budget)
 
     def test_link_indexes_preserve_literal_and_quote_policies(self) -> None:
@@ -342,7 +341,6 @@ class NativeFrameTests(unittest.TestCase):
             open_body.replace("1 open finding", "unknown open finding"),
             open_body.replace("<details open>", "<details>"),
             open_body.replace("🔵 Needs a closer look", "🟢 Approval recommended"),
-            open_body,
             overview_with_tail(body, COPILOT_RESOLVED_HISTORY * 2),
             overview_with_tail(body, COPILOT_RESOLVED_HISTORY + CURRENT_COPILOT_RESOLVED_HISTORY),
             overview_with_tail(body, CURRENT_COPILOT_RESOLVED_HISTORY.replace("1 resolved", "0 resolved")),
