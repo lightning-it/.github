@@ -190,6 +190,12 @@ class ControlTests(unittest.TestCase):
         api.pages.return_value = [previous, run()]
         self.assertEqual(10, control.reserve_request(api, REPO, pull(), SOURCE, 10, 1))
 
+    def test_old_generation_cannot_spend_a_later_ready_transition(self):
+        api = Mock(); api.call.return_value = run(10)
+        api.pages.return_value = [run(10), run(11)]
+        with self.assertRaisesRegex(control.ControlError, 'funding-current-native-generation-required'):
+            control.reserve_request(api, REPO, pull(), SOURCE, 10, 1)
+
     def test_renovate_is_narrow_and_other_renovate_still_requires_review(self):
         value = pull(control.RENOVATE)
         value['head']['ref'] = 'renovate/dependency'
@@ -381,9 +387,18 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(9, control.previous_approval(api, REPO, pull(), SOURCE))
             record.assert_called_once_with(api, REPO, previous)
 
-    def test_unqualified_codex_route_is_explicitly_blocked_without_fallback(self):
-        with self.assertRaisesRegex(control.ControlError, 'protected-codex-runtime-pending-native-admission'):
+    def test_codex_requires_current_native_producer_without_copilot_fallback(self):
+        import workflow_codex
+        import workflow_subject
+        job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
+               'workflow_sha': SOURCE, 'check_run_id': 123}
+        with patch.dict(os.environ, {'NATIVE_JOB': json.dumps(job), 'GITHUB_RUN_ID': '10'}), \
+             patch.object(workflow_subject, 'materialize', return_value={}), \
+             patch.object(workflow_codex, 'current_evidence', side_effect=control.ControlError('codex-current-native-producer-required')), \
+             patch.object(control, 'copilot_review') as copilot, \
+             self.assertRaisesRegex(control.ControlError, 'codex-current-native-producer-required'):
             control.verify_existing_route(Mock(), REPO, pull(control.RELEASE), {}, 'codex')
+        copilot.assert_not_called()
 
     def test_merged_ingress_uses_native_operation_when_live_association_disappears(self):
         value = pull() | {'merged': True, 'merge_commit_sha': 'e' * 40}
