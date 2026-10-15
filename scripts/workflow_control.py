@@ -489,13 +489,8 @@ def check_renovate(api, repo, pull):
     return {"kind": "policy-bound-renovate", "label_events": [e["id"] for e in policy_events]}
 
 
-def check_native_control(api, repo, pull, config):
-    """Authenticate the entire native required run, not a caller-authored name."""
-    sources = config.get("accepted_sources", [])
-    require(type(sources) is list and sources, "accepted-source-lineage-missing")
-    for value in sources:
-        sha(value)
-    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+def ingress_candidates(api, repo, pull, sources, runs):
+    """Use the same PR binding for initial selection and final generation read."""
     candidates = []
     for run in runs:
         if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
@@ -506,6 +501,8 @@ def check_native_control(api, repo, pull, config):
             associated = associations[0]
             if associated.get("base", {}).get("sha") != pull["base"]["sha"] or associated.get("head", {}).get("sha") != pull["head"]["sha"]:
                 continue
+        elif run.get("pull_requests"):
+            continue
         elif pull.get("merged") is True and pull.get("merge_commit_sha"):
             operation = operation_record(api, repo, run)
             if operation["source_sha"] not in sources or not same_immutable_tuple(operation["binding"], binding(pull)):
@@ -513,6 +510,17 @@ def check_native_control(api, repo, pull, config):
         else:
             continue
         candidates.append(run)
+    return candidates
+
+
+def check_native_control(api, repo, pull, config):
+    """Authenticate the entire native required run, not a caller-authored name."""
+    sources = config.get("accepted_sources", [])
+    require(type(sources) is list and sources, "accepted-source-lineage-missing")
+    for value in sources:
+        sha(value)
+    runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    candidates = ingress_candidates(api, repo, pull, sources, runs)
     require(candidates, "ingress-protected-run-missing")
     selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
     observed = selected
@@ -534,6 +542,14 @@ def check_native_control(api, repo, pull, config):
             "proof_sha256": digest(record)}
     # Every saved object above is a snapshot. Re-read all mutable decision
     # subjects after the evidence reads, for ordinary and historical passes.
+    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
+    generations = ingress_candidates(api, repo, pull, sources, latest_runs)
+    latest_generation = max(generations, key=lambda item: (item["id"], item["run_attempt"])) if generations else None
+    fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
+              "workflow_id", "workflow_url", "path")
+    require(latest_generation is not None
+            and all(latest_generation.get(key) == observed.get(key) for key in fields),
+            "ingress-native-generation-changed")
     if pull.get("merged") is True:
         current_pull = api.call(f"repos/{repo}/pulls/{pull['number']}")
         require(binding(current_pull) == binding(pull)
@@ -541,18 +557,9 @@ def check_native_control(api, repo, pull, config):
                         for key in ("state", "merged", "merged_at", "merge_commit_sha")),
                 "ingress-referenced-pull-changed")
     current = api.call(f"repos/{repo}/actions/runs/{observed['id']}")
-    fields = ("id", "run_attempt", "status", "conclusion", "head_sha",
-              "workflow_id", "workflow_url", "path")
     require(native_required(current, repo)
             and all(current.get(key) == observed.get(key) for key in fields),
             "ingress-current-run-changed")
-    latest_runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    generations = [item for item in latest_runs if native_required(item, repo)
-                   and item.get("head_sha") == pull["head"]["sha"]]
-    latest_generation = max(generations, key=lambda item: item["id"]) if generations else None
-    require(latest_generation is not None
-            and all(latest_generation.get(key) == observed.get(key) for key in fields),
-            "ingress-native-generation-changed")
     if after_merge:
         result["post_merge_failed_attempts"] = after_merge
     return result

@@ -116,7 +116,8 @@ class HistoricalIngressTests(unittest.TestCase):
                         {'merge_commit_sha': 'e' * 40}, {'state': 'open'}, {'merged': False}, {}):
             api = Mock(spec=control.API)
             api.call.side_effect = [subject | changes, observed]
-            api.pages.side_effect = [[observed], [observed, observed | {'id': 11, 'status': 'in_progress'}]]
+            api.pages.side_effect = [[observed], [observed] if changes else
+                                     [observed, observed | {'id': 11, 'status': 'in_progress'}]]
             with self.subTest(changes=changes), \
                     patch.object(ingress, 'merged_attempt', return_value=(accepted, [{'attempt': 2}])), \
                     patch.object(control, 'native_jobs', return_value=[gate]), \
@@ -124,6 +125,26 @@ class HistoricalIngressTests(unittest.TestCase):
                     self.assertRaisesRegex(control.ControlError,
                                            'referenced-pull-changed' if changes else 'native-generation-changed'):
                 control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+
+    def test_stable_unrelated_same_head_runs_do_not_invalidate_bound_generation(self):
+        from test_workflow_control import pull as ordinary_pull
+        from test_workflow_control import run
+        subject = ordinary_pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
+        bound = run() | {'status': 'completed', 'conclusion': 'success'}
+        proof = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(subject), 'route': 'copilot'}
+        unrelated = bound | {'id': 11, 'pull_requests': [{'number': 44, 'base': subject['base'], 'head': subject['head']}]}
+        for associated in (True, False):
+            foreign = unrelated if associated else unrelated | {'pull_requests': []}
+            api = Mock(spec=control.API)
+            api.pages.return_value = [bound, foreign]
+            api.call.side_effect = [subject, bound]
+            foreign_record = proof | {'binding': proof['binding'] | {'number': 44}}
+            with self.subTest(associated=associated), \
+                    patch.object(control, 'native_jobs', return_value=[{'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]), \
+                    patch.object(control, 'operation_record', return_value=foreign_record) as operation, \
+                    patch.object(control, 'artifact_record', return_value=proof):
+                self.assertEqual(10, control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})['run'])
+                self.assertEqual(0 if associated else 2, operation.call_count)
 
     def test_metadata_changes_and_success_after_merge_cannot_inherit_old_acceptance(self):
         for field, changed in (('title', 'Changed title'), ('body', 'Changed body'),
