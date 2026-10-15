@@ -32,10 +32,10 @@ class FakeStore:
     def request(self, role, method, key, **kwargs):
         self.calls.append((role, method, key, kwargs))
         if method == "PUT":
-            if self.duplicate:
-                raise MODULE.PreconditionFailed("object-already-exists")
             return {"x-amz-version-id": self.version}, b""
         if method == "HEAD":
+            if not self.duplicate:
+                raise MODULE.ObjectAbsent("object-absent")
             return {"x-amz-version-id": self.version, "last-modified": format_datetime(NOW)}, b""
         if "retention" in kwargs.get("query", {}):
             return {}, f'<Retention><Mode>{self.mode}</Mode><RetainUntilDate>{self.until.isoformat()}</RetainUntilDate></Retention>'.encode()
@@ -53,19 +53,27 @@ class ReleaseArchiveTests(unittest.TestCase):
         receipt = self.archive(store)
         self.assertFalse(receipt["release_authorized"])
         self.assertEqual("immutable-version", receipt["version_id"])
-        self.assertEqual([("writer", "PUT"), ("reader", "GET"), ("reviewer", "GET")], [(a, b) for a, b, _, _ in store.calls])
-        put = store.calls[0][3]
-        self.assertEqual("*", put["headers"]["if-none-match"])
+        self.assertEqual([("reader", "HEAD"), ("writer", "PUT"), ("reader", "GET"), ("reviewer", "GET")], [(a, b) for a, b, _, _ in store.calls])
+        put = store.calls[1][3]
+        self.assertNotIn("if-none-match", put["headers"])
         self.assertEqual("COMPLIANCE", put["headers"]["x-amz-object-lock-mode"])
         self.assertEqual(PACKAGE, put["body"])
-        self.assertTrue(all(item[3]["query"]["versionId"] == "immutable-version" for item in store.calls[1:]))
+        self.assertTrue(all(item[3]["query"]["versionId"] == "immutable-version" for item in store.calls[2:]))
 
     def test_duplicate_reuses_only_matching_still_locked_original_version(self):
         store = FakeStore(duplicate=True)
         result = self.archive(store, now=NOW + timedelta(hours=1))
         self.assertEqual("immutable-version", result["version_id"])
-        self.assertEqual(["PUT", "HEAD", "GET", "GET"], [item[1] for item in store.calls])
-        self.assertEqual(1, sum(item[1] == "PUT" for item in store.calls))
+        self.assertEqual(["HEAD", "GET", "GET"], [item[1] for item in store.calls])
+        self.assertEqual(0, sum(item[1] == "PUT" for item in store.calls))
+
+    def test_unavailable_head_is_blocking_without_any_upload_retry(self):
+        store = FakeStore()
+        store.request = Mock(side_effect=MODULE.ArchiveError("provider-http-403"))
+        with self.assertRaisesRegex(MODULE.ArchiveError, "provider-http-403"):
+            self.archive(store)
+        self.assertEqual(1, store.request.call_count)
+        self.assertEqual(("reader", "HEAD"), store.request.call_args.args[:2])
 
     def test_digest_mismatch_stops_before_cloud_write(self):
         store = FakeStore()

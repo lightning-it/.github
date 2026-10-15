@@ -31,7 +31,7 @@ class ArchiveError(ValueError):
     """Safe category only: no credentials, endpoint, payload or resource locator."""
 
 
-class PreconditionFailed(ArchiveError):
+class ObjectAbsent(ArchiveError):
     pass
 
 
@@ -101,8 +101,8 @@ class Store:
                 return {k.lower(): v for k, v in response.headers.items()}, payload
         except urllib.error.HTTPError as error:
             # Response bodies may contain private resource identifiers. Do not log them.
-            if error.code == 412:
-                raise PreconditionFailed("object-already-exists") from None
+            if error.code == 404:
+                raise ObjectAbsent("object-absent") from None
             raise ArchiveError("provider-http-" + str(error.code)) from None
         except (OSError, TimeoutError):
             raise ArchiveError("provider-transport-failure") from None
@@ -137,7 +137,12 @@ def retention_date(payload: bytes) -> datetime:
 
 
 def archive(store: Store, package: bytes, *, repository: str, promotion: int, head: str, expected_digest: str, now: datetime) -> dict:
-    """Storage integrity only. The protected caller owns package provenance/approval."""
+    """Storage only. A protected caller must serialize this entire operation.
+
+    Hetzner does not support conditional PUT on versioned buckets. The caller
+    must enforce one shared repository/target concurrency group across all
+    archive entry points. This module is not an atomic multi-writer lock.
+    """
     require(REPOSITORY.fullmatch(repository) is not None, "repository-shape")
     require(type(promotion) is int and promotion > 0, "promotion-shape")
     require(SHA.fullmatch(head) is not None, "head-shape")
@@ -149,12 +154,8 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
     required_until = (seven_years_after(now) + timedelta(days=1)).replace(microsecond=0)
     key = f"runs/github-release/v1/{repository}/{promotion}/{head}/{expected_digest}.json"
     headers = {**store.encryption, "content-type": "application/json", "content-md5": base64.b64encode(hashlib.md5(package).digest()).decode(),
-               "if-none-match": "*", "x-amz-object-lock-mode": "COMPLIANCE", "x-amz-object-lock-retain-until-date": required_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
+               "x-amz-object-lock-mode": "COMPLIANCE", "x-amz-object-lock-retain-until-date": required_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
     try:
-        response, _ = store.request("writer", "PUT", key, headers=headers, body=package)
-        version = response.get("x-amz-version-id")
-    except PreconditionFailed:
-        # A duplicate may reuse only an exactly matching, still locked version.
         response, _ = store.request("reader", "HEAD", key, headers=store.encryption)
         version = response.get("x-amz-version-id")
         try:
@@ -163,6 +164,9 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
             raise ArchiveError("object-creation-time-missing") from None
         require(created.tzinfo is not None and created <= now, "object-creation-time-invalid")
         required_until = seven_years_after(created).replace(microsecond=0)
+    except ObjectAbsent:
+        response, _ = store.request("writer", "PUT", key, headers=headers, body=package)
+        version = response.get("x-amz-version-id")
     require(isinstance(version, str) and bool(version) and len(version) <= 1024 and version != "null", "object-version-missing")
     query = {"versionId": version}
     _, actual = store.request("reader", "GET", key, query=query, headers=store.encryption, response_limit=MAX_PACKAGE_BYTES)

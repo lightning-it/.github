@@ -98,7 +98,7 @@ native acceptance paths. Changing a JSON status field is not activation.
 release package in the existing private Hetzner S3 store. It checks the expected
 SHA-256 before upload, sets seven calendar years of per-version COMPLIANCE
 retention and verifies the exact returned version through separate read and
-retention-review credentials. A duplicate conditional upload may reuse only an
+retention-review credentials. A repeated serialized call may reuse only an
 identical version with its original full retention still intact. The adapter
 never changes bucket policy/defaults, deletes objects, retries uncertain writes
 or grants release authorization.
@@ -115,3 +115,12 @@ completeness, artifact authenticity or long-term encryption-key recovery. The
 protected promotion producer must verify these before accepting a release.
 No workflow invokes this adapter yet; adding its source does not activate the
 target or qualify a repository for rollout.
+
+Hetzner does not guarantee conditional PUT/DELETE on versioned buckets. The
+adapter therefore uses supported HEAD/PUT/GET operations and immutable version
+IDs. The protected caller must serialize the complete archive operation in one
+shared concurrency group per consumer repository and target branch, including
+all recovery paths. A matching existing object is read and verified without a
+write; an unavailable/ambiguous lookup blocks. An uncertain upload is not retried
+automatically. The adapter alone is not an atomic multi-writer coordinator and
+cannot satisfy rollout acceptance before that caller boundary is implemented.
