@@ -5,6 +5,19 @@ release acceptance remain separate decisions; source tests alone do not admit a
 repository. Existing quality, security and product publishing checks remain
 required throughout the transition.
 
+## Use one review controller across repositories
+
+Disable the additional Codex Cloud `Review code` / `Automatic review` in each
+repository's shared settings, including newly connected repositories. The
+centrally governed author/risk route remains responsible for the required code
+review. Repository settings override personal preferences; onboarding must check
+the explicit repository setting rather than rely on a person's preference.
+
+Keep existing separate security reviews active. If their trigger was `Whenever
+code review runs`, use `On PR open` so disabling the extra code review does not
+silently disable that security review. This changes neither the mandatory CI
+checks nor the normal one-person human approval contract.
+
 ## Finish an ordinary change
 
 1. Prepare the change and run the repository's digest-pinned deterministic
