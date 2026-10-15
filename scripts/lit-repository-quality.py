@@ -270,7 +270,7 @@ def check_secret_safe_generated_docs() -> None:
                 raise AssertionError(f"{label} appears to contain secret-like material")
 
 
-def check_terraform(repo_type: str) -> None:
+def check_terraform(repo_type: str, *, source_owned: bool = False) -> None:
     if repo_type not in {"terraform_module", "terraform_policy"}:
         return
     tf_files = sorted(
@@ -302,6 +302,11 @@ def check_terraform(repo_type: str) -> None:
                     "Terraform policy repository has no explicit validation root; "
                     "add .terraform.lock.hcl, versions.tf, or backend.tf"
                 )
+        if source_owned:
+            # Common definitions inspect HCL without provider downloads or execution.
+            # The independent native product-quality gate still owns init/validate.
+            run_terraform(["terraform", f"-chdir={ROOT}", "fmt", "-check", "-recursive"])
+            return
         # The canonical profile runs inside a read-only source checkout.
         # Terraform writes both .terraform data and dependency lock-file
         # updates below each validation root, so validate one temporary copy
@@ -630,7 +635,7 @@ def run_checks(meta: dict, *, source_owned: bool = False) -> int:
         check_embedded_code(source_owned=source_owned)
         check_managed_assets()
         repo_type = meta.get("repository_type", "")
-        check_terraform(repo_type)
+        check_terraform(repo_type, source_owned=source_owned)
         check_helm(repo_type)
         check_packer(repo_type)
     except subprocess.CalledProcessError as exc:

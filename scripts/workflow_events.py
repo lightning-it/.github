@@ -62,7 +62,21 @@ def refresh(api, repo, name, event):
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={head}", "workflow_runs")
     matches = [run for run in runs if native_required(run, repo)
                and any(pr.get("number") == number for pr in run.get("pull_requests", []))]
-    require(matches, "refresh-native-required-run-missing")
+    if not matches:
+        # An installed caller does not admit its repository. During the POC,
+        # no control run and no enforced common rule grants nothing to refresh.
+        # An enforced scope must fail closed if its native run is unavailable.
+        base = pull["base"]["ref"]
+        require(base in {"develop", "main"}, "refresh-protected-base-required")
+        rules = api.call(f"repos/{repo}/rules/branches/{base}")
+        require(type(rules) is list and all(type(r) is dict for r in rules), "refresh-native-rule-shape")
+        enforced = any(rule.get("type") == "workflows" and any(
+            workflow.get("repository_id") == 1112629689
+            and workflow.get("path") == ".github/workflows/change-control-required.yml"
+            for workflow in rule.get("parameters", {}).get("workflows", [])) for rule in rules)
+        require(not enforced, "refresh-native-required-run-missing")
+        print("Common control is not admitted here; no native verifier or approval created.")
+        return
     selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
     jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
     target = "Current revision review"

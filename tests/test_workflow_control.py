@@ -393,6 +393,24 @@ class ControlTests(unittest.TestCase):
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
 
+    def test_unadmitted_metadata_caller_grants_no_acceptance(self):
+        api = Mock()
+        api.call.side_effect = [pull(), []]
+        api.pages.return_value = []
+        events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual([f'repos/{REPO}/pulls/3', f'repos/{REPO}/rules/branches/develop'],
+                         [call.args[0] for call in api.call.call_args_list])
+        self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+
+    def test_enforced_scope_cannot_silently_skip_a_missing_native_run(self):
+        rule = {'type': 'workflows', 'parameters': {'workflows': [{
+            'repository_id': 1112629689, 'path': control.WORKFLOW, 'sha': SOURCE}]}}
+        for rules in ([rule], {'not': 'native rules'}):
+            api = Mock(); api.call.side_effect = [pull(), rules]; api.pages.return_value = []
+            with self.subTest(rules=rules), self.assertRaises(control.ControlError):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+
     def test_generic_comments_cannot_refresh_or_fund_a_protected_review(self):
         api = Mock()
         with self.assertRaisesRegex(control.ControlError, 'unsupported-refresh-event'):

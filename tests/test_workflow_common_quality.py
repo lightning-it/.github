@@ -139,6 +139,28 @@ class CommonQualityTests(unittest.TestCase):
                 engine.check_embedded_code(source_owned=True)
             self.assertFalse((directory / 'candidate-executed').exists())
 
+    def test_offline_common_terraform_format_does_not_replace_product_validation(self):
+        spec = importlib.util.spec_from_file_location('terraform_quality', ROOT / 'scripts/lit-repository-quality.py')
+        engine = importlib.util.module_from_spec(spec); spec.loader.exec_module(engine)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            config = directory / 'main.tf'
+            # Built-in provider only: no network or credential is required.
+            config.write_text('resource "terraform_data" "sample" {\n  input = "valid"\n}\n')
+            with patch.object(engine, 'ROOT', directory):
+                engine.check_terraform('terraform_module', source_owned=True)
+                self.assertFalse((directory / '.terraform').exists())
+                engine.check_terraform('terraform_module')
+                # HCL is formatted correctly but semantically invalid. Only
+                # the preserved independent product validator may accept it.
+                config.write_text('resource "terraform_data" "sample" {\n  input = var.missing\n}\n')
+                engine.check_terraform('terraform_module', source_owned=True)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    engine.check_terraform('terraform_module')
+                config.write_text('resource "terraform_data" "sample" {')
+                with self.assertRaises(subprocess.CalledProcessError):
+                    engine.check_terraform('terraform_module', source_owned=True)
+
     def test_native_dag_makes_common_quality_mandatory(self):
         import yaml
         workflow = yaml.safe_load((ROOT / '.github/workflows/change-control-required.yml').read_bytes())
