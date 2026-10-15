@@ -1,0 +1,160 @@
+# Immutable common source. Management admits one pinned source per rollout scope.
+# yamllint disable rule:truthy
+---
+name: Protected change control
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+concurrency:
+  group: protected-control-${{ github.repository_id }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  review:
+    name: Protected current revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      pull-requests: write
+    outputs:
+      route: ${{ steps.classify.outputs.route }}
+    steps:
+      - name: Resolve native defining source
+        id: source
+        env:
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          job = json.loads(os.environ['NATIVE_JOB'])
+          assert job['workflow_repository'] == 'lightning-it/.github'
+          assert job['workflow_file_path'] == '.github/workflows/change-control-required.yml'
+          assert re.fullmatch('[0-9a-f]{40}', job['workflow_sha'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('sha=' + job['workflow_sha'] + '\n')
+          PY
+      - name: Load immutable common source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - name: Classify protected current revision
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_control.py classify
+      - name: Verify applicable native review or governed exemption
+        if: steps.classify.outputs.route != 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_control.py review
+      - name: Reserve protected Codex request
+        if: steps.classify.outputs.route == 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_control.py reserve-codex
+      - name: Materialize complete data-only review subject
+        if: steps.classify.outputs.route == 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B scripts/workflow_subject.py
+      - name: Install complete-request budget gateway
+        if: steps.classify.outputs.route == 'codex'
+        id: gateway
+        run: |
+          sudo -n python3 -E -s scripts/exact_revision_gateway.py install --run-id "$GITHUB_RUN_ID"
+          python3 - <<'PY'
+          import json, os
+          root = '/run/exact-review-' + os.environ['GITHUB_RUN_ID'] + '/public'
+          port = json.load(open(root + '/port.json'))['port']
+          assert type(port) is int and port > 0
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'endpoint=http://127.0.0.1:{port}/responses\ndirectory={root}\n')
+          PY
+      - name: Protected exact-revision Codex review
+        if: steps.classify.outputs.route == 'codex'
+        uses: openai/codex-action@86365089eb2b84e0a8fb0717b304f8bdcb13b20e # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          responses-api-endpoint: ${{ steps.gateway.outputs.endpoint }}
+          codex-version: '0.160.0'
+          model: gpt-5.4-mini-2026-03-17
+          effort: high
+          prompt-file: ${{ steps.gateway.outputs.directory }}/prompt.md
+          output-schema-file: ${{ steps.gateway.outputs.directory }}/schema.json
+          output-file: exact-revision-review/action-result.json
+          working-directory: ${{ steps.gateway.outputs.directory }}
+          permission-profile: :read-only
+          safety-strategy: drop-sudo
+          codex-args: '["--ephemeral","-c","web_search=\"disabled\""]'
+          allow-bots: 'true'
+          allow-bot-users: lightning-it-release-automation
+      - name: Collect and verify the protected model receipt
+        if: steps.classify.outputs.route == 'codex'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          python3 -B -E -s "/run/exact-review-$GITHUB_RUN_ID/code/exact_revision_gateway.py" consume --run-id "$GITHUB_RUN_ID"
+          python3 -B scripts/workflow_control.py verify-codex
+  normal-approval:
+    name: Approve exact main promotion
+    needs: review
+    if: needs.review.outputs.route == 'promotion'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment: normal-release-promotion-approval
+    steps:
+      - name: Record native approval boundary
+        run: echo 'Native approval granted; final control rechecks the current tuple.'
+  required:
+    name: Current revision review
+    needs: [review, normal-approval]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Resolve native defining source
+        id: source
+        env:
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          job = json.loads(os.environ['NATIVE_JOB'])
+          assert job['workflow_repository'] == 'lightning-it/.github'
+          assert job['workflow_file_path'] == '.github/workflows/change-control-required.yml'
+          assert re.fullmatch('[0-9a-f]{40}', job['workflow_sha'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('sha=' + job['workflow_sha'] + '\n')
+          PY
+      - name: Load immutable common source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - name: Enforce native review and quality on the still-current tuple
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          APPROVAL_RESULT: ${{ needs.normal-approval.result }}
+        run: python3 -B scripts/workflow_control.py finalize

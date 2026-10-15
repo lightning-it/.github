@@ -21,3 +21,22 @@ review, evidence, retry and promotion requirements for this repository.
   POC acceptance requirements.
 - Any future mandatory review/governance rollout requires an explicit new
   decision and migration. This POC policy does not claim production readiness.
+
+## Owner-approved safe-target migration
+
+The owner has now explicitly commissioned the safe target described in
+`docs/workflow-target.md` and `docs/workflow-target-catalog.md`. That decision
+authorizes implementing the new common control and delivery entry points; it
+does not authorize reactivating the retired controller chains.
+
+The initial `.lit/workflow-control.json` is a reference-scope configuration.
+Its empty accepted-source lineage grants no promotion or release acceptance.
+Management admits an immutable source only after its native positive and
+negative reference checks. The existing POC remains the operating transition
+until that scoped cutover is actually accepted. Preserve all existing quality,
+security and applicable publishing checks throughout the migration.
+
+One authorized person must be able to complete every human approval, including
+self-approval of a normal release. Do not require a second person or synthesize
+human approval. The common runtime executes in the consumer's visibility and
+uses only explicitly scoped secrets. Local validation remains deterministic.

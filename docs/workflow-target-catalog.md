@@ -12,7 +12,7 @@ The target uses these four source workflow files in `lightning-it/.github`:
 | --- | --- | --- | --- |
 | `.github/workflows/repository-quality.yml` | Validate this source repository; WF-01/02 | PR, protected push or manual run; deterministic profile result | Existing and active |
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
-| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | To implement; no file or registration installed |
+| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Reference implementation delivered in source; native admission pending |
 | `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | To implement; no file or registration installed |
 
 This is the initial implementation assignment. A necessary additional entry
@@ -94,3 +94,25 @@ request/PR prevention, private output boundaries, no dependency cycles, exact
 published-artifact verification and immutable archive retention. Then require
 three real changes without necessary correction, a bounded canary and waves.
 The POC transition ends only for the accepted scope.
+
+## Implementation boundary: protected change control
+
+`change-control-required.yml` now supplies the common reference runtime. It
+loads code from the native defining workflow SHA, never consumer candidate
+code. Management still has to admit that immutable source as a Required
+Workflow; the existence of this file grants no production acceptance.
+
+The reference source implements the author matrix, native current-head Copilot
+verification, one native-run reservation before a funded request, the retained
+isolated complete-request-budget Codex gateway, strict Renovate provenance,
+exact ancestry checks and aggregated native ingress verification. The normal
+promotion job uses the one-person approval environment, followed by a fresh
+current-tuple and quality check. Unknown identity, stale metadata, findings,
+failed checks and ambiguous request outcomes block.
+
+Distribution receipt verification requires the protected source-run-produced
+full file manifest. Existing distributors must be migrated jointly before that
+route is admitted; an App author or PR body alone never grants an exemption.
+The empty reference accepted-source list deliberately grants no promotion.
+Delivery operations, private wiring and native staged acceptance remain open
+until their actual implementation and observed results are recorded here.
