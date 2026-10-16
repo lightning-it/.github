@@ -13,12 +13,20 @@ The target uses these five source workflow files in `lightning-it/.github`:
 | `.github/workflows/repository-quality.yml` | Validate this source repository; WF-01/02 | PR, protected push or manual run; deterministic profile result | Existing and active |
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
 | `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Root reference natively qualified and selected at immutable source `6845abfda6069e33b3939736c88177dabc9bf315`; private admission pending |
-| `.github/workflows/delivery-operations.yml` | Refresh original native control after review/metadata events; WF-03 support | Protected/default receiver and immutable consumer call; current-state invalidation only | Root receiver delivered; an unadmitted consumer has no acceptance authority. Promotion preparation is owned by the protected management entry point below; full archive producer pending |
+| `.github/workflows/delivery-operations.yml` | Refresh original native control and signal relevant integrated changes; WF-03/04 support | Review/metadata invalidation; successful native quality of a current protected Develop push dispatches Main-bound preparation | Root event adapter implemented; native event acceptance and timer retirement are separately recorded. An unadmitted consumer has no acceptance authority; full archive producer pending |
 | `.github/workflows/review-events.yml` | Unprivileged review-event signal; WF-03 support | Native review/comment activity; checkout-free signal only | Delivered; no acceptance authority |
 
-The protected management entry point owns privileged PR preparation. Its
-unprivileged default-branch observer dispatches the protected Main preparer;
-the preparer imports the immutable admitted public control definitions. It
+The protected management entry point owns privileged PR preparation. The
+existing consumer delivery workflow signals it directly after successful native
+quality for the actual current protected Develop push. It checks the native
+repository, workflow, event, revision and successful quality job before loading
+the existing App credential. It rechecks freshness before dispatch; stale events
+do nothing. PR and fork runs, failed/skipped checks, other workflows and manual
+producer reruns cannot signal preparation. No timer is required in the target.
+The App token allows only Actions dispatch in Management; it cannot mutate source
+contents or authorize a release. The protected Main preparer independently
+checks current target tips, its single-target App token, admitted source and
+native ingress evidence, then creates or returns at most one PR. It
 cannot approve or merge its own PR and cannot change branch rules. In the real
 [ancestry operation 888](https://github.com/lightning-it/.github/pull/888),
 one native preparation created exactly one App PR and the second returned that
@@ -26,7 +34,12 @@ same unchanged PR. Required control, source quality and CodeQL passed before
 a regular merge preserved both parents and the exact Develop tree, without a
 model request. This qualifies the ancestry/idempotence case only. Normal content
 promotion, private scopes, full archive production and staged rollout still
-require their own actual acceptance.
+require their own actual acceptance. The old Management cron and its observer
+are retired in the paired Management change; source presence alone does not
+prove that both sides have been deployed. This event route adds no workflow
+file or AI review. Its behavior follows GitHub's
+[workflow completion event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
+and explicit workflow-dispatch model.
 
 This is the initial implementation assignment. A necessary additional entry
 point requires an explained function, caller and ownership change in the
