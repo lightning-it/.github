@@ -187,7 +187,7 @@ class ControlTests(unittest.TestCase):
         self.assertNotIn('issue_comment', triggers)
         self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
         checkout = next(step for step in receiver['jobs']['refresh']['steps'] if 'uses' in step)
-        self.assertEqual('732294f965b1f4e7de9a4fe799a13294d2ca3521', checkout['with']['ref'])
+        self.assertEqual('33bb33a5134022f668c8ad33a611a1e3836a6f8c', checkout['with']['ref'])
         self.assertFalse(checkout['with']['persist-credentials'])
         self.assertNotIn('${{', str(checkout['with']['ref']))
 
