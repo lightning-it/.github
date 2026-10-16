@@ -45,6 +45,21 @@ class TransportFramingTests(unittest.TestCase):
         chunks = hex(len(body))[2:].encode() + b'\r\n' + body + b'\r\n0\r\n\r\n'
         self.assertEqual(body, self.fetch(self.response(chunks, b'Transfer-Encoding: chunked\r\n')))
 
+    def test_only_explicit_transient_service_status_has_recoverable_category(self):
+        for status in (429, 500, 502, 503, 504, 400, 401, 403):
+            response = self.response(b'{}', b'Content-Length: 2\r\n')
+            response.status = status
+            expected = 'transport-service-unavailable' if status in (429, 500, 502, 503, 504) else 'transport-upstream-status'
+            with self.subTest(status=status), self.assertRaisesRegex(ReviewError, expected): self.fetch(response)
+
+    def test_worker_preserves_only_the_sanitized_service_category(self):
+        from unittest.mock import Mock
+        payload = transport.canonical({'request': {'input': 'bound'}, 'credential': 'fixture', 'timeout_ms': 1, 'counting': True})
+        for reason, expected in (('transport-service-unavailable', 75), ('transport-upstream-status', 1)):
+            with patch.object(transport.sys, 'stdin', Mock(buffer=io.BytesIO(payload))), \
+                    patch.object(transport, 'fetch_once', side_effect=ReviewError(reason)):
+                self.assertEqual(transport.worker(), expected)
+
     def test_malformed_duplicate_or_conflicting_framing_never_reaches_json_decode(self):
         for headers in (b'Content-Length: unknown\r\n', b'Content-Length: 2\r\nContent-Length: 2\r\n',
                         b'Content-Length: 2\r\nTransfer-Encoding: chunked\r\n'):
