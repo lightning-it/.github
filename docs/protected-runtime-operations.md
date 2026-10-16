@@ -68,6 +68,21 @@ prescribed code-review route or enable additional automatic Codex code reviews.
 
 ## Approve a normal main promotion
 
+The current protected `main` commit must be an ancestor of the proposed
+`develop` head. A normal Main merge creates a new commit; its content being
+present in Develop does not establish that ancestry. Before finalizing the next
+real change, integrate the current Main into that change's branch and merge it
+through the ordinary reviewed Develop PR. Resolve actual conflicts explicitly;
+never replace Develop's tree with Main's tree or bypass the ancestry check.
+When only history needs convergence and both protected trees agree, the
+existing bounded App ancestry operation can prepare its unchanged-tree PR.
+
+If preparation reports content convergence or the reference bootstrap stops
+before creating a PR, inspect the actual protected tips and merge base first.
+Retain the failed preparation; after a regular ancestry integration, prepare a
+fresh plan bound to the new tips through the existing management operation.
+This grants no review, merge or normal release approval and adds no retry chain.
+
 The Root reference's existing delivery entry point observes completion of Repository Quality.
 Only a successful native push for the actual current protected Develop head
 can signal preparation; PR/fork runs, stale heads, skipped checks and producer
@@ -189,6 +204,22 @@ gateway response or receipt blocks another model allocation, even if its later
 collection or artifact upload failed. Completed fully skipped jobs are proven
 no-spend. A successful prior result passes the quality preflight to the existing
 authenticated replay path, which still cannot fund a cache miss.
+
+Failure records distinguish fixed source-owned HTTP authentication/request,
+TLS, network, framing and timeout categories. They also bind the failed phase:
+count, token admission, model response, response validation or settlement.
+Worker exit codes carry no response body, headers, credential or exception text.
+The client's generic high-demand message alone never establishes an upstream
+service outage. Older generic failure records cannot be retrospectively decoded.
+These diagnostics grant no retry, refund, successful review or release authority.
+
+The single response uses the documented model output capacity, including its
+reasoning tokens, rather than an 8192-token cutoff that can consume the entire
+output allowance without producing the final review packet. The existing
+50-minute overall review policy supplies one shared absolute deadline to token
+counting, inference and collection; workers do not receive fresh per-step time
+budgets. The native job remains limited to 55 minutes. One request and the
+existing one-dollar reservation ceiling remain enforced before model access.
 
 The old immutable source did not export this outcome. The separately commissioned
 historical recovery therefore requires an explicit `legacy_unknown_outcome_sha256`
