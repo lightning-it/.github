@@ -38,6 +38,25 @@ Classic human, CODEOWNER and last-push approvals do not require another person.
 Open review conversations remain a native merge condition. The applicable AI
 review and technical checks still need to succeed.
 
+### Finalize a correction to an already ready PR
+
+Finish the correction, run the deterministic profile and push the finalized
+head. If that existing PR was already ready, perform one real Draft-to-Ready
+transition after the push. A synchronization or completed test does not replace
+this explicit finalization. `head-not-finalized-for-funded-review` means that
+the native workflow blocked before spending a request; waiting or requesting
+another review does not finalize the head. The metadata receiver refreshes the
+original verifier after the actual Ready transition. Observe that run rather
+than repeatedly marking Ready or rerunning all jobs.
+
+After the final Ready transition, first observe any independent Security review
+that it has already started. Invoke the exact supported native Security fallback
+only if the finalized head has no current or pending Security review, with one
+durable request reservation. For qualification, finish intentional Draft/Ready
+counterexamples before considering that fallback. Requesting a fallback and then
+marking Ready again can start another Security review. This does not change the
+prescribed code-review route or enable additional automatic Codex code reviews.
+
 ## Approve a normal main promotion
 
 The Root reference's existing delivery entry point observes completion of Repository Quality.
