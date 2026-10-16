@@ -160,7 +160,7 @@ class ControlTests(unittest.TestCase):
 
     def test_metadata_refresh_reruns_original_classification_without_granting_funding_or_success(self):
         api = Mock()
-        api.call.side_effect = [pull(), pull(), {}]
+        api.call.side_effect = [pull(), pull(), run() | {'status': 'completed'}, pull(), {}]
         api.pages.side_effect = [[run()], [{'id': 100, 'run_id': 10, 'name': 'Current revision review',
                                            'status': 'completed', 'conclusion': 'success'},
                                           {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
@@ -384,7 +384,7 @@ class ControlTests(unittest.TestCase):
         producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
                     'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'success',
                     'pull_requests': [{'number': 3, 'head': {'sha': HEAD}}]}
-        api = Mock(); api.call.side_effect = [producer, pull(), pull(), {}]
+        api = Mock(); api.call.side_effect = [producer, pull(), pull(), run() | {'status': 'in_progress'}, pull(), run() | {'status': 'completed'}, pull(), {}]
         review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
         gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
         api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
@@ -392,6 +392,56 @@ class ControlTests(unittest.TestCase):
             events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
+
+    def test_metadata_waits_for_common_quality_before_final_job_exists(self):
+        api = Mock()
+        review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
+                  'status': 'completed', 'conclusion': 'failure'}
+        quality = {'id': 102, 'run_id': 10, 'name': 'Source common quality',
+                   'status': 'in_progress', 'conclusion': None}
+        final = {'id': 100, 'run_id': 10, 'name': 'Current revision review',
+                 'status': 'completed', 'conclusion': 'failure'}
+        api.call.side_effect = [pull(), pull(), run() | {'status': 'in_progress'},
+                                pull(), run() | {'status': 'completed'}, pull(), {}]
+        api.pages.side_effect = [[run()], [review, quality],
+                                [review, quality | {'status': 'completed', 'conclusion': 'success'}, final]]
+        def waiting(seconds):
+            self.assertEqual(15, seconds)
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+        with patch.object(events.time, 'sleep', side_effect=waiting) as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_called_once()
+        writes = [c for c in api.call.call_args_list if c.kwargs.get('method') == 'POST']
+        self.assertEqual(1, len(writes))
+        self.assertEqual(f'repos/{REPO}/actions/jobs/101/rerun', writes[0].args[0])
+
+    def test_metadata_stops_immediately_if_head_changes_while_waiting(self):
+        api = Mock()
+        changed = pull(); changed['head']['sha'] = 'd' * 40
+        api.call.side_effect = [pull(), pull(), run() | {'status': 'in_progress'}, changed]
+        api.pages.side_effect = [[run()], []]
+        with patch.object(events.time, 'sleep') as wait, self.assertRaisesRegex(control.ControlError, 'stale-refresh'):
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_called_once_with(15)
+        self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_rejects_a_changed_native_run_before_rerun(self):
+        for changed in (run() | {'id': 11}, run() | {'head_sha': 'd' * 40},
+                        run() | {'workflow_id': 88}, run() | {'workflow_url': 'candidate-workflow'}):
+            api = Mock(); api.call.side_effect = [pull(), pull(), changed]
+            api.pages.return_value = [run()]
+            with self.subTest(changed=changed), self.assertRaisesRegex(control.ControlError, 'refresh-native-run-drift'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_wait_timeout_never_retries_or_writes(self):
+        api = Mock()
+        api.call.side_effect = lambda path: pull() if '/pulls/' in path else run() | {'status': 'in_progress'}
+        api.pages.side_effect = lambda path, key: [run()] if 'head_sha=' in path else []
+        with patch.object(events.time, 'sleep') as wait, self.assertRaisesRegex(control.ControlError, 'refresh-inflight-timeout'):
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual(120, wait.call_count)
+        self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
 
     def test_unadmitted_metadata_caller_grants_no_acceptance(self):
         api = Mock()
@@ -439,7 +489,7 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(events.common_control_enforced([{'type': 'workflows', 'parameters': {'workflows': [entry]}}]))
 
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
-        api = Mock(); api.call.side_effect = [pull(), pull(), {}]
+        api = Mock(); api.call.side_effect = [pull(), pull(), run() | {'status': 'completed'}, pull(), {}]
         api.pages.side_effect = [[run()], [
             {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'failure'},
             {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'completed', 'conclusion': 'failure'}]]
