@@ -46,6 +46,13 @@ jobs:
           ref: ${{ steps.source.outputs.sha }}
           path: common-source
           persist-credentials: false
+      - name: Check out protected base for dependency admission
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: protected-base
+          persist-credentials: false
       - name: Check out candidate as isolated data
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -61,7 +68,7 @@ jobs:
           NATIVE_PULL_NUMBER: ${{ github.event.pull_request.number }}
           NATIVE_HEAD: ${{ github.event.pull_request.head.sha }}
           NATIVE_BASE: ${{ github.event.pull_request.base.sha }}
-        run: common-source/scripts/run-common-quality.sh "$GITHUB_WORKSPACE/candidate"
+        run: common-source/scripts/run-common-quality.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/protected-base"
   review:
     name: Protected current revision
     runs-on: ubuntu-latest
