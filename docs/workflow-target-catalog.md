@@ -319,3 +319,10 @@ Installing the metadata caller does not activate a POC repository. When both its
 native common run and an enforced common workflow rule are absent, the helper
 makes no change and grants no acceptance. Once an enforced rule exists, a missing
 native run remains an error; existing evaluate runs are still refreshed normally.
+
+The metadata receiver pins its reviewed helper to an immutable ancestor of this
+source update, including the nonauthorizing behavior for unadmitted consumers.
+It can only refresh the original independently selected native control; it does
+not admit its helper as a verifier or alter the previously accepted source that
+judges this update. Consumer calls to this source therefore use the same fixed
+helper without copying private configuration or control code downstream.
