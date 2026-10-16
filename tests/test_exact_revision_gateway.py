@@ -240,6 +240,82 @@ class SingleReviewGatewayTests(unittest.TestCase):
             self.reviewer.submit(self.request(), "fixture-secret")
         worker.assert_not_called()
 
+    def test_count_failure_keeps_exact_safe_phase_and_never_calls_model_or_retries(self):
+        with patch.object(gateway.transport, 'run_worker', side_effect=gateway.review.ReviewError('transport-http-unauthorized')) as worker:
+            with self.assertRaises(gateway.review.ReviewError):
+                self.reviewer.submit(self.request(), 'fixture-secret')
+            self.assertEqual(1, worker.call_count)
+            self.assertTrue(worker.call_args.kwargs['counting'])
+            with self.assertRaises(gateway.review.ReviewError):
+                self.reviewer.submit(self.request(), 'fixture-secret')
+            self.assertEqual(1, worker.call_count)
+        failure = json.loads((self.root / 'public/failure.json').read_text())
+        self.assertEqual('count', failure['phase'])
+        self.assertEqual('transport-http-unauthorized', failure['category'])
+        self.assertNotIn('fixture-secret', json.dumps(failure))
+        self.assertFalse((self.root / 'public/receipt.json').exists())
+
+    def test_documented_output_capacity_and_one_shared_policy_deadline_keep_cost_and_count_bounds(self):
+        calls = []
+        def worker(request, credential, deadline, *, counting=False, **options):
+            calls.append((counting, deadline, copy.deepcopy(request)))
+            return gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 28_297}
+                                            if counting else self.response())
+        with patch.object(gateway.transport, 'run_worker', side_effect=worker):
+            self.reviewer.submit(self.request(), 'fixture')
+        self.assertEqual([True, False], [x[0] for x in calls])
+        self.assertEqual(calls[0][1], calls[1][1])
+        self.assertGreater(self.reviewer.budget.deadline - self.reviewer.started, 100_000)
+        self.assertLessEqual(self.reviewer.budget.deadline - self.reviewer.started, gateway.config.REVIEW_TIMEOUT_MS)
+        self.assertEqual(calls[1][2]['max_output_tokens'], gateway.config.CAPACITY['maximum_output_tokens'])
+        self.assertGreater(calls[1][2]['max_output_tokens'], 8192)
+        self.assertEqual(self.reviewer.budget.max_requests, 1)
+        self.assertEqual(self.reviewer.budget.limit, 1_000_000)
+
+    def test_response_failure_is_distinct_from_count_and_retains_budget(self):
+        with patch.object(gateway.transport, 'run_worker', side_effect=[
+            gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10}),
+            gateway.review.ReviewError('transport-timeout'),
+        ]) as worker, self.assertRaises(gateway.review.ReviewError):
+            self.reviewer.submit(self.request(), 'fixture-secret')
+        self.assertEqual(2, worker.call_count)
+        failure = json.loads((self.root / 'public/failure.json').read_text())
+        self.assertEqual('response', failure['phase'])
+        self.assertEqual('transport-timeout', failure['category'])
+        self.assertEqual('unknown', failure['provider_state'])
+        self.assertGreater(failure['reserved_cost_microusd'], 0)
+
+    def test_unknown_exception_text_never_enters_sealed_diagnostics(self):
+        with patch.object(gateway.transport, 'run_worker', side_effect=RuntimeError('fixture-secret-body')):
+            with self.assertRaises(gateway.review.ReviewError):
+                self.reviewer.submit(self.request(), 'fixture-secret-key')
+        failure = (self.root / 'public/failure.json').read_text()
+        self.assertNotIn('fixture-secret', failure)
+        self.assertEqual('single-contract-rejected', json.loads(failure)['category'])
+        self.assertEqual('count', json.loads(failure)['phase'])
+
+    def test_output_budget_exhaustion_is_not_mislabeled_as_service_outage_or_retried(self):
+        response = self.response() | {'status': 'incomplete', 'incomplete_details': {'reason': 'max_output_tokens'}}
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                wire = gateway.review.canonical(response)
+                if streaming:
+                    events = [{'type': 'response.created', 'sequence_number': 0, 'response': {'id': response['id']}},
+                              {'type': 'response.incomplete', 'sequence_number': 1, 'response': response}]
+                    wire = b''.join(b'data: ' + gateway.review.canonical(x) + b'\n\n' for x in events)
+                reviewer = gateway.Reviewer(self.state, self.prompt, self.root / 'public')
+                with patch.object(gateway.transport, 'run_worker', side_effect=[
+                    gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10}), wire
+                ]) as worker, self.assertRaisesRegex(gateway.review.ReviewError, 'provider-output-limit'):
+                    reviewer.submit(self.request() | {'stream': streaming}, 'fixture')
+                self.assertEqual(2, worker.call_count)
+                failure = json.loads((self.root / 'public/failure.json').read_text())
+                self.assertEqual('provider-output-limit', failure['category'])
+                self.assertEqual('response-validation', failure['phase'])
+                self.assertEqual('unknown', failure['provider_state'])
+                self.assertFalse((self.root / 'public/receipt.json').exists())
+                (self.root / 'public/failure.json').unlink()
+
     def test_json_node_and_depth_abuse_fail_in_actual_http_before_count(self):
         import http.client
         import threading
@@ -329,7 +405,7 @@ class SingleReviewGatewayTests(unittest.TestCase):
                 return gateway.review.canonical({"object": "response.input_tokens", "input_tokens": 10})
             raise TimeoutError
         with patch.object(gateway.transport, "run_worker", side_effect=worker) as worker:
-            with self.assertRaises(TimeoutError):
+            with self.assertRaisesRegex(gateway.transport.TransportFailure, 'transport-timeout'):
                 self.reviewer.submit(self.request(), "fixture")
             with self.assertRaises(gateway.review.ReviewError):
                 self.reviewer.submit(self.request(), "fixture")

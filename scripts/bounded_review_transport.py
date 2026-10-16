@@ -24,11 +24,50 @@ from pathlib import Path
 from typing import Any
 
 from bounded_review import ReviewError, canonical, integer, require
+from bounded_review_config import REVIEW_TIMEOUT_MS
 from bounded_review_provider import ResponseBudget
 
 MAX_RESPONSE_BYTES = 8_000_000
 MAX_WORKER_INPUT = 2_100_000
 WORKER_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+
+# Only fixed, source-owned codes cross the worker boundary. No upstream body,
+# credential, exception text or header may enter diagnostics.
+WORKER_FAILURES = {
+    75: "transport-service-unavailable",
+    76: "transport-http-bad-request",
+    77: "transport-http-unauthorized",
+    78: "transport-http-forbidden",
+    79: "transport-http-not-found",
+    80: "transport-upstream-status",
+    81: "transport-tls-failure",
+    82: "transport-network-failure",
+    83: "transport-timeout",
+    84: "transport-http-framing",
+    85: "transport-incomplete-response",
+    86: "transport-content-type",
+    87: "transport-content-encoding",
+    88: "transport-response-size",
+}
+FAILURE_CATEGORIES = frozenset(WORKER_FAILURES.values()) | {
+    "transport-upstream-failure", "transport-contract-rejected",
+    "provider-timeout", "provider-incomplete", "provider-model-drift",
+    "provider-missing-usage", "provider-usage", "provider-token-count-shape",
+    "provider-token-count-object", "provider-input-admission", "provider-context-admission",
+    "provider-request-budget", "provider-request-feature", "provider-client-message-id",
+    "provider-client-metadata", "provider-cache-key", "provider-unbound-state",
+    "provider-output-limit", "transport-incomplete", "transport-incomplete-stream", "transport-invalid-json",
+}
+
+
+class TransportFailure(ReviewError):
+    def __init__(self, category, phase):
+        # Preserve existing controller exception semantics. The gateway's
+        # source-owned allowlist alone selects what may enter a failure record.
+        super().__init__(category)
+        self.phase = phase if phase in {
+            "reservation", "count", "token-admission", "response", "response-validation", "settlement"
+        } else "unknown"
 
 
 def strict_json(payload: bytes | str, *, json_limits: tuple[int, int] | None = None) -> Any:
@@ -83,6 +122,12 @@ def separated(text: str, delimiter: str):
         start = end + len(delimiter)
 
 
+def reject_output_limit(response):
+    details = response.get("incomplete_details")
+    require(not (response.get("status") == "incomplete" and type(details) is dict
+                 and details.get("reason") == "max_output_tokens"), "provider-output-limit")
+
+
 def completed_response(
     payload: bytes,
     *,
@@ -100,6 +145,7 @@ def completed_response(
     if not streaming:
         response = strict_json(payload, json_limits=json_limits)
         require(type(response) is dict, "transport-response-shape")
+        reject_output_limit(response)
         return response
     text = payload.decode("utf-8", errors="strict")
     text = text.replace("\r\n", "\n")
@@ -139,6 +185,8 @@ def completed_response(
         sequence += 1
         count += 1
         require(count <= 100_000, "transport-event-budget")
+        if kind == "response.incomplete" and type(event.get("response")) is dict:
+            reject_output_limit(event["response"])
         require(kind not in ("response.failed", "response.incomplete", "response.cancelled"), "transport-incomplete")
         if kind == "response.created":
             require(identity is None and count == 1, "transport-response-identity")
@@ -211,6 +259,9 @@ def fetch_once(
         )
         response = connection.getresponse()
         require(response.status not in {429, 500, 502, 503, 504}, "transport-service-unavailable")
+        status_category = {400: "transport-http-bad-request", 401: "transport-http-unauthorized",
+                           403: "transport-http-forbidden", 404: "transport-http-not-found"}
+        require(response.status not in status_category, status_category.get(response.status, "transport-upstream-status"))
         require(response.status == 200, "transport-upstream-status")
         require(response.getheader("Content-Encoding", "identity").lower() == "identity", "transport-content-encoding")
         expected = "text/event-stream" if request.get("stream", False) else "application/json"
@@ -284,7 +335,8 @@ def run_worker(
         remaining = (deadline - monotonic_ms()) / 1000
         require(remaining > 0, "provider-timeout")
         payload, _ = child.communicate(message, timeout=remaining)
-        require(child.returncode != 75, "transport-service-unavailable")
+        require(child.returncode not in WORKER_FAILURES,
+                WORKER_FAILURES.get(child.returncode, "transport-upstream-failure"))
         require(child.returncode == 0, "transport-upstream-failure")
         if output is not None:
             require(0 < os.fstat(output.fileno()).st_size <= maximum, "transport-response-size")
@@ -325,6 +377,7 @@ def exchange(
     Both isolated workers share one absolute deadline. Count failures are terminal
     and never reach the model endpoint. No partial output precedes settlement.
     """
+    phase = "reservation"
     try:
         digest, bounded = ledger.reserve(request, now_ms=monotonic_ms())
         maximum = response_limit(response_byte_limit)
@@ -337,6 +390,7 @@ def exchange(
             from single_review_resources import ENVELOPE_NODES
 
             options["json_limits"] = (json_limits[0] + ENVELOPE_NODES, json_limits[1] + 1)
+        phase = "count"
         count = strict_json(
             bounded_response(
                 run_worker(
@@ -350,13 +404,21 @@ def exchange(
             ),
             json_limits=json_limits,
         )
+        phase = "token-admission"
         ledger.admit_tokens(digest, bounded, count, now_ms=monotonic_ms())
+        phase = "response"
         payload = run_worker(bounded, credential, ledger.deadline, **options)
+        phase = "response-validation"
         response = completed_response(
             payload, streaming=bounded.get("stream", False), json_limits=json_limits, response_byte_limit=maximum
         )
+        phase = "settlement"
         ledger.complete(digest, response, now_ms=monotonic_ms())
         return payload
+    except Exception as error:
+        ledger.abandon()
+        category = "transport-timeout" if isinstance(error, (subprocess.TimeoutExpired, TimeoutError)) else str(error)
+        raise TransportFailure(category, phase) from None
     except BaseException:
         ledger.abandon()
         raise
@@ -377,7 +439,7 @@ def worker(
             type(message) is dict and set(message) == {"request", "credential", "timeout_ms", "counting"},
             "transport-worker-input",
         )
-        integer(message["timeout_ms"], 1, 100_000, "transport-worker-timeout")
+        integer(message["timeout_ms"], 1, REVIEW_TIMEOUT_MS, "transport-worker-timeout")
         require(type(message["counting"]) is bool, "transport-worker-operation")
         options = {} if response_byte_limit is None else {"response_byte_limit": response_limit(response_byte_limit)}
         result = fetch_once(
@@ -390,7 +452,15 @@ def worker(
         sys.stdout.buffer.write(bounded_response(result, response_byte_limit))
         return 0
     except ReviewError as error:
-        return 75 if str(error) == "transport-service-unavailable" else 1
+        return next((code for code, category in WORKER_FAILURES.items() if category == str(error)), 1)
+    except ssl.SSLError:
+        return 81
+    except TimeoutError:
+        return 83
+    except http.client.HTTPException:
+        return 84
+    except OSError:
+        return 82
     except Exception:
         # Never expose error bodies, request data, credentials, headers or a
         # traceback. The parent records a generic, terminal transport failure.

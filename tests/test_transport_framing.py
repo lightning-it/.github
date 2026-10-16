@@ -49,16 +49,51 @@ class TransportFramingTests(unittest.TestCase):
         for status in (429, 500, 502, 503, 504, 400, 401, 403):
             response = self.response(b'{}', b'Content-Length: 2\r\n')
             response.status = status
-            expected = 'transport-service-unavailable' if status in (429, 500, 502, 503, 504) else 'transport-upstream-status'
+            expected = 'transport-service-unavailable' if status in (429, 500, 502, 503, 504) else {
+                400: 'transport-http-bad-request', 401: 'transport-http-unauthorized', 403: 'transport-http-forbidden'}[status]
             with self.subTest(status=status), self.assertRaisesRegex(ReviewError, expected): self.fetch(response)
 
-    def test_worker_preserves_only_the_sanitized_service_category(self):
+    def test_worker_preserves_only_source_owned_category_codes(self):
         from unittest.mock import Mock
         payload = transport.canonical({'request': {'input': 'bound'}, 'credential': 'fixture', 'timeout_ms': 1, 'counting': True})
-        for reason, expected in (('transport-service-unavailable', 75), ('transport-upstream-status', 1)):
+        for reason, expected in tuple((reason, code) for code, reason in transport.WORKER_FAILURES.items()) + (
+                ('secret-from-upstream-body', 1),):
             with patch.object(transport.sys, 'stdin', Mock(buffer=io.BytesIO(payload))), \
                     patch.object(transport, 'fetch_once', side_effect=ReviewError(reason)):
                 self.assertEqual(transport.worker(), expected)
+
+    def test_worker_does_not_expose_network_exception_text(self):
+        from unittest.mock import Mock
+        payload = transport.canonical({'request': {}, 'credential': 'fixture-secret', 'timeout_ms': 1, 'counting': True})
+        for error, expected in ((transport.ssl.SSLError('secret'), 81), (TimeoutError('secret'), 83),
+                                (OSError('secret'), 82), (http.client.IncompleteRead(b'secret'), 84)):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(transport.sys, 'stdin', Mock(buffer=io.BytesIO(payload))), \
+                    patch.object(transport, 'fetch_once', side_effect=error):
+                self.assertEqual(transport.worker(), expected)
+
+    def test_parent_decodes_worker_code_without_capturing_stderr_or_credential_in_argv(self):
+        from unittest.mock import Mock
+        child = Mock(returncode=77)
+        child.communicate.return_value = (b'', None)
+        child.poll.return_value = 77
+        with patch.object(transport.subprocess, 'Popen', return_value=child) as spawn, \
+                self.assertRaisesRegex(ReviewError, 'transport-http-unauthorized'):
+            transport.run_worker({}, 'fixture-secret', transport.monotonic_ms() + 1000, counting=True)
+        self.assertEqual(spawn.call_args.kwargs['stderr'], transport.subprocess.DEVNULL)
+        self.assertNotIn('fixture-secret', repr(spawn.call_args.args))
+
+    def test_worker_accepts_only_the_existing_overall_policy_deadline(self):
+        from unittest.mock import Mock
+        for milliseconds, expected in ((transport.REVIEW_TIMEOUT_MS, 0), (transport.REVIEW_TIMEOUT_MS + 1, 1)):
+            payload = transport.canonical({'request': {}, 'credential': 'fixture',
+                                           'timeout_ms': milliseconds, 'counting': True})
+            with self.subTest(milliseconds=milliseconds), \
+                    patch.object(transport.sys, 'stdin', Mock(buffer=io.BytesIO(payload))), \
+                    patch.object(transport.sys, 'stdout', Mock(buffer=io.BytesIO())), \
+                    patch.object(transport, 'fetch_once', return_value=b'{}') as fetch:
+                self.assertEqual(transport.worker(), expected)
+                self.assertEqual(fetch.call_count, 1 if expected == 0 else 0)
 
     def test_malformed_duplicate_or_conflicting_framing_never_reaches_json_decode(self):
         for headers in (b'Content-Length: unknown\r\n', b'Content-Length: 2\r\nContent-Length: 2\r\n',
