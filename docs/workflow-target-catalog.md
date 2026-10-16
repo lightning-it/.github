@@ -41,6 +41,11 @@ permission context. Management binds the accepted immutable source. Source
 changes are checked by the previously accepted policy; a candidate cannot
 select its own authorization implementation.
 
+The protected common Terraform path runs full init/validate itself; a candidate-owned
+product-validator replacement cannot substitute for it. Dependency downloads
+receive only canonical provider metadata admitted against the protected base;
+private candidate validation stays offline and credential-free.
+
 Consumers keep their applicable product tests, build, installation, scans,
 signing and publishing in their own repositories. A small `delivery.yml`
 caller selects the accepted immutable `delivery-operations.yml` source with
