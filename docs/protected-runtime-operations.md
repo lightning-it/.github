@@ -182,6 +182,21 @@ request may still replay its original response bytes without new funding or
 another recovery approval. The native recovery artifact records the old unknown
 allocation and actual new approval; full durable release archival stays separate.
 
+For newly produced failures, the root-owned gateway exports a source/subject-bound
+outcome even when the action fails. Explicit transient HTTP429/5xx failures have
+a sanitized category; deterministic request errors remain ineligible. Any saved
+gateway response or receipt blocks another model allocation, even if its later
+collection or artifact upload failed. Completed fully skipped jobs are proven
+no-spend. A successful prior result passes the quality preflight to the existing
+authenticated replay path, which still cannot fund a cache miss.
+
+The old immutable source did not export this outcome. The separately commissioned
+historical recovery therefore requires an explicit `legacy_unknown_outcome_sha256`
+acknowledgment of its exact native high-demand/failure log, that specific accepted
+old source, and the same real native approval. Whether an unretained provider
+result or cost exists remains unknown; this is an acknowledged historical
+exception, not retrospective proof or a fallback for newly produced failures.
+
 No workflow file, retry loop, scheduled task or independent repair controller is
 added. Deployment and qualification of this capability remain separate from
 this source description. A source upgrade never itself resets a consumed slot.

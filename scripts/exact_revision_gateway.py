@@ -365,7 +365,8 @@ def failure_category(error):
                "provider-request-feature", "provider-model-drift", "provider-client-message-id",
                "provider-client-metadata", "provider-cache-key", "provider-unbound-state",
                "gateway-path", "gateway-encoding", "gateway-content-length", "gateway-memory-framing",
-               "gateway-content-type", "gateway-authorization", "gateway-incomplete-request", "gateway-timeout"}
+               "gateway-content-type", "gateway-authorization", "gateway-incomplete-request", "gateway-timeout",
+               "transport-service-unavailable"}
     if not isinstance(error, review.ReviewError):
         return "single-unexpected-error"
     return str(error) if str(error) in allowed else "single-contract-rejected"
@@ -904,16 +905,24 @@ def report_failure(run_id: int):
     root = root_for(run_id)
     state, _ = context(root, run_id)
     path = root / "public/failure.json"
-    if not path.exists():
-        print("Protected review failed without a gateway failure receipt.")
-        return
-    failure = transport.strict_json(read_owned(path, 0, MAX_STATE_BYTES))
-    review.require(failure.get("version") == VERSION
+    failure = transport.strict_json(read_owned(path, 0, MAX_STATE_BYTES)) if path.exists() else None
+    review.require(failure is None or failure.get("version") == VERSION
                    and failure.get("state_sha256") == review.sha(review.canonical(state)),
                    "single-failure-report-binding")
-    category = failure.get("category", "single-terminal-failure")
+    category = failure.get("category", "single-terminal-failure") if failure else "unknown-client-failure"
     review.require(type(category) is str and re.fullmatch(r"[a-z][a-z0-9-]{1,95}", category),
                    "single-failure-report-category")
+    metadata = state["metadata"]
+    # Even an action failure after a completed response cannot obtain another
+    # allocation. The root-owned gateway files, not skipped export steps, decide.
+    produced = any((root / "public" / name).exists() for name in ("receipt.json", "response.bin"))
+    write_once(Path("control-review-outcome.json"), {
+        "version": 1, "run": run_id, "source_sha": metadata["central_source_sha"],
+        "binding": {k: metadata[k] for k in ("repository", "pull_request", "head_sha", "base_sha")},
+        "metadata_sha256": review.sha(review.canonical(metadata)),
+        "category": category, "result_produced": produced,
+        "failure": failure,
+    })
     print("Protected gateway failure category: " + category)
 
 

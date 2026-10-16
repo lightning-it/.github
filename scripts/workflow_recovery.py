@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -10,12 +11,13 @@ import workflow_control as control
 
 MARKER = "<!-- lit-review-recovery/v1 "
 OWNER = ("litroc", 76040632, "User")
+LEGACY_SOURCE = "b815cefb4a5f18cd97b3947c789b6db59fedf991"
 require = control.require
 
 
 def history(api, repo, pull, native):
     """Count reserved effects across every native workflow generation/source."""
-    reserved = []
+    reserved, delivered = [], False
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     for run in runs:
         if not control.native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
@@ -35,14 +37,19 @@ def history(api, repo, pull, native):
             if not review:
                 continue
             job = review[0]
-            require(job.get("conclusion") != "success", "recovery-delivered-review-already-exists")
+            require(job.get("run_id") == run["id"] and type(job.get("steps")) is list,
+                    "recovery-native-job-provenance")
+            if job.get("status") == "completed" and job.get("conclusion") == "skipped" \
+                    and all(s.get("conclusion") == "skipped" for s in job["steps"]):
+                continue
+            delivered |= job.get("conclusion") == "success"
             steps = [s for s in job.get("steps", []) if s.get("name") == "Reserve protected Codex request"]
             require(len(steps) == 1 and job.get("run_id") == run["id"], "recovery-native-funding-history-required")
             if steps[0].get("conclusion") == "skipped":
                 continue
             require(job.get("status") == "completed", "recovery-previous-request-still-pending")
             reserved.append((run, attempt, job))
-    return reserved
+    return reserved, delivered
 
 
 def request(api, repo, pull):
@@ -58,7 +65,8 @@ def request(api, repo, pull):
     match = re.search(re.escape(MARKER) + r'(\{[^\n]+\}) -->', body)
     require(match is not None, "recovery-request-shape")
     value = json.loads(match[1])
-    require(type(value) is dict and set(value) == {"repository", "pull", "head", "base", "failed_run", "failed_attempt"}
+    required = {"repository", "pull", "head", "base", "failed_run", "failed_attempt"}
+    require(type(value) is dict and required <= set(value) <= required | {"legacy_unknown_outcome_sha256"}
             and value["repository"] == repo and type(value["pull"]) is int and value["pull"] == pull["number"]
             and value["head"] == pull["head"]["sha"] and value["base"] == pull["base"]["sha"]
             and all(type(value[k]) is int and value[k] > 0 for k in ("failed_run", "failed_attempt")),
@@ -79,8 +87,12 @@ def plan(api, repo, pull, source, native):
     wanted = request(api, repo, pull)
     if wanted is None:
         return None
+    reserved, delivered = history(api, repo, pull, native)
+    # This grants no funding: prepare-codex must still authenticate the complete
+    # cached request, and ordinary cross-generation reservation blocks a miss.
+    if delivered:
+        return None
     require(native["run_attempt"] == 1, "recovery-new-generation-only")
-    reserved = history(api, repo, pull, native)
     require(len(reserved) == 1, "recovery-one-previous-reservation-only")
     failed, attempt, job = reserved[0]
     require((failed["id"], attempt) == (wanted["failed_run"], wanted["failed_attempt"])
@@ -107,9 +119,35 @@ def plan(api, repo, pull, source, native):
     artifacts = api.pages(f"repos/{repo}/actions/runs/{failed['id']}/artifacts", "artifacts")
     require(not any(a.get("name", "").startswith("codex-receipt-") for a in artifacts),
             "recovery-existing-provider-evidence-forbidden")
+    outcome_name = f"control-review-outcome-{attempt}"
+    if any(a.get("name") == outcome_name for a in artifacts):
+        outcome = control.artifact_record(api, repo, failed, outcome_name, "control-review-outcome.json")
+        require(outcome.get("version") == 1 and outcome.get("run") == failed["id"]
+                and outcome.get("source_sha") == prior["source_sha"]
+                and outcome.get("binding") == {"repository": repo, "pull_request": pull["number"],
+                                               "head_sha": pull["head"]["sha"], "base_sha": pull["base"]["sha"]}
+                and outcome.get("result_produced") is False
+                and outcome.get("category") == "transport-service-unavailable"
+                and type(outcome.get("failure")) is dict
+                and outcome["failure"].get("category") == "transport-service-unavailable",
+                "recovery-authenticated-service-failure-without-result-required")
+        outcome_reference = {"artifact": outcome_name, "sha256": control.digest(outcome)}
+    else:
+        # The owner explicitly accepted the unknown result/cost of the old
+        # source's terminal failure. Do not invent a retrospective gateway
+        # outcome. This cutover exception requires acknowledgment of the exact
+        # native log and the same genuine approval, and cannot apply to new code.
+        require(prior["source_sha"] == LEGACY_SOURCE
+                and wanted.get("legacy_unknown_outcome_sha256") == hashlib.sha256(log.encode()).hexdigest()
+                and "We’re currently experiencing high demand" in log
+                and "Protected gateway failure category: single-contract-rejected" in log,
+                "recovery-explicit-legacy-unknown-outcome-acknowledgment-required")
+        outcome_reference = {"legacy_unknown_outcome_sha256": wanted["legacy_unknown_outcome_sha256"],
+                             "result_produced": "unknown"}
     control.normal_environment(api, repo)
     return {"version": 1, "binding": control.binding(pull), "source_sha": source,
             "request": wanted, "failed_source": prior["source_sha"], "failed_job": job["id"],
+            "outcome": outcome_reference,
             "current_run": native["id"], "additional_attempts": 1,
             "original_provider_outcome": "unknown", "release_authorized": False}
 

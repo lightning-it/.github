@@ -52,6 +52,30 @@ class SingleReviewGatewayTests(unittest.TestCase):
                 "instructions": "Protected action instructions", "tools": [],
                 "text": {"format": {"type": "json_schema", "name": "review", "schema": {"type": "object"}}}}
 
+    def test_failure_export_preserves_native_binding_and_any_produced_result(self):
+        state = copy.deepcopy(self.state)
+        state['metadata'].update(central_source_sha='d' * 40, repository='lightning-it/example', pull_request=7)
+        failure = {'version': gateway.VERSION, 'state_sha256': gateway.review.sha(gateway.review.canonical(state)),
+                   'category': 'transport-service-unavailable', 'provider_state': 'unknown'}
+        (self.root / 'public/failure.json').write_text(json.dumps(failure))
+        original_read = gateway.read_owned
+        original_cwd = Path.cwd()
+        with patch.object(gateway, 'root_for', return_value=self.root), patch.object(gateway, 'context', return_value=(state, self.prompt)), \
+                patch.object(gateway, 'read_owned', side_effect=lambda path, uid, limit: original_read(path, os.getuid(), limit)):
+            os.chdir(self.temporary.name)
+            try:
+                for produced in (False, True):
+                    if produced: (self.root / 'public/response.bin').write_bytes(b'possibly completed response')
+                    gateway.report_failure(42)
+                    output = Path('control-review-outcome.json')
+                    record = json.loads(output.read_bytes())
+                    self.assertEqual(record['binding']['head_sha'], self.metadata['head_sha'])
+                    self.assertEqual(record['source_sha'], 'd' * 40)
+                    self.assertEqual(record['result_produced'], produced)
+                    self.assertEqual(record['failure']['provider_state'], 'unknown')
+                    output.unlink()
+            finally: os.chdir(original_cwd)
+
     def response(self):
         return {"id": "resp_fixture", "model": gateway.config.profile()["model"], "status": "completed",
                 "service_tier": "default", "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},

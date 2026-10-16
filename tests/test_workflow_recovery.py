@@ -40,20 +40,27 @@ class RecoveryTests(unittest.TestCase):
                         'body': recovery.MARKER + json.dumps(self.value) + ' -->'}
         self.api = Mock()
         self.runs = [self.failed, self.native]
-        self.artifacts = []
+        self.artifacts = [{'name': 'control-review-outcome-1', 'expired': False}]
+        self.outcome = {'version': 1, 'run': 10, 'source_sha': SOURCE,
+                        'binding': {'repository': REPO, 'pull_request': 9, 'head_sha': 'b' * 40, 'base_sha': 'c' * 40},
+                        'category': 'transport-service-unavailable', 'result_produced': False,
+                        'failure': {'category': 'transport-service-unavailable'}}
         self.comments = [self.comment]
         def pages(path, key=None):
             if '/issues/9/comments' in path: return self.comments
             if '/runs?head_sha=' in path: return self.runs
             if path.endswith('/runs/10/attempts/1/jobs'): return [self.job]
+            if path.endswith('/runs/20/attempts/1/jobs'): return [self.job | {'run_id': 20}]
             if path.endswith('/runs/10/artifacts'): return self.artifacts
             raise AssertionError(path)
         self.api.pages.side_effect = pages
-        self.api.native_job_log.return_value = f'"workflow_sha": "{PRIOR}", "workflow_repository": "{control.SOURCE}", "workflow_file_path": "{control.WORKFLOW}"'
-        self.record = {'version': 1, 'source_sha': PRIOR, 'binding': control.binding(self.pull)}
+        self.api.native_job_log.return_value = f'"workflow_sha": "{SOURCE}", "workflow_repository": "{control.SOURCE}", "workflow_file_path": "{control.WORKFLOW}"'
+        self.record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(self.pull)}
         self.op = patch.object(control, 'operation_record', side_effect=lambda *a: self.record)
         self.env = patch.object(control, 'normal_environment', return_value={'id': 50})
-        self.op.start(); self.env.start(); self.addCleanup(self.op.stop); self.addCleanup(self.env.stop)
+        self.outcome_patch = patch.object(control, 'artifact_record', side_effect=lambda *a: self.outcome)
+        self.op.start(); self.env.start(); self.outcome_patch.start()
+        self.addCleanup(self.op.stop); self.addCleanup(self.env.stop); self.addCleanup(self.outcome_patch.stop)
 
     def plan(self): return recovery.plan(self.api, REPO, self.pull, SOURCE, self.native)
 
@@ -87,7 +94,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_pending_successful_or_delivered_prior_outcomes_block(self):
         for target, key, value in ((self.failed, 'status', 'in_progress'), (self.failed, 'conclusion', 'success'),
-                                    (self.job, 'conclusion', 'success'), (self.job['steps'][2], 'conclusion', 'success'),
+                                    (self.job['steps'][2], 'conclusion', 'success'),
                                     (self.job['steps'][3], 'conclusion', 'failure')):
             before = target[key]; target[key] = value
             with self.subTest(key=key, value=value), self.assertRaises(control.ControlError): self.plan()
@@ -130,12 +137,55 @@ class RecoveryTests(unittest.TestCase):
         self.comment['updated_at'] = '2026-10-16T10:01:00Z'
         with self.assertRaisesRegex(control.ControlError, 'plan-drift'): recovery.authorize(self.api, REPO, self.pull, SOURCE, self.native, digest)
 
-    def test_missing_environment_or_successful_prior_replay_cannot_allocate(self):
+    def test_missing_environment_blocks_and_successful_prior_replay_grants_no_allocation(self):
         with patch.object(control, 'normal_environment', side_effect=control.ControlError('missing')):
             with self.assertRaises(control.ControlError): self.plan()
         self.job['conclusion'] = 'success'
         self.job['steps'][1]['conclusion'] = 'skipped'
-        with self.assertRaisesRegex(control.ControlError, 'delivered-review'): self.plan()
+        self.assertIsNone(self.plan())
+
+    def test_post_response_action_failure_and_deterministic_rejection_block(self):
+        for key, value in (('result_produced', True), ('category', 'single-full-input'), ('source_sha', 'd' * 40)):
+            before = self.outcome[key]; self.outcome[key] = value
+            with self.subTest(key=key), self.assertRaises(control.ControlError): self.plan()
+            self.outcome[key] = before
+
+    def test_legacy_unknown_outcome_requires_explicit_exact_log_acknowledgment(self):
+        import hashlib
+        self.artifacts = []
+        with self.assertRaisesRegex(control.ControlError, 'legacy-unknown'): self.plan()
+        self.record['source_sha'] = PRIOR
+        self.api.native_job_log.return_value = self.api.native_job_log.return_value.replace(SOURCE, PRIOR)
+        self.api.native_job_log.return_value += '\nERROR: We’re currently experiencing high demand\nProtected gateway failure category: single-contract-rejected'
+        value = self.value | {'legacy_unknown_outcome_sha256': hashlib.sha256(self.api.native_job_log.return_value.encode()).hexdigest()}
+        self.comment['body'] = recovery.MARKER + json.dumps(value) + ' -->'
+        self.assertEqual(self.plan()['outcome']['result_produced'], 'unknown')
+        self.api.native_job_log.return_value += '\nchanged'
+        with self.assertRaises(control.ControlError): self.plan()
+
+    def test_fully_skipped_generation_is_known_no_spend(self):
+        skipped = self.failed | {'id': 15, 'conclusion': 'failure'}
+        pages = self.api.pages.side_effect
+        self.api.pages.side_effect = lambda path, key=None: [self.job | {'run_id': 15, 'conclusion': 'skipped', 'steps': []}] if path.endswith('/runs/15/attempts/1/jobs') else pages(path, key)
+        self.runs.insert(1, skipped)
+        self.assertEqual(self.plan()['additional_attempts'], 1)
+        self.assertFalse(control.request_slot_started(self.api, REPO, skipped))
+
+    def test_full_rerun_and_fresh_generation_can_replay_without_authority(self):
+        self.job['conclusion'] = 'success'
+        self.assertIsNone(self.plan())
+        self.native['run_attempt'] = 2
+        self.assertIsNone(self.plan())
+        with self.assertRaisesRegex(control.ControlError, 'plan-drift'):
+            recovery.authorize(self.api, REPO, self.pull, SOURCE, self.native, 'a' * 64)
+
+    def test_no_request_does_not_bypass_cross_generation_ordinary_reservation(self):
+        self.api.call.return_value = self.native
+        self.comments = []
+        self.assertIsNone(self.plan())
+        with patch.dict(os.environ, {'REVIEW_RECOVERY_PLAN_SHA256': ''}):
+            with self.assertRaisesRegex(control.ControlError, 'request-slot-already-consumed'):
+                control.reserve_request(self.api, REPO, self.pull, SOURCE, 20, 1)
 
     def test_reservation_accepts_only_the_authorized_bound_plan(self):
         digest = control.digest(self.plan())

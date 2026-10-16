@@ -52,6 +52,10 @@ one additional attempt; the failed/unknown first allocation remains recorded.
 Any further consumed slot blocks. Keep this in the existing common workflow,
 with no timer, automatic retry, copied controller or new workflow file. A budget
 approval grants neither a successful review nor normal release authorization.
+New failures require a retained, authenticated transient-service outcome with
+no gateway result. The commissioned old-source exception instead requires
+explicit acknowledgment of the exact native log and preserves result/cost as
+unknown; missing historical evidence must never be labeled verified.
 
 ## Independently admitted Root Main reference
 
