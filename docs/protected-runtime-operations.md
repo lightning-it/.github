@@ -68,6 +68,21 @@ prescribed code-review route or enable additional automatic Codex code reviews.
 
 ## Approve a normal main promotion
 
+The current protected `main` commit must be an ancestor of the proposed
+`develop` head. A normal Main merge creates a new commit; its content being
+present in Develop does not establish that ancestry. Before finalizing the next
+real change, integrate the current Main into that change's branch and merge it
+through the ordinary reviewed Develop PR. Resolve actual conflicts explicitly;
+never replace Develop's tree with Main's tree or bypass the ancestry check.
+When only history needs convergence and both protected trees agree, the
+existing bounded App ancestry operation can prepare its unchanged-tree PR.
+
+If preparation reports content convergence or the reference bootstrap stops
+before creating a PR, inspect the actual protected tips and merge base first.
+Retain the failed preparation; after a regular ancestry integration, prepare a
+fresh plan bound to the new tips through the existing management operation.
+This grants no review, merge or normal release approval and adds no retry chain.
+
 The Root reference's existing delivery entry point observes completion of Repository Quality.
 Only a successful native push for the actual current protected Develop head
 can signal preparation; PR/fork runs, stale heads, skipped checks and producer
