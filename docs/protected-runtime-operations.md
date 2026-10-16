@@ -41,8 +41,10 @@ review and technical checks still need to succeed.
 ### Finalize a correction to an already ready PR
 
 Finish the correction, run the deterministic profile and push the finalized
+head. Wait until GitHub has created the native synchronization run for that exact
 head. If that existing PR was already ready, perform one real Draft-to-Ready
-transition after the push. A synchronization or completed test does not replace
+transition after that run's creation time, in a later timestamp second; equal-second
+ordering is deliberately unknown and blocks funding. A completed test does not replace
 this explicit finalization. `head-not-finalized-for-funded-review` means that
 the native workflow blocked before spending a request; waiting or requesting
 another review does not finalize the head. The metadata receiver refreshes the
