@@ -51,6 +51,13 @@ another review does not finalize the head. The metadata receiver refreshes the
 original verifier after the actual Ready transition. Observe that run rather
 than repeatedly marking Ready or rerunning all jobs.
 
+The metadata receiver retains an event until the entire selected native workflow
+has finished, including parallel common quality and a final job that may not yet
+exist. A completed review job alone does not make GitHub's rerun API available.
+While waiting, a closed PR or changed head stops the obsolete event immediately.
+The receiver makes one rerun request after completion; it never retries a write
+or turns a timeout into review or release acceptance.
+
 After the final Ready transition, first observe any independent Security review
 that it has already started. Invoke the exact supported native Security fallback
 only if the finalized head has no current or pending Security review, with one
