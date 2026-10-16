@@ -1,15 +1,27 @@
 # .github
 
-Safe long-term specification: [workflow target](docs/workflow-target.md) and
-[concrete entry-point catalog](docs/workflow-target-catalog.md).
-It is defined and inactive; current POC operation remains separate until the
-new source, consumer and management paths pass their actual acceptance.
+This public repository owns the common workflow definitions. The Root reference
+has an active protected Main control; other repositories keep their documented
+POC transition until their own scope is explicitly admitted and accepted.
+Installing a caller or changing these files does not activate a private scope.
 
-Current operation: [process and workflow purpose during the POC](docs/poc-workflows.md).
-The owner decision in [LI-319](https://lit.atlassian.net/browse/LI-319) temporarily
-supersedes the former mandatory AI review, evidence and automatic promotion
-requirements in the historical governance references below. Repository quality,
-security checks and applicable product release functions remain necessary.
+The process is defined in the [workflow target](docs/workflow-target.md),
+[entry-point catalog](docs/workflow-target-catalog.md) and
+[operator guide](docs/protected-runtime-operations.md). The
+[POC description](docs/poc-workflows.md) remains historical transition guidance
+for scopes that have not migrated; it does not waive active native requirements.
+Repository quality, security and applicable product release checks remain required.
+
+For changes entering the admitted Root Main route, prepare locally, submit a PR,
+and complete the current checks and prescribed ingress AI review before Main
+promotion. Unadmitted scopes retain the ordinary POC contribution process; this
+does not introduce a universal review gate for every ordinary PR. Relevant successful Develop quality signals
+the preparation of at most one Main PR. Preparation grants no approval. One
+authorized person can grant the actual normal release approval, including their
+own operation, after its current technical checks pass. Private consumers keep
+their code, sensitive configuration, validation credentials and results private.
+The public Root reference sends only a bounded preparation request with a
+short-lived dispatch token; it reads no private implementation or approval data.
 
 These organization-wide controls implement the accepted
 [repository topology ADR](https://lit.atlassian.net/wiki/spaces/LIT/pages/2878636297),
@@ -59,8 +71,9 @@ Publishing targets: `none`.
 
 ## Features
 
-- Managed repository metadata and shared quality checks.
-- Standard release, testing, and security documentation.
+- Public common quality, current-revision review and delivery definitions.
+- Explicit scope admission, one-person normal approval and private consumer boundaries.
+- Standard release, testing and security documentation.
 
 ## Documentation
 
@@ -114,7 +127,13 @@ Validation proof for each released version is stored in the corresponding GitHub
 
 ## Release Evidence
 
-This repository does not publish release artifacts by default; release evidence is recorded when artifact releases are enabled.
+This repository does not publish product artifacts by default. A Main promotion
+still needs its one complete audit package and verified seven-year immutable
+retention before full release acceptance. Native GitHub artifacts or storage
+qualification alone do not prove that archive. The complete native archive
+producer remains a separate rollout acceptance item; the Root reference is not
+a claim of completed fleet production acceptance. Develop PRs keep native GitHub
+evidence and do not create duplicate durable release packages.
 The evidence records:
 
 - tested matrix combinations
