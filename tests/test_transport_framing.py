@@ -101,6 +101,20 @@ class TransportFramingTests(unittest.TestCase):
             with self.subTest(headers=headers), self.assertRaises(ReviewError):
                 self.fetch(self.response(b'{}', headers))
 
+    def test_worker_maps_real_malformed_duplicate_and_conflicting_headers_to_framing(self):
+        from unittest.mock import Mock
+        payload = transport.canonical({'request': {}, 'credential': 'fixture', 'timeout_ms': 1000, 'counting': True})
+        for headers in (b'Content-Length: unknown\r\n', b'Content-Length: 2\r\nContent-Length: 2\r\n',
+                        b'Content-Length: 2\r\nTransfer-Encoding: chunked\r\n'):
+            connection = Mock()
+            connection.getresponse.return_value = self.response(b'{}', headers)
+            with self.subTest(headers=headers), \
+                    patch.object(transport.sys, 'stdin', Mock(buffer=io.BytesIO(payload))), \
+                    patch.object(transport.http.client, 'HTTPSConnection', return_value=connection):
+                self.assertEqual(transport.worker(), 84)
+            connection.request.assert_called_once()
+            connection.close.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

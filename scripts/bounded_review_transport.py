@@ -452,6 +452,8 @@ def worker(
         sys.stdout.buffer.write(bounded_response(result, response_byte_limit))
         return 0
     except ReviewError as error:
+        if str(error) in {"transport-content-length-ambiguous", "transport-content-length", "transport-framing-conflict"}:
+            return 84
         return next((code for code, category in WORKER_FAILURES.items() if category == str(error)), 1)
     except ssl.SSLError:
         return 81
