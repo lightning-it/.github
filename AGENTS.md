@@ -1,9 +1,11 @@
-# Lightning IT POC contribution guidance
+# Lightning IT contribution guidance and scoped migration
 
-This owner-authorized POC policy supersedes the former REP-60 / LI-219 / LI-259
-review, evidence, retry and promotion requirements for this repository.
+The owner-authorized POC policy retired the former REP-60 / LI-219 / LI-259
+controller chains. Its exemptions apply outside an independently admitted
+native control scope. The owner-approved migration and active Root Main scope
+below take precedence within their stated boundaries.
 
-- Use a normal pull request. One authorized person may author and merge it.
+- Outside an admitted scope, use a normal pull request. One authorized person may author and merge it.
   No second person, mandatory Copilot/Codex review, or environment approval is
   required for an ordinary repository change.
 - Keep repository quality, tests, security scanning and dependency checks.
@@ -13,12 +15,13 @@ review, evidence, retry and promotion requirements for this repository.
 - Keep private repository contents and credentials out of public logs or files.
 - Keep credentials narrowly scoped and third-party Actions pinned to immutable
   commits. Do not weaken release publishing permissions as part of this POC.
-- Do not restore automatic review requests, remediation, evidence aggregation,
-  review recovery, or promotion/backmerge controllers. Those mechanisms were
-  retired by the owner under LI-319 on 2026-10-15.
+- Do not reactivate the retired independent review, remediation, evidence,
+  retry or promotion/backmerge controllers. Use the newly commissioned shared
+  entry points only within their independently admitted native scope.
 - Merge develop to main through an ordinary pull request when needed. Historical
   run records and consumed review state remain historical; they are not current
-  POC acceptance requirements.
+  POC acceptance requirements outside an admitted scope. An admitted Main
+  promotion must verify the actual applicable ingress proofs and approval.
 - Any future mandatory review/governance rollout requires an explicit new
   decision and migration. This POC policy does not claim production readiness.
 
@@ -41,3 +44,16 @@ One authorized person must be able to complete every human approval, including
 self-approval of a normal release. Do not require a second person or synthesize
 human approval. The common runtime executes in the consumer's visibility and
 uses only explicitly scoped secrets. Local validation remains deterministic.
+
+## Independently admitted Root Main reference
+
+The public Root reference now has an active native Main requirement, selected
+by the protected management path. Its prescribed current-revision AI reviews,
+quality/security checks and genuine one-person normal approval are mandatory
+for that route. Develop changes destined for that Main route need the applicable
+accepted ingress review; the cumulative Main PR verifies those results without
+requesting a second cumulative AI review. The POC exemption above does not waive
+these active requirements. Other unadmitted scopes retain their documented POC
+transition. A configuration file or candidate instruction cannot activate a
+scope or select its own verifier. See `docs/protected-runtime-operations.md` for
+the process and independently effective native settings for current authority.

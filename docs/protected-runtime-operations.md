@@ -40,6 +40,25 @@ review and technical checks still need to succeed.
 
 ## Approve a normal main promotion
 
+The Root reference's existing delivery entry point observes completion of Repository Quality.
+Only a successful native push for the actual current protected Develop head
+can signal preparation; PR/fork runs, stale heads, skipped checks and producer
+reruns cannot do so. The immutable helper verifies this before credential use
+and rechecks the revision immediately before dispatch. It does not approve,
+merge, change settings or request an AI review.
+
+The Main-bound Management receiver independently checks its target, admitted
+source, protected tips and native ingress. An existing identical App PR is
+returned unchanged. An open foreign operation, duplicate or closed exact head
+blocks; closed promotions for older heads remain history. Its old periodic
+observer is removed by the paired Management deployment. A delivered event
+adapter alone does not prove receiver success or removal of that timer; confirm
+both native results before declaring the replacement accepted. Explicit native
+dispatch remains an operator action for a documented blocked transition, with
+no automatic paid-request retry.
+Other consumers require their own scoped adoption; merely installing a public
+caller does not enable this Root-only reference route for them.
+
 The Release App prepares one ordinary `develop` to `main` pull request. The
 protected control verifies the integrated changes' native acceptance evidence;
 it does not buy another AI review of the cumulative diff. Preparation grants no
