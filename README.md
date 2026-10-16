@@ -12,8 +12,10 @@ The process is defined in the [workflow target](docs/workflow-target.md),
 for scopes that have not migrated; it does not waive active native requirements.
 Repository quality, security and applicable product release checks remain required.
 
-The change process is: prepare locally, submit a PR, complete its current checks
-and applicable AI review, then merge. Relevant successful Develop quality signals
+For changes entering the admitted Root Main route, prepare locally, submit a PR,
+and complete the current checks and prescribed ingress AI review before Main
+promotion. Unadmitted scopes retain the ordinary POC contribution process; this
+does not introduce a universal review gate for every ordinary PR. Relevant successful Develop quality signals
 the preparation of at most one Main PR. Preparation grants no approval. One
 authorized person can grant the actual normal release approval, including their
 own operation, after its current technical checks pass. Private consumers keep
