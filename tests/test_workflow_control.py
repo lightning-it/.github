@@ -418,6 +418,26 @@ class ControlTests(unittest.TestCase):
         api.call.assert_not_called()
         api.pages.assert_not_called()
 
+    def test_incomplete_native_workflow_rules_block_before_any_refresh_effect(self):
+        entry = {'repository_id': 1112629689, 'path': control.WORKFLOW, 'sha': SOURCE}
+        malformed = [
+            {'type': 'workflows'}, {'type': 'workflows', 'parameters': {}},
+            {'type': 'workflows', 'parameters': None},
+            *[{'type': 'workflows', 'parameters': {'workflows': value}}
+              for value in (None, {}, [], [None], [{}],
+                            [entry | {'repository_id': True}], [entry | {'repository_id': 0}],
+                            [entry | {'path': None}], [entry | {'path': 'other.yml'}],
+                            [entry | {'sha': 'unknown'}], [entry | {'ref': None}])],
+        ]
+        for rule in malformed:
+            api = Mock(); api.call.side_effect = [pull(), [rule]]; api.pages.return_value = []
+            with self.subTest(rule=rule), self.assertRaises(control.ControlError):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+        self.assertFalse(events.common_control_enforced([{'type': 'workflows', 'parameters': {
+            'workflows': [entry | {'repository_id': 42}]}}]))
+        self.assertTrue(events.common_control_enforced([{'type': 'workflows', 'parameters': {'workflows': [entry]}}]))
+
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
         api = Mock(); api.call.side_effect = [pull(), pull(), {}]
         api.pages.side_effect = [[run()], [

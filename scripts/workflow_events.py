@@ -25,6 +25,34 @@ SIGNAL_PATH = ".github/workflows/review-events.yml"
 SIGNAL_NAME = "Repository review events"
 
 
+def common_control_enforced(rules):
+    """An absent rule is distinct from incomplete native enforcement data."""
+    require(type(rules) is list and all(type(rule) is dict for rule in rules),
+            "refresh-native-rule-shape")
+    enforced = False
+    for rule in rules:
+        if rule.get("type") != "workflows":
+            continue
+        parameters = rule.get("parameters")
+        require(type(parameters) is dict, "refresh-native-workflow-parameters")
+        workflows = parameters.get("workflows")
+        require(type(workflows) is list and bool(workflows), "refresh-native-workflow-list")
+        for workflow in workflows:
+            require(type(workflow) is dict
+                    and type(workflow.get("repository_id")) is int and workflow["repository_id"] > 0
+                    and type(workflow.get("path")) is str
+                    and re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", workflow["path"]),
+                    "refresh-native-workflow-entry")
+            if workflow.get("sha") is not None:
+                sha(workflow["sha"])
+            if "ref" in workflow:
+                require(type(workflow["ref"]) is str and bool(workflow["ref"]),
+                        "refresh-native-workflow-ref")
+            if workflow["repository_id"] == 1112629689 and workflow["path"] == ".github/workflows/change-control-required.yml":
+                enforced = True
+    return enforced
+
+
 def event_pull(api, repo, name, event):
     if name == "workflow_run":
         locator = event.get("workflow_run", {}).get("id")
@@ -69,12 +97,7 @@ def refresh(api, repo, name, event):
         base = pull["base"]["ref"]
         require(base in {"develop", "main"}, "refresh-protected-base-required")
         rules = api.call(f"repos/{repo}/rules/branches/{base}")
-        require(type(rules) is list and all(type(r) is dict for r in rules), "refresh-native-rule-shape")
-        enforced = any(rule.get("type") == "workflows" and any(
-            workflow.get("repository_id") == 1112629689
-            and workflow.get("path") == ".github/workflows/change-control-required.yml"
-            for workflow in rule.get("parameters", {}).get("workflows", [])) for rule in rules)
-        require(not enforced, "refresh-native-required-run-missing")
+        require(not common_control_enforced(rules), "refresh-native-required-run-missing")
         print("Common control is not admitted here; no native verifier or approval created.")
         return
     selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
