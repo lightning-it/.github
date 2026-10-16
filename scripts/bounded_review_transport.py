@@ -210,6 +210,7 @@ def fetch_once(
             },
         )
         response = connection.getresponse()
+        require(response.status not in {429, 500, 502, 503, 504}, "transport-service-unavailable")
         require(response.status == 200, "transport-upstream-status")
         require(response.getheader("Content-Encoding", "identity").lower() == "identity", "transport-content-encoding")
         expected = "text/event-stream" if request.get("stream", False) else "application/json"
@@ -283,6 +284,7 @@ def run_worker(
         remaining = (deadline - monotonic_ms()) / 1000
         require(remaining > 0, "provider-timeout")
         payload, _ = child.communicate(message, timeout=remaining)
+        require(child.returncode != 75, "transport-service-unavailable")
         require(child.returncode == 0, "transport-upstream-failure")
         if output is not None:
             require(0 < os.fstat(output.fileno()).st_size <= maximum, "transport-response-size")
@@ -387,6 +389,8 @@ def worker(
         )
         sys.stdout.buffer.write(bounded_response(result, response_byte_limit))
         return 0
+    except ReviewError as error:
+        return 75 if str(error) == "transport-service-unavailable" else 1
     except Exception:
         # Never expose error bodies, request data, credentials, headers or a
         # traceback. The parent records a generic, terminal transport failure.

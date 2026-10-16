@@ -423,6 +423,9 @@ def request_slot_started(api, repo, run, *, attempt=None):
     if not review:
         return None
     require(len(review) == 1 and review[0].get("run_id") == run["id"], "request-job-provenance")
+    if review[0].get("status") == "completed" and review[0].get("conclusion") == "skipped" \
+            and all(s.get("conclusion") == "skipped" for s in review[0].get("steps", [])):
+        return False
     steps = [step for step in review[0].get("steps", []) if step["name"] in FUNDING_STEPS]
     require(steps and len({s["name"] for s in steps}) == len(steps), "request-boundary-history-unavailable")
     return any(step.get("conclusion") != "skipped" and step.get("status") != "queued" for step in steps)
@@ -438,9 +441,17 @@ def reserve_request(api, repo, pull, source_sha, run_id, attempt):
     require(run.get("id") == run_id and native_required(run, repo)
             and run["head_sha"] == pull["head"]["sha"], "request-origin")
     require(run["run_attempt"] == attempt, "request-attempt-drift")
+    recovery = os.environ.get("REVIEW_RECOVERY_PLAN_SHA256", "")
+    if recovery:
+        require(classify(pull, repo) == "codex", "recovery-codex-only")
+        import workflow_recovery
+        receipt = workflow_recovery.authorize(api, repo, pull, source_sha, run, recovery)
+        with Path("control-recovery.json").open("xb") as stream:
+            stream.write(canonical(receipt))
+        return run_id
     slot_consumed_before(api, repo, run, attempt)
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
-    owners = [r for r in runs if native_required(r, repo) and r["workflow_id"] == run["workflow_id"]
+    owners = [r for r in runs if native_required(r, repo)
               and any(pr.get("number") == pull["number"]
                       and pr.get("base", {}).get("sha") == pull["base"]["sha"]
                       and pr.get("head", {}).get("sha") == pull["head"]["sha"]
