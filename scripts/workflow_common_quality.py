@@ -73,7 +73,7 @@ def candidate_inputs():
             require(not item.is_symlink(), "common-quality-symlink-input")
 
 
-def validate(record):
+def subject(record):
     require(type(record) is dict and set(record) == {
         "version", "repository", "source_sha", "head", "base", "repository_type"
     } and record["version"] == 1, "common-quality-policy-shape")
@@ -92,10 +92,15 @@ def validate(record):
     subject = metadata(path.read_bytes(), record["repository"])
     require(subject["repository_type"] == record["repository_type"],
             "candidate-cannot-select-weaker-quality-profile")
+    return subject
+
+
+def validate(record):
+    configuration = subject(record)
     spec = importlib.util.spec_from_file_location("immutable_quality", SOURCE_DIRECTORY / "lit-repository-quality.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.run_checks(subject, source_owned=True)
+    return module.run_checks(configuration, source_owned=True)
 
 
 def main():
@@ -104,7 +109,10 @@ def main():
     parser.add_argument("--policy", type=Path, required=True)
     args = parser.parse_args()
     if args.operation == "prepare":
-        args.policy.write_bytes(canonical(prepare(API(), os.environ)))
+        record = prepare(API(), os.environ)
+        args.policy.write_bytes(canonical(record))
+        if record["repository_type"] in {"terraform_module", "terraform_policy"}:
+            (args.policy.parent / "terraform-required").touch()
         return 0
     require(args.policy.is_file() and not args.policy.is_symlink()
             and 0 < args.policy.stat().st_size <= 16384, "common-quality-policy-file-bound")

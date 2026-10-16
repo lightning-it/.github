@@ -187,7 +187,7 @@ class ControlTests(unittest.TestCase):
         self.assertNotIn('issue_comment', triggers)
         self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
         checkout = next(step for step in receiver['jobs']['refresh']['steps'] if 'uses' in step)
-        self.assertEqual('6845abfda6069e33b3939736c88177dabc9bf315', checkout['with']['ref'])
+        self.assertEqual('33bb33a5134022f668c8ad33a611a1e3836a6f8c', checkout['with']['ref'])
         self.assertFalse(checkout['with']['persist-credentials'])
         self.assertNotIn('${{', str(checkout['with']['ref']))
 
@@ -393,12 +393,50 @@ class ControlTests(unittest.TestCase):
         wait.assert_called_once_with(15)
         self.assertEqual(f'repos/{REPO}/actions/jobs/100/rerun', api.call.call_args.args[0])
 
+    def test_unadmitted_metadata_caller_grants_no_acceptance(self):
+        api = Mock()
+        api.call.side_effect = [pull(), []]
+        api.pages.return_value = []
+        events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual([f'repos/{REPO}/pulls/3', f'repos/{REPO}/rules/branches/develop'],
+                         [call.args[0] for call in api.call.call_args_list])
+        self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+
+    def test_enforced_scope_cannot_silently_skip_a_missing_native_run(self):
+        rule = {'type': 'workflows', 'parameters': {'workflows': [{
+            'repository_id': 1112629689, 'path': control.WORKFLOW, 'sha': SOURCE}]}}
+        for rules in ([rule], {'not': 'native rules'}):
+            api = Mock(); api.call.side_effect = [pull(), rules]; api.pages.return_value = []
+            with self.subTest(rules=rules), self.assertRaises(control.ControlError):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+
     def test_generic_comments_cannot_refresh_or_fund_a_protected_review(self):
         api = Mock()
         with self.assertRaisesRegex(control.ControlError, 'unsupported-refresh-event'):
             events.refresh(api, REPO, 'issue_comment', {'issue': {'number': 3, 'pull_request': {'url': 'native'}}})
         api.call.assert_not_called()
         api.pages.assert_not_called()
+
+    def test_incomplete_native_workflow_rules_block_before_any_refresh_effect(self):
+        entry = {'repository_id': 1112629689, 'path': control.WORKFLOW, 'sha': SOURCE}
+        malformed = [
+            {'type': 'workflows'}, {'type': 'workflows', 'parameters': {}},
+            {'type': 'workflows', 'parameters': None},
+            *[{'type': 'workflows', 'parameters': {'workflows': value}}
+              for value in (None, {}, [], [None], [{}],
+                            [entry | {'repository_id': True}], [entry | {'repository_id': 0}],
+                            [entry | {'path': None}], [entry | {'path': 'other.yml'}],
+                            [entry | {'sha': 'unknown'}], [entry | {'ref': None}])],
+        ]
+        for rule in malformed:
+            api = Mock(); api.call.side_effect = [pull(), [rule]]; api.pages.return_value = []
+            with self.subTest(rule=rule), self.assertRaises(control.ControlError):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+        self.assertFalse(events.common_control_enforced([{'type': 'workflows', 'parameters': {
+            'workflows': [entry | {'repository_id': 42}]}}]))
+        self.assertTrue(events.common_control_enforced([{'type': 'workflows', 'parameters': {'workflows': [entry]}}]))
 
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
         api = Mock(); api.call.side_effect = [pull(), pull(), {}]

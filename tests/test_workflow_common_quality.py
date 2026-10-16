@@ -139,6 +139,31 @@ class CommonQualityTests(unittest.TestCase):
                 engine.check_embedded_code(source_owned=True)
             self.assertFalse((directory / 'candidate-executed').exists())
 
+    def test_protected_terraform_rejects_semantic_errors_independently_of_product_scripts(self):
+        spec = importlib.util.spec_from_file_location('terraform_quality', ROOT / 'scripts/lit-repository-quality.py')
+        engine = importlib.util.module_from_spec(spec); spec.loader.exec_module(engine)
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            config = directory / 'main.tf'
+            # Built-in provider only: no network or credential is required.
+            config.write_text('resource "terraform_data" "sample" {\n  input = "valid"\n}\n')
+            with patch.object(engine, 'ROOT', directory):
+                engine.check_terraform('terraform_module', source_owned=True)
+                self.assertFalse((directory / '.terraform').exists())
+                engine.check_terraform('terraform_module')
+                # A candidate-controlled ordinary validator cannot replace the
+                # protected source's actual semantic validation.
+                config.write_text('resource "terraform_data" "sample" {\n  input = var.missing\n}\n')
+                (directory / 'scripts').mkdir()
+                (directory / 'scripts/lit-repository-quality.py').write_text('raise SystemExit(0)\n')
+                with self.assertRaises(subprocess.CalledProcessError):
+                    engine.check_terraform('terraform_module', source_owned=True)
+                with self.assertRaises(subprocess.CalledProcessError):
+                    engine.check_terraform('terraform_module')
+                config.write_text('resource "terraform_data" "sample" {')
+                with self.assertRaises(subprocess.CalledProcessError):
+                    engine.check_terraform('terraform_module', source_owned=True)
+
     def test_native_dag_makes_common_quality_mandatory(self):
         import yaml
         workflow = yaml.safe_load((ROOT / '.github/workflows/change-control-required.yml').read_bytes())
@@ -148,11 +173,15 @@ class CommonQualityTests(unittest.TestCase):
         final = next(step for step in jobs['required']['steps'] if step.get('run', '').endswith(' finalize'))
         self.assertEqual('${{ needs.common-quality.result }}', final['env']['COMMON_QUALITY_RESULT'])
         script = (ROOT / 'scripts/run-common-quality.sh').read_text()
-        preparation, validation = script.split('# Source-owned validation:', 1)
+        preparation = script.split('terraform_mounts=()', 1)[0]
+        validation = script.split('# Source-owned validation:', 1)[1]
         self.assertNotIn('-v "$candidate_root:', preparation)
         self.assertIn('--network none', validation)
         self.assertNotIn('-e GH_TOKEN', validation)
         self.assertNotIn('docker.sock', script)
+        fetch = script.split('# No repository checkout, policy, token or private code is mounted here.', 1)[1].split('terraform_mounts=', 1)[0]
+        for private_mount in ('$candidate_root', '$base_root', '$policy_directory', '-e GH_TOKEN'):
+            self.assertNotIn(private_mount, fetch)
 
     def test_failed_skipped_or_absent_common_result_cannot_finalize(self):
         for result in ('failure', 'skipped', 'cancelled', ''):

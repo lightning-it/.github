@@ -1,6 +1,6 @@
 # Workflow target catalog
 
-Version: **1.0.0**. Status: **defined, runtime migration pending**.
+Version: **1.1.0**. Status: **public reference qualified; private rollout and complete release archive pending**.
 The [process contract](workflow-target.md) remains authoritative. This catalog
 assigns its functions to concrete entry points; it does not activate them.
 
@@ -12,9 +12,21 @@ The target uses these five source workflow files in `lightning-it/.github`:
 | --- | --- | --- | --- |
 | `.github/workflows/repository-quality.yml` | Validate this source repository; WF-01/02 | PR, protected push or manual run; deterministic profile result | Existing and active |
 | `.github/workflows/openssf-scorecard.yml` | Assess repository posture; WF-02 | Existing schedule, relevant setting change or manual run; posture report | Existing and active |
-| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Reference implementation delivered in source; native admission pending |
-| `.github/workflows/delivery-operations.yml` | Prepare promotion/branch-sync PRs and finalize release archives; WF-04/07, verification support for WF-06 | Trusted native delivery events through an immutable consumer call; one PR per repository/target and one final archive package per accepted promotion | Metadata receiver implemented for reference; promotion/archive jobs pending |
-| `.github/workflows/review-events.yml` | Unprivileged review-event signal; WF-03 support | Native review/comment activity; checkout-free signal only | Reference implementation; no acceptance authority |
+| `.github/workflows/change-control-required.yml` | Common protected current-revision policy; WF-02/03/05 | Native required-workflow PR events; verify current quality/security and the existing author/risk review route; bind normal release approval to the exact promotion | Root reference natively qualified and selected at immutable source `6845abfda6069e33b3939736c88177dabc9bf315`; private admission pending |
+| `.github/workflows/delivery-operations.yml` | Refresh original native control after review/metadata events; WF-03 support | Protected/default receiver and immutable consumer call; current-state invalidation only | Root receiver delivered; an unadmitted consumer has no acceptance authority. Promotion preparation is owned by the protected management entry point below; full archive producer pending |
+| `.github/workflows/review-events.yml` | Unprivileged review-event signal; WF-03 support | Native review/comment activity; checkout-free signal only | Delivered; no acceptance authority |
+
+The protected management entry point owns privileged PR preparation. Its
+unprivileged default-branch observer dispatches the protected Main preparer;
+the preparer imports the immutable admitted public control definitions. It
+cannot approve or merge its own PR and cannot change branch rules. In the real
+[ancestry operation 888](https://github.com/lightning-it/.github/pull/888),
+one native preparation created exactly one App PR and the second returned that
+same unchanged PR. Required control, source quality and CodeQL passed before
+a regular merge preserved both parents and the exact Develop tree, without a
+model request. This qualifies the ancestry/idempotence case only. Normal content
+promotion, private scopes, full archive production and staged rollout still
+require their own actual acceptance.
 
 This is the initial implementation assignment. A necessary additional entry
 point requires an explained function, caller and ownership change in the
@@ -28,6 +40,11 @@ The required change-control workflow runs in the consumer's visibility and
 permission context. Management binds the accepted immutable source. Source
 changes are checked by the previously accepted policy; a candidate cannot
 select its own authorization implementation.
+
+The protected common Terraform path runs full init/validate itself; a candidate-owned
+product-validator replacement cannot substitute for it. Dependency downloads
+receive only canonical provider metadata admitted against the protected base;
+private candidate validation stays offline and credential-free.
 
 Consumers keep their applicable product tests, build, installation, scans,
 signing and publishing in their own repositories. A small `delivery.yml`
@@ -62,8 +79,8 @@ normal one-person approval, blocked operations and consumer privacy.
 
 ## Promotion and archive lifecycle
 
-Delivery operations prepare or update one develop-to-main PR. They grant no
-human approval. Branch reconciliation also uses a normal PR: an unprotected
+The protected management preparer creates at most one develop-to-main PR using
+the admitted public verifier definitions. It grants no human approval. Branch reconciliation also uses a normal PR: an unprotected
 integration branch joins both protected tips and proves the resulting tree,
 without direct writes to protected branches. Source-only ancestry joins are
 not real product changes for reference acceptance.
@@ -279,11 +296,12 @@ plan. A candidate's lineage file has no effect on the authority judging that
 candidate. This two-stage transition preserves old valid evidence without letting
 a candidate select or authorize its own verifier.
 
-Management source-advance planning must validate this central lineage without
-requiring consumer entries to preselect it. The existing reference preparation
-still requires those redundant entries; that management reader must migrate
-before advancing the active main rule. Keeping the previous rule active while
-this coordination is incomplete preserves the current protection.
+Management source-advance planning validates the central lineage without
+requiring consumer entries to preselect their judge. The protected native
+reference preparation checks the selected predecessor and forward-only source
+ancestry before changing the main rule. The existing rule remains active until
+the exact reviewed transition is applied; caller installation alone grants no
+scope adoption.
 
 
 A replay candidate is not current acceptance. An authenticated prior successful
@@ -293,3 +311,23 @@ client request before returning those exact original bytes, without another
 provider call. Final acceptance separately requires the latest actual native
 producer to finish collection and export successfully; a failed or pending
 current producer cannot fall back to an older successful acceptance.
+
+
+Common Terraform checks run offline and without credentials. They validate the
+protected repository type, required HCL layout and formatting. Provider install
+and semantic `terraform validate` remain mandatory in the separately verified
+native product-quality workflow declared by the protected consumer policy. The
+ordinary repository validator continues to run init and validate; a successful
+common format check cannot replace a failed product gate.
+
+Installing the metadata caller does not activate a POC repository. When both its
+native common run and an enforced common workflow rule are absent, the helper
+makes no change and grants no acceptance. Once an enforced rule exists, a missing
+native run remains an error; existing evaluate runs are still refreshed normally.
+
+The metadata receiver pins its reviewed helper to an immutable ancestor of this
+source update, including the nonauthorizing behavior for unadmitted consumers.
+It can only refresh the original independently selected native control; it does
+not admit its helper as a verifier or alter the previously accepted source that
+judges this update. Consumer calls to this source therefore use the same fixed
+helper without copying private configuration or control code downstream.
