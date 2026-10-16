@@ -18,6 +18,9 @@ concurrency:
 jobs:
   common-quality:
     name: Source common quality
+    outputs:
+      recovery: ${{ steps.recovery.outputs.required }}
+      recovery_sha256: ${{ steps.recovery.outputs.sha256 }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -69,8 +72,16 @@ jobs:
           NATIVE_HEAD: ${{ github.event.pull_request.head.sha }}
           NATIVE_BASE: ${{ github.event.pull_request.base.sha }}
         run: common-source/scripts/run-common-quality.sh "$GITHUB_WORKSPACE/candidate" "$GITHUB_WORKSPACE/protected-base"
+      - name: Classify explicit one-time recovery request
+        id: recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: python3 -B common-source/scripts/workflow_recovery.py
   review:
     name: Protected current revision
+    needs: common-quality
+    environment: ${{ needs.common-quality.outputs.recovery == 'true' && github.run_attempt == 1 && 'normal-release-promotion-approval' || '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 55
     permissions:
@@ -154,11 +165,21 @@ jobs:
               output.write(f'endpoint=http://127.0.0.1:{port}/responses\ndirectory={root}\n')
           PY
       - name: Reserve protected Codex request
+        id: reserve
         if: steps.classify.outputs.route == 'codex' && steps.codex.outputs.replay != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
+          REVIEW_RECOVERY_PLAN_SHA256: ${{ needs.common-quality.outputs.recovery_sha256 }}
         run: python3 -B scripts/workflow_control.py reserve-codex
+      - name: Preserve actual native recovery approval and original unknown allocation
+        if: steps.reserve.outcome == 'success' && needs.common-quality.outputs.recovery == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: control-recovery-${{ github.run_attempt }}
+          path: control-recovery.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Protected exact-revision Codex review
         if: steps.classify.outputs.route == 'codex'
         uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1

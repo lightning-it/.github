@@ -156,3 +156,32 @@ verified seven-year immutable retention before release acceptance. Ordinary
 `develop` pull requests retain native GitHub evidence and do not create duplicate
 durable release packages. Product repositories also retain their applicable
 artifact scans, signatures, provenance and verification of published bytes.
+
+## One explicitly approved service-failure recovery
+
+Ordinary first reviews keep their existing budget. A terminal protected Codex
+service failure with no delivered result may receive exactly one additional
+attempt after an explicit owner request and genuine native one-person approval.
+The original provider outcome stays unknown and its allocation is not refunded,
+erased or described as free. A second terminal failure blocks again.
+
+The owner posts one `lit-review-recovery/v1` JSON comment binding repository,
+pull number, exact head/base, failed native run and attempt. The existing common
+quality job verifies this request against the actual native failure and defining
+source. A comment cannot grant authority. Only the existing normal approval
+Environment, with one eligible user and self approval allowed, authorizes the
+additional review allocation. This use of that Environment grants no release
+approval; a normal Main promotion still needs its own genuine approval.
+
+Quality now finishes before the review can spend a request. The existing review
+job requires the native approval only for a valid recovery request. Native
+funding history spans all source/workflow generations: another consumed slot,
+a prior delivered result, stale binding, missing authority or changed request
+blocks. Reruns cannot obtain another allocation. An already successful complete
+request may still replay its original response bytes without new funding or
+another recovery approval. The native recovery artifact records the old unknown
+allocation and actual new approval; full durable release archival stays separate.
+
+No workflow file, retry loop, scheduled task or independent repair controller is
+added. Deployment and qualification of this capability remain separate from
+this source description. A source upgrade never itself resets a consumed slot.

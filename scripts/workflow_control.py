@@ -438,6 +438,14 @@ def reserve_request(api, repo, pull, source_sha, run_id, attempt):
     require(run.get("id") == run_id and native_required(run, repo)
             and run["head_sha"] == pull["head"]["sha"], "request-origin")
     require(run["run_attempt"] == attempt, "request-attempt-drift")
+    recovery = os.environ.get("REVIEW_RECOVERY_PLAN_SHA256", "")
+    if recovery:
+        require(classify(pull, repo) == "codex", "recovery-codex-only")
+        import workflow_recovery
+        receipt = workflow_recovery.authorize(api, repo, pull, source_sha, run, recovery)
+        with Path("control-recovery.json").open("xb") as stream:
+            stream.write(canonical(receipt))
+        return run_id
     slot_consumed_before(api, repo, run, attempt)
     runs = api.pages(f"repos/{repo}/actions/runs?head_sha={pull['head']['sha']}", "workflow_runs")
     owners = [r for r in runs if native_required(r, repo) and r["workflow_id"] == run["workflow_id"]

@@ -45,6 +45,14 @@ self-approval of a normal release. Do not require a second person or synthesize
 human approval. The common runtime executes in the consumer's visibility and
 uses only explicitly scoped secrets. Local validation remains deterministic.
 
+The owner also approved one controlled recovery after a terminal Codex service
+failure with no delivered review. An explicit exact-subject owner request is
+only a locator. The existing native one-person approval must separately approve
+one additional attempt; the failed/unknown first allocation remains recorded.
+Any further consumed slot blocks. Keep this in the existing common workflow,
+with no timer, automatic retry, copied controller or new workflow file. A budget
+approval grants neither a successful review nor normal release authorization.
+
 ## Independently admitted Root Main reference
 
 The public Root reference now has an active native Main requirement, selected
