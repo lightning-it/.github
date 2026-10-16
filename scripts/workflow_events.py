@@ -101,23 +101,30 @@ def refresh(api, repo, name, event):
         print("Common control is not admitted here; no native verifier or approval created.")
         return
     selected = max(matches, key=lambda run: (run["id"], run["run_attempt"]))
-    jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
     target = "Current revision review"
     if name == "pull_request_target":
         # Metadata changes require a fresh operation snapshot/classification.
         # Re-running the original review does not authorize a second provider
         # effect: only its source-bound funding step may reserve one.
         target = "Protected current revision"
-    # Keep the invalidation signal until an in-flight gate finishes. Returning
-    # here would allow a dismissal during finalization to leave a stale success.
+    # A finished review can precede common quality and creation of the final
+    # gate. GitHub rejects a rerun while that original workflow is still active.
+    # Retain the signal until the entire native run finishes; never retry a write.
     for _ in range(120):
+        current = api.call(f"repos/{repo}/pulls/{number}")
+        require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
+        observed = api.call(f"repos/{repo}/actions/runs/{selected['id']}")
+        require(observed.get("id") == selected["id"] and observed.get("head_sha") == head
+                and observed.get("workflow_id") == selected.get("workflow_id")
+                and native_required(observed, repo), "refresh-native-run-drift")
+        jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
         active = [job for job in jobs if job["name"] in {"Current revision review", "Protected current revision"}
                   and job["status"] != "completed"]
-        if not active:
+        if observed.get("status") == "completed" and not active:
             break
         time.sleep(15)
-        jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
-    require(not active, "refresh-inflight-timeout")
+    else:
+        raise ControlError("refresh-inflight-timeout")
     review = [job for job in jobs if job["name"] == "Protected current revision"]
     require(len(review) == 1, "refresh-native-review-job-ambiguous")
     # A completed failed review may now have received provider evidence. Its
