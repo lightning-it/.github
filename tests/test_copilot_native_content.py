@@ -89,6 +89,54 @@ class NativeFrameTests(unittest.TestCase):
                 overview_with_tail(open_body, COPILOT_PREVIOUSLY_MISSED_HISTORY)
             )
 
+    def test_native_issue_frame_accepts_complete_zero_with_resolved_history(self):
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            "**0 open findings**", "**No open issues** 🎉"
+        ).replace("🧠 **Review effort:** Balanced", "<sub>Review effort: Balanced</sub>")
+        for verdict in ("🔵 Needs a closer look", "🟢 Approval recommended"):
+            current = body.replace("🔵 Needs a closer look", verdict)
+            current = current.replace("<details>\n<summary><strong>What changed in this PR</strong></summary>\n\n"
+                                      "Enables the guarded, read-only Terraform creation preview.\n</details>\n\n", "")
+            current = current.replace("<sub>", CURRENT_COPILOT_RESOLVED_HISTORY + "\n<sub>", 1)
+            with self.subTest(verdict=verdict):
+                self.assertEqual(0, MODULE.historical_copilot_findings_count(current))
+
+    def test_native_issue_frame_rejects_missed_issues_and_incomplete_frames(self):
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            "**0 open findings**", "**No open issues** 🎉"
+        ).replace("🧠 **Review effort:** Balanced", "<sub>Review effort: Balanced</sub>")
+        missed = COPILOT_PREVIOUSLY_MISSED_HISTORY.replace("Previously missed (1)", "1 previously missed issue")
+        for invalid in (
+            body.replace("<sub>", missed + "<sub>", 1),
+            body.replace("<sub>", COPILOT_PREVIOUSLY_MISSED_HISTORY + "<sub>", 1),
+            body.replace("<sub>Review effort: Balanced</sub>", ""),
+            body.replace("<sub>Review effort: Balanced</sub>", "🧠 **Review effort:** Balanced"),
+            body.replace("**No open issues** 🎉", "**0 open issues**"),
+            body.replace("**No open issues** 🎉", "**No open issues**"),
+            body.replace("**No open issues** 🎉", "**No open issues** 🎉\n**0 open findings**"),
+            body + "\n🧠 **Review effort:** Balanced",
+            body.replace("**No open issues** 🎉", "<details>\n**No open issues** 🎉\n</details>"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(MODULE.EvidenceError):
+                MODULE.historical_copilot_findings_count(invalid)
+
+    def test_native_issue_counts_and_missed_heading_variants(self):
+        body = CURRENT_COPILOT_OVERVIEW.replace(
+            "🔵 Needs a closer look", "🟡 Changes recommended"
+        ).replace("**0 open findings**", CURRENT_COPILOT_OPEN_FINDING).replace(
+            "🧠 **Review effort:** Balanced", "<sub>Review effort: Balanced</sub>")
+        for count in (1, 2):
+            current = body.replace("1 open finding", f"{count} open {'issue' if count == 1 else 'issues'}")
+            with self.subTest(count=count):
+                self.assertEqual(count, MODULE.historical_copilot_findings_count(current))
+        for field in ("0 open issues", "01 open issue", "1 open issues", "2 open issue", "1001 open issues"):
+            with self.subTest(field=field), self.assertRaises(MODULE.EvidenceError):
+                MODULE.historical_copilot_findings_count(body.replace("1 open finding", field))
+        for heading in ("1 previously missed issue", "2 previously missed issues"):
+            with self.subTest(heading=heading):
+                self.assertTrue(MODULE.copilot_has_missed_heading(["**" + heading + "**"]))
+                self.assertTrue(MODULE.copilot_rendered_has_missed_heading("<p><strong>" + heading + "</strong></p>"))
+
     def test_quote_projection_preserves_tabs_and_indented_literals(self) -> None:
         for source, projected in (
             ('>\t> ordinary text', ['', 'ordinary text']),

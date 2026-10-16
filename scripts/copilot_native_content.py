@@ -908,7 +908,7 @@ def copilot_has_missed_heading(lines: list[str]) -> bool:
     )
     return re.search(
         r"(?im)^[ \t]*(?:previously\s+missed(?:\s*\([^()]*\))?"
-        r"|[0-9]+\s+previously\s+missed)[ \t]*$", rendered,
+        r"|[0-9]+\s+previously\s+missed(?:\s+issues?)?)[ \t]*$", rendered,
     ) is not None
 
 
@@ -1002,7 +1002,7 @@ def copilot_rendered_has_missed_heading(body_html: Any) -> bool:
             "producer-review-rendered-html")
     return re.search(
         r"(?im)^[^\S\r\n]*(?:previously\s+missed(?:\s*\([^()]*\))?"
-        r"|[0-9]+\s+previously\s+missed)[^\S\r\n]*$", "".join(parser.parts),
+        r"|[0-9]+\s+previously\s+missed(?:\s+issues?)?)[^\S\r\n]*$", "".join(parser.parts),
     ) is not None
 
 
@@ -1028,7 +1028,7 @@ def historical_copilot_findings_count(body: str) -> int:
     require(not has_fences, "producer-review-binding")
     require(headings == ["## Copilot review overview"], "producer-review-binding")
     require(
-        not any("open finding" in line.lower() for line in lines
+        not any(re.search(r"open (?:finding|issue)", line, re.IGNORECASE) for line in lines
                 if "**" in line or "<summary" in line.lower()),
         "producer-review-binding",
     )
@@ -1252,7 +1252,7 @@ def assessment_table_header(previous: str, delimiter: str) -> bool:
 
 
 def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
-    # Only the two observed native CCR renderings are admitted. Counts remain
+    # Only explicitly recognized native CCR renderings are admitted. Counts remain
     # submission-time metadata; exact review binding and live thread coverage
     # are independently required by the caller.
     nonempty = [line for line in lines if line]
@@ -1261,21 +1261,24 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         and not any("**findings:**" in line.lower() for line in lines),
         "producer-review-binding",
     )
-    fields = [line for line in lines if "open finding" in line.lower()
+    fields = [line for line in lines if re.search(r"open (?:finding|issue)", line, re.IGNORECASE)
               and ("**" in line or "<summary" in line.lower())]
     require(len(fields) == 1, "producer-review-binding")
-    if fields[0] == "**0 open findings**":
+    issue_frame = "open issue" in fields[0]
+    noun = "issue" if issue_frame else "finding"
+    zero_field = "**No open issues** 🎉" if issue_frame else "**0 open findings**"
+    if fields[0] == zero_field:
         count = 0
     else:
         match = re.fullmatch(
-            r"<summary><strong>([1-9][0-9]{0,3}) open (finding|findings)"
+            rf"<summary><strong>([1-9][0-9]{{0,3}}) open ({noun}|{noun}s)"
             r"</strong></summary>", fields[0],
         )
         require(match is not None, "producer-review-binding")
         count = int(match.group(1))
         require(
             count <= MAX_REVIEW_COMMENTS_PER_REVIEW
-            and match.group(2) == ("finding" if count == 1 else "findings"),
+            and match.group(2) == (noun if count == 1 else noun + "s"),
             "producer-review-binding",
         )
         position = nonempty.index(fields[0])
@@ -1292,7 +1295,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
     # Both observed current renderings include an introductory assessment and
     # a terminal effort footer. The compact native rendering may omit What
     # changed, so that section alone cannot prove a complete overview.
-    footer = "🧠 **Review effort:** Balanced"
+    footer = ("<sub>Review effort: Balanced</sub>" if issue_frame
+              else "🧠 **Review effort:** Balanced")
     # GitHub optionally appends this fixed informational tip to the native
     # frame. Admit only its observed platform rendering, never arbitrary tail.
     if len(nonempty) >= 3 and nonempty[-3:-1] == [footer, "---"]:
@@ -1309,7 +1313,8 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         require(re.fullmatch(appendix, nonempty[-1]) is not None, "producer-review-binding")
         nonempty = nonempty[:-2]
     require(
-        [line for line in lines if "**review effort:**" in line.lower()] == [footer]
+        [line for line in lines if "**review effort:**" in line.lower()
+         or "<sub>review effort:" in line.lower()] == [footer]
         and nonempty[-1] == footer,
         "producer-review-binding",
     )
@@ -1465,7 +1470,7 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
             block = blocks.pop()
             if block["summary"] == missed_summary:
                 require(block["children"] == missed_count, "producer-review-binding")
-        elif line in {"**0 open findings**", footer}:
+        elif line in {zero_field, footer}:
             require(not blocks, "producer-review-binding")
         elif blocks:
             require(blocks[-1]["summary"] is not None, "producer-review-binding")
@@ -1528,7 +1533,8 @@ def bind_copilot_review_findings(
     targets: list[int] | None = None
     if count and "## Copilot review overview" not in body.splitlines():
         lines = [line for line in body.splitlines() if line]
-        summary = f"<summary><strong>{count} open {'finding' if count == 1 else 'findings'}</strong></summary>"
+        noun = "issue" if "<sub>Review effort: Balanced</sub>" in lines else "finding"
+        summary = f"<summary><strong>{count} open {noun if count == 1 else noun + 's'}</strong></summary>"
         start = lines.index(summary) + 1
         entries = lines[start:lines.index("</details>", start)]
         if any("discussion_r" in line or "](" in line
@@ -1570,7 +1576,7 @@ def validate_reported_file_coverage(body: str, changed_files: Any) -> None:
     """
     lines, _ = copilot_frame_control_lines(body)
     boundary = next((i for i, line in enumerate(lines)
-                     if line in {"**0 open findings**", "<details open>"}), len(lines))
+                     if line in {"**0 open findings**", "**No open issues** 🎉", "<details open>"}), len(lines))
     intro = " ".join(assessment_visible_text("\n".join(lines[2:boundary])).split())
     for reviewed, total in re.findall(r"\bCopilot reviewed ([0-9]+) out of ([0-9]+) changed files\b", intro, re.IGNORECASE):
         require(type(changed_files) is int and changed_files > 0

@@ -637,6 +637,20 @@ class ControlTests(unittest.TestCase):
         api = Mock(); api.pages.side_effect = [[native_review()], [delivery()], []]
         self.assertEqual(20, control.copilot_review(api, REPO, pull(changed_files=30))['service_run'])
 
+    def test_native_issue_zero_frame_keeps_full_report_and_explicit_coverage(self):
+        import hashlib
+        body = NATIVE_BODY.replace('**0 open findings**', '**No open issues** 🎉').replace(
+            '🧠 **Review effort:** Balanced', '<sub>Review effort: Balanced</sub>')
+        api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()], []]
+        proof = control.copilot_review(api, REPO, pull(changed_files=30))
+        self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), proof['frame']['review_body_sha256'])
+        self.assertEqual(0, proof['frame']['historical_findings_count'])
+        partial = body.replace('The complete proposed source has no actionable findings.',
+                               'Copilot reviewed 1 out of 2 changed files.')
+        api = Mock(); api.pages.side_effect = [[native_review(body=partial)], [delivery()]]
+        with self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
+            control.copilot_review(api, REPO, pull(changed_files=2))
+
     def test_native_nonzero_findings_keep_prose_coverage_separate_from_container(self):
         findings = ('<details open>\n<summary><strong>1 open finding</strong></summary>\n\n'
                     '- [Correct the parser](https://github.com/lightning-it/.github/pull/3#discussion_r123) · New\n'
@@ -647,6 +661,27 @@ class ControlTests(unittest.TestCase):
             body = NATIVE_BODY.replace('🟢 Approval recommended', '🟡 Changes recommended').replace(
                 'The complete proposed source has no actionable findings.', assessment).replace(
                 '**0 open findings**', findings)
+            api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()], [comment], [comment]]
+            with self.subTest(assessment=assessment):
+                proof = control.copilot_review(api, REPO, pull(changed_files=2))
+                self.assertEqual([123], proof['finding_comment_ids'])
+                self.assertEqual(1, proof['frame']['historical_findings_count'])
+            partial = body.replace(assessment, 'Copilot reviewed 1 out of 2 changed files.')
+            api = Mock(); api.pages.side_effect = [[native_review(body=partial)], [delivery()]]
+            with self.assertRaisesRegex(control.ControlError, 'copilot-native-frame'):
+                control.copilot_review(api, REPO, pull(changed_files=2))
+
+    def test_native_issue_findings_bind_actual_threads_and_full_file_coverage(self):
+        findings = ('<details open>\n<summary><strong>1 open issue</strong></summary>\n\n'
+                    '- [Correct the parser](https://github.com/lightning-it/.github/pull/3#discussion_r123) · New\n'
+                    '</details>')
+        comment = {'id': 123, 'pull_request_review_id': 9, 'original_commit_id': HEAD,
+                   'user': native_review()['user'], 'body': 'Correct the parser.'}
+        for assessment in ('The parser needs a correction.', 'Copilot reviewed 2 out of 2 changed files.'):
+            body = NATIVE_BODY.replace('🟢 Approval recommended', '🟡 Changes recommended').replace(
+                'The complete proposed source has no actionable findings.', assessment).replace(
+                '**0 open findings**', findings).replace(
+                '🧠 **Review effort:** Balanced', '<sub>Review effort: Balanced</sub>')
             api = Mock(); api.pages.side_effect = [[native_review(body=body)], [delivery()], [comment], [comment]]
             with self.subTest(assessment=assessment):
                 proof = control.copilot_review(api, REPO, pull(changed_files=2))
