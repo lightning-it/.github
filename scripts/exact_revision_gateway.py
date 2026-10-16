@@ -211,7 +211,7 @@ class Reviewer:
     def deadline(self):
         return self.budget.deadline if self.budget else self.startup_deadline
 
-    def fail(self, category="single-terminal-failure"):
+    def fail(self, category="single-terminal-failure", *, phase="gateway"):
         if self.done:
             return
         self.done = self.failed = True
@@ -223,6 +223,7 @@ class Reviewer:
             {
                 "version": VERSION,
                 "category": category,
+                "phase": phase,
                 "state_sha256": review.sha(review.canonical(self.state)),
                 "provider_state": "settled" if settled else "unknown",
                 "request_sha256": sorted(self.budget.requests) if self.budget else [],
@@ -252,7 +253,7 @@ class Reviewer:
                     config.profile(),
                     max_cost_microusd=1_000_000,
                     start_ms=self.started,
-                    timeout_ms=min(100_000, self.startup_deadline - self.started),
+                    timeout_ms=min(config.REVIEW_TIMEOUT_MS, self.startup_deadline - self.started),
                     max_requests=1,
                     request_byte_limit=wire_limit,
                     allow_tool_calls=False,
@@ -266,7 +267,7 @@ class Reviewer:
                 worker_input_limit=wire_limit
                 + len(
                     review.canonical(
-                        {"request": {}, "credential": credential, "timeout_ms": 100_000, "counting": False}
+                        {"request": {}, "credential": credential, "timeout_ms": config.REVIEW_TIMEOUT_MS, "counting": False}
                     )
                 ),
             )
@@ -305,7 +306,7 @@ class Reviewer:
                 self.done = True
             return wire
         except BaseException as error:
-            self.fail(failure_category(error))
+            self.fail(failure_category(error), phase=error.phase if isinstance(error, transport.TransportFailure) else "gateway")
             raise
 
 
@@ -333,7 +334,7 @@ class ReplayReviewer(Reviewer):
             resources.preflight_json(review.canonical(request), *json_limits)
             # Pure local normalization; this object never reaches exchange().
             budget = ResponseBudget(config.profile(), max_cost_microusd=1_000_000,
-                                    start_ms=transport.monotonic_ms(), timeout_ms=100_000,
+                                    start_ms=transport.monotonic_ms(), timeout_ms=config.REVIEW_TIMEOUT_MS,
                                     max_requests=1, request_byte_limit=wire_limit, allow_tool_calls=False)
             request_digest, _ = budget.reserve(request, now_ms=transport.monotonic_ms())
             provider = self.prior_receipt.get("provider", {})
@@ -366,7 +367,7 @@ def failure_category(error):
                "provider-client-metadata", "provider-cache-key", "provider-unbound-state",
                "gateway-path", "gateway-encoding", "gateway-content-length", "gateway-memory-framing",
                "gateway-content-type", "gateway-authorization", "gateway-incomplete-request", "gateway-timeout",
-               "transport-service-unavailable"}
+               "transport-service-unavailable"} | transport.FAILURE_CATEGORIES
     if not isinstance(error, review.ReviewError):
         return "single-unexpected-error"
     return str(error) if str(error) in allowed else "single-contract-rejected"
@@ -599,7 +600,7 @@ def prepare(root: Path, directory: Path, run_id: int, owner: int):
         "subject_bytes": len(payload),
         "prompt_bytes": len(prompt.encode()),
         "prompt_json_bytes": len(review.canonical(prompt)),
-        "expires_unix_ms": time.time_ns() // 1_000_000 + 600_000,
+        "expires_unix_ms": time.time_ns() // 1_000_000 + config.REVIEW_TIMEOUT_MS,
     }
     replay = None
     replay_manifest = directory / "reuse-candidate.json"

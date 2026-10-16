@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from bounded_review import ReviewError, canonical, integer, keys, require, sha
+from bounded_review_config import REVIEW_TIMEOUT_MS
 
 PROFILE_KEYS = {
     "version",
@@ -107,7 +108,7 @@ class ResponseBudget:
         validate_profile(profile)
         integer(max_cost_microusd, 1, 1_000_000, "provider-cost-budget")
         integer(start_ms, 0, 2**63 - 1, "provider-clock")
-        integer(timeout_ms, 1, 100_000, "provider-time-budget")
+        integer(timeout_ms, 1, REVIEW_TIMEOUT_MS, "provider-time-budget")
         integer(max_requests, 1, 16, "provider-request-budget")
         self.profile = json.loads(canonical(profile))
         self.limit = max_cost_microusd

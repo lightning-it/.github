@@ -11,6 +11,10 @@ from typing import Any
 
 import bounded_review as review
 
+# Existing protected job policy: one review must finish inside 50 minutes,
+# leaving margin below the 55-minute job and one-hour dispatch credential.
+REVIEW_TIMEOUT_MS = 3_000_000
+
 CAPACITY = {
     "source": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
     "observed_on": "2026-10-05",
@@ -84,7 +88,7 @@ def policy() -> dict[str, Any]:
     Admission precedes token minting. The parent job additionally has a hard
     55-minute timeout, leaving five minutes of installation-token margin.
     """
-    return review.policy() | {"max_review_seconds": 3000}
+    return review.policy() | {"max_review_seconds": REVIEW_TIMEOUT_MS // 1000}
 
 
 def profile() -> dict[str, Any]:
@@ -93,7 +97,7 @@ def profile() -> dict[str, Any]:
         "model": CAPACITY["model"],
         "context_tokens": CAPACITY["context_tokens"],
         "max_input_tokens": CAPACITY["maximum_input_tokens"],
-        "max_output_tokens": 8192,
+        "max_output_tokens": CAPACITY["maximum_output_tokens"],
         "input_microusd_per_million_tokens": PRICING["input_microusd_per_million_tokens"],
         "output_microusd_per_million_tokens": PRICING["output_microusd_per_million_tokens"],
         "capacity_evidence_sha256": review.sha(review.canonical(CAPACITY)),

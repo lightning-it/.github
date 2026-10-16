@@ -190,6 +190,22 @@ collection or artifact upload failed. Completed fully skipped jobs are proven
 no-spend. A successful prior result passes the quality preflight to the existing
 authenticated replay path, which still cannot fund a cache miss.
 
+Failure records distinguish fixed source-owned HTTP authentication/request,
+TLS, network, framing and timeout categories. They also bind the failed phase:
+count, token admission, model response, response validation or settlement.
+Worker exit codes carry no response body, headers, credential or exception text.
+The client's generic high-demand message alone never establishes an upstream
+service outage. Older generic failure records cannot be retrospectively decoded.
+These diagnostics grant no retry, refund, successful review or release authority.
+
+The single response uses the documented model output capacity, including its
+reasoning tokens, rather than an 8192-token cutoff that can consume the entire
+output allowance without producing the final review packet. The existing
+50-minute overall review policy supplies one shared absolute deadline to token
+counting, inference and collection; workers do not receive fresh per-step time
+budgets. The native job remains limited to 55 minutes. One request and the
+existing one-dollar reservation ceiling remain enforced before model access.
+
 The old immutable source did not export this outcome. The separately commissioned
 historical recovery therefore requires an explicit `legacy_unknown_outcome_sha256`
 acknowledgment of its exact native high-demand/failure log, that specific accepted
