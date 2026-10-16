@@ -7,7 +7,7 @@ on:
   pull_request_target:
     types: [edited, labeled, unlabeled, ready_for_review, converted_to_draft]
   workflow_run:
-    workflows: [Repository review events]
+    workflows: [Repository review events, Repository Quality]
     types: [completed]
   workflow_call:
 permissions:
@@ -21,7 +21,7 @@ jobs:
   refresh:
     name: Refresh protected verifier
     if: >-
-      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.name == 'Repository review events') ||
       github.event.pull_request.number
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -34,10 +34,70 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: 6845abfda6069e33b3939736c88177dabc9bf315
+          ref: 33bb33a5134022f668c8ad33a611a1e3836a6f8c
           persist-credentials: false
       - name: Refresh original native job from current state
         env:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: python3 -B scripts/workflow_events.py
+
+  prepare:
+    name: Prepare one promotion after current native quality
+    if: >-
+      github.repository == 'lightning-it/.github' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Repository Quality' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Load immutable event admission helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: a385b11b58b0137f7cc7db118108ddfe42aa1180
+          persist-credentials: false
+      - name: Check actual current protected quality before credentials
+        id: signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          head="$(python3 -B scripts/workflow_promotion_event.py)"
+          if [ -n "$head" ]; then
+            printf 'head=%s\n' "$head" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mint preparation dispatch token for Management only
+        if: steps.signal.outputs.head != ''
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: lightning-it
+          repositories: github-management-lit
+          permission-actions: write
+      - name: Recheck current source and dispatch preparation on protected Main
+        if: steps.signal.outputs.head != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SOURCE_READ_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ steps.signal.outputs.head }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          head="$(GH_TOKEN="$SOURCE_READ_TOKEN" python3 -B scripts/workflow_promotion_event.py --expected-head "$EXPECTED_HEAD")"
+          if [ "$head" != "$EXPECTED_HEAD" ]; then
+            printf 'Develop advanced; this event is no longer relevant.\n'
+            exit 0
+          fi
+          gh api --method POST \
+            repos/lightning-it/github-management-lit/actions/workflows/terraform-github-management.yml/dispatches \
+            --input - <<'JSON'
+          {"ref":"main","inputs":{"operation":"native-promotion-prepare","repository":".github","policy_group":"repository_quality"}}
+          JSON

@@ -270,9 +270,9 @@ def check_secret_safe_generated_docs() -> None:
                 raise AssertionError(f"{label} appears to contain secret-like material")
 
 
-def check_terraform(repo_type: str) -> None:
+def terraform_roots(repo_type: str) -> list[Path]:
     if repo_type not in {"terraform_module", "terraform_policy"}:
-        return
+        return []
     tf_files = sorted(
         path
         for path in ROOT.glob("**/*.tf")
@@ -284,24 +284,23 @@ def check_terraform(repo_type: str) -> None:
         )
     if repo_type == "terraform_module" and not any(path.parent == ROOT for path in tf_files):
         raise AssertionError("Terraform module repository has no root *.tf files")
-    if shutil_which("terraform"):
-        if repo_type == "terraform_module":
-            validation_roots = [ROOT]
-        else:
-            validation_roots = sorted(
-                {
-                    path.parent
-                    for path in tf_files
+    if repo_type == "terraform_module":
+        return [ROOT]
+    roots = sorted({path.parent for path in tf_files
                     if (path.parent / ".terraform.lock.hcl").is_file()
                     or (path.parent / "versions.tf").is_file()
-                    or (path.parent / "backend.tf").is_file()
-                }
-            )
-            if not validation_roots:
-                raise AssertionError(
-                    "Terraform policy repository has no explicit validation root; "
-                    "add .terraform.lock.hcl, versions.tf, or backend.tf"
-                )
+                    or (path.parent / "backend.tf").is_file()})
+    if not roots:
+        raise AssertionError("Terraform policy repository has no explicit validation root; "
+                             "add .terraform.lock.hcl, versions.tf, or backend.tf")
+    return roots
+
+
+def check_terraform(repo_type: str, *, source_owned: bool = False) -> None:
+    validation_roots = terraform_roots(repo_type)
+    if not validation_roots:
+        return
+    if shutil_which("terraform"):
         # The canonical profile runs inside a read-only source checkout.
         # Terraform writes both .terraform data and dependency lock-file
         # updates below each validation root, so validate one temporary copy
@@ -392,6 +391,7 @@ def check_terraform(repo_type: str) -> None:
                             "init",
                             "-backend=false",
                             "-input=false",
+                            *(["-lockfile=readonly"] if source_owned and lock_file.is_file() else []),
                         ]
                     )
                     run_terraform(
@@ -630,7 +630,7 @@ def run_checks(meta: dict, *, source_owned: bool = False) -> int:
         check_embedded_code(source_owned=source_owned)
         check_managed_assets()
         repo_type = meta.get("repository_type", "")
-        check_terraform(repo_type)
+        check_terraform(repo_type, source_owned=source_owned)
         check_helm(repo_type)
         check_packer(repo_type)
     except subprocess.CalledProcessError as exc:
