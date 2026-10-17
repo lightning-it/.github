@@ -12,6 +12,7 @@ SINCE = '2026-10-17T00:00:00Z'
 
 def run(identifier=1, **overrides):
     return {'id': identifier, 'path': '.github/workflows/delivery-operations.yml',
+            'event': 'workflow_run', 'html_url': 'https://github.com/lightning-it/example/actions/runs/1',
             'created_at': SINCE, 'head_sha': 'default-branch-sha', 'run_attempt': 1,
             'status': 'completed', 'conclusion': 'success', **overrides}
 
@@ -56,3 +57,24 @@ class CompletionTests(unittest.TestCase):
     def test_timezone_is_explicit(self):
         with self.assertRaises(ValueError):
             completion.timestamp('2026-10-17T00:00:00')
+
+    def test_inventory_shrinking_between_pages_cannot_hide_unread_hold(self):
+        api = Mock(side_effect=[
+            {'workflow_runs': [run(i) for i in range(1, 101)], 'total_count': 101},
+            {'workflow_runs': [], 'total_count': 100}])
+        with self.assertRaisesRegex(ValueError, 'changed during pagination'):
+            completion.audit(api, 'lightning-it/example', SINCE)
+
+    def test_missing_or_malformed_classification_fields_fail_closed(self):
+        for key in run():
+            row = run()
+            del row[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                self.audit([row])
+        for overrides in ({'id': True}, {'run_attempt': 0}, {'run_attempt': '2'},
+                          {'path': None}, {'status': 'unknown'}, {'conclusion': 'unknown'},
+                          {'status': []}, {'conclusion': []},
+                          {'status': 'queued', 'conclusion': 'success'},
+                          {'created_at': 123}, {'head_sha': []}):
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                self.audit([run(**overrides)])

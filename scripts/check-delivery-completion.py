@@ -27,6 +27,8 @@ def get(path):
 
 
 def timestamp(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError('A timestamp string is required')
     parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
     if parsed.tzinfo is None:
         raise ValueError('An explicit timezone is required')
@@ -40,12 +42,22 @@ def summarize(run):
 
 def audit(api, repository, since):
     timestamp(since)
-    runs, seen = [], set()
+    runs, seen, expected_total = [], set(), None
     for page in range(1, 11):
         query = urlencode({'created': '>=' + since, 'per_page': 100, 'page': page})
         response = api(f'repos/{repository}/actions/runs?{query}')
+        total = response['total_count']
+        if type(total) is not int or total < 0:
+            raise ValueError('Native inventory count is missing or malformed')
+        if expected_total is None:
+            expected_total = total
+        if total != expected_total:
+            raise ValueError('Native run inventory changed during pagination')
         rows = response['workflow_runs']
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise ValueError('Native run page is malformed')
         for run in rows:
+            validate_run(run)
             if run['id'] in seen or timestamp(run['created_at']) < timestamp(since):
                 raise ValueError('Native run inventory changed or escaped the time window')
             seen.add(run['id'])
@@ -73,6 +85,31 @@ def audit(api, repository, since):
             'approval_holds': holds, 'active_metadata': active,
             'review_deliveries_to_inspect': multiple,
             'auxiliary_clear': not (holds or active or multiple)}
+
+
+def validate_run(run):
+    if not isinstance(run, dict):
+        raise ValueError('Native run record is malformed')
+    for key in ('id', 'run_attempt'):
+        if type(run.get(key)) is not int or run[key] <= 0:
+            raise ValueError('Native run identity or attempt is missing')
+    for key in ('path', 'event', 'head_sha', 'html_url'):
+        if not isinstance(run.get(key), str) or not run[key]:
+            raise ValueError('Native run classification fields are missing')
+    timestamp(run.get('created_at'))
+    if not isinstance(run.get('status'), str) or run['status'] not in {
+            'queued', 'in_progress', 'completed', 'waiting', 'pending', 'requested'}:
+        raise ValueError('Native run status is unsupported')
+    if 'conclusion' not in run:
+        raise ValueError('Native run conclusion is missing')
+    conclusion = run['conclusion']
+    if run['status'] == 'completed':
+        if not isinstance(conclusion, str) or conclusion not in {
+                              'success', 'failure', 'neutral', 'cancelled', 'skipped',
+                              'timed_out', 'action_required', 'stale', 'startup_failure'}:
+            raise ValueError('Native completed run conclusion is unsupported')
+    elif conclusion is not None:
+        raise ValueError('Native active run has an inconsistent conclusion')
 
 
 def main():
