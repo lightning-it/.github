@@ -98,6 +98,14 @@ class PromotionEventTests(unittest.TestCase):
         api.pages.assert_not_called()
         verify.assert_not_called()
 
+    def test_read_only_selection_is_only_a_locator_not_a_bypass_attestation(self):
+        api, signal, env, state = self.fixture()
+        del state["rule"]["bypass_actors"]
+        with patch.object(event, "policy", return_value={}), patch.object(event, "check_native_control",
+                return_value={"source_sha": event.target(REPO)["source_sha"]}):
+            self.assertEqual(HEAD, event.current_head(api, signal, env))
+        self.assertTrue(all("method" not in call.kwargs for call in api.call.call_args_list))
+
     def test_advancing_develop_during_control_verification_is_a_noop(self):
         api, signal, env, state = self.fixture()
         def verify(*_):

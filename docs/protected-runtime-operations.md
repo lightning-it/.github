@@ -271,13 +271,22 @@ protected still-current Develop and the exact receiver source. It then invokes
 the same independent native-control verifier used for promotion ingress. A
 successful audit without that actual accepted ingress proof grants no dispatch.
 Source selection, private execution and approval remain independent boundaries.
+The receiver authenticates only the ruleset's visible read-only projection.
+GitHub may omit bypass actors without ruleset-write authority; absence is never
+an attestation of an empty list. Any visible bypass actor blocks. The receiver
+has no administrative credential and grants only a non-authorizing dispatch.
 
 Only after this check may the existing Release App mint an actions-write token
 for Management alone. A second full read-only event/proof check precedes its
 one dispatch, carrying the exact expected Develop revision. Management selects
 its reviewed target configuration, creates a token for that repository alone
-and independently authenticates the selected source, all ingress and both tips
-before preparing an ordinary App PR. Stale, unknown, duplicated or consumed
+and independently authenticates the selected source, all ingress and both tips.
+For Shared preparation, the existing Management administration environment first
+requires its genuine approval. Its existing private management credential reads
+the complete organization-owned rule, including an explicitly empty bypass list;
+that exact rule snapshot is rechecked before every PR/ref effect. The secret
+never crosses into Shared or Source, and Release App permissions do not expand.
+Unknown or changed full rules block preparation. Stale, duplicated or consumed
 operations fail or observe their existing PR; no new review, rerun or approval
 is created by the event receiver. Normal Main approval remains genuine and
 separate. Shared's first evaluation/qualification/enforcement and end-to-end

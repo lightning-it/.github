@@ -78,6 +78,10 @@ the audit completion locator and the independently selected bb1a control.
 Before credentials, authenticate the current protected Develop producer and its
 actual merged native ingress proof. The same check repeats before dispatching
 the existing protected Management preparer for that exact Develop revision.
+The read-only ruleset projection is only a locator: missing bypass data is
+unknown. Shared preparation requires the existing Management administration
+environment's genuine approval and full rule authentication before every PR/ref
+effect. Never delegate its administrative secret or widen Release App rights.
 Private contents and results stay in the private caller; only the existing
 Release App key is passed explicitly. This grants no approval, merge, source
 selection or fleet authority. Root preparation stays inside its successful

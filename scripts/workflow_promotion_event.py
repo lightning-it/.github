@@ -36,7 +36,13 @@ def selected_control(api, entry):
     rule = api.call(f"repos/{repository}/rulesets/{matching[0]['id']}")
     expected = {"repository_id": 1112629689, "path": WORKFLOW,
                 "sha": entry["source_sha"], "ref": "refs/heads/main"}
-    require(rule.get("enforcement") in {"evaluate", "active"} and rule.get("bypass_actors") == []
+    # GitHub's read-only projection omits bypass actors. This locator grants
+    # only a dispatch, never accepts unknown bypass settings as empty. Protected
+    # Management must authenticate the complete organization rule with its
+    # existing administration credential before any PR effect.
+    if "bypass_actors" in rule:
+        require(rule["bypass_actors"] == [], "promotion-event-visible-bypass")
+    require(rule.get("enforcement") in {"evaluate", "active"}
             and rule.get("source_type") == "Organization" and rule.get("source") == "lightning-it"
             and rule.get("target") == "branch"
             and rule.get("conditions") == {"repository_id": {"repository_ids": [entry["repository_id"]]},
