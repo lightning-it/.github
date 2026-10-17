@@ -69,3 +69,20 @@ these active requirements. Other unadmitted scopes retain their documented POC
 transition. A configuration file or candidate instruction cannot activate a
 scope or select its own verifier. See `docs/protected-runtime-operations.md` for
 the process and independently effective native settings for current authority.
+
+## Shared Assets event preparation (LI-357)
+
+The owner commissioned the existing common delivery receiver for the separate
+Shared Assets target. Its reviewed registry binds only that private repository,
+the audit completion locator and the independently selected bb1a control.
+Before credentials, authenticate the current protected Develop producer and its
+actual merged native ingress proof. The same check repeats before dispatching
+the existing protected Management preparer for that exact Develop revision.
+The read-only ruleset projection is only a locator: missing bypass data is
+unknown. Shared preparation requires the existing Management administration
+environment's genuine approval and full rule authentication before every PR/ref
+effect. Never delegate its administrative secret or widen Release App rights.
+Private contents and results stay in the private caller; only the existing
+Release App key is passed explicitly. This grants no approval, merge, source
+selection or fleet authority. Root preparation stays inside its successful
+quality job; do not restore its removed empty completion receivers or timers.

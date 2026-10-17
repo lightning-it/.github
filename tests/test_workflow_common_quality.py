@@ -19,6 +19,14 @@ RAW = b'schema_version: 1\nrepository: .github\nrepository_type: repository_prof
 
 
 class CommonQualityTests(unittest.TestCase):
+    def setUp(self):
+        # Nested Git fixtures must not inherit the read-only source worktree.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"}}
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def environment(self):
         job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
                'workflow_sha': SOURCE, 'check_run_id': 123}
