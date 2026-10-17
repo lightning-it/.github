@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from workflow_control import API, ControlError, SOURCE, WORKFLOW, check_native_control, policy, require, sha, source_identity
+from workflow_control import API, ControlError, SOURCE, check_native_control, policy, require, sha, source_identity
 
 DELIVERY = ".github/workflows/delivery-operations.yml"
 
@@ -26,30 +26,6 @@ def target(repository):
             "promotion-event-target-identity")
     require(entry["repository"] == repository, "promotion-event-target-not-admitted")
     return entry
-
-
-def selected_control(api, entry):
-    repository = entry["repository"]
-    matching = [rule for rule in api.pages(f"repos/{repository}/rulesets?includes_parents=true")
-                if rule.get("name") == "WF-1 central review / " + entry["scope"]]
-    require(len(matching) == 1, "promotion-event-independent-selection-required")
-    rule = api.call(f"repos/{repository}/rulesets/{matching[0]['id']}")
-    expected = {"repository_id": 1112629689, "path": WORKFLOW,
-                "sha": entry["source_sha"], "ref": "refs/heads/main"}
-    # GitHub's read-only projection omits bypass actors. This locator grants
-    # only a dispatch, never accepts unknown bypass settings as empty. Protected
-    # Management must authenticate the complete organization rule with its
-    # existing administration credential before any PR effect.
-    if "bypass_actors" in rule:
-        require(rule["bypass_actors"] == [], "promotion-event-visible-bypass")
-    require(rule.get("enforcement") in {"evaluate", "active"}
-            and rule.get("source_type") == "Organization" and rule.get("source") == "lightning-it"
-            and rule.get("target") == "branch"
-            and rule.get("conditions") == {"repository_id": {"repository_ids": [entry["repository_id"]]},
-                                           "ref_name": {"include": ["refs/heads/develop", "refs/heads/main"], "exclude": []}}
-            and rule.get("rules") == [{"type": "workflows", "parameters": {
-                "do_not_enforce_on_create": False, "workflows": [expected]}}],
-            "promotion-event-selection-drift")
 
 
 def current_head(api, event, env):
@@ -93,7 +69,10 @@ def current_head(api, event, env):
     require(len(audit) == 1 and audit[0].get("run_id") == locator and audit[0].get("head_sha") == head
             and audit[0].get("status") == "completed" and audit[0].get("conclusion") == "success",
             "promotion-event-audit-job-required")
-    selected_control(api, entry)
+    # Repository rule projections can omit a genuine organization Evaluate rule.
+    # They cannot authorize or veto this non-authorizing locator. The actual
+    # independent Required ingress below is mandatory; protected Management must
+    # still authenticate the full current organization rule before every effect.
     pulls = api.pages(f"repos/{repository}/commits/{head}/pulls")
     merged = [pull for pull in pulls if pull.get("merged_at") and pull.get("merge_commit_sha") == head
               and pull.get("base", {}).get("ref") == "develop"

@@ -66,7 +66,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: 81990307ed007dcc1fdd63f52a2fa1ea8c5a3755
+          ref: 7a42089e28a90a39b7b397c19db494a575ae25aa
           persist-credentials: false
       - name: Authenticate current private producer and independent ingress before credentials
         id: signal
