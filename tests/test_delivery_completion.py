@@ -120,3 +120,9 @@ class CompletionTests(unittest.TestCase):
         old = review(head='old')
         old['pull_requests'][0]['head']['sha'] = 'new'
         self.assertTrue(self.audit([old, review(2, head='new')])['auxiliary_clear'])
+
+    def test_single_pending_copilot_delivery_waits_for_future_receivers(self):
+        for status in ('queued', 'in_progress', 'pending', 'requested', 'waiting'):
+            result = self.audit([review(status=status, conclusion=None)])
+            self.assertFalse(result['auxiliary_clear'])
+            self.assertEqual(1, len(result['active_metadata']))

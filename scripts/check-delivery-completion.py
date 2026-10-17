@@ -110,7 +110,7 @@ def audit(api, repository, since):
         if run.get('conclusion') == 'action_required' or run.get('status') == 'waiting':
             holds.append(summarize(run))
         path = run['path'].split('@', 1)[0]
-        if (path.rsplit('/', 1)[-1] in METADATA
+        if ((path.rsplit('/', 1)[-1] in METADATA or path == COPILOT)
                 and run.get('status') != 'completed'):
             active.append(summarize(run))
         if path == COPILOT:

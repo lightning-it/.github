@@ -41,7 +41,7 @@ use `--since` with an ISO timestamp and timezone. Output can identify private
 repositories; do not publish it in public CI or artifacts. Cross-repository CI
 output is rejected. The command is read-only and adds no workflow, timer,
 approval, review request, merge or deletion. A nonzero exit means a hold, active
-metadata, possible repeated native delivery, incomplete inventory or read error
+review/metadata delivery, possible repeated native delivery, incomplete inventory or read error
 needs attention. Multiple native deliveries are an inspection signal, not proof
 of a second charge; distinct legitimate review inputs remain distinct.
 Two bounded native observations must agree on run identities, attempts and
