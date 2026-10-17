@@ -18,6 +18,32 @@ code review runs`, use `On PR open` so disabling the extra code review does not
 silently disable that security review. This changes neither the mandatory CI
 checks nor the normal one-person human approval contract.
 
+## Finish native review delivery in every repository
+
+Apply the same completion procedure to every connected repository, including
+those still in the documented POC transition. Use GitHub's native Actions,
+review and deployment state; keep private observations in the private context.
+
+1. Wait for the prescribed reviewer to publish the complete result for the
+   current finalized input. A completed Copilot service run can precede review
+   publication. Resolve actual findings and finish the current mandatory gates.
+2. Inspect the review's native signal runs and their following delivery receivers
+   across the repository. Include callbacks on the default branch; filtering only
+   by the PR commit misses these. GitHub can require genuine maintainer approval
+   at both stages. Confirm each relevant receiver has actually arrived and
+   finished; an empty pending list alone does not establish that.
+3. Complete the relevant native approvals with the same authorized person before
+   integration, then inspect the resulting delivery. Identify an unknown or stale
+   operation before acting on it. A superseded never-executed callback is history,
+   not a reason to purchase another review or reuse acceptance from an older input.
+
+Keep the author/risk matrix, current-revision quality/security checks and normal
+one-person release approval. Prepare at most one promotion per repository and
+target. Before broad rollout, verify that obsolete callers and generator copies
+are removed without removing product tests, releases or separate security review.
+A native run list is an observation, not an independent approval or proof that all
+asynchronous callbacks have arrived. No extra completion controller is required.
+
 ## Finish an ordinary change
 
 1. Prepare the change and run the repository's digest-pinned deterministic
