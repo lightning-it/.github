@@ -83,12 +83,16 @@ Retain the failed preparation; after a regular ancestry integration, prepare a
 fresh plan bound to the new tips through the existing management operation.
 This grants no review, merge or normal release approval and adds no retry chain.
 
-The Root reference's existing delivery entry point observes completion of Repository Quality.
-Only a successful native push for the actual current protected Develop head
-can signal preparation; PR/fork runs, stale heads, skipped checks and producer
-reruns cannot do so. The immutable helper verifies this before credential use
-and rechecks the revision immediately before dispatch. It does not approve,
-merge, change settings or request an AI review.
+The Root reference prepares promotion in a dependent job of Repository Quality.
+GitHub admits that job only after the quality job succeeds on the first native
+push attempt to protected Develop. PR/fork runs, manual runs and reruns cannot
+use the preparation job. The job executes no repository checkout, verifies the
+current protected Develop head before credentials and rechecks it immediately
+before dispatch. Its App token has Actions write access only to Management.
+The review-event receiver no longer subscribes to Repository Quality; ordinary
+PR quality completion therefore creates no empty delivery run. Actual review
+and PR metadata events retain their existing protected receiver. Preparation
+does not approve, merge, change settings or request an AI review.
 
 The Main-bound Management receiver independently checks its target, admitted
 source, protected tips and native ingress. An existing identical App PR is
