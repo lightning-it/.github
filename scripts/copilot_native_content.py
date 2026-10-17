@@ -774,8 +774,11 @@ def copilot_heading_markup(source: str) -> str:
 
 
 def copilot_has_missed_heading(lines: list[str]) -> bool:
-    """Recognize visible actionable headings without interpreting quoted code.
+    """Detect forbidden actionable headings; True makes the caller reject.
 
+    This is a blocker, not a history/count validator. Deliberately recognize
+    malformed singular/plural issue labels too, so they cannot hide findings
+    inside an otherwise permitted prose section. No matched heading is accepted.
     Strip actual HTML wrappers before decoding entities, so encoded tag text
     remains literal. Keep code and escaped punctuation as non-heading content;
     comments and link destinations cannot hide or supply heading words.

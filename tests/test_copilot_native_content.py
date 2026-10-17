@@ -137,6 +137,22 @@ class NativeFrameTests(unittest.TestCase):
                 self.assertTrue(MODULE.copilot_has_missed_heading(["**" + heading + "**"]))
                 self.assertTrue(MODULE.copilot_rendered_has_missed_heading("<p><strong>" + heading + "</strong></p>"))
 
+    def test_malformed_missed_issue_headings_are_forbidden_not_accepted(self):
+        # A hit is a rejection signal, never a validated history/count result.
+        # Tightening the blocker to grammatical headings would admit malformed
+        # finding text hidden inside otherwise permitted owned prose.
+        for heading in ("1 previously missed issues", "2 previously missed issue"):
+            body = CURRENT_COPILOT_OVERVIEW.replace(
+                "Enables the guarded, read-only Terraform creation preview.",
+                "**" + heading + "**",
+            ).replace("**0 open findings**", "**No open issues** 🎉").replace(
+                "🧠 **Review effort:** Balanced", "<sub>Review effort: Balanced</sub>")
+            with self.subTest(heading=heading):
+                self.assertTrue(MODULE.copilot_has_missed_heading(["**" + heading + "**"]))
+                self.assertTrue(MODULE.copilot_rendered_has_missed_heading("<p><strong>" + heading + "</strong></p>"))
+                with self.assertRaisesRegex(MODULE.EvidenceError, "producer-review-binding"):
+                    MODULE.historical_copilot_findings_count(body)
+
     def test_quote_projection_preserves_tabs_and_indented_literals(self) -> None:
         for source, projected in (
             ('>\t> ordinary text', ['', 'ordinary text']),
