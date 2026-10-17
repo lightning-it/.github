@@ -10,6 +10,9 @@ on:
     workflows: [Repository review events]
     types: [completed]
   workflow_call:
+    secrets:
+      RELEASE_AUTOMATION_APP_PRIVATE_KEY:
+        required: false
 permissions:
   contents: read
   actions: read
@@ -41,3 +44,67 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NATIVE_JOB: ${{ toJSON(job) }}
         run: python3 -B scripts/workflow_events.py
+
+  prepare:
+    name: Prepare one admitted private promotion
+    if: >-
+      github.repository != 'lightning-it/.github' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Repository policy audit' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - name: Load immutable reviewed event admission helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: lightning-it/.github
+          ref: 81990307ed007dcc1fdd63f52a2fa1ea8c5a3755
+          persist-credentials: false
+      - name: Authenticate current private producer and independent ingress before credentials
+        id: signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          head="$(python3 -B scripts/workflow_promotion_event.py)"
+          if [ -n "$head" ]; then
+            printf 'head=%s\n' "$head" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mint existing preparation dispatch token for Management only
+        if: steps.signal.outputs.head != ''
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: lightning-it
+          repositories: github-management-lit
+          permission-actions: write
+      - name: Recheck exact private event and dispatch the existing protected preparer once
+        if: steps.signal.outputs.head != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SOURCE_READ_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ steps.signal.outputs.head }}
+          NATIVE_JOB: ${{ toJSON(job) }}
+        run: |
+          set -euo pipefail
+          head="$(GH_TOKEN="$SOURCE_READ_TOKEN" python3 -B scripts/workflow_promotion_event.py --expected-head "$EXPECTED_HEAD")"
+          if [ "$head" != "$EXPECTED_HEAD" ]; then
+            printf 'Develop advanced; this event is no longer relevant.\n'
+            exit 0
+          fi
+          jq -n --arg repository "${GITHUB_REPOSITORY#*/}" --arg head "$head" \
+            '{ref:"main",inputs:{operation:"native-promotion-prepare",repository:$repository,policy_group:"repository_quality",runtime_develop_sha:$head}}' \
+            > promotion-dispatch.json
+          gh api --method POST \
+            repos/lightning-it/github-management-lit/actions/workflows/terraform-github-management.yml/dispatches \
+            --input promotion-dispatch.json

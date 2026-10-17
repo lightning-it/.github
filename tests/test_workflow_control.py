@@ -186,7 +186,8 @@ class ControlTests(unittest.TestCase):
         self.assertNotIn('pull_request_review_comment', triggers)
         self.assertNotIn('issue_comment', triggers)
         self.assertEqual(['Repository review events'], triggers['workflow_run']['workflows'])
-        self.assertNotIn('prepare', receiver['jobs'])
+        self.assertIn("github.repository != 'lightning-it/.github'", receiver['jobs']['prepare']['if'])
+        self.assertIn("Repository policy audit", receiver['jobs']['prepare']['if'])
         quality = yaml.safe_load((root / '.github/workflows/repository-quality.yml').read_text())
         prepare = quality['jobs']['prepare']
         self.assertEqual('quality', prepare['needs'])

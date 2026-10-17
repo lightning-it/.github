@@ -18,6 +18,14 @@ LOCK = 'provider "' + ADDRESS + '" {\nversion = "6.8.2"\nconstraints = "~> 6.0"\
 
 
 class TerraformDependencyTests(unittest.TestCase):
+    def setUp(self):
+        # Nested Git fixtures must not inherit the read-only source worktree.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"}}
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def test_literal_lock_roundtrip_drops_comments_and_rejects_expressions_or_hosts(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / '.terraform.lock.hcl'

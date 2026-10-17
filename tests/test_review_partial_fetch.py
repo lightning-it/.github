@@ -13,6 +13,14 @@ import workflow_subject as subject
 
 
 class PartialFetchTests(unittest.TestCase):
+    def setUp(self):
+        # Nested Git fixtures must not inherit the read-only source worktree.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"}}
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def test_large_historical_blob_is_not_downloaded_for_complete_current_diff(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); source = root / 'source'; source.mkdir()
