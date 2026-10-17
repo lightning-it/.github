@@ -130,7 +130,42 @@ def retention_date(payload: bytes) -> datetime:
         raise ArchiveError("retention-response") from None
 
 
-def archive(store: Store, package: bytes, *, repository: str, promotion: int, head: str, expected_digest: str, reservation: str, operation: str, now: datetime) -> dict:
+def object_key(repository, promotion, head, expected_digest, reservation):
+    require(isinstance(repository, str) and REPOSITORY.fullmatch(repository) is not None, "repository-shape")
+    require(type(promotion) is int and promotion > 0, "promotion-shape")
+    require(isinstance(head, str) and SHA.fullmatch(head) is not None, "head-shape")
+    require(isinstance(expected_digest, str) and SHA256.fullmatch(expected_digest) is not None, "package-digest-shape")
+    require(isinstance(reservation, str) and re.fullmatch(r"[0-9a-f]{32}", reservation) is not None, "reservation-shape")
+    return f"runs/github-release/v1/{repository}/{promotion}/{head}/{reservation}/{expected_digest}.json"
+
+
+def restore(store: Store, *, repository: str, promotion: int, head: str, expected_digest: str,
+            reservation: str, expected_bytes: int, now: datetime, expected_version: str | None = None):
+    """Recover the claimed package without any expiring Actions input or write.
+
+    With a receipt, every read pins its exact version. A consumed reservation
+    without a receipt may inspect the latest version, but never grants a PUT.
+    The permanent reservation's digest and length remain authoritative.
+    """
+    key = object_key(repository, promotion, head, expected_digest, reservation)
+    require(type(expected_bytes) is int and 0 < expected_bytes <= MAX_PACKAGE_BYTES, "package-size")
+    require(expected_version is None or isinstance(expected_version, str)
+            and 0 < len(expected_version) <= 1024 and expected_version != "null", "expected-version-shape")
+    metadata, package = store.request("reader", "GET", key, headers=store.encryption,
+                                    query={"versionId": expected_version} if expected_version else None,
+                                    response_limit=MAX_PACKAGE_BYTES)
+    version = metadata.get("x-amz-version-id")
+    require(isinstance(version, str) and 0 < len(version) <= 1024 and version != "null", "object-version-missing")
+    require(expected_version is None or version == expected_version, "object-version-drift")
+    require(len(package) == expected_bytes and hashlib.sha256(package).hexdigest() == expected_digest,
+            "archived-digest-mismatch")
+    receipt = archive(store, package, repository=repository, promotion=promotion, head=head,
+                      expected_digest=expected_digest, reservation=reservation,
+                      operation="verify-existing", now=now, expected_version=version)
+    return package, receipt
+
+
+def archive(store: Store, package: bytes, *, repository: str, promotion: int, head: str, expected_digest: str, reservation: str, operation: str, now: datetime, expected_version: str | None = None) -> dict:
     """Storage only. A protected caller must serialize this entire operation.
 
     Hetzner does not support conditional PUT on versioned buckets. The caller
@@ -139,23 +174,23 @@ def archive(store: Store, package: bytes, *, repository: str, promotion: int, he
     Repeated events may only verify that existing reservation. This module
     cannot reserve an operation or determine absence without bucket-list rights.
     """
-    require(REPOSITORY.fullmatch(repository) is not None, "repository-shape")
-    require(type(promotion) is int and promotion > 0, "promotion-shape")
-    require(SHA.fullmatch(head) is not None, "head-shape")
-    require(SHA256.fullmatch(expected_digest) is not None, "package-digest-shape")
-    require(re.fullmatch(r"[0-9a-f]{32}", reservation) is not None, "reservation-shape")
+    key = object_key(repository, promotion, head, expected_digest, reservation)
     require(operation in {"create", "verify-existing"}, "operation-shape")
+    require(expected_version is None or operation == "verify-existing"
+            and isinstance(expected_version, str) and 0 < len(expected_version) <= 1024
+            and expected_version != "null", "expected-version-shape")
     require(0 < len(package) <= MAX_PACKAGE_BYTES, "package-size")
     require(hashlib.sha256(package).hexdigest() == expected_digest, "package-digest-mismatch")
     # Cover upload latency/provider clock granularity. Repeated writes verify
     # seven years from the provider's immutable version creation time below.
     required_until = (seven_years_after(now) + timedelta(days=1)).replace(microsecond=0)
-    key = f"runs/github-release/v1/{repository}/{promotion}/{head}/{reservation}/{expected_digest}.json"
     headers = {**store.encryption, "content-type": "application/json", "content-md5": base64.b64encode(hashlib.md5(package).digest()).decode(),
                "x-amz-object-lock-mode": "COMPLIANCE", "x-amz-object-lock-retain-until-date": required_until.strftime("%Y-%m-%dT%H:%M:%SZ")}
     if operation == "verify-existing":
-        response, _ = store.request("reader", "HEAD", key, headers=store.encryption)
+        response, _ = store.request("reader", "HEAD", key, headers=store.encryption,
+                                    query={"versionId": expected_version} if expected_version else None)
         version = response.get("x-amz-version-id")
+        require(expected_version is None or version == expected_version, "object-version-drift")
         try:
             created = parsedate_to_datetime(response["last-modified"])
         except (KeyError, TypeError, ValueError):
@@ -187,6 +222,7 @@ def main() -> int:
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--reservation", required=True, help="Unique immutable reservation already persisted by the protected caller")
     parser.add_argument("--operation", required=True, choices=("create", "verify-existing"))
+    parser.add_argument("--expected-version", help="Exact immutable version from the persistent archive receipt; verification only")
     parser.add_argument("--receipt", type=Path, required=True, help="Private consumer-local receipt, never stdout")
     args = parser.parse_args()
     try:
@@ -195,7 +231,7 @@ def main() -> int:
         require(args.package.is_file() and not args.package.is_symlink(), "package-regular-file")
         with args.package.open("rb") as stream:
             package = stream.read(MAX_PACKAGE_BYTES + 1)
-        result = archive(store, package, repository=args.repository, promotion=args.promotion, head=args.head, expected_digest=args.expected_sha256, reservation=args.reservation, operation=args.operation, now=datetime.now(timezone.utc))
+        result = archive(store, package, repository=args.repository, promotion=args.promotion, head=args.head, expected_digest=args.expected_sha256, reservation=args.reservation, operation=args.operation, now=datetime.now(timezone.utc), expected_version=args.expected_version)
         # Exclusive creation prevents overwriting/following an attacker-selected receipt.
         descriptor = os.open(args.receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as stream:
