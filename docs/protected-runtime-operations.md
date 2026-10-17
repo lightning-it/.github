@@ -271,10 +271,13 @@ protected still-current Develop and the exact receiver source. It then invokes
 the same independent native-control verifier used for promotion ingress. A
 successful audit without that actual accepted ingress proof grants no dispatch.
 Source selection, private execution and approval remain independent boundaries.
-The receiver authenticates only the ruleset's visible read-only projection.
-GitHub may omit bypass actors without ruleset-write authority; absence is never
-an attestation of an empty list. Any visible bypass actor blocks. The receiver
-has no administrative credential and grants only a non-authorizing dispatch.
+Repository rule APIs may omit a genuine organization Evaluate rule, and the
+repository ruleset endpoint may return 404 for it. Such missing projections stay
+unknown; they are never interpreted as an empty scope or bypass list, nor used
+to infer selection. The actual independently selected native Required ingress
+is the only evidence locator here. It grants no rule authorization. The receiver
+has no administrative credential and grants only a non-authorizing dispatch;
+protected Management alone authenticates the complete current rule before effects.
 
 Only after this check may the existing Release App mint an actions-write token
 for Management alone. A second full read-only event/proof check precedes its
