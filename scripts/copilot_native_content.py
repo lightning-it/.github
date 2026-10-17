@@ -1264,10 +1264,15 @@ def current_copilot_findings_count(lines: list[str], verdict: str) -> int:
         and not any("**findings:**" in line.lower() for line in lines),
         "producer-review-binding",
     )
-    fields = [line for line in lines if re.search(r"open (?:finding|issue)", line, re.IGNORECASE)
-              and ("**" in line or "<summary" in line.lower())]
+    zero_markers = {"**0 open findings**", "**No open issues** 🎉"}
+    # Zero reports have no counted summary. Recognize their exact native
+    # markers explicitly, while retaining broad rejection of conflicting fields.
+    fields = [line for line in lines if line in zero_markers or (
+        re.search(r"open (?:finding|issue)", line, re.IGNORECASE)
+        and ("**" in line or "<summary" in line.lower())
+    )]
     require(len(fields) == 1, "producer-review-binding")
-    issue_frame = "open issue" in fields[0]
+    issue_frame = fields[0] == "**No open issues** 🎉" or "open issue" in fields[0]
     noun = "issue" if issue_frame else "finding"
     zero_field = "**No open issues** 🎉" if issue_frame else "**0 open findings**"
     if fields[0] == zero_field:
