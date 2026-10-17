@@ -17,6 +17,14 @@ def run(identifier=1, **overrides):
             'status': 'completed', 'conclusion': 'success', **overrides}
 
 
+def review(identifier=1, *, number=1, base='b', head='a', **overrides):
+    return run(identifier, path=completion.COPILOT, head_sha=head,
+               pull_requests=[{'number': number,
+                               'base': {'ref': 'develop', 'sha': base, 'repo': {'id': 1}},
+                               'head': {'ref': 'change', 'sha': head, 'repo': {'id': 1}}}],
+               **overrides)
+
+
 class CompletionTests(unittest.TestCase):
     def audit(self, rows):
         api = Mock(return_value={'workflow_runs': rows, 'total_count': len(rows)})
@@ -42,10 +50,10 @@ class CompletionTests(unittest.TestCase):
         self.assertNotIn('required_checks_passed', result)
 
     def test_same_head_copilot_deliveries_flag_inspection_but_distinct_heads_do_not(self):
-        first = run(path=completion.COPILOT, head_sha='a')
-        self.assertFalse(self.audit([first, run(2, path=completion.COPILOT, head_sha='a')])['auxiliary_clear'])
-        self.assertTrue(self.audit([first, run(2, path=completion.COPILOT, head_sha='b')])['auxiliary_clear'])
-        self.assertFalse(self.audit([run(path=completion.COPILOT, run_attempt=2)])['auxiliary_clear'])
+        first = review()
+        self.assertFalse(self.audit([first, review(2)])['auxiliary_clear'])
+        self.assertTrue(self.audit([first, review(2, head='b')])['auxiliary_clear'])
+        self.assertFalse(self.audit([review(run_attempt=2)])['auxiliary_clear'])
 
     def test_truncation_or_unstable_pages_cannot_report_success(self):
         api = Mock(return_value={'workflow_runs': [], 'total_count': 1})
@@ -78,3 +86,37 @@ class CompletionTests(unittest.TestCase):
                           {'created_at': 123}, {'head_sha': []}):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 self.audit([run(**overrides)])
+
+    def test_consumer_and_ref_qualified_metadata_paths_cannot_hide_active_runs(self):
+        for path in ('.github/workflows/delivery.yml',
+                     '.github/workflows/review-events.yml@main',
+                     '.github/workflows/review-events.yml@refs/heads/main'):
+            with self.subTest(path=path):
+                self.assertFalse(self.audit([run(path=path, status='in_progress', conclusion=None)])['auxiliary_clear'])
+
+    def test_fixed_count_rerun_after_first_page_is_detected(self):
+        first = [run(i) for i in range(1, 101)]
+        changed = [run(1, run_attempt=2, status='waiting', conclusion=None), *first[1:]]
+        api = Mock(side_effect=[
+            {'workflow_runs': first, 'total_count': 101},
+            {'workflow_runs': [run(101)], 'total_count': 101},
+            {'workflow_runs': changed, 'total_count': 101},
+            {'workflow_runs': [run(101)], 'total_count': 101}])
+        with self.assertRaisesRegex(ValueError, 'state changed'):
+            completion.audit(api, 'lightning-it/example', SINCE)
+
+    def test_same_head_distinct_pr_or_base_is_not_a_duplicate(self):
+        for distinct in (review(2, base='c'), review(2, number=2)):
+            self.assertTrue(self.audit([review(), distinct])['auxiliary_clear'])
+        for pulls in ([], None, [{}, {}], [{}]):
+            row = review()
+            row['pull_requests'] = pulls
+            result = self.audit([row])
+            self.assertFalse(result['auxiliary_clear'])
+            self.assertEqual('native-pr-base-head-unavailable',
+                             result['review_deliveries_to_inspect'][0]['inspection_reason'])
+
+    def test_advanced_live_pr_head_does_not_relabel_an_older_native_run(self):
+        old = review(head='old')
+        old['pull_requests'][0]['head']['sha'] = 'new'
+        self.assertTrue(self.audit([old, review(2, head='new')])['auxiliary_clear'])

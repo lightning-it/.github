@@ -17,7 +17,7 @@ from collections import defaultdict
 from urllib.parse import urlencode
 
 COPILOT = 'dynamic/agents/copilot-pull-request-reviewer'
-METADATA = {'delivery-operations.yml', 'review-events.yml', 'copilot-review-refresh.yml',
+METADATA = {'delivery.yml', 'delivery-operations.yml', 'review-events.yml', 'copilot-review-refresh.yml',
             'review-event-reconcile.yml', 'review-request-continuation.yml',
             'codex-copilot-remediation.yml', 'current-revision-rerun.yml'}
 
@@ -40,7 +40,7 @@ def summarize(run):
             ('id', 'path', 'event', 'status', 'conclusion', 'head_sha', 'run_attempt', 'html_url')}
 
 
-def audit(api, repository, since):
+def inventory(api, repository, since):
     timestamp(since)
     runs, seen, expected_total = [], set(), None
     for page in range(1, 11):
@@ -68,18 +68,60 @@ def audit(api, repository, since):
             break
     else:
         raise ValueError('Bounded inventory exceeded; inspect before completion')
-    holds, active, deliveries = [], [], defaultdict(list)
+    return runs
+
+
+def review_subject(run):
+    """Missing native association requires inspection, never a head-only guess."""
+    pulls = run.get('pull_requests')
+    if not isinstance(pulls, list) or len(pulls) != 1 or not isinstance(pulls[0], dict):
+        return None
+    pull = pulls[0]
+    try:
+        number = pull['number']
+        if type(number) is not int or number <= 0:
+            return None
+        subject = [number]
+        for side in ('base', 'head'):
+            identity, ref = pull[side]['repo']['id'], pull[side]['ref']
+            # GitHub updates an old run's PR association when the PR advances.
+            # The reviewed head is the immutable run head, not that live pointer.
+            sha = run['head_sha'] if side == 'head' else pull[side]['sha']
+            if (type(identity) is not int or identity <= 0
+                    or not isinstance(ref, str) or not ref
+                    or not isinstance(sha, str) or not sha):
+                return None
+            subject.extend((identity, ref, sha))
+        return tuple(subject)
+    except (KeyError, TypeError):
+        return None
+
+
+def audit(api, repository, since):
+    runs = inventory(api, repository, since)
+    observed = inventory(api, repository, since)
+    def state(rows):
+        return {run['id']: {**summarize(run), 'pull_requests': run.get('pull_requests')}
+                for run in rows}
+    if state(runs) != state(observed):
+        raise ValueError('Native run state changed during observation')
+    holds, active, deliveries, unbound = [], [], defaultdict(list), []
     for run in runs:
         if run.get('conclusion') == 'action_required' or run.get('status') == 'waiting':
             holds.append(summarize(run))
-        if (run.get('path', '').rsplit('/', 1)[-1] in METADATA
+        path = run['path'].split('@', 1)[0]
+        if (path.rsplit('/', 1)[-1] in METADATA
                 and run.get('status') != 'completed'):
             active.append(summarize(run))
-        if run.get('path') == COPILOT:
-            deliveries[run['head_sha']].append(run)
+        if path == COPILOT:
+            subject = review_subject(run)
+            if subject is None:
+                unbound.append({**summarize(run), 'inspection_reason': 'native-pr-base-head-unavailable'})
+            else:
+                deliveries[subject].append(run)
     multiple = [summarize(run) for group in deliveries.values()
                 if len(group) > 1 or any(r.get('run_attempt', 1) > 1 for r in group)
-                for run in group]
+                for run in group] + unbound
     # A second native run is an inspection signal, not proof of a second bill.
     return {'repository': repository, 'since': since, 'head_filter_used': False,
             'approval_holds': holds, 'active_metadata': active,

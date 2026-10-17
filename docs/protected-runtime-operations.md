@@ -44,6 +44,11 @@ approval, review request, merge or deletion. A nonzero exit means a hold, active
 metadata, possible repeated native delivery, incomplete inventory or read error
 needs attention. Multiple native deliveries are an inspection signal, not proof
 of a second charge; distinct legitimate review inputs remain distinct.
+Two bounded native observations must agree on run identities, attempts and
+states. Caller paths and ref suffixes are normalized. Reviews are grouped by
+their native PR/base/head association; missing or ambiguous associations need
+inspection, including older runs whose native PR association is no longer
+available. This is a momentary observation, not an atomic lock on future events.
 
 This supplements the independently selected mandatory gates. Its success does
 not approve product/security checks, attest reviewer identity, replace a native
