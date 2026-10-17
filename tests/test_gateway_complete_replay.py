@@ -137,6 +137,24 @@ class CompleteReplayTests(unittest.TestCase):
             self.assertEqual(wire, reviewer.submit(request, 'fixture'))
         provider.assert_not_called()
 
+    def test_runtime_date_change_is_real_request_drift_and_never_funds_a_replay(self):
+        context = ('<environment_context><cwd>/run/exact-review/public</cwd>'
+                   '<current_date>2026-10-16</current_date>'
+                   '<timezone>Etc/UTC</timezone></environment_context>')
+        original = self.request() | {'input': self.prompt + '\n' + context}
+        wire = gateway.review.canonical(self.response())
+        count = gateway.review.canonical({'object': 'response.input_tokens', 'input_tokens': 10})
+        with patch.object(transport, 'run_worker', side_effect=[count, wire]):
+            self.reviewer.submit(original, 'fixture')
+        receipt = json.loads((self.root / 'public/receipt.json').read_text())
+        reviewer = self.replay(receipt, wire)
+        changed = original | {'input': original['input'].replace('2026-10-16', '2026-10-17')}
+        with patch.object(transport, 'run_worker') as provider, \
+             self.assertRaisesRegex(gateway.review.ReviewError, 'single-replay-complete-request-drift'):
+            reviewer.submit(changed, 'unused-fixture')
+        provider.assert_not_called()
+        self.assertFalse((self.root / 'replay/receipt.json').exists())
+
     def test_large_valid_instruction_metadata_survives_receipt_and_replay(self):
         import hashlib
         import shutil

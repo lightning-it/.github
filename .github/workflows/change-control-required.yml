@@ -195,7 +195,9 @@ jobs:
           working-directory: ${{ steps.gateway.outputs.directory }}
           permission-profile: :read-only
           safety-strategy: drop-sudo
-          codex-args: '["--ephemeral","-c","web_search=\"disabled\""]'
+          # The complete review subject is inline; runner date/host context
+          # must not change a later byte-identical, zero-request replay.
+          codex-args: '["--ephemeral","-c","web_search=\"disabled\"","-c","include_environment_context=false"]'
           allow-bots: 'true'
           allow-bot-users: lightning-it-release-automation
       - name: Collect and verify the protected model receipt
