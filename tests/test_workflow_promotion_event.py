@@ -15,6 +15,20 @@ HEAD, BASE, ADAPTER = "a" * 40, "b" * 40, "c" * 40
 
 
 class PromotionEventTests(unittest.TestCase):
+    def test_private_receiver_checks_the_proof_before_its_only_management_token(self):
+        import yaml
+        value = yaml.safe_load((Path(__file__).resolve().parents[1] / event.DELIVERY).read_bytes())
+        self.assertEqual(["Repository review events"], value[True]["workflow_run"]["workflows"])
+        steps = value["jobs"]["prepare"]["steps"]
+        self.assertLess(next(i for i, step in enumerate(steps) if step.get("id") == "signal"),
+                        next(i for i, step in enumerate(steps) if step.get("id") == "app"))
+        token = next(step for step in steps if step.get("id") == "app")
+        self.assertEqual("github-management-lit", token["with"]["repositories"])
+        self.assertEqual("write", token["with"]["permission-actions"])
+        self.assertFalse(value[True]["workflow_call"]["secrets"]["RELEASE_AUTOMATION_APP_PRIVATE_KEY"]["required"])
+        self.assertIn("--expected-head", steps[-1]["run"])
+        self.assertIn("runtime_develop_sha", steps[-1]["run"])
+
     def fixture(self):
         entry = event.target(REPO)
         env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REPOSITORY_ID": str(IDENTIFIER),

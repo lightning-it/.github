@@ -17,6 +17,13 @@
       "job": "quality",
       "reason": "Checkout and artifact persistence require the GitHub Actions event and service context.",
       "owner": "Lightning IT Application Platform Maintainers"
+    },
+    {
+      "id": "admitted-private-promotion-event",
+      "workflow": ".github/workflows/delivery-operations.yml",
+      "job": "prepare",
+      "reason": "The immutable private event receiver needs the actual protected audit completion, independently accepted native ingress, exact current Develop and a target-bound Management dispatch. Unit fixtures grant no native source admission, review, approval or promotion acceptance.",
+      "owner": "Lightning IT Application Platform Maintainers"
     }
   ],
   "review": {
