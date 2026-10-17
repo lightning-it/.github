@@ -49,3 +49,32 @@ write. The native caller must bind a persistent reservation to the exact origina
 producer run/attempt and package digest before any create. All duplicate runs and
 retries must only verify that reservation. This module intentionally has no
 reservation creation fallback, S3 write, automatic review request or new workflow.
+
+## Permanent claims and recovery
+
+`release_archive_reservation.py` uses annotated tags in the existing private
+consumer. The operation hashes the repository ID, promotion, head and main
+target. Package digest and length are immutable record fields; changing bytes
+cannot obtain a different operation key. The exact two suffix patterns are
+`refs/tags/release-archive/v1/*/reservation` and
+`refs/tags/release-archive/v1/*/receipt`. The native repository ruleset must deny
+updates and deletion with no bypass actors. `**` alone would not span the extra
+path separator under GitHub's fnmatch semantics.
+
+Only a confirmed initial ref POST (HTTP 201), exact readback and renewed policy
+read grants one upload. An unknown response grants no upload in that invocation.
+A later confirmed initial POST can succeed only if the previous ref did not
+exist; that previous invocation never obtained upload authority. There is no
+automatic POST retry and no claim that a process-local timeout flag is durable.
+After any S3 PUT, including an unknown response, the previously persisted claim
+forces every subsequent invocation to restore or block. Ref protection is
+permanent and must not be removed on operational errors.
+
+`deliver` restores an existing claim before asking for expired native inputs.
+The receipt pins the original S3 version for every read. If receipt publication
+was interrupted, the permanent claim's exact digest and byte length may recover
+a matching object read-only; missing objects never permit another upload.
+The storage adapter checks provider version, exact bytes and actual COMPLIANCE
+retention. The protected consumer validates the restored profile and provenance
+again before completing the immutable receipt. Native workflow serialization,
+credential binding and profile acceptance belong to that consumer.

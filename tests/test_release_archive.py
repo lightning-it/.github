@@ -35,12 +35,45 @@ class FakeStore:
             return {"x-amz-version-id": self.version}, b""
         if method == "HEAD":
             return {"x-amz-version-id": self.version, "last-modified": format_datetime(NOW)}, b""
-        if "retention" in kwargs.get("query", {}):
+        if "retention" in (kwargs.get("query") or {}):
             return {}, f'<Retention><Mode>{self.mode}</Mode><RetainUntilDate>{self.until.isoformat()}</RetainUntilDate></Retention>'.encode()
-        return {}, self.body
+        return {"x-amz-version-id": self.version}, self.body
 
 
 class ReleaseArchiveTests(unittest.TestCase):
+    def restore(self, store, **changes):
+        args = dict(repository="lightning-it/.github", promotion=123, head=HEAD,
+                    expected_digest=DIGEST, reservation="b" * 32, expected_bytes=len(PACKAGE),
+                    now=NOW, expected_version="immutable-version")
+        args.update(changes)
+        return MODULE.restore(store, **args)
+
+    def test_restore_after_artifact_expiry_uses_only_original_object_reads(self):
+        store = FakeStore()
+        package, receipt = self.restore(store)
+        self.assertEqual(PACKAGE, package)
+        self.assertEqual(store.version, receipt["version_id"])
+        self.assertTrue(all(call[1] in {"GET", "HEAD"} for call in store.calls))
+        self.assertTrue(all(call[3]["query"]["versionId"] == store.version for call in store.calls))
+
+    def test_consumed_claim_without_receipt_can_only_recover_matching_bytes(self):
+        store = FakeStore()
+        package, _receipt = self.restore(store, expected_version=None)
+        self.assertEqual(PACKAGE, package)
+        self.assertTrue(all(call[1] != "PUT" for call in store.calls))
+        with self.assertRaisesRegex(MODULE.ArchiveError, "archived-digest-mismatch"):
+            self.restore(FakeStore(body=b"substituted"), expected_version=None)
+
+    def test_restore_mismatch_or_404_never_recreates_package(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(MODULE.ArchiveError, "object-version-drift"):
+            self.restore(store, expected_version="wrong")
+        self.assertEqual(1, len(store.calls))
+        store.request = Mock(side_effect=MODULE.ArchiveError("provider-http-404"))
+        with self.assertRaisesRegex(MODULE.ArchiveError, "provider-http-404"):
+            self.restore(store)
+        self.assertEqual(1, store.request.call_count)
+
     def archive(self, store=None, **changes):
         args = dict(repository="lightning-it/.github", promotion=123, head=HEAD, expected_digest=DIGEST, reservation="b" * 32, operation="create", now=NOW)
         args.update(changes)
@@ -72,6 +105,25 @@ class ReleaseArchiveTests(unittest.TestCase):
             self.archive(store, operation="verify-existing")
         self.assertEqual(1, store.request.call_count)
         self.assertEqual(("reader", "HEAD"), store.request.call_args.args[:2])
+
+    def test_persistent_receipt_pins_every_read_to_original_version(self):
+        store = FakeStore()
+        self.archive(store, operation="verify-existing", expected_version=store.version)
+        self.assertTrue(all(call[3]["query"]["versionId"] == store.version for call in store.calls))
+        self.assertFalse(any(call[1] == "PUT" for call in store.calls))
+
+    def test_changed_latest_version_cannot_replace_persisted_version(self):
+        store = FakeStore()
+        with self.assertRaisesRegex(MODULE.ArchiveError, "object-version-drift"):
+            self.archive(store, operation="verify-existing", expected_version="original-version")
+        self.assertEqual(["HEAD"], [call[1] for call in store.calls])
+
+    def test_version_pin_cannot_enable_create_or_null_version(self):
+        for changes in ({"expected_version": "original"}, {"operation": "verify-existing", "expected_version": "null"}):
+            store = FakeStore()
+            with self.assertRaisesRegex(MODULE.ArchiveError, "expected-version-shape"):
+                self.archive(store, **changes)
+            self.assertEqual([], store.calls)
 
     def test_missing_reservation_or_unknown_operation_stops_before_any_cloud_call(self):
         for changes in ({"reservation": ""}, {"reservation": "../../escape"}, {"operation": "retry-create"}):
