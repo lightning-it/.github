@@ -18,45 +18,31 @@ code review runs`, use `On PR open` so disabling the extra code review does not
 silently disable that security review. This changes neither the mandatory CI
 checks nor the normal one-person human approval contract.
 
-## Check delivery completion across repositories
+## Finish native review delivery in every repository
 
-Use the same private operator check for every connected repository, including
-repositories still in the documented POC transition:
+Apply the same completion procedure to every connected repository, including
+those still in the documented POC transition. Use GitHub's native Actions,
+review and deployment state; keep private observations in the private context.
 
-```sh
-python3 scripts/check-delivery-completion.py \
-  --repository lightning-it/REPOSITORY --pull PR_NUMBER
-```
+1. Wait for the prescribed reviewer to publish the complete result for the
+   current finalized input. A completed Copilot service run can precede review
+   publication. Resolve actual findings and finish the current mandatory gates.
+2. Inspect the review's native signal runs and their following delivery receivers
+   across the repository. Include callbacks on the default branch; filtering only
+   by the PR commit misses these. GitHub can require genuine maintainer approval
+   at both stages. Confirm each relevant receiver has actually arrived and
+   finished; an empty pending list alone does not establish that.
+3. Complete the relevant native approvals with the same authorized person before
+   integration, then inspect the resulting delivery. Identify an unknown or stale
+   operation before acting on it. A superseded never-executed callback is history,
+   not a reason to purchase another review or reuse acceptance from an older input.
 
-The check reads all native runs in the PR's lifetime, including callbacks on the
-default branch. It does not filter by the PR commit: Copilot can require separate
-maintainer approval for its review signal and for the following protected
-receiver. Finish both genuine approvals with the same authorized person before
-integration, then inspect again after delivery. Never approve an unknown source
-or stale operation just to clear the list. An unattributed hold needs inspection.
-A superseded never-executed run is history, not a reason to fund another review.
-
-For an explicitly bounded private fleet observation, repeat `--repository` and
-use `--since` with an ISO timestamp and timezone. Output can identify private
-repositories; do not publish it in public CI or artifacts. Cross-repository CI
-output is rejected. The command is read-only and adds no workflow, timer,
-approval, review request, merge or deletion. A nonzero exit means a hold, active
-review/metadata delivery, possible repeated native delivery, incomplete inventory or read error
-needs attention. Multiple native deliveries are an inspection signal, not proof
-of a second charge; distinct legitimate review inputs remain distinct.
-Two bounded native observations must agree on run identities, attempts and
-states. Caller paths and ref suffixes are normalized. Reviews are grouped by
-their native PR/base/head association; missing or ambiguous associations need
-inspection, including older runs whose native PR association is no longer
-available. This is a momentary observation, not an atomic lock on future events.
-
-This supplements the independently selected mandatory gates. Its success does
-not approve product/security checks, attest reviewer identity, replace a native
-Required Workflow, authorize release or prove fleet adoption. Keep the current
-author/risk matrix and one complete review per finalized input; a later source
-change requires its prescribed review. Keep the additional Codex connector
-Automatic review disabled, with separate required security review preserved.
-Required human approvals must remain possible for one authorized person.
+Keep the author/risk matrix, current-revision quality/security checks and normal
+one-person release approval. Prepare at most one promotion per repository and
+target. Before broad rollout, verify that obsolete callers and generator copies
+are removed without removing product tests, releases or separate security review.
+A native run list is an observation, not an independent approval or proof that all
+asynchronous callbacks have arrived. No extra completion controller is required.
 
 ## Finish an ordinary change
 
