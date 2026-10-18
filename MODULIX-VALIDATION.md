@@ -67,4 +67,4 @@ The policy is enforced and regression-tested in the implementation repositories:
 - [`github-management-lit#180`](https://github.com/lightning-it/github-management-lit/issues/180): branch-specific required contexts, invalid-context rejection, and live drift detection.
 
 Cross-repository governance and check-name semantics are tracked in
-[LI-118](https://lit.atlassian.net/browse/LI-118).
+[LTN-118](https://lit.atlassian.net/browse/LTN-118).
