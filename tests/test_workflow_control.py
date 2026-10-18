@@ -60,6 +60,35 @@ def refresh_api(observations, views, *, post_error=None):
     return api
 
 
+def verifier_only_refresh_api():
+    api = Mock()
+    review = refresh_jobs()[0] | {'head_sha': HEAD}
+    origin = run() | {'status': 'completed', 'conclusion': 'success'}
+    state = {'attempt': 2, 'review': review.copy(), 'origin': origin.copy(),
+             'origin_jobs': [review.copy(), refresh_jobs()[1]]}
+    def final():
+        return refresh_jobs(state['attempt'])[1] | {'head_sha': HEAD}
+    def call(path, **kwargs):
+        if kwargs.get('method') == 'POST': return {}
+        if path == f'repos/{REPO}/pulls/3': return pull()
+        if path == f'repos/{REPO}/actions/runs/22':
+            return {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH, 'status': 'completed',
+                    'event': 'pull_request_review', 'pull_requests': run()['pull_requests']}
+        if path == f'repos/{REPO}/actions/runs/10':
+            return origin | {'run_attempt': state['attempt']}
+        if path == f'repos/{REPO}/actions/jobs/101': return state['review'].copy()
+        if path == f'repos/{REPO}/actions/runs/10/attempts/1': return state['origin'].copy()
+        raise AssertionError(path)
+    def pages(path, key):
+        if path == f'repos/{REPO}/actions/runs?head_sha={HEAD}': return [origin | {'run_attempt': state['attempt']}]
+        if path == f'repos/{REPO}/actions/runs/10/jobs?filter=latest': return state.get('latest', [review, final()])
+        if path == f'repos/{REPO}/actions/runs/10/attempts/1/jobs': return state['origin_jobs']
+        if path == f'repos/{REPO}/actions/runs/10/attempts/{state["attempt"]}/jobs': return [final()]
+        raise AssertionError(path)
+    api.call.side_effect, api.pages.side_effect = call, pages
+    return api, state
+
+
 NATIVE_BODY = """<!-- ccr-overview-v2 -->
 
 ### 🟢 Approval recommended
@@ -614,6 +643,131 @@ class ControlTests(unittest.TestCase):
             events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         wait.assert_not_called()
         self.assertEqual(1, sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_two_successive_refreshes_after_verifier_only_attempt_authenticate_carried_review(self):
+        api, state = verifier_only_refresh_api()
+        with patch.object(events.time, 'sleep') as wait:
+            for attempt in (2, 3):
+                state['attempt'] = attempt
+                events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+        wait.assert_not_called()
+        self.assertEqual([f'repos/{REPO}/actions/jobs/{attempt * 100 + 2}/rerun' for attempt in (2, 3)],
+                         [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_metadata_after_verifier_only_attempt_reclassifies_only_authenticated_original_review_job(self):
+        api, _ = verifier_only_refresh_api()
+        with patch.object(events.time, 'sleep') as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_not_called()
+        self.assertEqual([f'repos/{REPO}/actions/jobs/101/rerun'],
+                         [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+        self.assertIn(f'repos/{REPO}/actions/runs/10/attempts/1', [c.args[0] for c in api.call.call_args_list])
+
+    def test_latest_association_attempt_tag_never_substitutes_for_actual_job_origin(self):
+        api, state = verifier_only_refresh_api()
+        state['latest'] = [state['review'] | {'run_attempt': 2}, refresh_jobs(2)[1] | {'head_sha': HEAD}]
+        with patch.object(events.time, 'sleep') as wait:
+            events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+        wait.assert_not_called()
+        self.assertIn(f'repos/{REPO}/actions/runs/10/attempts/1', [c.args[0] for c in api.call.call_args_list])
+        self.assertEqual([f'repos/{REPO}/actions/jobs/202/rerun'],
+                         [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_carried_review_origin_and_current_association_cannot_be_forged(self):
+        for defect in ('job-id', 'job-run', 'job-head', 'job-attempt', 'job-failed', 'job-running',
+                       'origin-run', 'origin-head', 'origin-attempt-bool', 'origin-workflow', 'origin-namespace',
+                       'origin-pr', 'origin-pr-head', 'origin-membership', 'origin-job-attempt-bool',
+                       'duplicate-origin', 'duplicate-current-review', 'duplicate-current-final', 'latest-head'):
+            api, state = verifier_only_refresh_api()
+            if defect == 'job-id': state['review'] |= {'id': 999}
+            elif defect == 'job-run': state['review'] |= {'run_id': 11}
+            elif defect == 'job-head': state['review'] |= {'head_sha': BASE}
+            elif defect == 'job-attempt': state['review'] |= {'run_attempt': 2}
+            elif defect == 'job-failed': state['review'] |= {'conclusion': 'failure'}
+            elif defect == 'job-running': state['review'] |= {'status': 'in_progress'}
+            elif defect == 'origin-run': state['origin'] |= {'id': 11}
+            elif defect == 'origin-head': state['origin'] |= {'head_sha': BASE}
+            elif defect == 'origin-attempt-bool': state['origin'] |= {'run_attempt': True}
+            elif defect == 'origin-workflow': state['origin'] |= {'workflow_id': 88}
+            elif defect == 'origin-namespace': state['origin'] |= {'workflow_url': 'ordinary-candidate-workflow'}
+            elif defect == 'origin-pr': state['origin'] |= {'pull_requests': []}
+            elif defect == 'origin-pr-head': state['origin'] |= {'pull_requests': [{'number': 3, 'head': {'sha': BASE}}]}
+            elif defect == 'origin-membership': state['origin_jobs'] = [state['review'] | {'id': 999}]
+            elif defect == 'origin-job-attempt-bool': state['origin_jobs'] = [state['review'] | {'run_attempt': True}]
+            elif defect == 'duplicate-origin': state['origin_jobs'] = [state['review'], state['review']]
+            else:
+                final = refresh_jobs(2)[1] | {'head_sha': HEAD}
+                state['latest'] = [state['review'], final]
+                if defect == 'duplicate-current-review': state['latest'].append(state['review'])
+                elif defect == 'duplicate-current-final': state['latest'].append(final)
+                elif defect == 'latest-head': state['latest'][0] = state['review'] | {'head_sha': BASE}
+            with self.subTest(defect=defect), patch.object(events.time, 'sleep') as wait, \
+                    self.assertRaises(control.ControlError):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            wait.assert_not_called()
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_carried_review_missing_current_or_origin_views_never_use_arbitrary_old_success(self):
+        for view in ('latest', 'origin_jobs'):
+            api, state = verifier_only_refresh_api()
+            state[view] = []
+            with self.subTest(view=view), patch.object(events.time, 'sleep') as wait, \
+                    self.assertRaisesRegex(control.ControlError, 'refresh-inflight-timeout'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertEqual(120, wait.call_count)
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+            if view == 'latest':
+                self.assertNotIn(f'repos/{REPO}/actions/jobs/101', [c.args[0] for c in api.call.call_args_list])
+
+    def test_partial_carried_views_wait_for_actual_native_association_and_membership(self):
+        for view in ('latest', 'origin_jobs'):
+            api, state = verifier_only_refresh_api()
+            original = state.get(view)
+            state[view] = []
+            def waiting(seconds):
+                self.assertEqual(15, seconds)
+                self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+                if view == 'latest': del state[view]
+                else: state[view] = original
+            with self.subTest(view=view), patch.object(events.time, 'sleep', side_effect=waiting) as wait:
+                events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+            wait.assert_called_once_with(15)
+            self.assertEqual(1, sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_carried_review_generation_advance_during_origin_reads_or_last_fence_cannot_write_stale_job(self):
+        for fence in ('origin', 'last'):
+            api, state = verifier_only_refresh_api()
+            original, observations = api.call.side_effect, [0]
+            def call(path, **kwargs):
+                if path == f'repos/{REPO}/actions/runs/10':
+                    observations[0] += 1
+                    if fence == 'last' and observations[0] == 3: state['attempt'] = 3
+                value = original(path, **kwargs)
+                if fence == 'origin' and path == f'repos/{REPO}/actions/jobs/101': state['attempt'] = 3
+                return value
+            api.call.side_effect = call
+            with self.subTest(fence=fence), patch.object(events.time, 'sleep') as wait:
+                events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+            wait.assert_called_once_with(15)
+            self.assertEqual([f'repos/{REPO}/actions/jobs/302/rerun'],
+                             [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_carried_review_native_error_and_unknown_post_outcome_never_retry_or_fund(self):
+        for failure in ('origin-get', 'post'):
+            api, _ = verifier_only_refresh_api()
+            original = api.call.side_effect
+            def call(path, **kwargs):
+                if ((failure == 'origin-get' and path == f'repos/{REPO}/actions/jobs/101')
+                        or (failure == 'post' and kwargs.get('method') == 'POST')):
+                    raise control.ControlError('native-api-unavailable')
+                return original(path, **kwargs)
+            api.call.side_effect = call
+            with self.subTest(failure=failure), patch.object(events.time, 'sleep') as wait, \
+                    self.assertRaisesRegex(control.ControlError, 'native-api-unavailable'):
+                events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+            wait.assert_not_called()
+            self.assertEqual(0 if failure == 'origin-get' else 1,
+                             sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
 
     def test_unadmitted_metadata_caller_grants_no_acceptance(self):
         api = Mock()

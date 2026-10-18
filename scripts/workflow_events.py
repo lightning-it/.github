@@ -82,6 +82,68 @@ def event_pull(api, repo, name, event):
     return pull
 
 
+def carried_review(api, repo, observed, head, number, final):
+    """Authenticate an upstream job still associated with this verifier-only run.
+
+    The latest view is only an association locator, not generation or success
+    authority. Verify the exact native job and its actual origin attempt, then
+    re-enumerate its current association. The caller retains both run fences.
+    """
+    run_id, attempt = observed['id'], observed['run_attempt']
+    endpoint = f"repos/{repo}/actions/runs/{run_id}"
+    def association():
+        jobs = api.pages(endpoint + "/jobs?filter=latest", "jobs")
+        require(all(job.get("run_id") == run_id and type(job.get("run_attempt")) is int
+                    and job["run_attempt"] > 0 for job in jobs), "refresh-carried-association-origin")
+        if any(job["run_attempt"] > attempt for job in jobs):
+            return None  # A newer generation is only a reason to observe again.
+        reviews = [job for job in jobs if job.get("name") == "Protected current revision"]
+        gates = [job for job in jobs if job.get("name") == "Current revision review"]
+        require(len(reviews) <= 1 and len(gates) <= 1, "refresh-carried-association-ambiguous")
+        if (len(reviews) != 1 or len(gates) != 1 or gates[0].get("id") != final.get("id")
+                or not all(job.get("status") == "completed" for job in jobs)):
+            return None
+        review = reviews[0]
+        require(type(review.get("id")) is int and review["id"] > 0
+                and review.get("head_sha") == head and review.get("conclusion") == "success",
+                "refresh-carried-association-binding")
+        return review
+    associated = association()
+    if associated is None:
+        return None
+    review = api.call(f"repos/{repo}/actions/jobs/{associated['id']}")
+    require(type(review.get("id")) is int and review["id"] == associated["id"]
+            and type(review.get("run_id")) is int and review["run_id"] == run_id
+            and review.get("name") == "Protected current revision" and review.get("head_sha") == head
+            and review.get("status") == "completed" and review.get("conclusion") == "success"
+            and type(review.get("run_attempt")) is int and 0 < review["run_attempt"] < attempt,
+            "refresh-carried-review-origin")
+    origin = api.call(endpoint + f"/attempts/{review['run_attempt']}")
+    require(type(origin.get("id")) is int and origin["id"] == run_id and origin.get("head_sha") == head
+            and type(origin.get("run_attempt")) is int and origin["run_attempt"] == review["run_attempt"]
+            and origin.get("status") == "completed"
+            and origin.get("workflow_id") == observed.get("workflow_id") and native_required(origin, repo),
+            "refresh-carried-attempt-origin")
+    pulls = [pr for pr in origin.get("pull_requests", []) if pr.get("number") == number]
+    require(len(pulls) == 1 and pulls[0].get("head", {}).get("sha") == head,
+            "refresh-carried-pr-association")
+    jobs = api.pages(endpoint + f"/attempts/{review['run_attempt']}/jobs", "jobs")
+    require(all(type(job.get("run_id")) is int and job["run_id"] == run_id
+                and type(job.get("run_attempt")) is int and job["run_attempt"] == review["run_attempt"]
+                for job in jobs), "refresh-carried-attempt-job-origin")
+    originals = [job for job in jobs if job.get("name") == "Protected current revision"]
+    require(len(originals) <= 1, "refresh-carried-review-ambiguous")
+    if not originals:
+        return None  # A partial origin view is no completed proof.
+    fields = ("id", "run_id", "run_attempt", "name", "head_sha", "status", "conclusion")
+    require(all(originals[0].get(field) == review.get(field) for field in fields),
+            "refresh-carried-review-membership")
+    current = association()
+    if current is None or current["id"] != review["id"]:
+        return None
+    return review
+
+
 def refresh(api, repo, name, event):
     pull = event_pull(api, repo, name, event)
     if pull is None:
@@ -132,9 +194,14 @@ def refresh(api, repo, name, event):
         jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/attempts/{attempt}/jobs", "jobs")
         require(all(job.get("run_id") == selected["id"] and type(job.get("run_attempt")) is int
                     and job["run_attempt"] > 0 for job in jobs), "refresh-native-job-origin")
-        after_jobs = observe_run()
         review = [job for job in jobs if job["name"] == "Protected current revision"]
         final = [job for job in jobs if job["name"] == "Current revision review"]
+        if (attempt > 1 and not review and len(final) == 1
+                and all(job["run_attempt"] == attempt and job.get("status") == "completed" for job in jobs)):
+            inherited = carried_review(api, repo, observed, head, number, final[0])
+            if inherited is not None:
+                review = [inherited]
+        after_jobs = observe_run()
         coherent = (generation(after_jobs) == generation(observed)
                     and all(job["run_attempt"] == attempt for job in jobs))
         if coherent:
