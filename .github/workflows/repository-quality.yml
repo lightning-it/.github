@@ -42,3 +42,54 @@ jobs:
 
       - name: Run canonical repository-quality profile
         run: scripts/lit-ci-profile.sh repository-quality
+
+  prepare:
+    name: Prepare one promotion after current native quality
+    needs: quality
+    if: >-
+      github.repository == 'lightning-it/.github' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check current protected Develop before credentials
+        id: signal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api repos/lightning-it/.github/branches/develop --jq 'select(.protected == true) | .commit.sha')"
+          if [ "$current" = "$GITHUB_SHA" ]; then
+            printf 'current=true\n' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Mint preparation dispatch token for Management only
+        if: steps.signal.outputs.current == 'true'
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_AUTOMATION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_AUTOMATION_APP_PRIVATE_KEY }}
+          owner: lightning-it
+          repositories: github-management-lit
+          permission-actions: write
+      - name: Recheck Develop and dispatch preparation on protected Main
+        if: steps.signal.outputs.current == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          SOURCE_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(GH_TOKEN="$SOURCE_READ_TOKEN" gh api repos/lightning-it/.github/branches/develop --jq 'select(.protected == true) | .commit.sha')"
+          if [ "$current" != "$GITHUB_SHA" ]; then
+            printf 'Develop advanced; this event is no longer relevant.\n'
+            exit 0
+          fi
+          gh api --method POST \
+            repos/lightning-it/github-management-lit/actions/workflows/terraform-github-management.yml/dispatches \
+            --input - <<'JSON'
+          {"ref":"main","inputs":{"operation":"native-promotion-prepare","repository":".github","policy_group":"repository_quality"}}
+          JSON

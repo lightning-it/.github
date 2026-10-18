@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "targets": [{
+    "repository": "lightning-it/shared-assets-lit",
+    "repository_id": 1120841013,
+    "scope": "shared-assets",
+    "source_sha": "bb1a5df9f54c5f98547048297e7e367cc382543e",
+    "workflow": ".github/workflows/repository-quality.yml",
+    "workflow_name": "Repository policy audit",
+    "job": "Release policy audit artifact"
+  }]
+}

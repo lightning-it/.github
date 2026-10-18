@@ -1,85 +1,138 @@
-"""Only a current protected push with an actual passing job can prepare a PR."""
+"""A successful audit alone must never authorize private promotion preparation."""
 import copy
 import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import workflow_promotion_event as event
-from workflow_control import ControlError
 
-HEAD = 'a' * 40
+REPO = "lightning-it/shared-assets-lit"
+IDENTIFIER = 1120841013
+HEAD, BASE, ADAPTER = "a" * 40, "b" * 40, "c" * 40
 
 
 class PromotionEventTests(unittest.TestCase):
+    def test_private_receiver_checks_the_proof_before_its_only_management_token(self):
+        import yaml
+        value = yaml.safe_load((Path(__file__).resolve().parents[1] / event.DELIVERY).read_bytes())
+        self.assertEqual(["Repository review events"], value[True]["workflow_run"]["workflows"])
+        steps = value["jobs"]["prepare"]["steps"]
+        self.assertLess(next(i for i, step in enumerate(steps) if step.get("id") == "signal"),
+                        next(i for i, step in enumerate(steps) if step.get("id") == "app"))
+        token = next(step for step in steps if step.get("id") == "app")
+        self.assertEqual("github-management-lit", token["with"]["repositories"])
+        self.assertEqual("write", token["with"]["permission-actions"])
+        self.assertFalse(value[True]["workflow_call"]["secrets"]["RELEASE_AUTOMATION_APP_PRIVATE_KEY"]["required"])
+        self.assertIn("--expected-head", steps[-1]["run"])
+        self.assertIn("runtime_develop_sha", steps[-1]["run"])
+
     def fixture(self):
-        env = {'GITHUB_REPOSITORY': event.REPOSITORY, 'GITHUB_REPOSITORY_ID': str(event.REPOSITORY_ID),
-               'GITHUB_EVENT_NAME': 'workflow_run', 'GITHUB_REF': 'refs/heads/develop',
-               'GITHUB_WORKFLOW_REF': f'{event.REPOSITORY}/{event.DELIVERY}@refs/heads/develop',
-               'NATIVE_JOB': json.dumps({'workflow_repository': event.REPOSITORY,
-                    'workflow_file_path': event.DELIVERY, 'workflow_sha': 'b' * 40, 'check_run_id': 55})}
-        signal = {'action': 'completed', 'workflow_run': {'id': 42, 'head_sha': HEAD}}
-        run = {'id': 42, 'workflow_id': 7, 'name': 'Repository Quality', 'path': event.QUALITY,
-               'event': 'push', 'head_branch': 'develop', 'run_attempt': 1, 'head_sha': HEAD,
-               'status': 'completed', 'conclusion': 'success',
-               'repository': {'id': event.REPOSITORY_ID}, 'head_repository': {'id': event.REPOSITORY_ID}}
-        branch = {'name': 'develop', 'protected': True, 'commit': {'sha': HEAD}}
-        job = {'name': 'repository / quality', 'status': 'completed', 'conclusion': 'success'}
+        entry = event.target(REPO)
+        env = {"GITHUB_REPOSITORY": REPO, "GITHUB_REPOSITORY_ID": str(IDENTIFIER),
+               "GITHUB_EVENT_NAME": "workflow_run", "GITHUB_REF": "refs/heads/develop",
+               "GITHUB_WORKFLOW_REF": f"{REPO}/{event.DELIVERY}@refs/heads/develop",
+               "NATIVE_JOB": json.dumps({"workflow_repository": event.SOURCE,
+                   "workflow_file_path": event.DELIVERY, "workflow_sha": ADAPTER, "check_run_id": 55})}
+        signal = {"action": "completed", "workflow_run": {"id": 42, "head_sha": HEAD}}
+        run = {"id": 42, "workflow_id": 7, "name": entry["workflow_name"], "path": entry["workflow"],
+               "workflow_url": f"https://api.github.com/repos/{REPO}/actions/workflows/7",
+               "event": "push", "head_branch": "develop", "run_attempt": 1, "head_sha": HEAD,
+               "status": "completed", "conclusion": "success",
+               "repository": {"id": IDENTIFIER, "private": True}, "head_repository": {"id": IDENTIFIER}}
+        branch = {"name": "develop", "protected": True, "commit": {"sha": HEAD}}
+        job = {"name": entry["job"], "status": "completed", "conclusion": "success", "run_id": 42, "head_sha": HEAD}
+        pull = {"number": 9, "merged_at": "2026-10-17T00:00:00Z", "merged": True,
+                "state": "closed", "merge_commit_sha": HEAD,
+                "base": {"ref": "develop", "sha": BASE, "repo": {"id": IDENTIFIER}}}
+        state = {"run": run, "branch": branch, "jobs": [job], "pulls": [pull], "pull": pull}
         api = Mock()
-        api.call.side_effect = [run, {'id': 7, 'path': event.QUALITY}, branch]
-        api.pages.return_value = [job]
-        return api, signal, env, run, branch, job
+        def call(path):
+            if path.endswith("/actions/runs/42"): return copy.deepcopy(state["run"])
+            if path.endswith("/actions/workflows/repository-quality.yml"): return {"id": 7, "path": entry["workflow"]}
+            if path.endswith("/branches/develop"): return copy.deepcopy(state["branch"])
+            if path.endswith("/pulls/9"): return copy.deepcopy(state["pull"])
+            self.fail(path)
+        def pages(path, key=None):
+            if path.endswith("/jobs?filter=latest"): return copy.deepcopy(state["jobs"])
+            if path.endswith("/commits/" + HEAD + "/pulls"): return copy.deepcopy(state["pulls"])
+            self.fail(path)
+        api.call.side_effect, api.pages.side_effect = call, pages
+        api.file.return_value = f"uses: {event.SOURCE}/{event.DELIVERY}@{ADAPTER}".encode()
+        return api, signal, env, state
 
-    def test_current_native_push_admits_only_a_head_and_performs_no_write(self):
-        api, signal, env, *_ = self.fixture()
-        self.assertEqual(HEAD, event.current_head(api, signal, env))
-        self.assertTrue(all('method' not in call.kwargs for call in api.call.call_args_list))
+    def test_real_producer_and_independent_control_locate_only_the_exact_current_head(self):
+        api, signal, env, state = self.fixture()
+        with patch.object(event, "policy", return_value={}) as policy, \
+                patch.object(event, "check_native_control", return_value={"source_sha": event.target(REPO)["source_sha"]}) as verify:
+            self.assertEqual(HEAD, event.current_head(api, signal, env))
+        policy.assert_called_once_with(api, REPO, BASE, event.target(REPO)["source_sha"])
+        verify.assert_called_once_with(api, REPO, state["pull"], {})
+        self.assertTrue(all("method" not in call.kwargs for call in api.call.call_args_list))
 
-    def test_stale_successful_push_is_a_noop_before_job_or_dispatch_access(self):
-        api, signal, env, run, branch, _ = self.fixture()
-        branch['commit']['sha'] = 'c' * 40
-        self.assertIsNone(event.current_head(api, signal, env))
+    def test_unprojected_evaluate_rule_does_not_replace_actual_native_ingress(self):
+        api, signal, env, _ = self.fixture()
+        original_pages = api.pages.side_effect
+        def active_parent_projection(path, key=None):
+            if path.endswith("/rulesets?includes_parents=true"):
+                return []
+            return original_pages(path, key)
+        api.pages.side_effect = active_parent_projection
+        with patch.object(event, "policy", return_value={}), patch.object(event, "check_native_control",
+                return_value={"source_sha": event.target(REPO)["source_sha"]}) as verify:
+            self.assertEqual(HEAD, event.current_head(api, signal, env))
+        verify.assert_called_once()
+        self.assertFalse(any("/rulesets" in call.args[0]
+                             for call in api.call.call_args_list + api.pages.call_args_list))
+
+    def test_passing_audit_with_missing_or_wrong_native_control_never_admits(self):
+        for failure in (True, False):
+            api, signal, env, _ = self.fixture()
+            with self.subTest(failure=failure), patch.object(event, "policy", return_value={}), \
+                    patch.object(event, "check_native_control", side_effect=event.ControlError("missing") if failure else None,
+                                 return_value={"source_sha": "f" * 40}), self.assertRaises(event.ControlError):
+                event.current_head(api, signal, env)
+
+    def test_stale_events_stop_before_evidence_or_credentials(self):
+        api, signal, env, state = self.fixture()
+        state["branch"]["commit"]["sha"] = "d" * 40
+        with patch.object(event, "check_native_control") as verify:
+            self.assertIsNone(event.current_head(api, signal, env))
         api.pages.assert_not_called()
+        verify.assert_not_called()
 
-    def test_pr_fork_failed_skipped_rerun_and_wrong_workflow_cannot_admit(self):
-        for change in ({'event': 'pull_request'}, {'head_branch': 'main'}, {'run_attempt': 2},
-                       {'conclusion': 'failure'}, {'conclusion': 'skipped'}, {'status': 'in_progress'},
-                       {'head_repository': {'id': 42}}, {'repository': {'id': 42}}, {'workflow_id': 9},
-                       {'path': '.github/workflows/other.yml'}, {'head_sha': 'c' * 40}):
-            api, signal, env, run, branch, _ = self.fixture()
-            run.update(copy.deepcopy(change))
-            with self.subTest(change=change), self.assertRaises(ControlError):
+    def test_advancing_develop_during_control_verification_is_a_noop(self):
+        api, signal, env, state = self.fixture()
+        def verify(*_):
+            state["branch"]["commit"]["sha"] = "d" * 40
+            return {"source_sha": event.target(REPO)["source_sha"]}
+        with patch.object(event, "policy", return_value={}), patch.object(event, "check_native_control", side_effect=verify):
+            self.assertIsNone(event.current_head(api, signal, env))
+
+    def test_pr_fork_failed_rerun_required_quality_alias_and_other_workflows_are_rejected(self):
+        for change in ({"event": "pull_request"}, {"head_branch": "main"}, {"run_attempt": 2},
+                       {"conclusion": "failure"}, {"conclusion": "skipped"}, {"status": "in_progress"},
+                       {"head_repository": {"id": 42}}, {"repository": {"id": IDENTIFIER, "private": False}},
+                       {"workflow_id": 9}, {"path": ".github/workflows/other.yml"},
+                       {"workflow_url": f"https://api.github.com/repos/{REPO}/actions/required_workflows/7"}):
+            api, signal, env, state = self.fixture()
+            state["run"].update(change)
+            with self.subTest(change=change), self.assertRaises(event.ControlError):
                 event.current_head(api, signal, env)
             api.pages.assert_not_called()
 
-    def test_successful_workflow_with_missing_skipped_or_duplicate_quality_blocks(self):
-        for change in ([], [{'name': 'repository / quality', 'status': 'completed', 'conclusion': 'skipped'}],
-                       [{'name': 'repository / quality', 'status': 'completed', 'conclusion': 'success'}] * 2):
-            api, signal, env, *_ = self.fixture()
-            api.pages.return_value = change
-            with self.subTest(jobs=change), self.assertRaises(ControlError):
-                event.current_head(api, signal, env)
-
-    def test_candidate_or_foreign_context_blocks_before_access(self):
-        for change in ({'GITHUB_EVENT_NAME': 'pull_request_target'}, {'GITHUB_REF': 'refs/pull/3/merge'},
-                       {'GITHUB_REPOSITORY': 'contributor/fork'}, {'GITHUB_REPOSITORY_ID': '42'},
-                       {'GITHUB_WORKFLOW_REF': f'{event.REPOSITORY}/{event.DELIVERY}@refs/heads/main'}):
-            api, signal, env, *_ = self.fixture()
+    def test_unknown_consumers_and_candidate_receivers_have_no_api_access(self):
+        for change in ({"GITHUB_REPOSITORY": "contributor/fork"}, {"GITHUB_REPOSITORY_ID": "42"},
+                       {"GITHUB_EVENT_NAME": "pull_request_target"}, {"GITHUB_REF": "refs/pull/9/merge"},
+                       {"GITHUB_WORKFLOW_REF": f"{REPO}/{event.DELIVERY}@refs/heads/main"}):
+            api, signal, env, _ = self.fixture()
             env.update(change)
-            with self.subTest(change=change), self.assertRaises(ControlError):
+            with self.subTest(change=change), self.assertRaises(event.ControlError):
                 event.current_head(api, signal, env)
             api.call.assert_not_called()
 
-    def test_unprotected_branch_or_missing_native_signal_blocks(self):
-        for locator in (None, True, 0, '42'):
-            api, signal, env, *_ = self.fixture()
-            signal['workflow_run']['id'] = locator
-            with self.subTest(locator=locator), self.assertRaises(ControlError):
-                event.current_head(api, signal, env)
-            api.call.assert_not_called()
-        api, signal, env, _, branch, _ = self.fixture()
-        branch['protected'] = False
-        with self.assertRaises(ControlError):
-            event.current_head(api, signal, env)
+
+if __name__ == "__main__":
+    unittest.main()

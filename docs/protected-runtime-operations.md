@@ -18,6 +18,32 @@ code review runs`, use `On PR open` so disabling the extra code review does not
 silently disable that security review. This changes neither the mandatory CI
 checks nor the normal one-person human approval contract.
 
+## Finish native review delivery in every repository
+
+Apply the same completion procedure to every connected repository, including
+those still in the documented POC transition. Use GitHub's native Actions,
+review and deployment state; keep private observations in the private context.
+
+1. Wait for the prescribed reviewer to publish the complete result for the
+   current finalized input. A completed Copilot service run can precede review
+   publication. Resolve actual findings and finish the current mandatory gates.
+2. Inspect the review's native signal runs and their following delivery receivers
+   across the repository. Include callbacks on the default branch; filtering only
+   by the PR commit misses these. GitHub can require genuine maintainer approval
+   at both stages. Confirm each relevant receiver has actually arrived and
+   finished; an empty pending list alone does not establish that.
+3. Complete the relevant native approvals with the same authorized person before
+   integration, then inspect the resulting delivery. Identify an unknown or stale
+   operation before acting on it. A superseded never-executed callback is history,
+   not a reason to purchase another review or reuse acceptance from an older input.
+
+Keep the author/risk matrix, current-revision quality/security checks and normal
+one-person release approval. Prepare at most one promotion per repository and
+target. Before broad rollout, verify that obsolete callers and generator copies
+are removed without removing product tests, releases or separate security review.
+A native run list is an observation, not an independent approval or proof that all
+asynchronous callbacks have arrived. No extra completion controller is required.
+
 ## Finish an ordinary change
 
 1. Prepare the change and run the repository's digest-pinned deterministic
@@ -83,12 +109,16 @@ Retain the failed preparation; after a regular ancestry integration, prepare a
 fresh plan bound to the new tips through the existing management operation.
 This grants no review, merge or normal release approval and adds no retry chain.
 
-The Root reference's existing delivery entry point observes completion of Repository Quality.
-Only a successful native push for the actual current protected Develop head
-can signal preparation; PR/fork runs, stale heads, skipped checks and producer
-reruns cannot do so. The immutable helper verifies this before credential use
-and rechecks the revision immediately before dispatch. It does not approve,
-merge, change settings or request an AI review.
+The Root reference prepares promotion in a dependent job of Repository Quality.
+GitHub admits that job only after the quality job succeeds on the first native
+push attempt to protected Develop. PR/fork runs, manual runs and reruns cannot
+use the preparation job. The job executes no repository checkout, verifies the
+current protected Develop head before credentials and rechecks it immediately
+before dispatch. Its App token has Actions write access only to Management.
+The review-event receiver no longer subscribes to Repository Quality; ordinary
+PR quality completion therefore creates no empty delivery run. Actual review
+and PR metadata events retain their existing protected receiver. Preparation
+does not approve, merge, change settings or request an AI review.
 
 The Main-bound Management receiver independently checks its target, admitted
 source, protected tips and native ingress. An existing identical App PR is
@@ -231,3 +261,38 @@ exception, not retrospective proof or a fallback for newly produced failures.
 No workflow file, retry loop, scheduled task or independent repair controller is
 added. Deployment and qualification of this capability remain separate from
 this source description. A source upgrade never itself resets a consumed slot.
+
+## Separately admitted private event preparation
+
+The LI-357 Shared Assets receiver uses its existing private policy-audit Develop
+push completion as a locator. The protected immutable event helper binds its
+single reviewed target, native producer identity, successful named audit job,
+protected still-current Develop and the exact receiver source. It then invokes
+the same independent native-control verifier used for promotion ingress. A
+successful audit without that actual accepted ingress proof grants no dispatch.
+Source selection, private execution and approval remain independent boundaries.
+Repository rule APIs may omit a genuine organization Evaluate rule, and the
+repository ruleset endpoint may return 404 for it. Such missing projections stay
+unknown; they are never interpreted as an empty scope or bypass list, nor used
+to infer selection. The actual independently selected native Required ingress
+is the only evidence locator here. It grants no rule authorization. The receiver
+has no administrative credential and grants only a non-authorizing dispatch;
+protected Management alone authenticates the complete current rule before effects.
+
+Only after this check may the existing Release App mint an actions-write token
+for Management alone. A second full read-only event/proof check precedes its
+one dispatch, carrying the exact expected Develop revision. Management selects
+its reviewed target configuration, creates a token for that repository alone
+and independently authenticates the selected source, all ingress and both tips.
+For Shared preparation, the existing Management administration environment first
+requires its genuine approval. Its existing private management credential reads
+the complete organization-owned rule, including an explicitly empty bypass list;
+that exact rule snapshot is rechecked before every PR/ref effect. The secret
+never crosses into Shared or Source, and Release App permissions do not expand.
+Unknown or changed full rules block preparation. Stale, duplicated or consumed
+operations fail or observe their existing PR; no new review, rerun or approval
+is created by the event receiver. Normal Main approval remains genuine and
+separate. Shared's first evaluation/qualification/enforcement and end-to-end
+event acceptance must be observed privately before claiming active operation.
+This changes neither Root's quality-job preparation nor its event triggers,
+and admits no additional repository, archive or fleet operation.

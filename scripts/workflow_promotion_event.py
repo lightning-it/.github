@@ -1,4 +1,4 @@
-"""Read-only admission of a relevant native event; no review or approval effect."""
+"""Authenticate an admitted private completion and native ingress before dispatch."""
 from __future__ import annotations
 
 import argparse
@@ -7,48 +7,91 @@ import os
 import sys
 from pathlib import Path
 
-from workflow_control import API, ControlError, require, sha, source_identity
+from workflow_control import API, ControlError, SOURCE, check_native_control, policy, require, sha, source_identity
 
-REPOSITORY = "lightning-it/.github"
-REPOSITORY_ID = 1112629689
-QUALITY = ".github/workflows/repository-quality.yml"
 DELIVERY = ".github/workflows/delivery-operations.yml"
 
 
+def target(repository):
+    value = json.loads((Path(__file__).resolve().parents[1] / ".lit/promotion-event-targets.json").read_bytes())
+    require(set(value) == {"version", "targets"} and value["version"] == 1
+            and type(value["targets"]) is list and len(value["targets"]) == 1,
+            "promotion-event-target-registry")
+    entry = value["targets"][0]
+    require(type(entry) is dict and set(entry) == {"repository", "repository_id", "scope", "source_sha", "workflow", "workflow_name", "job"}
+            and entry["repository"] == "lightning-it/shared-assets-lit" and entry["repository_id"] == 1120841013
+            and entry["scope"] == "shared-assets" and entry["source_sha"] == "bb1a5df9f54c5f98547048297e7e367cc382543e"
+            and entry["workflow"] == ".github/workflows/repository-quality.yml"
+            and entry["workflow_name"] == "Repository policy audit" and entry["job"] == "Release policy audit artifact",
+            "promotion-event-target-identity")
+    require(entry["repository"] == repository, "promotion-event-target-not-admitted")
+    return entry
+
+
 def current_head(api, event, env):
-    require(env.get("GITHUB_REPOSITORY") == REPOSITORY
-            and env.get("GITHUB_REPOSITORY_ID") == str(REPOSITORY_ID)
+    entry = target(env.get("GITHUB_REPOSITORY"))
+    repository, identifier = entry["repository"], entry["repository_id"]
+    require(env.get("GITHUB_REPOSITORY_ID") == str(identifier)
             and env.get("GITHUB_EVENT_NAME") == "workflow_run"
             and env.get("GITHUB_REF") == "refs/heads/develop"
-            and env.get("GITHUB_WORKFLOW_REF") == f"{REPOSITORY}/{DELIVERY}@refs/heads/develop",
-            "promotion-event-reference-scope")
-    source_identity(json.loads(env["NATIVE_JOB"]), expected_path=DELIVERY)
+            and env.get("GITHUB_WORKFLOW_REF") == f"{repository}/{DELIVERY}@refs/heads/develop",
+            "promotion-event-protected-receiver-required")
+    defining = json.loads(env["NATIVE_JOB"])
+    source_identity(defining, expected_path=DELIVERY)
     signal = event.get("workflow_run", {})
     locator = signal.get("id")
     require(type(locator) is int and locator > 0 and event.get("action") == "completed",
             "promotion-event-locator")
-    run = api.call(f"repos/{REPOSITORY}/actions/runs/{locator}")
-    workflow = api.call(f"repos/{REPOSITORY}/actions/workflows/repository-quality.yml")
+    run = api.call(f"repos/{repository}/actions/runs/{locator}")
+    workflow = api.call(f"repos/{repository}/actions/workflows/repository-quality.yml")
     require(run.get("id") == locator and run.get("workflow_id") == workflow.get("id")
-            and workflow.get("path") == QUALITY and run.get("path") == QUALITY
-            and run.get("name") == "Repository Quality" and run.get("event") == "push"
+            and workflow.get("path") == entry["workflow"] and run.get("path") == entry["workflow"]
+            and run.get("workflow_url") == f"https://api.github.com/repos/{repository}/actions/workflows/{workflow['id']}"
+            and run.get("name") == entry["workflow_name"] and run.get("event") == "push"
             and run.get("head_branch") == "develop" and run.get("run_attempt") == 1
             and run.get("status") == "completed" and run.get("conclusion") == "success"
-            and run.get("repository", {}).get("id") == REPOSITORY_ID
-            and run.get("head_repository", {}).get("id") == REPOSITORY_ID,
+            and run.get("repository", {}).get("id") == identifier and run.get("repository", {}).get("private") is True
+            and run.get("head_repository", {}).get("id") == identifier,
             "promotion-event-native-origin")
-    head = sha(run["head_sha"])
+    head = sha(run.get("head_sha"))
     require(head == signal.get("head_sha"), "promotion-event-binding")
-    branch = api.call(f"repos/{REPOSITORY}/branches/develop")
+    branch = api.call(f"repos/{repository}/branches/develop")
     require(branch.get("name") == "develop" and branch.get("protected") is True,
             "promotion-event-protected-develop")
     if branch["commit"]["sha"] != head:
         return None
-    jobs = api.pages(f"repos/{REPOSITORY}/actions/runs/{locator}/jobs?filter=latest", "jobs")
-    quality = [job for job in jobs if job.get("name") == "repository / quality"]
-    require(len(quality) == 1 and quality[0].get("status") == "completed"
-            and quality[0].get("conclusion") == "success", "promotion-event-quality-not-successful")
-    return head
+    # Bind the protected receiver to the exact independently published adapter.
+    receiver = api.file(repository, DELIVERY, head).decode("utf-8")
+    require(f"uses: {SOURCE}/{DELIVERY}@{defining['workflow_sha']}" in receiver,
+            "promotion-event-receiver-source-drift")
+    jobs = api.pages(f"repos/{repository}/actions/runs/{locator}/jobs?filter=latest", "jobs")
+    audit = [job for job in jobs if job.get("name") == entry["job"]]
+    require(len(audit) == 1 and audit[0].get("run_id") == locator and audit[0].get("head_sha") == head
+            and audit[0].get("status") == "completed" and audit[0].get("conclusion") == "success",
+            "promotion-event-audit-job-required")
+    # Repository rule projections can omit a genuine organization Evaluate rule.
+    # They cannot authorize or veto this non-authorizing locator. The actual
+    # independent Required ingress below is mandatory; protected Management must
+    # still authenticate the full current organization rule before every effect.
+    pulls = api.pages(f"repos/{repository}/commits/{head}/pulls")
+    merged = [pull for pull in pulls if pull.get("merged_at") and pull.get("merge_commit_sha") == head
+              and pull.get("base", {}).get("ref") == "develop"
+              and pull.get("base", {}).get("repo", {}).get("id") == identifier]
+    require(len(merged) == 1, "promotion-event-unique-ingress-required")
+    pull = api.call(f"repos/{repository}/pulls/{merged[0]['number']}")
+    require(pull.get("merged") is True and pull.get("state") == "closed" and pull.get("merge_commit_sha") == head
+            and pull.get("base", {}).get("ref") == "develop"
+            and pull.get("base", {}).get("repo", {}).get("id") == identifier,
+            "promotion-event-merged-ingress-required")
+    configuration = policy(api, repository, pull["base"]["sha"], entry["source_sha"])
+    proof = check_native_control(api, repository, pull, configuration)
+    require(proof.get("source_sha") == entry["source_sha"], "promotion-event-ingress-source-drift")
+    # Evidence reads can be long. Only the still-current exact event may dispatch.
+    require(api.call(f"repos/{repository}/actions/runs/{locator}") == run,
+            "promotion-event-producer-drift")
+    current = api.call(f"repos/{repository}/branches/develop")
+    require(current.get("protected") is True, "promotion-event-protected-develop")
+    return head if current["commit"]["sha"] == head else None
 
 
 def main():
