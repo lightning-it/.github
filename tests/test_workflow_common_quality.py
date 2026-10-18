@@ -41,7 +41,8 @@ class CommonQualityTests(unittest.TestCase):
         api.file.return_value = RAW
         with patch.object(quality, 'policy') as policy:
             result = quality.prepare(api, self.environment())
-        policy.assert_called_once_with(api, REPO, BASE, SOURCE)
+        policy.assert_called_once_with(api, REPO, BASE, SOURCE,
+                                       pull=pull() if subject is None else subject)
         api.file.assert_called_once_with(REPO, '.lit/repository.yml', BASE)
         return result
 
