@@ -52,6 +52,26 @@ producer keys are `id, run, attempt, job, source_sha`. Material keys are
 intake, at base/head, with plain64hex SHA256. The producer timestamps bind the
 original valid v2 request envelope, never a refreshed authorization lifetime.
 
+Packet and material bounds are separate. Every listed regular mode100644 Git
+material is admitted using `cat-file -s` before its blob is read: nonempty,
+at most1048576 bytes (matching the Product emitter), and within the unchanged
+dynamic wire-memory limit. The byte count is verified again after reading.
+Only material JSON uses that larger per-file decoder bound; packet and small
+Source registry remain capped at262144. Existing memory, JSON-node and depth
+admission applies unchanged; this grants no larger review or funding budget.
+
+For this new Security artifact only, actual native `size_in_bytes` must be a
+positive integer at most327680 before download (262144 packet bytes plus65536
+container-overhead allowance), also within the existing wire-memory limit.
+After the existing `gh run download`, the directory must contain exactly the
+named regular, non-symlink JSON file, with no extra file or directory, including
+hidden entries. Strict parsing independently enforces the original packet bound.
+Legacy artifact behavior is unchanged. The metadata bound limits reported
+download size; it does not prove a bound on expansion performed by `gh` before
+the directory/packet checks. No new ZIP extractor or claimed ZIP-bomb guarantee
+is introduced. The empty producer registry and required independent native
+qualification remain closed boundaries before any runtime adoption.
+
 Source recomputes the full binary integration diff, exact tree, regular-file
 modes/material digests, v2 chain and metadata bindings, protected-base release-
 eligible domain profile, and candidate diff excluding only the new intake

@@ -18,6 +18,10 @@ PROFILE = "release-app-security/v1"
 MARKER = "<!-- lit-security-premerge/v1 "
 FILENAME = "security-premerge-proof.json"
 REGISTRY = Path(__file__).resolve().parents[1] / ".lit/workflow-security-producers.json"
+MATERIAL_MAX = 1024 * 1024
+# One bounded packet plus 64 KiB for the native ZIP container overhead. This
+# bounds reported download size, not expansion performed by the existing gh CLI.
+MAX_ARTIFACT_BYTES = MAX_OPERATION_BYTES + 65536
 HEX = re.compile(r"[0-9a-f]{64}")
 SEMVER = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 TUPLE_KEYS = {"number", "base", "head", "base_ref", "head_ref", "head_repository", "author"}
@@ -54,12 +58,14 @@ def unique(pairs):
     return result
 
 
-def decode(raw, *, canonical_required=False):
-    require(type(raw) is bytes and 0 < len(raw) <= MAX_OPERATION_BYTES, "security-json-resource-bound")
+def decode(raw, *, canonical_required=False, maximum=MAX_OPERATION_BYTES):
+    require(type(maximum) is int and 0 < maximum <= MATERIAL_MAX
+            and type(raw) is bytes and 0 < len(raw) <= maximum, "security-json-resource-bound")
     # The native artifact reader already preflights its allocation. Apply the
     # same existing resource admission to registry and small material documents.
     import single_review_resources as resources
     limits = resources.memory_contract()
+    require(len(raw) <= limits["max_wire_bytes"], "security-json-resource-bound")
     resources.preflight_json(raw, limits["max_json_nodes"], limits["max_json_depth"])
     value = json.loads(raw, object_pairs_hook=unique)
     if canonical_required:
@@ -245,9 +251,14 @@ def git_materials(repo, pull, packet, entry):
             revision = base if item["at"] == "base" else head
             file_entry = git(objects, "ls-tree", "-z", revision, "--", item["path"], binary=True)
             require(file_entry.count(b"\0") == 1 and file_entry.startswith(b"100644 blob "), "security-material-mode")
-            raw = git(objects, "show", f"{revision}:{item['path']}", binary=True)
+            blob = sha(file_entry.split(b"\t", 1)[0].split()[2].decode("ascii"))
+            from single_review_resources import wire_limit
+            size = int(git(objects, "cat-file", "-s", blob))
+            require(0 < size <= min(MATERIAL_MAX, wire_limit()), "security-material-size")
+            raw = git(objects, "cat-file", "blob", blob, binary=True)
+            require(len(raw) == size, "security-material-size-drift")
             require(hashlib.sha256(raw).hexdigest() == item["sha256"], "security-material-digest")
-            materials[item["path"]] = raw if item["role"] == "fragment" else decode(raw)
+            materials[item["path"]] = raw if item["role"] == "fragment" else decode(raw, maximum=MATERIAL_MAX)
         profiles_path = ".lit/security-release-profiles.json"
         require(git(objects, "ls-tree", "-z", base, "--", profiles_path, binary=True).startswith(b"100644 blob "),
                 "security-protected-domain-profiles-mode")

@@ -205,11 +205,20 @@ def artifact_record(api, repo, run, name, filename):
     artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
     matches = [a for a in artifacts if a["name"] == name and not a["expired"]]
     require(len(matches) == 1, "protected-native-artifact-missing-or-ambiguous")
+    if filename == "security-premerge-proof.json":
+        from single_review_resources import wire_limit
+        from workflow_security_profile import MAX_ARTIFACT_BYTES
+        size = matches[0].get("size_in_bytes")
+        require(type(size) is int and 0 < size <= min(MAX_ARTIFACT_BYTES, wire_limit()),
+                "security-artifact-download-size")
     with tempfile.TemporaryDirectory(prefix="native-control-proof-") as temp:
         result = subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
                                  "--name", name, "--dir", temp], capture_output=True, timeout=60, check=False)
         require(result.returncode == 0, "protected-native-artifact-unavailable")
         file = Path(temp) / filename
+        if filename == "security-premerge-proof.json":
+            require(list(Path(temp).iterdir()) == [file] and file.is_file() and not file.is_symlink(),
+                    "security-artifact-exact-single-file")
         maximum = MAX_OPERATION_BYTES if filename in {"control-operation.json", "security-premerge-proof.json"} else MAX_PROOF_BYTES
         value = read_native_json(file, maximum)
         if filename == "security-premerge-proof.json":

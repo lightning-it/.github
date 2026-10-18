@@ -313,7 +313,7 @@ class SecurityProfileTests(unittest.TestCase):
     def test_native_artifact_reader_rejects_duplicates_noncanonical_and_oversized_packets(self):
         for raw in (b'{"version":1,"version":1}', b'{ "version": 1 }', b' ' * (core.MAX_OPERATION_BYTES + 1)):
             api = Mock()
-            api.pages.return_value = [{'name': 'security-premerge-1', 'expired': False}]
+            api.pages.return_value = [{'name': 'security-premerge-1', 'expired': False, 'size_in_bytes': 100}]
             def download(command, **kwargs):
                 (Path(command[-1]) / security.FILENAME).write_bytes(raw)
                 return Mock(returncode=0)
@@ -324,6 +324,98 @@ class SecurityProfileTests(unittest.TestCase):
         with patch.object(core.subprocess, 'run') as download, self.assertRaises(core.ControlError):
             core.artifact_record(api, REPO, self.run, 'security-premerge-1', security.FILENAME)
         download.assert_not_called()
+
+    def test_security_artifact_requires_exactly_one_regular_file(self):
+        for defect in ('none', 'extra-file', 'extra-directory', 'hidden-directory', 'symlink', 'directory', 'wrong-name'):
+            api = Mock()
+            api.pages.return_value = [{'name': 'security-premerge-1', 'expired': False, 'size_in_bytes': 100}]
+            def download(command, **kwargs):
+                root = Path(command[-1]); packet = root / security.FILENAME
+                if defect == 'symlink': packet.symlink_to(self.root / self.metadata_path)
+                elif defect == 'directory': packet.mkdir()
+                elif defect == 'wrong-name': (root / 'wrong.json').write_bytes(b'{}')
+                else: packet.write_bytes(b'{}')
+                if defect == 'extra-file': (root / 'other.json').write_bytes(b'{}')
+                elif defect == 'extra-directory': (root / 'other').mkdir()
+                elif defect == 'hidden-directory': (root / '.hidden').mkdir()
+                return Mock(returncode=0)
+            with self.subTest(defect=defect), patch.object(core.subprocess, 'run', side_effect=download):
+                if defect == 'none':
+                    self.assertEqual({}, core.artifact_record(api, REPO, self.run, 'security-premerge-1', security.FILENAME))
+                else:
+                    with self.assertRaises((core.ControlError, ValueError)):
+                        core.artifact_record(api, REPO, self.run, 'security-premerge-1', security.FILENAME)
+
+    def test_security_artifact_metadata_is_admitted_before_download_only_for_new_packet(self):
+        for size in (None, 0, -1, True, 1.5, '100', core.MAX_OPERATION_BYTES + 65537):
+            api = Mock()
+            api.pages.return_value = [{'name': 'security-premerge-1', 'expired': False, 'size_in_bytes': size}]
+            with self.subTest(size=size), patch.object(core.subprocess, 'run') as download, \
+                    self.assertRaises(core.ControlError):
+                core.artifact_record(api, REPO, self.run, 'security-premerge-1', security.FILENAME)
+            download.assert_not_called()
+        # Existing artifact behavior is intentionally unchanged, including its
+        # separate file bound and acceptance of unrelated extracted entries.
+        api.pages.return_value = [{'name': 'control-operation-1', 'expired': False}]
+        def legacy_download(command, **kwargs):
+            root = Path(command[-1])
+            (root / 'control-operation.json').write_bytes(b'{}')
+            (root / 'legacy-extra').mkdir()
+            return Mock(returncode=0)
+        with patch.object(core.subprocess, 'run', side_effect=legacy_download):
+            self.assertEqual({}, core.artifact_record(api, REPO, self.run, 'control-operation-1', 'control-operation.json'))
+        api.pages.return_value = [{'name': 'security-premerge-1', 'expired': False, 'size_in_bytes': 100}]
+        with patch('single_review_resources.wire_limit', return_value=99), \
+                patch.object(core.subprocess, 'run') as download, self.assertRaises(core.ControlError):
+            core.artifact_record(api, REPO, self.run, 'security-premerge-1', security.FILENAME)
+        download.assert_not_called()
+
+    def test_material_reader_accepts_json_above_packet_bound_up_to_one_mib(self):
+        for size in (core.MAX_OPERATION_BYTES + 1, 1024 * 1024):
+            value = self.metadata | {'padding': ''}
+            value['padding'] = 'x' * (size - len(core.canonical(value)))
+            raw = core.canonical(value)
+            self.assertEqual(size, len(raw))
+            self.write(self.metadata_path, raw)
+            git(self.root, 'add', self.metadata_path); git(self.root, 'commit', '-q', '--amend', '--no-edit')
+            self.head = git(self.root, 'rev-parse', 'HEAD'); self.configure('intake', 20)
+            with self.subTest(size=size), patch.object(subjects, 'fetch_objects', side_effect=self.fetch):
+                documents, _diff, _changes = security.git_materials(REPO, self.pull, self.packet, self.entry)
+                self.assertEqual(value, documents[self.metadata_path])
+                with self.assertRaises(core.ControlError): security.decode(raw)
+
+    def test_material_reader_rejects_oversize_before_blob_read_and_detects_size_drift(self):
+        for path in (self.fragment_path, self.metadata_path):
+            original_raw = (self.root / path).read_bytes()
+            self.write(path, b'x' * (1024 * 1024 + 1))
+            git(self.root, 'add', path); git(self.root, 'commit', '-q', '--amend', '--no-edit')
+            self.head = git(self.root, 'rev-parse', 'HEAD'); self.configure('intake', 20)
+            with self.subTest(path=path), patch.object(subjects, 'fetch_objects', side_effect=self.fetch), \
+                    patch.object(subjects, 'git', wraps=subjects.git) as reads, \
+                    self.assertRaisesRegex(core.ControlError, 'material-size'):
+                security.git_materials(REPO, self.pull, self.packet, self.entry)
+            oid = git(self.root, 'rev-parse', f'{self.head}:{path}')
+            self.assertFalse(any(call.args[1:] == ('cat-file', 'blob', oid) for call in reads.call_args_list))
+            self.write(path, original_raw)
+            git(self.root, 'add', path); git(self.root, 'commit', '-q', '--amend', '--no-edit')
+            self.head = git(self.root, 'rev-parse', 'HEAD'); self.configure('intake', 20)
+        original = subjects.git
+        def drift(objects, *args, **kwargs):
+            value = original(objects, *args, **kwargs)
+            return str(int(value) + 1) if args[:2] == ('cat-file', '-s') else value
+        with patch.object(subjects, 'fetch_objects', side_effect=self.fetch), \
+                patch.object(subjects, 'git', side_effect=drift), \
+                self.assertRaisesRegex(core.ControlError, 'material-size-drift'):
+            security.git_materials(REPO, self.pull, self.packet, self.entry)
+
+    def test_material_decoder_retains_memory_node_and_depth_admission(self):
+        admission = {'max_wire_bytes': 1024 * 1024, 'max_json_nodes': 16384, 'max_json_depth': 64}
+        for field, limit, raw in (('max_wire_bytes', 4, b'{"a":0}'),
+                                  ('max_json_nodes', 1, b'{"a":0}'),
+                                  ('max_json_depth', 1, b'[[0]]')):
+            with self.subTest(field=field), patch('single_review_resources.memory_contract',
+                    return_value=admission | {field: limit}), self.assertRaises((core.ControlError, ValueError)):
+                security.decode(raw, maximum=security.MATERIAL_MAX)
 
     def test_native_operation_binds_risk_and_missing_evidence_blocks_before_funding(self):
         evidence = self.authorize()
