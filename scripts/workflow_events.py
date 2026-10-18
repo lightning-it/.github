@@ -82,6 +82,70 @@ def event_pull(api, repo, name, event):
     return pull
 
 
+def carried_review(api, repo, observed, head, number, final):
+    """Authenticate an upstream job still associated with this verifier-only run.
+
+    The latest view is only an association locator, not generation or success
+    authority. Verify the exact native job and its actual origin attempt, then
+    re-enumerate its current association. The caller retains both run fences.
+    """
+    run_id, attempt = observed['id'], observed['run_attempt']
+    endpoint = f"repos/{repo}/actions/runs/{run_id}"
+    def association():
+        jobs = api.pages(endpoint + "/jobs?filter=latest", "jobs")
+        require(all(job.get("run_id") == run_id and type(job.get("run_attempt")) is int
+                    and job["run_attempt"] > 0 for job in jobs), "refresh-carried-association-origin")
+        if any(job["run_attempt"] > attempt for job in jobs):
+            return None  # A newer generation is only a reason to observe again.
+        reviews = [job for job in jobs if job.get("name") == "Protected current revision"]
+        gates = [job for job in jobs if job.get("name") == "Current revision review"]
+        require(len(reviews) <= 1 and len(gates) <= 1, "refresh-carried-association-ambiguous")
+        if (len(reviews) != 1 or len(gates) != 1 or gates[0].get("id") != final.get("id")
+                or not all(job.get("status") == "completed" for job in jobs)):
+            return None
+        review = reviews[0]
+        require(type(review.get("id")) is int and review["id"] > 0
+                and review.get("head_sha") == head and review.get("conclusion") == "success",
+                "refresh-carried-association-binding")
+        return review
+    associated = association()
+    if associated is None:
+        return None
+    review = api.call(f"repos/{repo}/actions/jobs/{associated['id']}")
+    require(type(review.get("id")) is int and review["id"] == associated["id"]
+            and type(review.get("run_id")) is int and review["run_id"] == run_id
+            and review.get("name") == "Protected current revision" and review.get("head_sha") == head
+            and review.get("status") == "completed" and review.get("conclusion") == "success"
+            and type(review.get("run_attempt")) is int and review["run_attempt"] > 0,
+            "refresh-carried-review-origin")
+    if review["run_attempt"] >= attempt:
+        return None  # A partial current view is not proof of a carried review.
+    origin = api.call(endpoint + f"/attempts/{review['run_attempt']}")
+    require(type(origin.get("id")) is int and origin["id"] == run_id and origin.get("head_sha") == head
+            and type(origin.get("run_attempt")) is int and origin["run_attempt"] == review["run_attempt"]
+            and origin.get("status") == "completed"
+            and origin.get("workflow_id") == observed.get("workflow_id") and native_required(origin, repo),
+            "refresh-carried-attempt-origin")
+    pulls = [pr for pr in origin.get("pull_requests", []) if pr.get("number") == number]
+    require(len(pulls) == 1 and pulls[0].get("head", {}).get("sha") == head,
+            "refresh-carried-pr-association")
+    jobs = api.pages(endpoint + f"/attempts/{review['run_attempt']}/jobs", "jobs")
+    require(all(type(job.get("run_id")) is int and job["run_id"] == run_id
+                and type(job.get("run_attempt")) is int and job["run_attempt"] == review["run_attempt"]
+                for job in jobs), "refresh-carried-attempt-job-origin")
+    originals = [job for job in jobs if job.get("name") == "Protected current revision"]
+    require(len(originals) <= 1, "refresh-carried-review-ambiguous")
+    if not originals:
+        return None  # A partial origin view is no completed proof.
+    fields = ("id", "run_id", "run_attempt", "name", "head_sha", "status", "conclusion")
+    require(all(originals[0].get(field) == review.get(field) for field in fields),
+            "refresh-carried-review-membership")
+    current = association()
+    if current is None or current["id"] != review["id"]:
+        return None
+    return review
+
+
 def refresh(api, repo, name, event):
     pull = event_pull(api, repo, name, event)
     if pull is None:
@@ -107,35 +171,61 @@ def refresh(api, repo, name, event):
         # Re-running the original review does not authorize a second provider
         # effect: only its source-bound funding step may reserve one.
         target = "Protected current revision"
+    def observe_run():
+        value = api.call(f"repos/{repo}/actions/runs/{selected['id']}")
+        require(value.get("id") == selected["id"] and value.get("head_sha") == head
+                and value.get("workflow_id") == selected.get("workflow_id")
+                and native_required(value, repo), "refresh-native-run-drift")
+        require(type(value.get("run_attempt")) is int and value["run_attempt"] > 0,
+                "refresh-native-attempt-required")
+        return value
+
+    def generation(value):
+        return value["run_attempt"], value.get("status"), value.get("conclusion")
     # A finished review can precede common quality and creation of the final
     # gate. GitHub rejects a rerun while that original workflow is still active.
     # Retain the signal until the entire native run finishes; never retry a write.
     for _ in range(120):
         current = api.call(f"repos/{repo}/pulls/{number}")
         require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
-        observed = api.call(f"repos/{repo}/actions/runs/{selected['id']}")
-        require(observed.get("id") == selected["id"] and observed.get("head_sha") == head
-                and observed.get("workflow_id") == selected.get("workflow_id")
-                and native_required(observed, repo), "refresh-native-run-drift")
-        jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/jobs?filter=latest", "jobs")
-        active = [job for job in jobs if job["name"] in {"Current revision review", "Protected current revision"}
-                  and job["status"] != "completed"]
-        if observed.get("status") == "completed" and not active:
-            break
+        observed = observe_run()
+        if observed.get("status") != "completed":
+            time.sleep(15)
+            continue
+        attempt = observed["run_attempt"]
+        jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/attempts/{attempt}/jobs", "jobs")
+        require(all(job.get("run_id") == selected["id"] and type(job.get("run_attempt")) is int
+                    and job["run_attempt"] > 0 for job in jobs), "refresh-native-job-origin")
+        review = [job for job in jobs if job["name"] == "Protected current revision"]
+        final = [job for job in jobs if job["name"] == "Current revision review"]
+        if (attempt > 1 and not review and len(final) == 1
+                and all(job["run_attempt"] == attempt and job.get("status") == "completed" for job in jobs)):
+            inherited = carried_review(api, repo, observed, head, number, final[0])
+            if inherited is not None:
+                review = [inherited]
+        after_jobs = observe_run()
+        coherent = (generation(after_jobs) == generation(observed)
+                    and all(job["run_attempt"] == attempt for job in jobs))
+        if coherent:
+            require(len(review) <= 1, "refresh-native-review-job-ambiguous")
+            require(len(final) <= 1, "refresh-native-job-ambiguous")
+        if (coherent and observed.get("status") == "completed"
+                and len(review) == len(final) == 1
+                and all(job.get("status") == "completed" for job in jobs)):
+            # A failed review reclassifies through its original source-bound
+            # reservation; this receiver grants no additional funded effect.
+            chosen = target if review[0]["conclusion"] == "success" else "Protected current revision"
+            gate = review[0] if chosen == "Protected current revision" else final[0]
+            current = api.call(f"repos/{repo}/pulls/{number}")
+            require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
+            if generation(observe_run()) == generation(observed):
+                break
         time.sleep(15)
     else:
         raise ControlError("refresh-inflight-timeout")
-    review = [job for job in jobs if job["name"] == "Protected current revision"]
-    require(len(review) == 1, "refresh-native-review-job-ambiguous")
-    # A completed failed review may now have received provider evidence. Its
-    # original job reclassifies and skips already-delivered funded effects.
-    if review[0]["conclusion"] != "success":
-        target = "Protected current revision"
-    gate = [job for job in jobs if job["name"] == target]
-    require(len(gate) == 1, "refresh-native-job-ambiguous")
-    current = api.call(f"repos/{repo}/pulls/{number}")
-    require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
-    api.call(f"repos/{repo}/actions/jobs/{gate[0]['id']}/rerun", method="POST", data={})
+    # This sole write remains outside the bounded read loop. An unknown POST
+    # outcome is terminal; generation convergence never retries a mutation.
+    api.call(f"repos/{repo}/actions/jobs/{gate['id']}/rerun", method="POST", data={})
     print("Original protected native job refreshed; no acceptance or provider retry granted.")
 
 
