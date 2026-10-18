@@ -977,6 +977,27 @@ class ControlTests(unittest.TestCase):
             self.assertIsNone(control.previous_approval(api, REPO, pull(), SOURCE))
         api.call.assert_not_called()
 
+    def test_real_policy_receives_exact_pull_before_any_review_or_funding(self):
+        value = pull()
+        job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,
+               'workflow_sha': SOURCE, 'check_run_id': 123}
+        api = Mock(); api.call.side_effect = [run(), value]
+        with tempfile.TemporaryDirectory() as temp:
+            event = Path(temp) / 'event.json'; event.write_text(json.dumps({'pull_request': value}))
+            env = {'GITHUB_REPOSITORY': REPO, 'GITHUB_RUN_ID': '10', 'NATIVE_JOB': json.dumps(job),
+                   'GITHUB_EVENT_PATH': str(event)}
+            with patch.dict(os.environ, env), patch.object(sys, 'argv', ['control', 'classify']), \
+                 patch.object(control, 'API', return_value=api), \
+                 patch.object(control, 'policy', side_effect=control.ControlError('exact-bootstrap-denied')) as policy, \
+                 patch.object(control, 'copilot_review') as review, \
+                 patch.object(control, 'reserve_request') as funding, \
+                 self.assertRaisesRegex(control.ControlError, 'exact-bootstrap-denied'):
+                control.main()
+            policy.assert_called_once_with(api, REPO, BASE, SOURCE, pull=value)
+            review.assert_not_called()
+            funding.assert_not_called()
+        self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET' for call in api.call.call_args_list))
+
     def test_unicode_operation_is_rejected_before_any_funded_effect(self):
         value = pull(body='界' * 50000)
         job = {'workflow_repository': REPO, 'workflow_file_path': control.WORKFLOW,

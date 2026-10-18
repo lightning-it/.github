@@ -15,6 +15,7 @@ control = original.control
 recovery = recovery_fixture.recovery
 ROOT = Path(__file__).resolve().parents[1]
 BB1 = "bb1a5df9f54c5f98547048297e7e367cc382543e"
+MAIN678 = "678560bdd02d32ccae59c430f0047f85a81ec72e"
 # The reader parameter models a future independent native selection. Neither
 # this test nor the lineage file admits this actual, currently unselected commit.
 CANDIDATE = "4dbd1a7d63a3ffae5ada5e6e0127a847585a051d"
@@ -50,7 +51,7 @@ class AdoptedLineageTests(unittest.TestCase):
         value = json.loads((ROOT / ".lit/workflow-source-lineage.json").read_bytes())
         # Exact sequence catches deletion, duplication, replacement, unknown or
         # forward/self additions without adding a production validator/framework.
-        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1]}, value)
+        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1, MAIN678]}, value)
         policy = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         self.assertEqual([], policy["accepted_sources"])
         self.assertNotIn(CANDIDATE, value["accepted_predecessors"])
@@ -58,7 +59,7 @@ class AdoptedLineageTests(unittest.TestCase):
     def test_real_policy_retains_bb1_and_old_pins_but_consumer_cannot_admit_unknown(self):
         api = Mock()
         value = self.policy(api)
-        self.assertEqual({CANDIDATE, BB1, *PREDECESSORS}, set(value["accepted_sources"]))
+        self.assertEqual({CANDIDATE, BB1, MAIN678, *PREDECESSORS}, set(value["accepted_sources"]))
         consumer = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         api.file.return_value = json.dumps(consumer | {"accepted_sources": ["e" * 40]}).encode()
         with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
