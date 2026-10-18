@@ -125,6 +125,9 @@ def refresh(api, repo, name, event):
         current = api.call(f"repos/{repo}/pulls/{number}")
         require(current["state"] == "open" and current["head"]["sha"] == head, "stale-refresh")
         observed = observe_run()
+        if observed.get("status") != "completed":
+            time.sleep(15)
+            continue
         attempt = observed["run_attempt"]
         jobs = api.pages(f"repos/{repo}/actions/runs/{selected['id']}/attempts/{attempt}/jobs", "jobs")
         require(all(job.get("run_id") == selected["id"] and type(job.get("run_attempt")) is int
