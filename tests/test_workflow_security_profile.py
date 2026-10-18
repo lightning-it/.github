@@ -221,6 +221,7 @@ class SecurityProfileTests(unittest.TestCase):
         self.configure('preparation', 30)
 
     def test_source_registry_is_empty_and_consumer_cannot_admit_a_producer(self):
+        self.assertEqual({'version': 1, 'producers': []}, security.SOURCE_REGISTRY)
         self.assertEqual([], security.registry())
         self.assertIsNone(security.validate_policy({}, REPO))
         for policy in ({'security_profile': security.PROFILE}, {'security_profile': {'producer': self.entry}}):
@@ -367,19 +368,39 @@ class SecurityProfileTests(unittest.TestCase):
         self.assertEqual(finite, security.decode(core.canonical(finite), canonical_required=True))
 
     def test_source_registry_rejects_duplicate_ids_missing_bindings_and_unknown_file_paths(self):
-        path = self.root / 'source-registry.json'
         valid = copy.deepcopy(self.entry)
-        for defect in ('valid', 'duplicate', 'missing', 'path', 'scope'):
+        for defect in ('valid', 'duplicate', 'missing', 'path', 'scope', 'revocation'):
             entry = copy.deepcopy(valid)
             if defect == 'missing': del entry['workflow_blob']
             elif defect == 'path': entry['files']['../candidate.py'] = 'a' * 64
             elif defect == 'scope': entry['repository'] = 'outside/repository'
+            elif defect == 'revocation': entry['revoked'] = 0
             value = {'version': 1, 'producers': [entry, entry] if defect == 'duplicate' else [entry]}
-            path.write_bytes(core.canonical(value))
-            with self.subTest(defect=defect), patch.object(security, 'REGISTRY', path):
+            with self.subTest(defect=defect), patch.object(security, 'SOURCE_REGISTRY', value):
                 if defect == 'valid': self.assertEqual([entry], security.registry())
                 else:
                     with self.assertRaises(core.ControlError): security.registry()
+
+    def test_source_literal_registry_retains_strict_schema_resource_bounds_and_detaches_data(self):
+        entry = copy.deepcopy(self.entry)
+        source = {'version': 1, 'producers': [entry]}
+        with patch.object(security, 'SOURCE_REGISTRY', source):
+            result = security.registry()
+            result[0]['files'].clear()
+            result.clear()
+            self.assertEqual([entry], security.registry())
+            self.assertTrue(source['producers'][0]['files'])
+        for value in ({'version': True, 'producers': []}, {'version': 2, 'producers': []},
+                      {'version': 1, 'producers': {}}, {'version': 1, 'producers': [], 'unknown': True}):
+            with self.subTest(value=value), patch.object(security, 'SOURCE_REGISTRY', value), \
+                    self.assertRaises(core.ControlError):
+                security.registry()
+        with patch.object(security, 'SOURCE_REGISTRY', {'version': 1, 'producers': ['x' * core.MAX_OPERATION_BYTES]}), \
+                self.assertRaisesRegex(core.ControlError, 'security-json-resource-bound'):
+            security.registry()
+        with patch.object(security, 'SOURCE_REGISTRY', {'version': 1, 'producers': [float('inf')]}), \
+                self.assertRaisesRegex(core.ControlError, 'security-nonfinite-json'):
+            security.registry()
 
     def test_native_artifact_reader_rejects_duplicates_noncanonical_and_oversized_packets(self):
         for raw in (b'{"version":1,"version":1}', b'{ "version": 1 }', b' ' * (core.MAX_OPERATION_BYTES + 1)):

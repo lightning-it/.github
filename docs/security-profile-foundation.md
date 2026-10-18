@@ -2,7 +2,11 @@
 
 This Source-only foundation is connected to the existing protected controller.
 It activates no consumer and admits **zero producers**:
-`.lit/workflow-security-producers.json` is `{version:1,producers:[]}`. No example
+the hand-maintained `SOURCE_REGISTRY` data literal in
+`scripts/workflow_security_profile.py` is `{version:1,producers:[]}`. Its canonical
+JSON passes the same bounded strict decoder and schema validation, yielding
+detached data; no external registry file or Product Python is loaded. Changes
+to this authority require native review of the Source module. No example
 producer, consumer JSON, branch name, receipt or successful local fixture is
 runtime acceptance. Control proof source, delivery adapter lineage and Product
 producer revisions remain separate immutable bindings.
