@@ -1,5 +1,6 @@
 """Permanent CAS survives run/artifact expiry and ambiguous responses."""
 import copy
+from datetime import timedelta
 from pathlib import Path
 import sys
 import unittest
@@ -125,6 +126,54 @@ class ReservationTests(unittest.TestCase):
         result = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, build, Mock(), NOW)
         self.assertEqual("verify-existing", result[2])
         self.assertEqual(1, sum(call[1] == "PUT" for call in cloud.calls))
+
+    def test_retention_extension_replays_original_receipt_without_any_write(self):
+        cloud = FakeStore()
+        build = Mock(return_value=PACKAGE)
+        first = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, build, Mock(), NOW)
+        original_refs, original_tags = copy.deepcopy(self.api.refs), copy.deepcopy(self.api.tags)
+        cloud.until += timedelta(days=365)
+        cloud.calls.clear()
+        self.api.calls.clear()
+        build.side_effect = AssertionError("replay must not rebuild")
+        second = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, build, Mock(), NOW)
+        self.assertEqual("verify-existing", second[2])
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual(original_refs, self.api.refs)
+        self.assertEqual(original_tags, self.api.tags)
+        self.assertTrue(all(method == "GET" for method, _, _ in self.api.calls))
+        self.assertTrue(all(call[1] in {"GET", "HEAD"} for call in cloud.calls))
+        self.assertTrue(all(call[3]["query"]["versionId"] == cloud.version for call in cloud.calls))
+
+    def test_retention_decrease_conflicts_even_above_seven_year_minimum(self):
+        cloud = FakeStore()
+        reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+        cloud.until -= timedelta(hours=1)
+        cloud.calls.clear()
+        with self.assertRaisesRegex(ControlError, "archive-receipt-conflict"):
+            reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, Mock(), Mock(), NOW)
+        self.assertTrue(all(call[1] in {"GET", "HEAD"} for call in cloud.calls))
+
+    def test_extended_retention_never_relaxes_other_receipt_fields(self):
+        cloud = FakeStore()
+        _, first, _ = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+        record = self.store.read(first["operation"], "reservation")
+        extended = first["storage"] | {"retain_until": (cloud.until + timedelta(days=365)).isoformat()}
+        for field, value in (("version_id", "replacement"), ("package_sha256", "f" * 64),
+                             ("key", "different-key"), ("repository", "lightning-it/other"),
+                             ("promotion", 99), ("head_sha", "f" * 40),
+                             ("retention_mode", "GOVERNANCE"), ("release_authorized", True)):
+            with self.subTest(field=field), self.assertRaises(ControlError):
+                self.store.finish(record, extended | {field: value})
+        self.assertEqual(first, self.store.read(first["operation"], "receipt"))
+
+    def test_changed_retention_must_be_a_timezone_aware_timestamp(self):
+        cloud = FakeStore()
+        _, first, _ = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+        record = self.store.read(first["operation"], "reservation")
+        for value in (None, 1, "invalid", "2039-01-01", "2039-01-01T00:00:00"):
+            with self.subTest(value=value), self.assertRaisesRegex(ControlError, "archive-receipt-conflict"):
+                self.store.finish(record, first["storage"] | {"retain_until": value})
 
     def test_invalid_package_stops_before_claim_and_before_s3(self):
         cloud = FakeStore()

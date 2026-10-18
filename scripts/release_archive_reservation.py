@@ -8,6 +8,7 @@ an already durable claim, so every later invocation remains read-only.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import hashlib
 import re
@@ -166,7 +167,18 @@ class Reservations:
         if existing is None and self.create(key, "receipt", record):
             return record
         existing = self.read(key, "receipt")
-        require(existing == record, "archive-receipt-conflict")
+        if existing != record:
+            # Retention may legitimately grow on the same immutable version.
+            # Keep the original receipt; every other binding must remain exact.
+            try:
+                original_until = existing["storage"]["retain_until"]
+                before = datetime.fromisoformat(original_until)
+                after = datetime.fromisoformat(storage["retain_until"])
+            except (KeyError, TypeError, ValueError):
+                raise ControlError("archive-receipt-conflict") from None
+            require(before.tzinfo is not None and after.tzinfo is not None and after >= before
+                    and existing == record | {"storage": storage | {"retain_until": original_until}},
+                    "archive-receipt-conflict")
         return existing
 
     def verify_denials(self, record):
