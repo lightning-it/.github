@@ -27,15 +27,25 @@ def moment(delta=0):
     return (datetime.now(UTC) + timedelta(minutes=delta)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def git(root, *args):
+def git_environment():
     environment = os.environ.copy()
     for key in ('GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'):
         environment.pop(key, None)
-    return subprocess.check_output(['git', '-C', str(root), *args], env=environment).decode().strip()
+    return environment
+
+
+def git(root, *args, binary=False):
+    payload = subprocess.check_output(['git', '-C', str(root), *args], env=git_environment())
+    return payload if binary else payload.decode().strip()
 
 
 class SecurityProfileTests(unittest.TestCase):
     def setUp(self):
+        # The integration gate supplies its own worktree context. Fixtures and
+        # the data-only helpers they exercise own independent repositories.
+        context = patch.dict(os.environ, git_environment(), clear=True)
+        context.start()
+        self.addCleanup(context.stop)
         temp = tempfile.TemporaryDirectory(dir=os.environ.get('HOME'))
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -63,8 +73,8 @@ class SecurityProfileTests(unittest.TestCase):
         self.write(self.fragment_path, b'security_fixes: [Real security fixture]\n')
         self.commit('Original complete candidate')
         candidate = git(self.root, 'rev-parse', 'HEAD')
-        payload = subprocess.check_output(['git', '-C', str(self.root), 'diff', '--binary', '--full-index',
-            '--no-color', '--no-ext-diff', '--no-textconv', self.original_base, candidate])
+        payload = git(self.root, 'diff', '--binary', '--full-index',
+            '--no-color', '--no-ext-diff', '--no-textconv', self.original_base, candidate, binary=True)
         request = {'schemaVersion': 2, 'repository': REPO, 'repositoryId': '1234', 'baseSha': self.original_base,
                    'candidateBaseSha': self.original_base, 'candidateHeadSha': candidate,
                    'candidateDiffSha256': 'sha256:' + hashlib.sha256(payload).hexdigest(),
@@ -132,10 +142,10 @@ class SecurityProfileTests(unittest.TestCase):
         if kind == 'preparation': materials.append({'role': 'intake', 'at': 'base', 'path': self.intake_path})
         for item in materials:
             revision = self.head if item['at'] == 'head' else self.base
-            raw = subprocess.check_output(['git', '-C', str(self.root), 'show', f"{revision}:{item['path']}"])
+            raw = git(self.root, 'show', f"{revision}:{item['path']}", binary=True)
             item['sha256'] = hashlib.sha256(raw).hexdigest()
-        diff = subprocess.check_output(['git', '-C', str(self.root), 'diff', '--binary', '--full-index',
-            '--no-color', '--no-ext-diff', '--no-textconv', self.base, self.head])
+        diff = git(self.root, 'diff', '--binary', '--full-index',
+            '--no-color', '--no-ext-diff', '--no-textconv', self.base, self.head, binary=True)
         self.packet = {'version': 1, 'profile': security.PROFILE, 'kind': kind, 'repository': REPO, 'repository_id': 1234,
             'binding': security.subject(self.pull), 'integration_tree': git(self.root, 'rev-parse', f'{self.head}^{{tree}}'),
             'diff_sha256': hashlib.sha256(diff).hexdigest(), 'chain_id': self.intake['chainId'], 'evidence_id': EVIDENCE,
@@ -218,6 +228,15 @@ class SecurityProfileTests(unittest.TestCase):
         with self.assertRaises(core.ControlError):
             security.authorize(self.api, REPO, self.pull, {'security_profile': security.PROFILE})
         self.api.call.assert_not_called()
+
+    def test_git_fixture_binary_and_text_reads_ignore_foreign_worktree_context(self):
+        foreign = {'GIT_DIR': '/not-this-fixture/repository.git', 'GIT_COMMON_DIR': '/not-this-fixture/common',
+                   'GIT_WORK_TREE': '/not-this-fixture/worktree', 'GIT_INDEX_FILE': '/not-this-fixture/index'}
+        with patch.dict(os.environ, foreign):
+            self.assertEqual(self.head, git(self.root, 'rev-parse', 'HEAD'))
+            self.assertEqual((self.root / self.metadata_path).read_bytes(),
+                             git(self.root, 'show', f'{self.head}:{self.metadata_path}', binary=True))
+            self.assertEqual(foreign, {key: os.environ[key] for key in foreign})
 
     def test_both_real_git_shapes_require_native_proof_and_keep_full_codex_route(self):
         for kind in ('intake', 'preparation'):
