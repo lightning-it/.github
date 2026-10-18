@@ -1,4 +1,4 @@
-"""Authenticate an admitted private completion and native ingress before dispatch."""
+"""Authenticate an explicitly profiled completion and native ingress before dispatch."""
 from __future__ import annotations
 
 import argparse
@@ -13,19 +13,34 @@ DELIVERY = ".github/workflows/delivery-operations.yml"
 
 
 def target(repository):
+    profiles = {
+        "lightning-it/shared-assets-lit": {
+            "repository_id": 1120841013, "scope": "shared-assets", "private": True,
+            "workflow_id": 307348847, "workflow": ".github/workflows/repository-quality.yml",
+            "workflow_name": "Repository policy audit", "job": "Release policy audit artifact"},
+        "lightning-it/ansible-collection-supplementary": {
+            "repository_id": 1103407173, "scope": "collection-supplementary", "private": False,
+            "workflow_id": 214182490, "workflow": ".github/workflows/collection-ci.yml",
+            "workflow_name": "Collection CI", "job": "Collection / Fast"},
+    }
     value = json.loads((Path(__file__).resolve().parents[1] / ".lit/promotion-event-targets.json").read_bytes())
-    require(set(value) == {"version", "targets"} and value["version"] == 1
-            and type(value["targets"]) is list and len(value["targets"]) == 1,
+    require(type(value) is dict and set(value) == {"version", "targets"}
+            and type(value["version"]) is int and value["version"] == 1
+            and type(value["targets"]) is list and len(value["targets"]) == len(profiles),
             "promotion-event-target-registry")
-    entry = value["targets"][0]
-    require(type(entry) is dict and set(entry) == {"repository", "repository_id", "scope", "source_sha", "workflow", "workflow_name", "job"}
-            and entry["repository"] == "lightning-it/shared-assets-lit" and entry["repository_id"] == 1120841013
-            and entry["scope"] == "shared-assets" and entry["source_sha"] == "bb1a5df9f54c5f98547048297e7e367cc382543e"
-            and entry["workflow"] == ".github/workflows/repository-quality.yml"
-            and entry["workflow_name"] == "Repository policy audit" and entry["job"] == "Release policy audit artifact",
-            "promotion-event-target-identity")
-    require(entry["repository"] == repository, "promotion-event-target-not-admitted")
-    return entry
+    entries = {}
+    for entry in value["targets"]:
+        require(type(entry) is dict and type(entry.get("repository")) is str
+                and entry["repository"] in profiles and entry["repository"] not in entries,
+                "promotion-event-target-identity")
+        expected = profiles[entry["repository"]] | {
+            "repository": entry["repository"], "source_sha": "bb1a5df9f54c5f98547048297e7e367cc382543e"}
+        require(entry == expected and type(entry.get("private")) is bool
+                and type(entry.get("repository_id")) is int and type(entry.get("workflow_id")) is int,
+                "promotion-event-target-identity")
+        entries[entry["repository"]] = entry
+    require(repository in entries, "promotion-event-target-not-admitted")
+    return entries[repository]
 
 
 def current_head(api, event, env):
@@ -43,14 +58,17 @@ def current_head(api, event, env):
     require(type(locator) is int and locator > 0 and event.get("action") == "completed",
             "promotion-event-locator")
     run = api.call(f"repos/{repository}/actions/runs/{locator}")
-    workflow = api.call(f"repos/{repository}/actions/workflows/repository-quality.yml")
-    require(run.get("id") == locator and run.get("workflow_id") == workflow.get("id")
+    workflow = api.call(f"repos/{repository}/actions/workflows/{entry['workflow'].rsplit('/', 1)[1]}")
+    require(type(run.get("id")) is int and run["id"] == locator
+            and type(run.get("workflow_id")) is int and type(workflow.get("id")) is int
+            and run["workflow_id"] == workflow["id"] == entry["workflow_id"]
             and workflow.get("path") == entry["workflow"] and run.get("path") == entry["workflow"]
             and run.get("workflow_url") == f"https://api.github.com/repos/{repository}/actions/workflows/{workflow['id']}"
             and run.get("name") == entry["workflow_name"] and run.get("event") == "push"
-            and run.get("head_branch") == "develop" and run.get("run_attempt") == 1
+            and run.get("head_branch") == "develop"
+            and type(run.get("run_attempt")) is int and run["run_attempt"] == 1
             and run.get("status") == "completed" and run.get("conclusion") == "success"
-            and run.get("repository", {}).get("id") == identifier and run.get("repository", {}).get("private") is True
+            and run.get("repository", {}).get("id") == identifier and run.get("repository", {}).get("private") is entry["private"]
             and run.get("head_repository", {}).get("id") == identifier,
             "promotion-event-native-origin")
     head = sha(run.get("head_sha"))
@@ -66,7 +84,10 @@ def current_head(api, event, env):
             "promotion-event-receiver-source-drift")
     jobs = api.pages(f"repos/{repository}/actions/runs/{locator}/jobs?filter=latest", "jobs")
     audit = [job for job in jobs if job.get("name") == entry["job"]]
-    require(len(audit) == 1 and audit[0].get("run_id") == locator and audit[0].get("head_sha") == head
+    require(len(audit) == 1 and type(audit[0].get("id")) is int and audit[0]["id"] > 0
+            and type(audit[0].get("run_id")) is int and audit[0]["run_id"] == locator
+            and type(audit[0].get("run_attempt")) is int and audit[0]["run_attempt"] == 1
+            and audit[0].get("head_sha") == head
             and audit[0].get("status") == "completed" and audit[0].get("conclusion") == "success",
             "promotion-event-audit-job-required")
     # Repository rule projections can omit a genuine organization Evaluate rule.
