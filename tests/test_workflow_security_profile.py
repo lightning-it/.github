@@ -309,6 +309,48 @@ class SecurityProfileTests(unittest.TestCase):
         self.api.call.side_effect = read
         with self.assertRaisesRegex(core.ControlError, 'generation'): self.authorize()
 
+    def test_all_validity_windows_are_rechecked_after_final_native_generation_read(self):
+        initial = datetime.now(UTC)
+        original_intake = copy.deepcopy(self.intake)
+        original_expiry = datetime.fromisoformat(self.expires)
+        original_generation = security.generation
+        for window in ('packet-request', 'metadata', 'registry'):
+            deadline = original_expiry if window == 'metadata' else original_expiry - timedelta(minutes=30)
+            request_expiry = (deadline if window == 'packet-request' else
+                              original_expiry + timedelta(minutes=30) if window == 'metadata' else original_expiry)
+            for offset in (-1, 0, 1):
+                self.intake = copy.deepcopy(original_intake)
+                self.expires = request_expiry.strftime('%Y-%m-%dT%H:%M:%SZ')
+                self.intake['request']['expiresAt'] = self.expires
+                self.intake['verified']['expiresAt'] = self.expires
+                self.write(self.intake_path, core.canonical(self.intake))
+                git(self.root, 'add', self.intake_path); git(self.root, 'commit', '-q', '--amend', '--no-edit')
+                self.head = git(self.root, 'rev-parse', 'HEAD'); self.configure('intake', 20)
+                if window == 'registry': self.entry['expires_at'] = deadline.strftime('%Y-%m-%dT%H:%M:%SZ')
+                clock, reads = [initial], [0]
+                class Clock(datetime):
+                    @classmethod
+                    def now(cls, tz=None):
+                        return clock[0]
+                def no_more_io(*args, **kwargs):
+                    raise AssertionError('I/O after final native generation read')
+                def generation_read(*args):
+                    original_generation(*args)
+                    reads[0] += 1
+                    if reads[0] == 3:
+                        clock[0] = deadline + timedelta(microseconds=offset)
+                        for method in (self.api.call, self.api.pages, self.api.file):
+                            method.side_effect = no_more_io
+                with self.subTest(window=window, microseconds_after_expiry=offset), \
+                        patch.object(security, 'datetime', Clock), \
+                        patch.object(security, 'generation', side_effect=generation_read):
+                    if offset < 0:
+                        self.assertIs(type(self.authorize()), security.VerifiedSecurity)
+                    else:
+                        with self.assertRaisesRegex(core.ControlError, 'security-final-validity-expired'):
+                            self.authorize()
+                    self.assertEqual(3, reads[0])
+
     def test_duplicate_json_and_noncanonical_packet_never_pass_decoder(self):
         with self.assertRaises(core.ControlError): security.decode(b'{"version":1,"version":1}')
         with self.assertRaises(core.ControlError): security.decode(b'{ "version": 1 }', canonical_required=True)
