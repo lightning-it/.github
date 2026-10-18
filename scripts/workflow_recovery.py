@@ -82,6 +82,17 @@ def plan(api, repo, pull, source, native):
                      and p.get("head", {}).get("sha") == pull["head"]["sha"]
                      and p.get("base", {}).get("sha") == pull["base"]["sha"]]) == 1,
             "recovery-current-subject-association")
+    if not pull.get("draft"):
+        from workflow_security_profile import PROFILE, security_shape
+        if security_shape(pull, repo):
+            config = control.policy(api, repo, pull["base"]["sha"], source)
+            if config.get("security_profile") == PROFILE:
+                # policy() validated the immutable Source registry. This only
+                # WITHDRAWS recovery; it grants no review, funding or admission.
+                # The controller must independently prove the producer before
+                # original funding and again at finalization.
+                require(request(api, repo, pull) is None, "security-profile-recovery-not-supported")
+                return None
     if pull.get("draft") or control.classify(pull, repo) != "codex":
         return None
     wanted = request(api, repo, pull)

@@ -141,12 +141,16 @@ def live_pull(api, repo, number, expected=None):
     return value
 
 
-def classify(pull, repo):
+def classify(pull, repo, *, security=None):
     author = identity(pull["user"])
     same = (pull["head"].get("repo") or {}).get("full_name") == repo
     head, base = pull["head"]["ref"], pull["base"]["ref"]
     if author == RELEASE and same and head == "develop" and base == "main":
         return "promotion"
+    if author == RELEASE and same and base == "main" and security is not None:
+        from workflow_security_profile import permits
+        require(permits(security, repo, pull), "security-independent-proof-required")
+        return "codex"
     require(base != "main", "main-requires-exact-protected-promotion")
     if (same and base == "develop" and head.startswith("backmerge/") and head.endswith("-main")
             and (author == RELEASE or repo == SOURCE and author == SYNC)):
@@ -183,6 +187,9 @@ def policy(api, repo, base, source_sha):
     # Keep consumer configuration compatible with the previous immutable reader
     # throughout cutover; it cannot add sources or select candidate authority.
     value["accepted_sources"] = sorted(allowed)
+    if "security_profile" in value:
+        from workflow_security_profile import validate_policy
+        validate_policy(value, repo)
     return value
 
 
@@ -198,13 +205,26 @@ def artifact_record(api, repo, run, name, filename):
     artifacts = api.pages(f"repos/{repo}/actions/runs/{run['id']}/artifacts", "artifacts")
     matches = [a for a in artifacts if a["name"] == name and not a["expired"]]
     require(len(matches) == 1, "protected-native-artifact-missing-or-ambiguous")
+    if filename == "security-premerge-proof.json":
+        from single_review_resources import wire_limit
+        from workflow_security_profile import MAX_ARTIFACT_BYTES
+        size = matches[0].get("size_in_bytes")
+        require(type(size) is int and 0 < size <= min(MAX_ARTIFACT_BYTES, wire_limit()),
+                "security-artifact-download-size")
     with tempfile.TemporaryDirectory(prefix="native-control-proof-") as temp:
         result = subprocess.run(["gh", "run", "download", str(run["id"]), "--repo", repo,
                                  "--name", name, "--dir", temp], capture_output=True, timeout=60, check=False)
         require(result.returncode == 0, "protected-native-artifact-unavailable")
         file = Path(temp) / filename
-        maximum = MAX_OPERATION_BYTES if filename == "control-operation.json" else MAX_PROOF_BYTES
-        return read_native_json(file, maximum)
+        if filename == "security-premerge-proof.json":
+            require(list(Path(temp).iterdir()) == [file] and file.is_file() and not file.is_symlink(),
+                    "security-artifact-exact-single-file")
+        maximum = MAX_OPERATION_BYTES if filename in {"control-operation.json", "security-premerge-proof.json"} else MAX_PROOF_BYTES
+        value = read_native_json(file, maximum)
+        if filename == "security-premerge-proof.json":
+            from workflow_security_profile import decode
+            return decode(file.read_bytes(), canonical_required=True)
+        return value
 
 
 def same_immutable_tuple(left, right):
@@ -732,9 +752,11 @@ def main():
     require(type(number) is int and number > 0, "pull-event-required")
     pull = live_pull(api, repo, number)
     expected = binding(pull)
+    record = None
     if args.operation != "classify":
         if args.operation == "finalize":
-            expected = operation_record(api, repo, native, source_sha)["binding"]
+            record = operation_record(api, repo, native, source_sha)
+            expected = record["binding"]
         else:
             record = json.loads(Path("control-operation.json").read_bytes())
             require(record.get("version") == 1 and record.get("source_sha") == source_sha, "operation-source-drift")
@@ -743,8 +765,18 @@ def main():
     require(pull["head"]["sha"] == event["pull_request"]["head"]["sha"]
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
     config = policy(api, repo, pull["base"]["sha"], source_sha)
-    route = classify(pull, repo)
-    snapshot = canonical({"version": 1, "source_sha": source_sha, "binding": expected})
+    security = None
+    if config.get("security_profile"):
+        from workflow_security_profile import authorize
+        security = authorize(api, repo, pull, config)
+    route = classify(pull, repo, security=security)
+    security_summary = security.summary() if security is not None else None
+    operation = {"version": 1, "source_sha": source_sha, "binding": expected}
+    if security_summary is not None:
+        operation["security"] = security_summary
+    if record is not None:
+        require(record.get("security") == security_summary, "security-operation-proof-drift")
+    snapshot = canonical(operation)
     require(len(snapshot) <= MAX_OPERATION_BYTES, "operation-snapshot-size-before-funding")
     if args.operation == "classify":
         if route == "promotion":
@@ -867,9 +899,17 @@ def main():
     conversation_guard = native_conversation_guard(api, repo, current)
     evidence = verify_existing_route(api, repo, current, config, route)
     live_pull(api, repo, number, expected)
-    proof = canonical({"version": 1, "source_sha": source_sha, "binding": expected, "route": route,
+    if security_summary is not None:
+        from workflow_security_profile import authorize
+        final_security = authorize(api, repo, current, config)
+        require(final_security is not None and final_security.summary() == security_summary,
+                "security-current-proof-drift")
+    result = {"version": 1, "source_sha": source_sha, "binding": expected, "route": route,
                        "evidence": evidence, "authorization": authorization,
-                       "native_conversation_guard": conversation_guard})
+                       "native_conversation_guard": conversation_guard}
+    if security_summary is not None:
+        result["security"] = security_summary
+    proof = canonical(result)
     require(len(proof) <= MAX_PROOF_BYTES, "native-proof-resource-bound")
     Path("control-proof.json").write_bytes(proof)
     print("Protected current-revision control passed.")
