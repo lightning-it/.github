@@ -67,7 +67,14 @@ def decode(raw, *, canonical_required=False, maximum=MAX_OPERATION_BYTES):
     limits = resources.memory_contract()
     require(len(raw) <= limits["max_wire_bytes"], "security-json-resource-bound")
     resources.preflight_json(raw, limits["max_json_nodes"], limits["max_json_depth"])
-    value = json.loads(raw, object_pairs_hook=unique)
+    import math
+    def reject_constant(_value):
+        raise ControlError("security-nonfinite-json")
+    def finite_float(token):
+        number = float(token)
+        require(math.isfinite(number), "security-nonfinite-json")
+        return number
+    value = json.loads(raw, object_pairs_hook=unique, parse_constant=reject_constant, parse_float=finite_float)
     if canonical_required:
         require(canonical(value) == raw, "security-noncanonical-proof")
     return value

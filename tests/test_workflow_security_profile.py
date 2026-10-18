@@ -314,6 +314,16 @@ class SecurityProfileTests(unittest.TestCase):
         with self.assertRaises(core.ControlError): security.decode(b'{ "version": 1 }', canonical_required=True)
         self.assertEqual(self.packet, security.decode(core.canonical(self.packet), canonical_required=True))
 
+    def test_security_decoder_rejects_nonfinite_constants_and_numeric_overflow_at_any_depth(self):
+        for token in (b'NaN', b'Infinity', b'-Infinity', b'1e999', b'-1e999'):
+            for raw in (token, b'{"nested":[{"value":' + token + b'}]}'):
+                for canonical_required in (False, True):
+                    with self.subTest(raw=raw, canonical=canonical_required), \
+                            self.assertRaisesRegex(core.ControlError, 'security-nonfinite-json'):
+                        security.decode(raw, canonical_required=canonical_required, maximum=security.MATERIAL_MAX)
+        finite = {'values': [1.5, -0.25, 1e308], 'literal': 'NaN'}
+        self.assertEqual(finite, security.decode(core.canonical(finite), canonical_required=True))
+
     def test_source_registry_rejects_duplicate_ids_missing_bindings_and_unknown_file_paths(self):
         path = self.root / 'source-registry.json'
         valid = copy.deepcopy(self.entry)
