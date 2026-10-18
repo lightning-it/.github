@@ -18,12 +18,16 @@ def codex_review(api, repository, reference, proof):
     producer = evidence.get("producer", {})
     control = reference["control"]
     require(producer.get("repository") == repository and producer.get("pull_request") == reference["pull"]
-            and producer.get("run") == control["run"] and producer.get("attempt") == control["attempt"]
+            and producer.get("run") == control["run"] and ingress.positive(producer.get("attempt"))
+            and producer["attempt"] <= control["attempt"]
             and ingress.positive(producer.get("job")), "archive-codex-producer-binding")
     run = api.call(f"repos/{repository}/actions/runs/{producer['run']}/attempts/{producer['attempt']}")
     require(native_required(run, repository) and run.get("id") == producer["run"]
             and run.get("run_attempt") == producer["attempt"] and run.get("head_sha") == control["head"]
-            and run.get("status") == "completed" and run.get("conclusion") == "success",
+            # A successful verifier-only rerun may inherit this producer even
+            # when another job made its original attempt fail. Ingress retrieval
+            # separately requires the accepted control attempt to succeed.
+            and run.get("status") == "completed",
             "archive-codex-native-attempt")
     jobs = [job for job in native_jobs(api, repository, run) if job.get("id") == producer["job"]]
     require(len(jobs) == 1 and jobs[0].get("name") == "Protected current revision"

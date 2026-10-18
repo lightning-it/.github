@@ -2,8 +2,10 @@
 import base64
 import copy
 import hashlib
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -69,14 +71,50 @@ class ArchiveReviewTests(unittest.TestCase):
                 self.collect()
 
     def test_wrong_producer_or_failed_export_is_not_archivable(self):
-        self.proof["evidence"]["producer"]["attempt"] = 1
-        with self.assertRaisesRegex(ControlError, "producer-binding"):
-            self.collect()
+        for attempt in (0, -1, True, 3):
+            self.proof["evidence"]["producer"]["attempt"] = attempt
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(ControlError, "producer-binding"):
+                self.collect()
         self.api.call.assert_not_called()
-        self.proof["evidence"]["producer"]["attempt"] = 2
+        self.proof["evidence"]["producer"]["attempt"] = 1
+        self.run.update(run_attempt=1, conclusion="failure")
         self.job["steps"][0]["conclusion"] = "failure"
         with self.assertRaisesRegex(ControlError, "native-producer"):
             self.collect()
+        self.download.assert_not_called()
+
+    def assemble_verifier_rerun(self, destination):
+        promotion, _, _, control_job, pull = fixtures()
+        self.proof["evidence"]["producer"]["attempt"] = 1
+        promotion["evidence"]["ingress"][0]["control"]["proof_sha256"] = digest(self.proof)
+        producer_run = self.run | {"run_attempt": 1, "conclusion": "failure"}
+        self.api.call.side_effect = lambda path: (
+            producer_run if path.endswith("/attempts/1") else
+            self.run if path.endswith("/attempts/2") else pull)
+        self.api.pages.side_effect = lambda path, *args: (
+            [control_job] if "/attempts/2/jobs" in path else
+            [self.job] if "/attempts/1/jobs" in path else [])
+        with patch.object(archive.ingress, "artifact_record", return_value=self.proof):
+            return archive.assemble(self.api, REPO, promotion, digest(promotion), destination)
+
+    def test_successful_control_rerun_archives_bound_earlier_successful_producer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "ingress.json"
+            self.assemble_verifier_rerun(destination)
+            collected = json.loads(destination.read_bytes())["ingress"][0]["review"]
+        self.assertEqual(1, collected["producer"]["attempt"])
+        self.assertEqual(self.response, base64.b64decode(collected["response"]))
+        self.assertEqual("codex-receipt-1", self.download.call_args.args[3])
+        self.api.call.assert_any_call(f"repos/{REPO}/actions/runs/10/attempts/2")
+        self.api.call.assert_any_call(f"repos/{REPO}/actions/runs/10/attempts/1")
+
+    def test_failed_control_rerun_cannot_archive_earlier_successful_producer(self):
+        self.run["conclusion"] = "failure"
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "ingress.json"
+            with self.assertRaisesRegex(ControlError, "package-native-attempt"):
+                self.assemble_verifier_rerun(destination)
+            self.assertEqual([], list(Path(directory).iterdir()))
         self.download.assert_not_called()
 
     def test_expired_receipt_never_becomes_new_provider_or_storage_write(self):
