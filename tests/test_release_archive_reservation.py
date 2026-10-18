@@ -21,6 +21,8 @@ class FakeGit:
         self.rule = reservation.rule_payload() | {"id": 25, "source_type": "Repository", "source": REPO}
         self.tags, self.refs, self.calls = {}, {}, []
         self.unknown = False
+        self.repository_id = SUBJECT["repository_id"]
+        self.commits = {SUBJECT["head_sha"]}
 
     def request(self, method, path, data=None):
         self.calls.append((method, path, copy.deepcopy(data)))
@@ -28,15 +30,20 @@ class FakeGit:
         if method in {"PATCH", "DELETE"} and "/git/refs/tags/release-archive/v1/" in path:
             return 422, {"message": "Repository rule violations found for ref"}
         if path == base:
-            return 200, {"full_name": REPO, "private": True, "archived": False}
+            return 200, {"full_name": REPO, "id": self.repository_id, "private": True, "archived": False}
         if path == base + "/rulesets/25":
             return 200, copy.deepcopy(self.rule)
+        if method == "GET" and "/git/commits/" in path:
+            commit = path.rsplit("/", 1)[-1]
+            return (200, {"sha": commit}) if commit in self.commits else (404, {})
         if method == "GET" and "/git/ref/" in path:
             name = "refs/" + path.split("/git/ref/", 1)[1]
             return (200, self.refs[name]) if name in self.refs else (404, {})
         if method == "GET" and "/git/tags/" in path:
             return 200, self.tags[path.rsplit("/", 1)[-1]]
         if method == "POST" and path.endswith("/git/tags"):
+            if data["object"] not in self.commits:
+                return 422, {"message": "Object does not exist in this repository"}
             identifier = digest(data)[:40]
             self.tags[identifier] = {"sha": identifier, "tag": data["tag"], "message": data["message"],
                                      "object": {"sha": data["object"], "type": data["type"]}}
@@ -60,6 +67,95 @@ class ReservationTests(unittest.TestCase):
         args = {"subject": SUBJECT, "package_sha256": "e" * 64, "package_bytes": 123, "authority": AUTHORITY}
         args.update(changes)
         return self.store.claim(**args)
+
+    def test_foreign_management_provenance_uses_authenticated_subject_commit(self):
+        self.assertNotIn(AUTHORITY["management_sha"], self.api.commits)
+        record, mode = self.claim()
+        self.assertEqual("create", mode)
+        self.assertEqual({"repository_id": SUBJECT["repository_id"], "commit_sha": SUBJECT["head_sha"]}, record["anchor"])
+        self.assertEqual(AUTHORITY["management_sha"], record["management_sha"])
+        self.assertEqual(AUTHORITY, record["authority"])
+        self.assertTrue(all(tag["object"]["sha"] == SUBJECT["head_sha"] for tag in self.api.tags.values()))
+        first_post = next(i for i, (method, _, _) in enumerate(self.api.calls) if method == "POST")
+        self.assertIn(("GET", "repos/" + REPO + "/git/commits/" + SUBJECT["head_sha"], None), self.api.calls[:first_post])
+
+    def test_unknown_repository_or_subject_commit_blocks_before_git_or_storage_write(self):
+        for repo_id, commits in ((None, {SUBJECT["head_sha"]}), (True, {SUBJECT["head_sha"]}),
+                                 (21.0, {SUBJECT["head_sha"]}), (99, {SUBJECT["head_sha"]}),
+                                 (21, {AUTHORITY["management_sha"]}), (21, set())):
+            with self.subTest(repository_id=repo_id, commits=commits):
+                api, cloud = FakeGit(), FakeStore()
+                api.repository_id, api.commits = repo_id, commits
+                with self.assertRaisesRegex(ControlError, "archive-anchor-(repository|commit)"):
+                    reservation.deliver(reservation.Reservations(api, REPO, 25), STORAGE, cloud,
+                                        SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+                self.assertTrue(all(method == "GET" for method, _, _ in api.calls))
+                self.assertEqual([], cloud.calls)
+                self.assertEqual({}, api.refs)
+
+    def test_commit_lookup_must_authenticate_exact_object_and_success(self):
+        request = self.api.request
+        for status, obj in ((200, {}), (200, {"sha": "f" * 40}), (403, {}), (404, {}),
+                            (500, {"sha": SUBJECT["head_sha"]})):
+            def changed(method, path, data=None):
+                if "/git/commits/" in path:
+                    return status, obj
+                return request(method, path, data)
+            self.api.request = changed
+            with self.subTest(status=status, obj=obj), self.assertRaisesRegex(ControlError, "archive-anchor-commit"):
+                self.claim()
+        self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
+
+    def test_replay_preserves_original_anchor_and_independent_management_provenance(self):
+        cloud = FakeStore()
+        first = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+        record = self.store.read(first[1]["operation"], "reservation")
+        self.assertEqual(record["anchor"], first[1]["anchor"])
+        self.assertEqual(AUTHORITY["management_sha"], first[1]["management_sha"])
+        self.assertTrue(all(tag["object"]["sha"] == SUBJECT["head_sha"] for tag in self.api.tags.values()))
+        probes = [data for method, _, data in self.api.calls if method == "PATCH"]
+        self.assertEqual([{"sha": SUBJECT["head_sha"], "force": True}], probes)
+        self.api.calls.clear()
+        cloud.calls.clear()
+        newer = AUTHORITY | {"management_sha": "f" * 40, "run": 99}
+        second = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, newer,
+                                     Mock(side_effect=AssertionError("no rebuild")), Mock(), NOW)
+        self.assertEqual("verify-existing", second[2])
+        self.assertEqual(first[:2], second[:2])
+        self.assertEqual(record, self.store.read(first[1]["operation"], "reservation"))
+        self.assertTrue(all(method == "GET" for method, _, _ in self.api.calls))
+        self.assertTrue(all(call[1] in {"GET", "HEAD"} for call in cloud.calls))
+
+    def test_redirected_tag_or_record_anchor_never_grants_replay_authority(self):
+        record, _ = self.claim()
+        ref = self.api.refs["refs/tags/" + reservation.PREFIX + record["operation"] + "/reservation"]
+        tag = self.api.tags[ref["object"]["sha"]]
+        original = copy.deepcopy(tag)
+        for anchor, target in ((record["anchor"], AUTHORITY["management_sha"]),
+                               (record["anchor"] | {"commit_sha": "f" * 40}, "f" * 40),
+                               (record["anchor"] | {"repository_id": 99}, SUBJECT["head_sha"]),
+                               (None, SUBJECT["head_sha"])):
+            tag.update(copy.deepcopy(original))
+            tag["message"] = reservation.canonical(record | {"anchor": anchor}).decode() + "\n"
+            tag["object"]["sha"] = target
+            self.api.calls.clear()
+            with self.subTest(anchor=anchor, target=target), self.assertRaises(ControlError):
+                self.claim()
+            self.assertTrue(all(method == "GET" for method, _, _ in self.api.calls))
+
+    def test_receipt_anchor_mismatch_blocks_before_storage_replay(self):
+        cloud = FakeStore()
+        first = reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, lambda: PACKAGE, Mock(), NOW)
+        receipt = first[1]
+        ref = self.api.refs["refs/tags/" + reservation.PREFIX + receipt["operation"] + "/receipt"]
+        tag = self.api.tags[ref["object"]["sha"]]
+        tag["message"] = reservation.canonical(receipt | {"anchor": receipt["anchor"] | {"repository_id": 99}}).decode() + "\n"
+        self.api.calls.clear()
+        cloud.calls.clear()
+        with self.assertRaisesRegex(ControlError, "archive-receipt-reservation"):
+            reservation.deliver(self.store, STORAGE, cloud, SUBJECT, AUTHORITY, Mock(), Mock(), NOW)
+        self.assertTrue(all(method == "GET" for method, _, _ in self.api.calls))
+        self.assertEqual([], cloud.calls)
 
     def test_integer_version_one_preserves_operation_and_single_claim(self):
         subject = SUBJECT | {"version": 1}

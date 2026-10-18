@@ -61,6 +61,19 @@ cannot obtain a different operation key. The exact two suffix patterns are
 updates and deletion with no bypass actors. `**` alone would not span the extra
 path separator under GitHub's fnmatch semantics.
 
+The tag anchor is independent of Management provenance. Each reservation binds
+an explicit `anchor` containing the subject's repository ID and immutable head
+commit. Before creating a tag, native repository identity must match that ID
+and a commit lookup in that exact private repository must return the exact head.
+Missing, ambiguous or foreign commits fail before any tag POST or upload.
+`management_sha` remains the original Management provenance and need not exist
+in the consumer's Git object database. Both tags, their readback and the native
+update-denial probe use the consumer-local anchor; the receipt retains the same
+anchor and reservation digest. Replay preserves the original claim, anchor and
+Management provenance even when invoked by a newer Management revision. It
+cannot select a moving tip or obtain another create authority. Records lacking
+this explicit anchor are rejected, never silently reinterpreted.
+
 Only a confirmed initial ref POST (HTTP 201), exact readback and renewed policy
 read grants one upload. An unknown response grants no upload in that invocation.
 A later confirmed initial POST can succeed only if the previous ref did not

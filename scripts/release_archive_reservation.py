@@ -72,6 +72,19 @@ class Reservations:
         self.api, self.repository, self.ruleset_id = api, repository, ruleset_id
         self.base = "repos/" + repository
 
+    def verify_anchor(self, anchor):
+        require(type(anchor) is dict and set(anchor) == {"repository_id", "commit_sha"}
+                and type(anchor["repository_id"]) is int and anchor["repository_id"] > 0,
+                "archive-anchor-shape")
+        commit = sha(anchor["commit_sha"])
+        status, repo = self.api.request("GET", self.base)
+        require(status == 200 and repo.get("full_name") == self.repository
+                and type(repo.get("id")) is int and repo["id"] == anchor["repository_id"]
+                and repo.get("private") is True and repo.get("archived") is False,
+                "archive-anchor-repository")
+        status, obj = self.api.request("GET", self.base + "/git/commits/" + commit)
+        require(status == 200 and obj.get("sha") == commit, "archive-anchor-commit")
+
     def protection(self):
         status, repo = self.api.request("GET", self.base)
         require(status == 200 and repo.get("full_name") == self.repository and repo.get("private") is True
@@ -103,15 +116,17 @@ class Reservations:
             raise ControlError("archive-reservation-record") from None
         require(type(record) is dict and canonical(record).decode() + "\n" == tag["message"]
                 and record.get("kind") == kind and record.get("operation") == key
-                and tag["object"].get("sha") == record.get("management_sha"), "archive-reservation-record")
+                and type(record.get("anchor")) is dict
+                and tag["object"].get("sha") == record["anchor"].get("commit_sha"), "archive-reservation-record")
         return record
 
     def create(self, key, kind, record):
         """One CAS attempt; uncertainty never becomes fresh create authority."""
+        self.verify_anchor(record.get("anchor"))
         name = PREFIX + key + "/" + kind
         status, tag = self.api.request("POST", self.base + "/git/tags",
                                       {"tag": name, "message": canonical(record).decode() + "\n",
-                                       "object": sha(record["management_sha"]), "type": "commit"})
+                                       "object": record["anchor"]["commit_sha"], "type": "commit"})
         require(status == 201 and tag.get("tag") == name, "archive-tag-create-not-confirmed")
         object_sha = sha(tag.get("sha"))
         status, ref = self.api.request("POST", self.base + "/git/refs",
@@ -126,6 +141,8 @@ class Reservations:
     def claim(self, subject, package_sha256, package_bytes, authority):
         policy = self.protection()
         key = operation(subject)
+        anchor = {"repository_id": subject["repository_id"], "commit_sha": subject["head_sha"]}
+        self.verify_anchor(anchor)
         require(type(package_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", package_sha256)
                 and type(package_bytes) is int and 0 < package_bytes <= 50 * 1024 * 1024,
                 "archive-reservation-package")
@@ -135,7 +152,7 @@ class Reservations:
             sha(authority.get(field))
         expected = {"version": 1, "kind": "reservation", "operation": key, "subject": subject,
                     "package_sha256": package_sha256, "package_bytes": package_bytes,
-                    "reservation": key[:32], "policy_sha256": policy}
+                    "reservation": key[:32], "policy_sha256": policy, "anchor": anchor}
         record = expected | {"authority": authority, "management_sha": authority["management_sha"]}
         existing = self.read(key, "reservation")
         if existing is None:
@@ -161,6 +178,7 @@ class Reservations:
                 and type(storage.get("version_id")) is str and storage["version_id"] not in {"", "null"},
                 "archive-storage-receipt")
         record = {"version": 1, "kind": "receipt", "operation": key,
+                  "anchor": reservation["anchor"],
                   "management_sha": reservation["management_sha"],
                   "reservation_sha256": digest(reservation), "storage": storage}
         existing = self.read(key, "receipt")
@@ -191,7 +209,7 @@ class Reservations:
         key = record["operation"]
         require(self.read(key, "reservation") == record, "archive-negative-original-claim")
         path = self.base + "/git/refs/tags/" + PREFIX + key + "/reservation"
-        for method, data in (("PATCH", {"sha": record["management_sha"], "force": True}), ("DELETE", None)):
+        for method, data in (("PATCH", {"sha": record["anchor"]["commit_sha"], "force": True}), ("DELETE", None)):
             status, result = self.api.request(method, path, data)
             require(status == 422 and "rule violations" in str(result.get("message", "")).lower(),
                     "archive-native-ref-denial-unproven")
@@ -226,7 +244,8 @@ def deliver(reservations, storage, store, subject, authority, build, validate, n
     else:
         receipt = reservations.read(key, "receipt")
         if receipt is not None:
-            require(receipt.get("reservation_sha256") == digest(existing), "archive-receipt-reservation")
+            require(receipt.get("reservation_sha256") == digest(existing)
+                    and receipt.get("anchor") == existing["anchor"], "archive-receipt-reservation")
         version = receipt["storage"]["version_id"] if receipt else None
         package, result = storage.restore(store, expected_bytes=existing["package_bytes"],
                                           expected_version=version, **arguments)
