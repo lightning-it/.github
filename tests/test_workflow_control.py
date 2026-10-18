@@ -673,8 +673,49 @@ class ControlTests(unittest.TestCase):
         self.assertEqual([f'repos/{REPO}/actions/jobs/202/rerun'],
                          [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
 
+    def test_partial_current_attempt_waits_for_complete_view_before_single_refresh(self):
+        for event, payload, target in (
+                ('workflow_run', {'workflow_run': {'id': 22}}, 202),
+                ('pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}}, 101)):
+            api, state = verifier_only_refresh_api()
+            state['review'] |= {'run_attempt': 2}
+            state['latest'] = [state['review'], refresh_jobs(2)[1] | {'head_sha': HEAD}]
+            original_pages = api.pages.side_effect
+            def pages(path, key):
+                if path == f'repos/{REPO}/actions/runs/10/attempts/2/jobs' and state.get('complete'):
+                    return state['latest']
+                return original_pages(path, key)
+            api.pages.side_effect = pages
+            def waiting(seconds):
+                self.assertEqual(15, seconds)
+                self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+                state['complete'] = True
+            with self.subTest(event=event), patch.object(events.time, 'sleep', side_effect=waiting) as wait:
+                events.refresh(api, REPO, event, payload)
+            wait.assert_called_once_with(15)
+            self.assertIn(f'repos/{REPO}/actions/jobs/101', [c.args[0] for c in api.call.call_args_list])
+            self.assertNotIn(f'repos/{REPO}/actions/runs/10/attempts/1', [c.args[0] for c in api.call.call_args_list])
+            self.assertEqual([f'repos/{REPO}/actions/jobs/{target}/rerun'],
+                             [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_current_or_newer_exact_review_attempt_exhausts_read_bound_without_carried_authority(self):
+        for attempt in (2, 3):
+            api, state = verifier_only_refresh_api()
+            state['review'] |= {'run_attempt': attempt}
+            # The association's attempt tag is not the exact job's origin.
+            state['latest'] = [state['review'] | {'run_attempt': 2}, refresh_jobs(2)[1] | {'head_sha': HEAD}]
+            with self.subTest(attempt=attempt), patch.object(events.time, 'sleep') as wait, \
+                    self.assertRaisesRegex(control.ControlError, 'refresh-inflight-timeout'):
+                events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
+            self.assertEqual([unittest.mock.call(15)] * 120, wait.call_args_list)
+            reads = [c.args[0] for c in api.call.call_args_list]
+            self.assertEqual(120, reads.count(f'repos/{REPO}/actions/jobs/101'))
+            self.assertFalse(any('/attempts/' in path for path in reads))
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
     def test_carried_review_origin_and_current_association_cannot_be_forged(self):
-        for defect in ('job-id', 'job-run', 'job-head', 'job-attempt', 'job-failed', 'job-running',
+        for defect in ('job-id', 'job-run', 'job-head', 'job-attempt-bool', 'job-attempt-zero',
+                       'job-attempt-negative', 'job-failed', 'job-running',
                        'origin-run', 'origin-head', 'origin-attempt-bool', 'origin-workflow', 'origin-namespace',
                        'origin-pr', 'origin-pr-head', 'origin-membership', 'origin-job-attempt-bool',
                        'duplicate-origin', 'duplicate-current-review', 'duplicate-current-final', 'latest-head'):
@@ -682,7 +723,9 @@ class ControlTests(unittest.TestCase):
             if defect == 'job-id': state['review'] |= {'id': 999}
             elif defect == 'job-run': state['review'] |= {'run_id': 11}
             elif defect == 'job-head': state['review'] |= {'head_sha': BASE}
-            elif defect == 'job-attempt': state['review'] |= {'run_attempt': 2}
+            elif defect == 'job-attempt-bool': state['review'] |= {'run_attempt': True}
+            elif defect == 'job-attempt-zero': state['review'] |= {'run_attempt': 0}
+            elif defect == 'job-attempt-negative': state['review'] |= {'run_attempt': -1}
             elif defect == 'job-failed': state['review'] |= {'conclusion': 'failure'}
             elif defect == 'job-running': state['review'] |= {'status': 'in_progress'}
             elif defect == 'origin-run': state['origin'] |= {'id': 11}

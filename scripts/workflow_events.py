@@ -116,8 +116,10 @@ def carried_review(api, repo, observed, head, number, final):
             and type(review.get("run_id")) is int and review["run_id"] == run_id
             and review.get("name") == "Protected current revision" and review.get("head_sha") == head
             and review.get("status") == "completed" and review.get("conclusion") == "success"
-            and type(review.get("run_attempt")) is int and 0 < review["run_attempt"] < attempt,
+            and type(review.get("run_attempt")) is int and review["run_attempt"] > 0,
             "refresh-carried-review-origin")
+    if review["run_attempt"] >= attempt:
+        return None  # A partial current view is not proof of a carried review.
     origin = api.call(endpoint + f"/attempts/{review['run_attempt']}")
     require(type(origin.get("id")) is int and origin["id"] == run_id and origin.get("head_sha") == head
             and type(origin.get("run_attempt")) is int and origin["run_attempt"] == review["run_attempt"]
