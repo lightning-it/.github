@@ -8,19 +8,26 @@ Common defining source owns this first-policy path.
 
 ## Accepted protected source
 
-The descriptor binds the accepted protected Shared Main commit
-`e622b430d52350f66a2a91fb35ee004960ac4c59` and canonical source unit SHA256
-`9d22c650c9366d8f7854ed3a36d12109f412c7a600a874215b7a78c21c1a92ae`.
-Every recorded canonical path/blob/mode and render input was verified together
-at that immutable commit after its normal protected Main integration. This
-source acceptance does not select Common or admit the target runtime. No
+The descriptor binds the complete eighteen-path unit at accepted protected Shared
+Main `0d464ea7f656b24ecfe4c39302df9fb3177d8871` with canonical unit SHA256
+`bdec6d06b0247393a33c4a1358bd7804e56ed538bf67d37e004d3d50070d8d72`.
+Every canonical payload, predecessor, mode and render input was verified together
+at that immutable source after normal protected Main integration and successful
+postchecks. Historically, Shared Main
+`e622b430d52350f66a2a91fb35ee004960ac4c59` supplied the preceding seventeen-path
+unit and the canonical fixture; its old manifest did not include that fixture.
+The accepted eighteen-path manifest now binds the complete adoption unit.
+Source acceptance does not select Common or admit the target runtime. No
 unaccepted draft or self-declared target policy can fill that dependency.
 Runtime does not load private source code or dynamically select a helper.
 
-The source-owned descriptor contains the complete 17-path delta, exact inline
+The source-owned descriptor contains the complete 18-path delta, exact inline
 policy bytes and semantic policy, static adapter template, preserved product
 workflow blobs and actual inventory absence. Artifact publication remains
 strictly true and the four existing workflow/job quality pairs remain required.
+The eighteenth replacement binds only the existing canonical push-ready test
+fixture, which isolates its two disposable-repository Git commands from the
+source checkout Git environment. All other target leaves remain unchanged.
 The adapter renders one marker using only the actual independently selected
 native defining Common SHA. It receives metadata/review signals only, carries
 no App secret and does not promise automatic Devtools promotion.
@@ -69,7 +76,7 @@ promotion result.
 
 Only the normal same-repository Release App Develop-to-Main shape can use this
 first-Main context. Its candidate tree must still be exactly the canonical
-17-path delta relative to the fixed Develop tree. The existing first-parent
+18-path delta relative to the fixed Develop tree. The existing first-parent
 promotion traversal retires only that exact historical Develop boundary after
 validating both historical commits. Every newer integration remains subject to
 normal PR association and `check_native_control`; at least one genuinely
@@ -116,14 +123,15 @@ an automatic producer only after installed policy and ordinary consumer
 CallerC follow-up. Accepted defining CoreA precedes HelperB, and public CallerC
 pins accepted HelperB. There is no dynamic helper loading or second
 initial-policy descriptor bootstrap.
-The first Main still carries the exact initial CoreA adapter delta. Consumer
-CallerC/runtime changes follow after that Main has adopted policy, so later
+The first Main retains the exact adapter bound to its independently selected
+defining source. Consumer CallerC/runtime changes follow after that Main has adopted policy, so later
 promotions can use the ordinary installed-policy path.
 
-The append-only source lineage now locally includes the genuinely accepted
-prior defining source `678560bdd02d32ccae59c430f0047f85a81ec72e` after all nine
-existing entries. This is prepared continuity, not a claim that the new source
-is already selected or accepted. No future/self SHA is invented.
+The append-only source lineage retains every previous entry and now locally
+appends the genuinely accepted prior defining source
+`4f12f255b4375907967d87a5462cc99930c5f3c7` after
+`678560bdd02d32ccae59c430f0047f85a81ec72e`. This is prepared continuity,
+not a claim that the new source is already selected or accepted. No future/self SHA is invented.
 
 ## Focused verification boundary
 
