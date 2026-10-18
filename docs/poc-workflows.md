@@ -19,7 +19,7 @@ The canonical process is [SCC-70 Delivery and Setup](https://lit.atlassian.net/w
 [SCC-41](https://lit.atlassian.net/wiki/spaces/LIT/pages/2935095298) describes
 orchestration and [SCC-40](https://lit.atlassian.net/wiki/spaces/LIT/pages/2897805754)
 describes review. The decision and implementation task is
-[LI-319](https://lit.atlassian.net/browse/LI-319). Earlier requirements remain
+[LTN-319](https://lit.atlassian.net/browse/LTN-319). Earlier requirements remain
 historical where this explicit temporary decision supersedes them.
 
 ## Current process
