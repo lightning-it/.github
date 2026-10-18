@@ -314,7 +314,7 @@ signals keep their own refresh route. No new workflow, timer or credential is
 needed. The schema-3 preparation must first merge normally to Develop, then its
 actual Develop CI and independent native ingress must pass. A preparation-run
 success or receipt JSON alone is not this completion evidence. The fixture
-`tests/fixtures/promotion-supplementary-producer-shape.json` is an anonymized
+`SUPPLEMENTARY_SHAPE` in `tests/test_workflow_promotion_event.py` is an anonymized
 historical API shape, not qualification of a future prepared Develop revision.
 
 The dispatch remains `native-promotion-prepare` with `repository_quality` and

@@ -17,6 +17,31 @@ IDENTIFIER = 1120841013
 SUPPLEMENTARY = "lightning-it/ansible-collection-supplementary"
 HEAD, BASE, ADAPTER = "a" * 40, "b" * 40, "c" * 40
 
+# Anonymized historical API form only; no future D1 or native acceptance.
+SUPPLEMENTARY_SHAPE = {'description': 'Anonymized API shape from public Collection CI run 39099542751 and Fast job 117596230526. '
+                'Run/job IDs, hashes and PR linkage are synthetic. This is not a D1 qualification or native '
+                'acceptance receipt.',
+ 'run': {'id': 42,
+         'workflow_id': 214182490,
+         'name': 'Collection CI',
+         'path': '.github/workflows/collection-ci.yml',
+         'workflow_url': 'https://api.github.com/repos/lightning-it/ansible-collection-supplementary/actions/workflows/214182490',
+         'event': 'push',
+         'head_branch': 'develop',
+         'run_attempt': 1,
+         'head_sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+         'status': 'completed',
+         'conclusion': 'success',
+         'repository': {'id': 1103407173, 'private': False},
+         'head_repository': {'id': 1103407173}},
+ 'job': {'id': 101,
+         'run_attempt': 1,
+         'name': 'Collection / Fast',
+         'status': 'completed',
+         'conclusion': 'success',
+         'run_id': 42,
+         'head_sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}}
+
 
 class PromotionEventTests(unittest.TestCase):
     def test_private_receiver_checks_the_proof_before_its_only_management_token(self):
@@ -60,7 +85,7 @@ class PromotionEventTests(unittest.TestCase):
                "status": "completed", "conclusion": "success",
                "repository": {"id": identifier, "private": entry["private"]}, "head_repository": {"id": identifier}}
         if repository == SUPPLEMENTARY:
-            fixture = json.loads((Path(__file__).parent / "fixtures/promotion-supplementary-producer-shape.json").read_bytes())
+            fixture = copy.deepcopy(SUPPLEMENTARY_SHAPE)
             run = fixture["run"]
         branch = {"name": "develop", "protected": True, "commit": {"sha": HEAD}}
         job = {"id": 101, "run_attempt": 1, "name": entry["job"], "status": "completed", "conclusion": "success", "run_id": 42, "head_sha": HEAD}
