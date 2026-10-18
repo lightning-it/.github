@@ -31,6 +31,35 @@ def run(number=10, source=SOURCE):
             'pull_requests': [{'number': 3, 'base': {'sha': BASE}, 'head': {'sha': HEAD}}]}
 
 
+def refresh_jobs(attempt=1):
+    return [{'id': attempt * 100 + index, 'run_id': 10, 'run_attempt': attempt,
+             'name': name, 'status': 'completed', 'conclusion': 'success'}
+            for index, name in enumerate(('Protected current revision', 'Current revision review'), 1)]
+
+
+def refresh_api(observations, views, *, post_error=None):
+    api = Mock()
+    native, inventory = iter(observations), iter(views)
+    def call(path, **kwargs):
+        if kwargs.get('method') == 'POST':
+            if post_error is not None:
+                raise post_error
+            return {}
+        if path == f'repos/{REPO}/pulls/3':
+            return pull()
+        if path == f'repos/{REPO}/actions/runs/10':
+            return next(native)
+        raise AssertionError(path)
+    def pages(path, key):
+        if path == f'repos/{REPO}/actions/runs?head_sha={HEAD}':
+            return [run()]
+        if path.startswith(f'repos/{REPO}/actions/runs/10/attempts/') and path.endswith('/jobs'):
+            return next(inventory)
+        raise AssertionError(path)
+    api.call.side_effect, api.pages.side_effect = call, pages
+    return api
+
+
 NATIVE_BODY = """<!-- ccr-overview-v2 -->
 
 ### 🟢 Approval recommended
@@ -160,10 +189,11 @@ class ControlTests(unittest.TestCase):
 
     def test_metadata_refresh_reruns_original_classification_without_granting_funding_or_success(self):
         api = Mock()
-        api.call.side_effect = [pull(), pull(), run() | {'status': 'completed'}, pull(), {}]
-        api.pages.side_effect = [[run()], [{'id': 100, 'run_id': 10, 'name': 'Current revision review',
+        completed = run() | {'status': 'completed'}
+        api.call.side_effect = [pull(), pull(), completed, completed, pull(), completed, {}]
+        api.pages.side_effect = [[run()], [{'id': 100, 'run_id': 10, 'run_attempt': 1, 'name': 'Current revision review',
                                            'status': 'completed', 'conclusion': 'success'},
-                                          {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
+                                          {'id': 101, 'run_id': 10, 'run_attempt': 1, 'name': 'Protected current revision',
                                            'status': 'completed', 'conclusion': 'success'}]]
         events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         writes = [call for call in api.call.call_args_list if call.kwargs.get('method') == 'POST']
@@ -396,9 +426,11 @@ class ControlTests(unittest.TestCase):
         producer = {'id': 22, 'name': events.SIGNAL_NAME, 'path': events.SIGNAL_PATH,
                     'event': 'pull_request_review', 'status': 'completed', 'conclusion': 'success',
                     'pull_requests': [{'number': 3, 'head': {'sha': HEAD}}]}
-        api = Mock(); api.call.side_effect = [producer, pull(), pull(), run() | {'status': 'in_progress'}, pull(), run() | {'status': 'completed'}, pull(), {}]
-        review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
-        gate = {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
+        active, completed = run() | {'status': 'in_progress'}, run() | {'status': 'completed'}
+        api = Mock(); api.call.side_effect = [producer, pull(), pull(), active, active, pull(), completed,
+                                             completed, pull(), completed, {}]
+        review = {'id': 101, 'run_id': 10, 'run_attempt': 1, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'success'}
+        gate = {'id': 100, 'run_id': 10, 'run_attempt': 1, 'name': 'Current revision review', 'status': 'in_progress', 'conclusion': None}
         api.pages.side_effect = [[run()], [review, gate], [review, gate | {'status': 'completed', 'conclusion': 'success'}]]
         with patch.object(events.time, 'sleep') as wait:
             events.refresh(api, REPO, 'workflow_run', {'workflow_run': {'id': 22}})
@@ -407,14 +439,14 @@ class ControlTests(unittest.TestCase):
 
     def test_metadata_waits_for_common_quality_before_final_job_exists(self):
         api = Mock()
-        review = {'id': 101, 'run_id': 10, 'name': 'Protected current revision',
+        review = {'id': 101, 'run_id': 10, 'run_attempt': 1, 'name': 'Protected current revision',
                   'status': 'completed', 'conclusion': 'failure'}
-        quality = {'id': 102, 'run_id': 10, 'name': 'Source common quality',
+        quality = {'id': 102, 'run_id': 10, 'run_attempt': 1, 'name': 'Source common quality',
                    'status': 'in_progress', 'conclusion': None}
-        final = {'id': 100, 'run_id': 10, 'name': 'Current revision review',
+        final = {'id': 100, 'run_id': 10, 'run_attempt': 1, 'name': 'Current revision review',
                  'status': 'completed', 'conclusion': 'failure'}
-        api.call.side_effect = [pull(), pull(), run() | {'status': 'in_progress'},
-                                pull(), run() | {'status': 'completed'}, pull(), {}]
+        active, completed = run() | {'status': 'in_progress'}, run() | {'status': 'completed'}
+        api.call.side_effect = [pull(), pull(), active, active, pull(), completed, completed, pull(), completed, {}]
         api.pages.side_effect = [[run()], [review, quality],
                                 [review, quality | {'status': 'completed', 'conclusion': 'success'}, final]]
         def waiting(seconds):
@@ -430,7 +462,8 @@ class ControlTests(unittest.TestCase):
     def test_metadata_stops_immediately_if_head_changes_while_waiting(self):
         api = Mock()
         changed = pull(); changed['head']['sha'] = 'd' * 40
-        api.call.side_effect = [pull(), pull(), run() | {'status': 'in_progress'}, changed]
+        active = run() | {'status': 'in_progress'}
+        api.call.side_effect = [pull(), pull(), active, active, changed]
         api.pages.side_effect = [[run()], []]
         with patch.object(events.time, 'sleep') as wait, self.assertRaisesRegex(control.ControlError, 'stale-refresh'):
             events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
@@ -454,6 +487,115 @@ class ControlTests(unittest.TestCase):
             events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         self.assertEqual(120, wait.call_count)
         self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_attempt_advance_after_job_read_reobserves_without_stale_write(self):
+        first = run() | {'status': 'completed', 'conclusion': 'success'}
+        second = first | {'run_attempt': 2}
+        api = refresh_api([first, second | {'status': 'queued', 'conclusion': None}, second, second, second],
+                          [refresh_jobs(1), refresh_jobs(2)])
+        with patch.object(events.time, 'sleep') as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_called_once_with(15)
+        self.assertEqual([f'repos/{REPO}/actions/jobs/201/rerun'],
+                         [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+        self.assertEqual([f'repos/{REPO}/actions/runs/10/attempts/{attempt}/jobs' for attempt in (1, 2)],
+                         [c.args[0] for c in api.pages.call_args_list[1:]])
+
+    def test_metadata_attempt_advance_at_last_fence_never_writes_the_old_job(self):
+        first = run() | {'status': 'completed', 'conclusion': 'success'}
+        second = first | {'run_attempt': 2}
+        api = refresh_api([first, first, second | {'status': 'in_progress'}, second, second, second],
+                          [refresh_jobs(1), refresh_jobs(2)])
+        with patch.object(events.time, 'sleep') as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_called_once_with(15)
+        self.assertEqual([f'repos/{REPO}/actions/jobs/201/rerun'],
+                         [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_metadata_empty_and_partial_completed_attempt_views_are_read_only_until_complete(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        active_quality = {'id': 103, 'run_id': 10, 'run_attempt': 1, 'name': 'Source common quality',
+                          'status': 'in_progress', 'conclusion': None}
+        api = refresh_api([completed] * 9, [[], refresh_jobs()[:1], refresh_jobs() + [active_quality], refresh_jobs()])
+        def waiting(seconds):
+            self.assertEqual(15, seconds)
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+        with patch.object(events.time, 'sleep', side_effect=waiting) as wait:
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual(3, wait.call_count)
+        self.assertEqual(1, sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_permanent_empty_completed_view_exhausts_only_existing_read_bound(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        api = refresh_api([completed] * 240, [[]] * 120)
+        with patch.object(events.time, 'sleep') as wait, self.assertRaisesRegex(control.ControlError, 'refresh-inflight-timeout'):
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        self.assertEqual(120, wait.call_count)
+        self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_true_duplicate_named_jobs_remain_closed(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        for duplicate in refresh_jobs():
+            api = refresh_api([completed, completed], [refresh_jobs() + [duplicate]])
+            with self.subTest(name=duplicate['name']), patch.object(events.time, 'sleep') as wait, \
+                    self.assertRaisesRegex(control.ControlError, 'ambiguous'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            wait.assert_not_called()
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_requires_actual_positive_attempt_and_native_job_origin(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        for attempt in (None, True, 0, -1, '1'):
+            api = refresh_api([completed | {'run_attempt': attempt}], [])
+            with self.subTest(attempt=attempt), self.assertRaisesRegex(control.ControlError, 'attempt-required'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertEqual(1, api.pages.call_count)
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+        for change in ({'run_id': 11}, {'run_attempt': None}, {'run_attempt': True}, {'run_attempt': 0}):
+            jobs = refresh_jobs(); jobs[0] |= change
+            api = refresh_api([completed], [jobs])
+            with self.subTest(change=change), self.assertRaisesRegex(control.ControlError, 'job-origin'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_other_job_attempt_is_reobserved_without_new_authority(self):
+        first = run() | {'status': 'completed', 'conclusion': 'success'}
+        second = first | {'run_attempt': 2}
+        for mismatched in (refresh_jobs(2), refresh_jobs(1) + refresh_jobs(2)):
+            api = refresh_api([first, first, second, second, second], [mismatched, refresh_jobs(2)])
+            with self.subTest(view=mismatched), patch.object(events.time, 'sleep') as wait:
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            wait.assert_called_once_with(15)
+            self.assertEqual([f'repos/{REPO}/actions/jobs/201/rerun'],
+                             [c.args[0] for c in api.call.call_args_list if c.kwargs.get('method') == 'POST'])
+
+    def test_metadata_same_attempt_status_or_conclusion_drift_is_read_only(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        for changed in (completed | {'status': 'in_progress'}, completed | {'conclusion': 'failure'}):
+            for reads in ([completed, changed, completed, completed, completed],
+                          [completed, completed, changed, completed, completed, completed]):
+                api = refresh_api(reads, [refresh_jobs(), refresh_jobs()])
+                with self.subTest(changed=changed, fence=len(reads)), patch.object(events.time, 'sleep') as wait:
+                    events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+                wait.assert_called_once_with(15)
+                self.assertEqual(1, sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_revalidates_native_identity_after_jobs_and_at_last_fence(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        changed = completed | {'workflow_id': 88}
+        for observations in ([completed, changed], [completed, completed, changed]):
+            api = refresh_api(observations, [refresh_jobs()])
+            with self.subTest(reads=len(observations)), self.assertRaisesRegex(control.ControlError, 'run-drift'):
+                events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+            self.assertFalse(any(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
+
+    def test_metadata_unknown_post_outcome_never_retries_mutation(self):
+        completed = run() | {'status': 'completed', 'conclusion': 'success'}
+        api = refresh_api([completed] * 3, [refresh_jobs()], post_error=control.ControlError('native-api-unavailable'))
+        with patch.object(events.time, 'sleep') as wait, self.assertRaisesRegex(control.ControlError, 'native-api-unavailable'):
+            events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
+        wait.assert_not_called()
+        self.assertEqual(1, sum(c.kwargs.get('method') == 'POST' for c in api.call.call_args_list))
 
     def test_unadmitted_metadata_caller_grants_no_acceptance(self):
         api = Mock()
@@ -501,10 +643,11 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(events.common_control_enforced([{'type': 'workflows', 'parameters': {'workflows': [entry]}}]))
 
     def test_late_copilot_delivery_reruns_review_with_no_new_request(self):
-        api = Mock(); api.call.side_effect = [pull(), pull(), run() | {'status': 'completed'}, pull(), {}]
+        completed = run() | {'status': 'completed'}
+        api = Mock(); api.call.side_effect = [pull(), pull(), completed, completed, pull(), completed, {}]
         api.pages.side_effect = [[run()], [
-            {'id': 101, 'run_id': 10, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'failure'},
-            {'id': 100, 'run_id': 10, 'name': 'Current revision review', 'status': 'completed', 'conclusion': 'failure'}]]
+            {'id': 101, 'run_id': 10, 'run_attempt': 1, 'name': 'Protected current revision', 'status': 'completed', 'conclusion': 'failure'},
+            {'id': 100, 'run_id': 10, 'run_attempt': 1, 'name': 'Current revision review', 'status': 'completed', 'conclusion': 'failure'}]]
         events.refresh(api, REPO, 'pull_request_target', {'action': 'edited', 'pull_request': {'number': 3}})
         self.assertEqual(f'repos/{REPO}/actions/jobs/101/rerun', api.call.call_args.args[0])
         # A delivered review makes classify request_needed false; a failed or
