@@ -4,8 +4,8 @@
   "repository_id": 1110305651,
   "shared_source": {
     "repository": "lightning-it/shared-assets-lit",
-    "accepted_sha": "e622b430d52350f66a2a91fb35ee004960ac4c59",
-    "unit_sha256": "9d22c650c9366d8f7854ed3a36d12109f412c7a600a874215b7a78c21c1a92ae",
+    "accepted_sha": "0d464ea7f656b24ecfe4c39302df9fb3177d8871",
+    "unit_sha256": "bdec6d06b0247393a33c4a1358bd7804e56ed538bf67d37e004d3d50070d8d72",
     "status": "accepted-protected-source"
   },
   "develop": {
@@ -216,6 +216,19 @@
       "before": {
         "mode": "100644",
         "blob": "ada6ab36f50c8e3c3ecf4dc51938b770eb1417a7"
+      }
+    },
+    {
+      "path": "tests/test_lit_push_ready.py",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "3d2707da21ada0388c3fcfdc92de19e7b2dad415"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "75e6d35a1783ceb0c2d1f0a1e15ca6544627ff8d",
+        "sha256": "437d12bb29adf10f6b62b49153165d68bb00c395c1a66497ca1deadb1f6d4dbc"
       }
     }
   ],
