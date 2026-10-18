@@ -17,7 +17,12 @@ from workflow_control import (MAX_OPERATION_BYTES, RELEASE, ControlError, artifa
 PROFILE = "release-app-security/v1"
 MARKER = "<!-- lit-security-premerge/v1 "
 FILENAME = "security-premerge-proof.json"
-REGISTRY = Path(__file__).resolve().parents[1] / ".lit/workflow-security-producers.json"
+# Hand-maintained Source authority: changes require native review of this module.
+# Consumer policy and producer packets cannot add or replace these bindings.
+SOURCE_REGISTRY = {
+    "version": 1,
+    "producers": [],
+}
 MATERIAL_MAX = 1024 * 1024
 # One bounded packet plus 64 KiB for the native ZIP container overhead. This
 # bounds reported download size, not expansion performed by the existing gh CLI.
@@ -81,8 +86,7 @@ def decode(raw, *, canonical_required=False, maximum=MAX_OPERATION_BYTES):
 
 
 def registry():
-    require(REGISTRY.is_file() and not REGISTRY.is_symlink(), "security-source-registry-required")
-    value = exact(decode(REGISTRY.read_bytes()), {"version", "producers"}, "security-registry-shape")
+    value = exact(decode(canonical(SOURCE_REGISTRY)), {"version", "producers"}, "security-registry-shape")
     require(type(value["version"]) is int and value["version"] == 1 and type(value["producers"]) is list,
             "security-registry-version")
     identifiers = set()
