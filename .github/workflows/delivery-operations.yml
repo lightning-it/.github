@@ -46,11 +46,14 @@ jobs:
         run: python3 -B scripts/workflow_events.py
 
   prepare:
-    name: Prepare one admitted private promotion
+    name: Prepare one admitted promotion
     if: >-
       github.repository != 'lightning-it/.github' &&
       github.event_name == 'workflow_run' &&
-      github.event.workflow_run.name == 'Repository policy audit' &&
+      ((github.repository == 'lightning-it/shared-assets-lit' &&
+        github.event.workflow_run.name == 'Repository policy audit') ||
+       (github.repository == 'lightning-it/ansible-collection-supplementary' &&
+        github.event.workflow_run.name == 'Collection CI')) &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'develop' &&
       github.event.workflow_run.conclusion == 'success' &&
@@ -66,9 +69,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: lightning-it/.github
-          ref: 7a42089e28a90a39b7b397c19db494a575ae25aa
+          ref: 201f55b5369112ac600b5a6b0f967258f145fe72
           persist-credentials: false
-      - name: Authenticate current private producer and independent ingress before credentials
+      - name: Authenticate current profiled producer and independent ingress before credentials
         id: signal
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,7 +91,7 @@ jobs:
           owner: lightning-it
           repositories: github-management-lit
           permission-actions: write
-      - name: Recheck exact private event and dispatch the existing protected preparer once
+      - name: Recheck exact profiled event and dispatch the existing protected preparer once
         if: steps.signal.outputs.head != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

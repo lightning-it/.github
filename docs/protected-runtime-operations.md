@@ -262,11 +262,11 @@ No workflow file, retry loop, scheduled task or independent repair controller is
 added. Deployment and qualification of this capability remain separate from
 this source description. A source upgrade never itself resets a consumed slot.
 
-## Separately admitted private event preparation
+## Explicit event profiles and independent promotion admission
 
 The LI-357 Shared Assets receiver uses its existing private policy-audit Develop
 push completion as a locator. The protected immutable event helper binds its
-single reviewed target, native producer identity, successful named audit job,
+reviewed target profile, native producer identity, successful named audit job,
 protected still-current Develop and the exact receiver source. It then invokes
 the same independent native-control verifier used for promotion ingress. A
 successful audit without that actual accepted ingress proof grants no dispatch.
@@ -295,4 +295,34 @@ is created by the event receiver. Normal Main approval remains genuine and
 separate. Shared's first evaluation/qualification/enforcement and end-to-end
 event acceptance must be observed privately before claiming active operation.
 This changes neither Root's quality-job preparation nor its event triggers,
-and admits no additional repository, archive or fleet operation.
+and grants no native scope, archive or fleet admission.
+
+The public Supplementary receiver profile is separately fixed to repository ID
+`1103407173`, visibility `public`, `Collection CI` workflow ID `214182490` at
+`.github/workflows/collection-ci.yml`, and `Collection / Fast`. Shared remains
+fixed to private repository ID `1120841013`, workflow ID `307348847`, and its
+existing audit job. Workflow and job names alone cannot substitute for those
+native identities. Only a completed successful first-attempt Develop push can
+locate evidence. Job IDs are read from that exact run; a missing, duplicate,
+failed or foreign-generation job blocks before credentials.
+
+This closed profile does not activate Supplementary's native scope. Its caller
+must separately adopt the actually accepted immutable common delivery source
+and explicitly pass only the existing Release App key. The existing delivery
+adapter can add `Collection CI` completion and a separate promotion call; review
+signals keep their own refresh route. No new workflow, timer or credential is
+needed. The schema-3 preparation must first merge normally to Develop, then its
+actual Develop CI and independent native ingress must pass. A preparation-run
+success or receipt JSON alone is not this completion evidence. The fixture
+`SUPPLEMENTARY_SHAPE` in `tests/test_workflow_promotion_event.py` is an anonymized
+historical API shape, not qualification of a future prepared Develop revision.
+
+The dispatch remains `native-promotion-prepare` with `repository_quality` and
+exact `runtime_develop_sha`. Protected Management already has the explicit
+Supplementary target and must independently validate its existing administration
+approval, current complete organization rule, admitted proof source and protected
+tips before any PR/ref effect. Neither the receiver profile nor the schema-3
+receipt can replace those checks, ordinary Main approval or release eligibility.
+An unknown dispatch outcome is terminal; no POST retry is introduced. Other
+Collections remain unprofiled until their actual identities and independent
+Management contract have been reviewed and accepted.
