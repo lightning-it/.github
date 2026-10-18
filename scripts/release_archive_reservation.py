@@ -57,7 +57,7 @@ class NativeAPI:
 
 def operation(subject):
     require(type(subject) is dict and set(subject) == {"version", "repository_id", "promotion", "head_sha", "target"}
-            and subject["version"] == 1 and subject["target"] == "main"
+            and type(subject["version"]) is int and subject["version"] == 1 and subject["target"] == "main"
             and all(type(subject[key]) is int and subject[key] > 0 for key in ("repository_id", "promotion")),
             "archive-operation-subject")
     sha(subject["head_sha"])

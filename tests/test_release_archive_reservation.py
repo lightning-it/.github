@@ -3,7 +3,7 @@ import copy
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from test_release_archive import MODULE as STORAGE, FakeStore, PACKAGE, NOW
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -59,6 +59,43 @@ class ReservationTests(unittest.TestCase):
         args = {"subject": SUBJECT, "package_sha256": "e" * 64, "package_bytes": 123, "authority": AUTHORITY}
         args.update(changes)
         return self.store.claim(**args)
+
+    def test_integer_version_one_preserves_operation_and_single_claim(self):
+        subject = SUBJECT | {"version": 1}
+        self.assertEqual(digest(SUBJECT), reservation.operation(subject))
+        record, mode = self.claim(subject=subject)
+        self.assertEqual("create", mode)
+        self.assertEqual(digest(SUBJECT), record["operation"])
+        self.assertEqual((record, "verify-existing"), self.claim(subject=subject))
+        self.assertEqual(1, len(self.api.refs))
+
+    def test_malformed_versions_never_hash_or_create_a_claim(self):
+        for version in (True, False, 1.0, 0.0, "1", None, 0, 2):
+            subject = SUBJECT | {"version": version}
+            with self.subTest(version=version, value_type=type(version).__name__):
+                with patch.object(reservation, "digest") as operation_digest:
+                    with self.assertRaisesRegex(ControlError, "archive-operation-subject"):
+                        reservation.operation(subject)
+                    operation_digest.assert_not_called()
+                with self.assertRaisesRegex(ControlError, "archive-operation-subject"):
+                    self.claim(subject=subject)
+                self.assertEqual({}, self.api.tags)
+                self.assertEqual({}, self.api.refs)
+                self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
+
+    def test_malformed_versions_stop_delivery_before_build_or_claim(self):
+        for version in (True, 1.0):
+            cloud = FakeStore()
+            build, validate = Mock(return_value=PACKAGE), Mock()
+            with self.subTest(version=version, value_type=type(version).__name__), \
+                 self.assertRaisesRegex(ControlError, "archive-operation-subject"):
+                reservation.deliver(self.store, STORAGE, cloud, SUBJECT | {"version": version},
+                                    AUTHORITY, build, validate, NOW)
+            build.assert_not_called()
+            validate.assert_not_called()
+            self.assertEqual({}, self.api.tags)
+            self.assertEqual({}, self.api.refs)
+            self.assertEqual([], cloud.calls)
 
     def test_expired_actions_artifacts_do_not_rebuild_or_upload_on_replay(self):
         cloud = FakeStore()
