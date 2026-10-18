@@ -479,9 +479,15 @@ def _authorize(api, repo, pull, config):
     # Final generation read follows all mutable subject/producer reads; no I/O
     # after this selector can hide a newly started or failed producer generation.
     generation(api, repo, entry, run)
-    return VerifiedSecurity({"profile": PROFILE, "kind": entry["kind"], "repository": repo,
+    proof = VerifiedSecurity({"profile": PROFILE, "kind": entry["kind"], "repository": repo,
                              "binding": subject(pull), "producer": packet["producer"],
                              "proof_sha256": digest(packet), "registry_sha256": digest(entry)})
+    validity = documents[f".lit/security-releases/{packet['fixed_version']}.json"]["validity"]
+    now = datetime.now(UTC)
+    require(timestamp(packet["issued_at"]) <= now < timestamp(packet["expires_at"])
+            and timestamp(validity["notBefore"]) <= now < timestamp(validity["expiresAt"])
+            and now < timestamp(entry["expires_at"]), "security-final-validity-expired")
+    return proof
 
 
 def authorize(api, repo, pull, config):
