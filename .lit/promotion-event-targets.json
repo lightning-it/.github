@@ -1,12 +1,27 @@
 {
   "version": 1,
-  "targets": [{
-    "repository": "lightning-it/shared-assets-lit",
-    "repository_id": 1120841013,
-    "scope": "shared-assets",
-    "source_sha": "bb1a5df9f54c5f98547048297e7e367cc382543e",
-    "workflow": ".github/workflows/repository-quality.yml",
-    "workflow_name": "Repository policy audit",
-    "job": "Release policy audit artifact"
-  }]
+  "targets": [
+    {
+      "repository": "lightning-it/shared-assets-lit",
+      "repository_id": 1120841013,
+      "scope": "shared-assets",
+      "source_sha": "bb1a5df9f54c5f98547048297e7e367cc382543e",
+      "workflow": ".github/workflows/repository-quality.yml",
+      "workflow_name": "Repository policy audit",
+      "job": "Release policy audit artifact",
+      "private": true,
+      "workflow_id": 307348847
+    },
+    {
+      "repository": "lightning-it/ansible-collection-supplementary",
+      "repository_id": 1103407173,
+      "scope": "collection-supplementary",
+      "source_sha": "bb1a5df9f54c5f98547048297e7e367cc382543e",
+      "workflow": ".github/workflows/collection-ci.yml",
+      "workflow_name": "Collection CI",
+      "job": "Collection / Fast",
+      "private": false,
+      "workflow_id": 214182490
+    }
+  ]
 }
