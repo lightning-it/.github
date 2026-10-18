@@ -45,7 +45,7 @@ def prepare(api, env):
             and pull["base"]["ref"] in {"develop", "main"}, "common-quality-open-subject-required")
     require(pull["head"]["sha"] == sha(env["NATIVE_HEAD"])
             and pull["base"]["sha"] == sha(env["NATIVE_BASE"]), "common-quality-stale-event")
-    policy(api, repository, pull["base"]["sha"], source)
+    policy(api, repository, pull["base"]["sha"], source, pull=pull)
     protected = metadata(api.file(repository, ".lit/repository.yml", pull["base"]["sha"]), repository)
     return {"version": 1, "repository": repository, "source_sha": source,
             "head": pull["head"]["sha"], "base": pull["base"]["sha"],

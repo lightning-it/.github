@@ -1,0 +1,292 @@
+{
+  "version": 1,
+  "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
+  "repository_id": 1110305651,
+  "shared_source": {
+    "repository": "lightning-it/shared-assets-lit",
+    "accepted_sha": "e622b430d52350f66a2a91fb35ee004960ac4c59",
+    "unit_sha256": "9d22c650c9366d8f7854ed3a36d12109f412c7a600a874215b7a78c21c1a92ae",
+    "status": "accepted-protected-source"
+  },
+  "develop": {
+    "sha": "65f4b9dc62df11d3c48acc531f9a802c1f8fb7cf",
+    "tree": "d9341e7d6a98a5fd181e0bb444cace4e4b8c3d5a"
+  },
+  "main": {
+    "sha": "294013a5c4efb4ed8586cae8343316bdfb882e30",
+    "tree": "83b94722a9331d833fb1491c4c10d1964108c933",
+    "parents": [
+      "f40b58f30829a2e0e1268dfd0d5a0130b6471965",
+      "f9a2bebfa9cd9cbe446e7667b7d4f21bdeaec81e"
+    ]
+  },
+  "historical_metadata_graph": [
+    {
+      "sha": "0632ae40851f58094409ce740ad5ee1a38f7468c",
+      "tree": "d9341e7d6a98a5fd181e0bb444cace4e4b8c3d5a",
+      "parents": [
+        "f9a2bebfa9cd9cbe446e7667b7d4f21bdeaec81e",
+        "294013a5c4efb4ed8586cae8343316bdfb882e30"
+      ]
+    },
+    {
+      "sha": "65f4b9dc62df11d3c48acc531f9a802c1f8fb7cf",
+      "tree": "d9341e7d6a98a5fd181e0bb444cace4e4b8c3d5a",
+      "parents": [
+        "f9a2bebfa9cd9cbe446e7667b7d4f21bdeaec81e",
+        "0632ae40851f58094409ce740ad5ee1a38f7468c"
+      ]
+    }
+  ],
+  "changes": [
+    {
+      "path": ".github/copilot-instructions.md",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "5b78bea6c9bf637415de6d68f5dcf55ee95693da"
+      },
+      "render": {
+        "kind": "existing-managed-agents-sha256-binding",
+        "body_source_path": "default/.github/copilot-instructions.md",
+        "body_sha256": "3b77ba7a1e940e8f16041a8fba7bacf0b0ddabe558cabef9dee58ed80880a4c6",
+        "agents_source_path": "container/overrides/container-ee-wunder-devtools-ubi9/AGENTS.md"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "be6a1e161cb8473c0502590569b77bb56af64772",
+        "sha256": "1183dc57fb5ce9158d0f6d348e4f13f8fb737f9dc228a95c5ea5cebea679b9cf"
+      }
+    },
+    {
+      "path": ".github/workflows/codex-copilot-remediation.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "c0ecc887ad984df03a60bd1ade513282665afaad"
+      }
+    },
+    {
+      "path": ".github/workflows/copilot-review-refresh.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "ec0b6e29bcb24d17ba1aa6c097be39391a2f8b44"
+      }
+    },
+    {
+      "path": ".github/workflows/copilot-review.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "ec0c9b4bae4b946cc379bded81f6bc6a773886f0"
+      }
+    },
+    {
+      "path": ".github/workflows/current-revision-rerun.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "d88bd6595d225ec54a9dc59b44a40386f948af51"
+      }
+    },
+    {
+      "path": ".github/workflows/delivery-operations.yml",
+      "operation": "add",
+      "before": null,
+      "render": {
+        "kind": "trusted-native-common-sha",
+        "template_source_path": "container/overrides/container-ee-wunder-devtools-ubi9/.github/workflows/delivery-operations.yml.in",
+        "template": {
+          "blob": "6c9379da3c1294aed7dc48aec0202c5d60184960",
+          "sha256": "abc7c12b0e82c48a043c98c1836911c3b6e3226832b75c949534f3165053a5b7"
+        },
+        "marker": "__DEFINING_COMMON_SHA__",
+        "value_authority": "independently admitted protected native Common defining SHA; never candidate input"
+      },
+      "after_mode": "100644"
+    },
+    {
+      "path": ".github/workflows/promote-develop-to-main.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "289bf68791bb83c935adaf8f3d9f4c16fa729a51"
+      }
+    },
+    {
+      "path": ".github/workflows/release-bot-exact-head-review.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "8f60d88af947b717a5ec245827a3a26123769b3f"
+      }
+    },
+    {
+      "path": ".github/workflows/renovate-guarded-automerge.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "d1f1a2142c88f4648f110cb5dd0c5e7e1ece78af"
+      }
+    },
+    {
+      "path": ".github/workflows/review-events.yml",
+      "operation": "add",
+      "before": null,
+      "source_path": "container/overrides/container-ee-wunder-devtools-ubi9/.github/workflows/review-events.yml",
+      "after": {
+        "mode": "100644",
+        "blob": "58db8ddb6b65b2f37773afad7aac4868effe94a0",
+        "sha256": "a1259b3f3a52bb85c5cc60e444480a91620cd61298a8b51feb9230cf494fec8a"
+      }
+    },
+    {
+      "path": ".github/workflows/shared-assets-guarded-automerge.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "5d89c31fb2b5763ff20a6966774b48607b829252"
+      }
+    },
+    {
+      "path": ".github/workflows/sync-main-to-develop.yml",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "a9753d8d8b2c79fefb4d07b83561b2cc838ad467"
+      }
+    },
+    {
+      "path": ".lit/repository.yml",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "81b6decfa7c7b066fa06381fb7589c56d1460083"
+      },
+      "source_path": "container/overrides/container-ee-wunder-devtools-ubi9/.lit/repository.yml",
+      "after": {
+        "mode": "100644",
+        "blob": "3997ee1acf9bd3336bf632043ea043b6321db050",
+        "sha256": "c7f57844041c6d1519c271a265ae34a9b703517d4eadde2f73aceb8045da0948"
+      }
+    },
+    {
+      "path": ".lit/workflow-control.json",
+      "operation": "add",
+      "before": null,
+      "source_path": "container/overrides/container-ee-wunder-devtools-ubi9/.lit/workflow-control.json",
+      "after": {
+        "mode": "100644",
+        "blob": "da7c37bed4571f606649088b432aaf8abeeba128",
+        "sha256": "4b534757ee094d1f571fcc67f48bfc1d0d3621d89fa28843ec74aee0cd1abea7"
+      }
+    },
+    {
+      "path": "AGENTS.md",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "d8f6ef0ff0a0d7f95b4dfb5bc41fd23a429fc078"
+      },
+      "source_path": "container/overrides/container-ee-wunder-devtools-ubi9/AGENTS.md",
+      "after": {
+        "mode": "100644",
+        "blob": "2214d4bb542fb6160ba9cc7f93f3c6b912a970e1",
+        "sha256": "f0c8d8e797e22346a68024179d3bbdd31c329919cc1ec62444be9dce3867d25c"
+      }
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "efbcb964a92f5399647151d0afab9668fd09be0a"
+      },
+      "source_path": "container/overrides/container-ee-wunder-devtools-ubi9/CONTRIBUTING.md",
+      "after": {
+        "mode": "100644",
+        "blob": "e421e15c7ffc89936e4e871662857675ccc19f46",
+        "sha256": "baf694a3ac4c3e17e465ac635e1553427366f614a64d642184781e999911a19e"
+      }
+    },
+    {
+      "path": "tests/test_current_revision_rerun_contract.py",
+      "operation": "delete",
+      "before": {
+        "mode": "100644",
+        "blob": "ada6ab36f50c8e3c3ecf4dc51938b770eb1417a7"
+      }
+    }
+  ],
+  "preserve_workflows": [
+    {
+      "path": ".github/workflows/container-build-publish.yml",
+      "mode": "100644",
+      "blob": "86007f78f4806515e7cf08f7722535ae4500ae5b"
+    },
+    {
+      "path": ".github/workflows/container-build.yml",
+      "mode": "100644",
+      "blob": "c505f3083af42d0777fe9899225d8b6af17e3d08"
+    },
+    {
+      "path": ".github/workflows/container-ci.yml",
+      "mode": "100644",
+      "blob": "10c8b0d28c2512b8ed66dc9c0efe8b8d967b53e5"
+    },
+    {
+      "path": ".github/workflows/container-fuzz.yml",
+      "mode": "100644",
+      "blob": "36d51afff203d226b90fc770ac81a0b41ccf3460"
+    },
+    {
+      "path": ".github/workflows/container-trivy.yml",
+      "mode": "100644",
+      "blob": "1f0a806c507698bae97ffb5a343f5ef3a482ac6b"
+    },
+    {
+      "path": ".github/workflows/openssf-scorecard.yml",
+      "mode": "100644",
+      "blob": "ba5b33d4c687d2a64e532ea54e1d2b0029d67060"
+    },
+    {
+      "path": ".github/workflows/semantic-release.yml",
+      "mode": "100644",
+      "blob": "d46fc016a08eab75631fae393e3d4d0caa1ad3f6"
+    }
+  ],
+  "inventory": {
+    "path": ".lit/managed-assets.json",
+    "before": null,
+    "after": null
+  },
+  "policy": {
+    "version": 1,
+    "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
+    "mode": "reference",
+    "quality": [
+      {
+        "workflow": ".github/workflows/semantic-release.yml",
+        "job": "Lint"
+      },
+      {
+        "workflow": ".github/workflows/semantic-release.yml",
+        "job": "Semantic Release (dry run)"
+      },
+      {
+        "workflow": ".github/workflows/container-ci.yml",
+        "job": "Validate container repository"
+      },
+      {
+        "workflow": ".github/workflows/container-trivy.yml",
+        "job": "Trivy"
+      }
+    ],
+    "accepted_sources": [],
+    "distribution_sources": [],
+    "artifact_publication": true
+  },
+  "adapter_template": "# Managed by lightning-it/shared-assets-lit; render only the trusted native Common SHA.\n# First-policy metadata receiver only; promotion admission is a separate stage.\n# yamllint disable rule:truthy\n---\nname: Protected delivery operations\non:\n  pull_request_target:\n    types: [edited, labeled, unlabeled, ready_for_review, converted_to_draft]\n  workflow_run:\n    workflows: [Repository review events]\n    types: [completed]\npermissions:\n  contents: read\n  actions: write\n  pull-requests: read\njobs:\n  delivery:\n    uses: lightning-it/.github/.github/workflows/delivery-operations.yml@__DEFINING_COMMON_SHA__\n",
+  "policy_payload": "{\n  \"version\": 1,\n  \"repository\": \"lightning-it/container-ee-wunder-devtools-ubi9\",\n  \"mode\": \"reference\",\n  \"quality\": [\n    {\"workflow\": \".github/workflows/semantic-release.yml\", \"job\": \"Lint\"},\n    {\"workflow\": \".github/workflows/semantic-release.yml\", \"job\": \"Semantic Release (dry run)\"},\n    {\"workflow\": \".github/workflows/container-ci.yml\", \"job\": \"Validate container repository\"},\n    {\"workflow\": \".github/workflows/container-trivy.yml\", \"job\": \"Trivy\"}\n  ],\n  \"accepted_sources\": [],\n  \"distribution_sources\": [],\n  \"artifact_publication\": true\n}\n"
+}

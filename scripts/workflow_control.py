@@ -171,8 +171,16 @@ def classify(pull, repo, *, security=None):
     return "copilot"
 
 
-def policy(api, repo, base, source_sha):
-    value = json.loads(api.file(repo, ".lit/workflow-control.json", base))
+def policy(api, repo, base, source_sha, *, pull=None):
+    from workflow_devtools_bootstrap import policy as first_policy
+    value = first_policy(api, repo, base, source_sha, pull)
+    if value is None:
+        value = json.loads(api.file(repo, ".lit/workflow-control.json", base))
+    return policy_value(value, repo, source_sha)
+
+
+def policy_value(value, repo, source_sha):
+    """The same protected lineage validation for installed and typed bootstrap reads."""
     require(value.get("version") == 1 and value.get("repository") == repo, "protected-policy-shape")
     require(value.get("mode") in {"reference", "enforce"}, "scope-not-admitted")
     require(type(value.get("quality")) is list and value["quality"], "quality-policy-missing")
@@ -616,8 +624,10 @@ def promotion_ingress(api, repo, pull, config):
     # duplicate PR attribution of feature commits. Every integration has one PR.
     import tempfile
 
+    from workflow_devtools_bootstrap import promotion_context
     from workflow_proofs import References
     from workflow_subject import fetch_objects, git
+    bootstrap = promotion_context(api, repo, pull, config)
     base, head = pull["base"]["sha"], pull["head"]["sha"]
     with tempfile.TemporaryDirectory(prefix="promotion-objects-", dir=os.environ.get("RUNNER_TEMP")) as temp:
         objects = Path(temp) / "objects.git"
@@ -628,6 +638,13 @@ def promotion_ingress(api, repo, pull, config):
         require(ancestor == base, "promotion-needs-main-ancestry")
         commits = git(objects, "rev-list", "--reverse", "--first-parent", f"{base}..{head}").splitlines()
         require(commits and len(commits) <= 10000, "promotion-ingress-empty-or-unbounded")
+        if bootstrap is not None:
+            historical = bootstrap["develop"]["sha"]
+            require(commits[0] == historical
+                    and git(objects, "merge-base", "--all", historical, head) == historical,
+                    "devtools-first-main-new-ingress-ancestry")
+            commits = commits[1:]
+            require(commits, "devtools-first-main-needs-new-reviewed-ingress")
         proof = References(MAX_PROOF_BYTES)
         for commit in commits:
             pulls = api.pages(f"repos/{repo}/commits/{commit}/pulls")
@@ -644,8 +661,14 @@ def promotion_ingress(api, repo, pull, config):
         payload = git(objects, "diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv",
                       f"{base}^{{tree}}", tree, binary=True)
     require(payload and any(item["control"]["route"] != "ancestry" for item in proof.items), "promotion-no-reviewed-change")
-    return {"base": base, "head": head, "integration_tree": tree,
-            "diff_sha256": hashlib.sha256(payload).hexdigest(), "ingress": proof.items}
+    result = {"base": base, "head": head, "integration_tree": tree,
+              "diff_sha256": hashlib.sha256(payload).hexdigest(), "ingress": proof.items}
+    if bootstrap is not None:
+        result["pre_admission_metadata_baseline"] = {
+            "main": bootstrap["main"], "develop": bootstrap["develop"],
+            "historical_graph": bootstrap["historical_metadata_graph"],
+        }
+    return result
 
 
 def ancestry_evidence(api, repo, pull, config):
@@ -764,7 +787,7 @@ def main():
         live_pull(api, repo, number, expected)
     require(pull["head"]["sha"] == event["pull_request"]["head"]["sha"]
             and pull["base"]["sha"] == event["pull_request"]["base"]["sha"], "stale-event")
-    config = policy(api, repo, pull["base"]["sha"], source_sha)
+    config = policy(api, repo, pull["base"]["sha"], source_sha, pull=pull)
     security = None
     if config.get("security_profile"):
         from workflow_security_profile import authorize
