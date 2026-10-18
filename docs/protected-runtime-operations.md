@@ -109,6 +109,13 @@ Retain the failed preparation; after a regular ancestry integration, prepare a
 fresh plan bound to the new tips through the existing management operation.
 This grants no review, merge or normal release approval and adds no retry chain.
 
+Before opening ordinary Develop work, include the current protected Main in
+the feature branch when that Main revision is not yet an ancestor of Develop.
+Inspect the actual merge result and preserve both branches' intended content.
+Identical Main and Develop trees do not establish commit ancestry. Including
+that existing Main history in the feature PR lets the same accepted native
+ingress cover the complete integration before normal promotion preparation.
+
 The Root reference prepares promotion in a dependent job of Repository Quality.
 GitHub admits that job only after the quality job succeeds on the first native
 push attempt to protected Develop. PR/fork runs, manual runs and reruns cannot
