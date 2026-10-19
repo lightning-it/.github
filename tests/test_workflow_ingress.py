@@ -254,5 +254,89 @@ class HistoricalIngressTests(unittest.TestCase):
                 ingress.merged_attempt(api, REPO, pull, failed)
 
 
+class CurrentIngressGenerationTests(unittest.TestCase):
+    def fixture(self):
+        from test_workflow_control import pull, run
+        subject = pull(state='closed', merged=True, merge_commit_sha='c' * 40, merged_at=MERGED)
+        # GitHub clears native associations after merge. The newer genuine
+        # operation binds this tuple; the earlier Draft run never made one.
+        bound = run(40) | {'pull_requests': [], 'status': 'completed', 'conclusion': 'success'}
+        draft = run(30) | {'pull_requests': [], 'status': 'completed', 'conclusion': 'failure'}
+        operation = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(subject)}
+        proof = operation | {'route': 'copilot'}
+        api = Mock(spec=control.API)
+        api.call.side_effect = lambda path: subject if '/pulls/' in path else bound
+        def pages(path, key=None):
+            if '/runs?head_sha=' in path:
+                return [bound, draft]
+            if path.endswith('/runs/40/artifacts'):
+                return [{'name': 'control-operation-1', 'expired': False}]
+            if path.endswith('/artifacts'):
+                return []
+            raise AssertionError(path)
+        api.pages.side_effect = pages
+        return api, subject, bound, draft, operation, proof
+
+    def artifacts(self, operation, proof):
+        # The actual operation reader still selects/requires its native artifact.
+        # Only the artifact transport is replaced with an explicit unit fixture.
+        return patch.object(control, 'artifact_record', side_effect=lambda _api, _repo, _run, _name, filename:
+                            operation if filename == 'control-operation.json' else proof)
+
+    def test_newest_bound_generation_ignores_superseded_unbound_draft_in_any_order(self):
+        for reverse in (False, True):
+            api, subject, bound, draft, operation, proof = self.fixture()
+            pages = api.pages.side_effect
+            irrelevant = {'workflow_id': None, 'id': None, 'run_attempt': None}
+            runs = [draft, irrelevant, bound] if reverse else [bound, irrelevant, draft]
+            api.pages.side_effect = lambda path, key=None, runs=runs, pages=pages: runs if '/runs?head_sha=' in path else pages(path, key)
+            with self.subTest(reverse=reverse), self.artifacts(operation, proof), \
+                    patch.object(control, 'native_jobs', return_value=[{'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]):
+                self.assertEqual(40, control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})['run'])
+            self.assertFalse(any('/runs/30/artifacts' in call.args[0] for call in api.pages.call_args_list))
+
+    def test_newer_unknown_or_only_unbound_generation_still_requires_operation(self):
+        for only in (False, True):
+            api, subject, bound, draft, operation, proof = self.fixture()
+            unknown = draft | {'id': 50}
+            runs = [unknown] if only else [bound, unknown]
+            with self.subTest(only=only), self.artifacts(operation, proof), \
+                    self.assertRaisesRegex(control.ControlError, 'protected-operation-missing'):
+                control.ingress_candidates(api, REPO, subject, [SOURCE], runs, {})
+
+    def test_bound_newer_failed_or_pending_run_never_falls_back_to_older_success(self):
+        for status, conclusion in (('completed', 'failure'), ('in_progress', None)):
+            api, subject, bound, _, operation, proof = self.fixture()
+            newer = bound | {'id': 50, 'status': status, 'conclusion': conclusion,
+                             'pull_requests': [{'number': subject['number'], 'base': subject['base'], 'head': subject['head']}]}
+            pages = api.pages.side_effect
+            api.pages.side_effect = lambda path, key=None, bound=bound, newer=newer, pages=pages: [bound, newer] if '/runs?head_sha=' in path else pages(path, key)
+            with self.subTest(status=status), self.artifacts(operation, proof):
+                candidates = control.ingress_candidates(api, REPO, subject, [SOURCE], [bound, newer], {})
+                self.assertEqual([newer], candidates)
+                with self.assertRaisesRegex(control.ControlError, 'ingress-protected-run-not-successful'):
+                    control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+
+    def test_late_generation_after_superseded_draft_exclusion_still_denies(self):
+        for associated in (False, True):
+            api, subject, bound, draft, operation, proof = self.fixture()
+            late = bound | {'id': 50, 'status': 'in_progress', 'conclusion': None}
+            if associated:
+                late['pull_requests'] = [{'number': subject['number'], 'base': subject['base'], 'head': subject['head']}]
+            pages = api.pages.side_effect
+            phase = {'reads': 0}
+            def snapshots(path, key=None, pages=pages, phase=phase, draft=draft, bound=bound, late=late):
+                if '/runs?head_sha=' not in path:
+                    return pages(path, key)
+                phase['reads'] += 1
+                return [draft, bound, late] if phase['reads'] == 3 else [draft, bound]
+            api.pages.side_effect = snapshots
+            with self.subTest(associated=associated), self.artifacts(operation, proof), \
+                    patch.object(control, 'native_jobs', return_value=[{'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]), \
+                    self.assertRaisesRegex(control.ControlError, 'native-generation-changed' if associated else 'generation-binding-unavailable'):
+                control.check_native_control(api, REPO, subject, {'accepted_sources': [SOURCE]})
+            self.assertEqual(3, phase['reads'])
+
+
 if __name__ == '__main__':
     unittest.main()
