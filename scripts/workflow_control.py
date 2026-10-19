@@ -531,9 +531,9 @@ def check_renovate(api, repo, pull):
 def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operations=True):
     """Use the same PR binding for initial selection and final generation read."""
     candidates = []
-    for run in runs:
-        if not native_required(run, repo) or run.get("head_sha") != pull["head"]["sha"]:
-            continue
+    eligible = [run for run in runs
+                if native_required(run, repo) and run.get("head_sha") == pull["head"]["sha"]]
+    for run in sorted(eligible, key=lambda item: (item["id"], item["run_attempt"]), reverse=True):
         associations = [p for p in run.get("pull_requests", []) if p.get("number") == pull["number"]]
         key = (run["id"], run["run_attempt"])
         if associations:
@@ -557,6 +557,9 @@ def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operati
         else:
             continue
         candidates.append(run)
+        # Older unbound Draft runs cannot invalidate a newer bound generation.
+        # Its status/proof and every newer unknown generation remain mandatory.
+        break
     return candidates
 
 
