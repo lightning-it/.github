@@ -109,8 +109,8 @@ class DevtoolsBootstrapTests(unittest.TestCase):
         self.assertEqual("copilot", control.classify(self.pull, self.repository))
 
     def test_exact_eighteenth_fixture_is_required_for_human_main_and_preparation(self):
-        self.assertEqual(18, len(self.descriptor["changes"]))
-        self.assertEqual(18, len({entry["path"] for entry in self.descriptor["changes"]}))
+        self.assertEqual(19, len(self.descriptor["changes"]))
+        self.assertEqual(19, len({entry["path"] for entry in self.descriptor["changes"]}))
         fixture = "tests/test_lit_push_ready.py"
         record = next(entry for entry in self.descriptor["changes"] if entry["path"] == fixture)
         self.assertEqual({"mode": "100644", "blob": "3d2707da21ada0388c3fcfdc92de19e7b2dad415"}, record["before"])
@@ -134,7 +134,7 @@ class DevtoolsBootstrapTests(unittest.TestCase):
                 if preparation is not None:
                     return bootstrap.promotion_context(self.api, self.repository, planned, preparation)
                 return self.policy()
-            validate()  # all three real readers require and accept the complete eighteen-path tree
+            validate()  # all three real readers require and accept the complete nineteen-path tree
             defects = {
                 "old-seventeen": (fixture, ("100644", record["before"]["blob"])),
                 "missing": (fixture, None),
@@ -149,7 +149,59 @@ class DevtoolsBootstrapTests(unittest.TestCase):
                 self.head_tree = fixture_tree(current)
                 self.records[HEAD]["tree"]["sha"] = self.head_tree["sha"]
                 with self.subTest(route=route, defect=defect), \
-                        self.assertRaisesRegex(control.ControlError, "exact-eighteen"):
+                        self.assertRaisesRegex(control.ControlError, "exact-nineteen"):
+                    validate()
+        self.pull, self.head_tree = original_pull, original_tree
+
+    def test_repository_owned_readme_is_required_at_all_real_first_policy_entries(self):
+        record = next(item for item in self.descriptor["changes"] if item["path"] == "README.md")
+        self.assertEqual({"mode": "100644", "blob": "c3d2c28f82182459e273b84972dd48eacf7ff0e3"}, record["before"])
+        self.assertEqual({"mode": "100644", "blob": "ff3463a5ed49143ba2f0d473576baaa0a75facd3",
+                          "sha256": "25e01efae4788e39149324bdbcceb8c90264f0d60c552d4bc87d9020e83b6f3f"}, record["after"])
+        self.assertEqual("repository-owned documentation", record["provenance"]["ownership"])
+        shared_changes = [item for item in self.descriptor["changes"] if item["path"] != "README.md"]
+        self.assertEqual(18, len(shared_changes))
+        self.assertEqual("5a78a7b0a676a2f26872be22f7a892228644b2524e67676413ae73bbcd817092",
+                         hashlib.sha256(control.canonical(shared_changes)).hexdigest())
+        self.assertEqual("bdec6d06b0247393a33c4a1358bd7804e56ed538bf67d37e004d3d50070d8d72",
+                         self.descriptor["shared_source"]["unit_sha256"])
+        original_pull, original_tree = copy.deepcopy(self.pull), copy.deepcopy(self.head_tree)
+        leaves = {item["path"]: (item["mode"], item["sha"])
+                  for item in original_tree["tree"] if item["type"] == "blob"}
+        for route in ("human", "main", "prepare", "quality"):
+            self.pull, self.head_tree = copy.deepcopy(original_pull), copy.deepcopy(original_tree)
+            self.records[HEAD]["tree"]["sha"] = self.head_tree["sha"]
+            if route in {"main", "prepare"}:
+                self.pull["base"].update(sha=self.descriptor["main"]["sha"], ref="main")
+                self.pull["head"]["ref"] = "develop"
+                self.pull["user"] = dict(zip(("login", "id", "type"), control.RELEASE))
+            preparation = bootstrap.preparation_policy(self.api, self.repository, SOURCE) if route == "prepare" else None
+            def validate():
+                if preparation is not None:
+                    return bootstrap.promotion_context(self.api, self.repository,
+                        {"base": {"sha": self.descriptor["main"]["sha"]}, "head": {"sha": HEAD}}, preparation)
+                if route == "quality":
+                    self.api.file.side_effect = None
+                    self.api.file.return_value = b"schema_version: 1\nrepository: container-ee-wunder-devtools-ubi9\nrepository_type: container_image\n"
+                    return quality.prepare(self.api, {"GITHUB_REPOSITORY": self.repository,
+                        "GITHUB_RUN_ID": "10", "NATIVE_PULL_NUMBER": "3", "NATIVE_HEAD": HEAD,
+                        "NATIVE_BASE": self.base, "NATIVE_JOB": json.dumps({"workflow_repository": control.SOURCE,
+                            "workflow_file_path": control.WORKFLOW, "workflow_sha": SOURCE, "check_run_id": 1})})
+                return self.policy()
+            validate()
+            for defect, path, replacement in (
+                    ("old-eighteen", "README.md", ("100644", record["before"]["blob"])),
+                    ("missing", "README.md", None),
+                    ("wrong-bytes", "README.md", ("100644", "f" * 40)),
+                    ("wrong-mode", "README.md", ("100755", record["after"]["blob"])),
+                    ("extra", "foreign", ("100644", "f" * 40))):
+                current = dict(leaves)
+                if replacement is None: del current[path]
+                else: current[path] = replacement
+                self.head_tree = fixture_tree(current)
+                self.records[HEAD]["tree"]["sha"] = self.head_tree["sha"]
+                with self.subTest(route=route, defect=defect), \
+                        self.assertRaisesRegex(control.ControlError, "exact-nineteen"):
                     validate()
         self.pull, self.head_tree = original_pull, original_tree
 
@@ -179,7 +231,7 @@ class DevtoolsBootstrapTests(unittest.TestCase):
                 else: current[path] = change
                 self.head_tree = fixture_tree(current)
                 self.records[HEAD]["tree"]["sha"] = self.head_tree["sha"]
-                with self.assertRaisesRegex(control.ControlError, "exact-eighteen"):
+                with self.assertRaisesRegex(control.ControlError, "exact-nineteen"):
                     self.policy()
         self.head_tree = original
 
@@ -260,6 +312,7 @@ class DevtoolsBootstrapTests(unittest.TestCase):
         ], entries[:9])
         self.assertEqual("678560bdd02d32ccae59c430f0047f85a81ec72e", entries[9])
         self.assertEqual("4f12f255b4375907967d87a5462cc99930c5f3c7", entries[10])
+        self.assertEqual("b634a997ed0daa541945456f468512f7164c46ca", entries[11])
 
     def test_installed_policy_keeps_ordinary_reader_and_api_failures_never_fallback(self):
         leaves = {entry["path"]: (entry["mode"], entry["sha"])

@@ -230,6 +230,26 @@
         "blob": "75e6d35a1783ceb0c2d1f0a1e15ca6544627ff8d",
         "sha256": "437d12bb29adf10f6b62b49153165d68bb00c395c1a66497ca1deadb1f6d4dbc"
       }
+    },
+    {
+      "path": "README.md",
+      "operation": "replace",
+      "before": {
+        "mode": "100644",
+        "blob": "c3d2c28f82182459e273b84972dd48eacf7ff0e3"
+      },
+      "after": {
+        "mode": "100644",
+        "blob": "ff3463a5ed49143ba2f0d473576baaa0a75facd3",
+        "sha256": "25e01efae4788e39149324bdbcceb8c90264f0d60c552d4bc87d9020e83b6f3f"
+      },
+      "provenance": {
+        "ownership": "repository-owned documentation",
+        "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
+        "base": "65f4b9dc62df11d3c48acc531f9a802c1f8fb7cf",
+        "correction_before": "ansible-playbook -i <inventory.yml> <playbook.yml>",
+        "correction_after": "ansible-playbook -i \"<inventory.yml>\" \"<playbook.yml>\""
+      }
     }
   ],
   "preserve_workflows": [
