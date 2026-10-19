@@ -94,8 +94,8 @@ def base_tree(api, base):
 
 def expected_tree(value, before, source):
     changes = value["changes"]
-    require(type(changes) is list and len(changes) == 18
-            and len({item["path"] for item in changes}) == 18, "devtools-exact-manifest")
+    require(type(changes) is list and len(changes) == 19
+            and len({item["path"] for item in changes}) == 19, "devtools-exact-manifest")
     require(".lit/managed-assets.json" not in before, "devtools-inventory-must-remain-absent")
     expected = dict(before)
     for item in changes:
@@ -167,7 +167,7 @@ def policy(api, repo, base, source, pull):
         before = first_main_baseline(api, value)
     head = sha(pull["head"]["sha"])
     require(tree(api, commit(api, head)["tree"]) == expected_tree(value, before, source),
-            "devtools-exact-eighteen-path-delta")
+            "devtools-exact-nineteen-path-delta")
     result = copy.deepcopy(value["policy"])
     result["_devtools_first_policy"] = FirstPolicy(sha(source), head, "native", digest(value))
     return result
@@ -211,7 +211,7 @@ def promotion_context(api, repo, pull, config):
         before = first_main_baseline(api, value)
         head = sha(pull["head"]["sha"])
         require(tree(api, commit(api, head)["tree"]) == expected_tree(value, before, context.source),
-                "devtools-exact-eighteen-path-delta")
+                "devtools-exact-nineteen-path-delta")
         return value
     require(context.purpose == "native" and context.head == pull["head"]["sha"]
             and "user" in pull and "repo" in pull["base"] and "repo" in pull["head"],
