@@ -81,6 +81,7 @@ Publishing targets: `none`.
 - [TESTING.md](./TESTING.md)
 - [ModuLix validation lanes](./MODULIX-VALIDATION.md)
 - [SECURITY.md](./SECURITY.md)
+- [Root CodeQL merge protection](docs/root-codeql-merge-protection.md)
 
 ## Security
 
