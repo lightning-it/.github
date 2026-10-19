@@ -19,6 +19,7 @@ MAIN678 = "678560bdd02d32ccae59c430f0047f85a81ec72e"
 MAIN4F12 = "4f12f255b4375907967d87a5462cc99930c5f3c7"
 MAINB634 = "b634a997ed0daa541945456f468512f7164c46ca"
 MAIN1E48 = "1e48bd0b8fab9605558d747615f60696f2deb819"
+MAIN652 = "652c1e48b40d643a5d954e4dbe8533079f3cb53d"
 # The reader parameter models a future independent native selection. Neither
 # this test nor the lineage file admits this actual, currently unselected commit.
 CANDIDATE = "4dbd1a7d63a3ffae5ada5e6e0127a847585a051d"
@@ -54,7 +55,7 @@ class AdoptedLineageTests(unittest.TestCase):
         value = json.loads((ROOT / ".lit/workflow-source-lineage.json").read_bytes())
         # Exact sequence catches deletion, duplication, replacement, unknown or
         # forward/self additions without adding a production validator/framework.
-        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48]}, value)
+        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652]}, value)
         policy = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         self.assertEqual([], policy["accepted_sources"])
         self.assertNotIn(CANDIDATE, value["accepted_predecessors"])
@@ -62,7 +63,7 @@ class AdoptedLineageTests(unittest.TestCase):
     def test_real_policy_retains_bb1_and_old_pins_but_consumer_cannot_admit_unknown(self):
         api = Mock()
         value = self.policy(api)
-        self.assertEqual({CANDIDATE, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, *PREDECESSORS}, set(value["accepted_sources"]))
+        self.assertEqual({CANDIDATE, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652, *PREDECESSORS}, set(value["accepted_sources"]))
         consumer = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         api.file.return_value = json.dumps(consumer | {"accepted_sources": ["e" * 40]}).encode()
         with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
