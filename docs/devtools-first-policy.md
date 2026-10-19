@@ -16,18 +16,29 @@ at that immutable source after normal protected Main integration and successful
 postchecks. Historically, Shared Main
 `e622b430d52350f66a2a91fb35ee004960ac4c59` supplied the preceding seventeen-path
 unit and the canonical fixture; its old manifest did not include that fixture.
-The accepted eighteen-path manifest now binds the complete adoption unit.
+That accepted eighteen-path manifest remains the complete Shared-owned supplier
+unit. This Common successor additionally binds one repository-owned documentation
+correction; it does not claim a nineteen-file Shared publication.
 Source acceptance does not select Common or admit the target runtime. No
 unaccepted draft or self-declared target policy can fill that dependency.
 Runtime does not load private source code or dynamically select a helper.
 
-The source-owned descriptor contains the complete 18-path delta, exact inline
+The source-owned descriptor contains the complete 19-path target delta, exact inline
 policy bytes and semantic policy, static adapter template, preserved product
 workflow blobs and actual inventory absence. Artifact publication remains
 strictly true and the four existing workflow/job quality pairs remain required.
 The eighteenth replacement binds only the existing canonical push-ready test
 fixture, which isolates its two disposable-repository Git commands from the
-source checkout Git environment. All other target leaves remain unchanged.
+source checkout Git environment. The nineteenth replacement binds only the repository-owned `README.md` shell
+example: quote the two literal `<inventory.yml>` and `<playbook.yml>` arguments
+without changing the command, image tag, validator or other document bytes. Its
+exact predecessor is blob `c3d2c28f82182459e273b84972dd48eacf7ff0e3` and its
+replacement is blob `ff3463a5ed49143ba2f0d473576baaa0a75facd3`, mode `100644`,
+SHA256 `25e01efae4788e39149324bdbcceb8c90264f0d60c552d4bc87d9020e83b6f3f`.
+This example lies outside Shared-managed README blocks. Its provenance is
+repository-owned documentation accepted as exact Common data, independent of
+the unchanged eighteen-record Shared supplier binding. All other target leaves
+remain unchanged.
 The adapter renders one marker using only the actual independently selected
 native defining Common SHA. It receives metadata/review signals only, carries
 no App secret and does not promise automatic Devtools promotion.
@@ -76,7 +87,7 @@ promotion result.
 
 Only the normal same-repository Release App Develop-to-Main shape can use this
 first-Main context. Its candidate tree must still be exactly the canonical
-18-path delta relative to the fixed Develop tree. The existing first-parent
+19-path delta relative to the fixed Develop tree. The existing first-parent
 promotion traversal retires only that exact historical Develop boundary after
 validating both historical commits. Every newer integration remains subject to
 normal PR association and `check_native_control`; at least one genuinely
@@ -129,8 +140,9 @@ promotions can use the ordinary installed-policy path.
 
 The append-only source lineage retains every previous entry and now locally
 appends the genuinely accepted prior defining source
-`4f12f255b4375907967d87a5462cc99930c5f3c7` after
-`678560bdd02d32ccae59c430f0047f85a81ec72e`. This is prepared continuity,
+`b634a997ed0daa541945456f468512f7164c46ca` after the retained
+`678560bdd02d32ccae59c430f0047f85a81ec72e` and
+`4f12f255b4375907967d87a5462cc99930c5f3c7`. This is prepared continuity,
 not a claim that the new source is already selected or accepted. No future/self SHA is invented.
 
 ## Focused verification boundary
