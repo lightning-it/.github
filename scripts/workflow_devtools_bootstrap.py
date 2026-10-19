@@ -13,6 +13,9 @@ REPOSITORY = "lightning-it/container-ee-wunder-devtools-ubi9"
 REPOSITORY_ID = 1110305651
 POLICY = ".lit/workflow-control.json"
 DESCRIPTOR = Path(__file__).resolve().parents[1] / ".lit/devtools-first-policy.json"
+FIRST_MAIN_INSTALLATION_SOURCE = "1e48bd0b8fab9605558d747615f60696f2deb819"
+FIRST_MAIN_PRODUCT_PATHS = ("container-toolchain/package.json", "container-toolchain/pnpm-lock.yaml",
+                            "container-toolchain/pnpm-workspace.yaml")
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,18 @@ def first_main_baseline(api, value):
     return develop
 
 
+def first_main_expected_tree(value, before, observed):
+    # The accepted installation keeps its original adapter. Later product
+    # integrations still require the complete native promotion-ingress reader.
+    expected = expected_tree(value, before, FIRST_MAIN_INSTALLATION_SOURCE)
+    for path in FIRST_MAIN_PRODUCT_PATHS:
+        require(expected.get(path, (None,))[0] == "100644"
+                and observed.get(path, (None,))[0] == "100644",
+                "devtools-first-main-product-shape")
+        expected[path] = observed[path]
+    return expected
+
+
 def policy(api, repo, base, source, pull):
     if repo != REPOSITORY:
         return None
@@ -166,7 +181,10 @@ def policy(api, repo, base, source, pull):
                 "devtools-first-main-shape")
         before = first_main_baseline(api, value)
     head = sha(pull["head"]["sha"])
-    require(tree(api, commit(api, head)["tree"]) == expected_tree(value, before, source),
+    observed = tree(api, commit(api, head)["tree"])
+    expected = (expected_tree(value, before, source) if pull["base"]["ref"] == "develop"
+                else first_main_expected_tree(value, before, observed))
+    require(observed == expected,
             "devtools-exact-nineteen-path-delta")
     result = copy.deepcopy(value["policy"])
     result["_devtools_first_policy"] = FirstPolicy(sha(source), head, "native", digest(value))
@@ -210,7 +228,8 @@ def promotion_context(api, repo, pull, config):
         base_tree(api, pull["base"]["sha"])
         before = first_main_baseline(api, value)
         head = sha(pull["head"]["sha"])
-        require(tree(api, commit(api, head)["tree"]) == expected_tree(value, before, context.source),
+        observed = tree(api, commit(api, head)["tree"])
+        require(observed == first_main_expected_tree(value, before, observed),
                 "devtools-exact-nineteen-path-delta")
         return value
     require(context.purpose == "native" and context.head == pull["head"]["sha"]

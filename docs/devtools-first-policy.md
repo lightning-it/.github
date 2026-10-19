@@ -37,10 +37,12 @@ replacement is blob `ff3463a5ed49143ba2f0d473576baaa0a75facd3`, mode `100644`,
 SHA256 `25e01efae4788e39149324bdbcceb8c90264f0d60c552d4bc87d9020e83b6f3f`.
 This example lies outside Shared-managed README blocks. Its provenance is
 repository-owned documentation accepted as exact Common data, independent of
-the unchanged eighteen-record Shared supplier binding. All other target leaves
-remain unchanged.
-The adapter renders one marker using only the actual independently selected
-native defining Common SHA. It receives metadata/review signals only, carries
+the unchanged eighteen-record Shared supplier binding. Human first installation
+preserves every other target leaf. Its adapter renders one marker using only
+the actual independently selected native defining Common SHA. First Main keeps
+the adapter from the accepted installation source
+`1e48bd0b8fab9605558d747615f60696f2deb819`, even when a later independently
+selected source verifies the promotion. It receives metadata/review signals only, carries
 no App secret and does not promise automatic Devtools promotion.
 
 ## Real entry points and missing-policy proof
@@ -86,8 +88,18 @@ acceptance proof. This exact metadata graph is reported separately in the
 promotion result.
 
 Only the normal same-repository Release App Develop-to-Main shape can use this
-first-Main context. Its candidate tree must still be exactly the canonical
-19-path delta relative to the fixed Develop tree. The existing first-parent
+first-Main context. Its candidate tree retains the exact canonical 19-path
+installation, including the original adapter above. Only blob contents of the
+three already existing product-owned files
+`container-toolchain/package.json`, `container-toolchain/pnpm-lock.yaml` and
+`container-toolchain/pnpm-workspace.yaml` may differ after installation. All
+three must remain regular mode `100644`; additions, deletions and mode changes
+are rejected. Every other blob and mode stays exact, including the seven product
+workflows and absence of inventory, timeout manifest and timeout validator.
+The Human Develop entry remains a full-tree check against its current defining
+source; this Main-only allowance does not widen first installation.
+
+The file allowance grants no acceptance of an integration. The existing first-parent
 promotion traversal retires only that exact historical Develop boundary after
 validating both historical commits. Every newer integration remains subject to
 normal PR association and `check_native_control`; at least one genuinely
@@ -97,10 +109,10 @@ and security gates remain mandatory; no cumulative duplicate AI is requested.
 
 ## Separately owned preparer and later static stages
 
-The current protected Management preparer calls the ordinary four-argument
-policy reader on Main before creating a PR, then passes only base/head SHAs to
-`promotion_ingress`. The new missing-policy path cannot infer a real pull from
-that partial object. Its exact Devtools adaptation must:
+The protected Management preparer explicitly reads the typed Devtools
+preparation policy before creating the first Main PR, then passes only base/head
+SHAs to `promotion_ingress`. The missing-policy path cannot infer a real pull
+from that partial object. This exact Devtools path must:
 
 1. Use `workflow_devtools_bootstrap.preparation_policy()` only for this fixed
    first-Main case, after its own protected source/target selection. This typed
@@ -134,15 +146,16 @@ an automatic producer only after installed policy and ordinary consumer
 CallerC follow-up. Accepted defining CoreA precedes HelperB, and public CallerC
 pins accepted HelperB. There is no dynamic helper loading or second
 initial-policy descriptor bootstrap.
-The first Main retains the exact adapter bound to its independently selected
-defining source. Consumer CallerC/runtime changes follow after that Main has adopted policy, so later
+The first Main retains the exact adapter bound to the original accepted
+installation source above. Consumer CallerC/runtime changes follow after that Main has adopted policy, so later
 promotions can use the ordinary installed-policy path.
 
 The append-only source lineage retains every previous entry and now locally
 appends the genuinely accepted prior defining source
-`b634a997ed0daa541945456f468512f7164c46ca` after the retained
+`1e48bd0b8fab9605558d747615f60696f2deb819` after the retained
 `678560bdd02d32ccae59c430f0047f85a81ec72e` and
-`4f12f255b4375907967d87a5462cc99930c5f3c7`. This is prepared continuity,
+`4f12f255b4375907967d87a5462cc99930c5f3c7` and
+`b634a997ed0daa541945456f468512f7164c46ca`. This is prepared continuity,
 not a claim that the new source is already selected or accepted. No future/self SHA is invented.
 
 ## Focused verification boundary
