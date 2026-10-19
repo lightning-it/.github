@@ -25,6 +25,25 @@ below take precedence within their stated boundaries.
 - Any future mandatory review/governance rollout requires an explicit new
   decision and migration. This POC policy does not claim production readiness.
 
+## Owner-authorized chat approval delegation
+
+The owner permits an authorized human to approve a concrete operation in the
+active chat and delegate its native GitHub submission to the agent. Present the
+repository, exact head or run/attempt, environment, scope and effect first; a
+policy apply also requires the actual saved plan and its hash. An explicit
+confirmation authorizes submission for that unchanged operation using an
+available, eligible authorized identity. Do not require the person to repeat
+that same confirmation in GitHub.
+
+Record that the agent submitted the native approval on the human's explicit
+chat instruction. Retain the bound decision and actual native actor/result;
+never claim a personal UI click or an independent second reviewer. A different
+head, attempt, environment, plan or material scope needs a new confirmation.
+Preserve native checks, approval eligibility, credential boundaries and the
+normal protected path. This delegation grants no administrator bypass,
+fabricated evidence, AI-review substitution or unspecified future approval.
+Read back the native outcome; observe an unknown write before considering a retry.
+
 ## Owner-approved safe-target migration
 
 The owner has now explicitly commissioned the safe target described in
