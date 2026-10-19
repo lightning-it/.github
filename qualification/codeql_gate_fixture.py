@@ -2,4 +2,4 @@
 
 
 def qualification(value: str) -> str:
-    return value.strip()
+    return value.strip().lower()
