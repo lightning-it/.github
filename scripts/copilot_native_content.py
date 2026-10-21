@@ -1502,8 +1502,139 @@ def sha(value: Any, label: str) -> str:
     return result
 
 
+def admitted_generated_exclusion(body: str, body_html: Any, allowed: frozenset[str]) -> tuple[str, list[JSON]]:
+    """Recognize only the observed native single generated-file exclusion.
+
+    This is parsing, not authority: every existing caller rejects by default.
+    The controller alone supplies paths from independently selected source.
+    """
+    if not allowed or "not reviewed" not in body:
+        return body, []
+    # Native bodies may use CRLF or a blank line before the generated-file list.
+    # Normalize only this working copy; the caller retains the original digest.
+    body = body.replace("\r\n", "\n")
+    section = (r"<details>\n<summary><strong>1 file not reviewed</strong></summary>\n\n?"
+               r"<ul>\n<li><strong><code>([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
+               r"</code></strong>: Generated file</li>\n</ul>\n</details>")
+    matches = list(re.finditer(section, body))
+    require(len(matches) == 1 and body.count("not reviewed") == 1,
+            "producer-generated-exclusion-shape")
+    match = matches[0]
+    path = match.group(1)
+    require(path in allowed and all(part not in {".", ".."} for part in path.split("/")),
+            "producer-generated-exclusion-not-admitted")
+    # Only the actual observed zero-issue rendering and top-level position are
+    # admitted. Never strip a quoted/fenced/nested fragment from an owned block.
+    require(body[:match.start()].rstrip().endswith("**No open issues** 🎉")
+            and body[match.end():].lstrip().startswith((
+                "<details>\n<summary><strong>What changed in this PR</strong></summary>",
+                "<sub>Review effort: Balanced</sub>")), "producer-generated-exclusion-position")
+    rendered = text(body_html, "producer-review-rendered-body")
+    require(len(rendered.encode("utf-8")) <= MAX_API_BYTES, "producer-review-rendered-body-too-large")
+    expected = (
+        ("start", "details"), ("start", "summary"), ("start", "strong"),
+        ("data", "1 file not reviewed"), ("end", "strong"), ("end", "summary"),
+        ("start", "ul"), ("start", "li"), ("start", "strong"), ("start", "code"),
+        ("data", path), ("end", "code"), ("end", "strong"),
+        ("data", ": Generated file"), ("end", "li"), ("end", "ul"), ("end", "details"),
+    )
+
+    class RenderedGeneratedExclusion(HTMLParser):
+        voids: ClassVar[set[str]] = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                                    "link", "meta", "param", "source", "track", "wbr"}
+        blocks: ClassVar[set[str]] = {"summary", "details", "p", "div", "li", "ul", "ol", "table",
+                                     "tr", "td", "th", "thead", "tbody", "tfoot", "caption",
+                                     "blockquote", "hr", "pre", "section", "article", "header",
+                                     "footer", "main", "nav", "aside", "dl", "dt", "dd",
+                                     "h1", "h2", "h3", "h4", "h5", "h6"}
+
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.stack: list[str] = []
+            self.parts: list[str] = []
+            self.capture = False
+            self.valid = False
+            self.position = 0
+            self.matches = 0
+
+        def token(self, kind: str, value: str) -> None:
+            if self.capture and self.valid:
+                if self.position >= len(expected) or expected[self.position] != (kind, value):
+                    self.valid = False
+                else:
+                    self.position += 1
+
+        def boundary(self, tag: str) -> None:
+            if tag == "br" or tag in self.blocks:
+                self.parts.append("\n")
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag == "details" and not self.stack:
+                self.capture, self.valid, self.position = True, True, 0
+            if self.capture:
+                # Only actual GitHub renderer attributes may decorate the
+                # admitted element path; comments and text never create nodes.
+                allowed = {"dir": "auto"} | ({"class": "notranslate"} if tag == "code" else {})
+                if len({key for key, _ in attrs}) != len(attrs) or any(
+                        key not in allowed or value != allowed[key] for key, value in attrs):
+                    self.valid = False
+            self.token("start", tag)
+            self.boundary(tag)
+            if tag not in self.voids:
+                self.stack.append(tag)
+
+        def handle_endtag(self, tag: str) -> None:
+            require(bool(self.stack) and self.stack[-1] == tag, "producer-generated-exclusion-rendered")
+            self.token("end", tag)
+            self.stack.pop()
+            self.boundary(tag)
+            if self.capture and not self.stack:
+                if self.valid and self.position == len(expected):
+                    self.matches += 1
+                self.capture = False
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.handle_starttag(tag, attrs)
+            if tag not in self.voids:
+                self.handle_endtag(tag)
+
+        def handle_data(self, data: str) -> None:
+            self.parts.append(data)
+            if data.strip():
+                self.token("data", data)
+
+        def handle_comment(self, data: str) -> None:
+            if self.capture:
+                self.valid = False
+
+        def handle_decl(self, decl: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+        def unknown_decl(self, data: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+        def handle_pi(self, data: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+    parser = RenderedGeneratedExclusion()
+    try:
+        parser.feed(rendered)
+        parser.close()
+    except (ValueError, AssertionError) as error:
+        if isinstance(error, EvidenceError):
+            raise
+        raise EvidenceError("producer-generated-exclusion-rendered") from error
+    visible = ASSESSMENT_IGNORABLE.sub("", unicodedata.normalize("NFKC", "".join(parser.parts)))
+    require(not parser.stack and not parser.rawdata and parser.matches == 1
+            and normalized_review_text(visible).count("notreviewed") == 1,
+            "producer-generated-exclusion-rendered")
+    return body[:match.start()] + body[match.end():], [
+        {"path": path, "reason": "Generated file", "reviewed_by_copilot": False}]
+
+
 def bind_copilot_review_findings(
-    pages: list[Any], *, repository: str, pull_number: int, head_sha: str
+    pages: list[Any], *, repository: str, pull_number: int, head_sha: str,
+    admitted_unreviewed_paths: frozenset[str] = frozenset(),
 ) -> JSON:
     """Retain native findings across both producer association routes."""
     native_reviews: dict[str, JSON] = {}
@@ -1535,7 +1666,9 @@ def bind_copilot_review_findings(
             and not any(marker in normalized_review_text(body)
                         for marker in COPILOT_REVIEW_FAILURE_MARKERS),
             "producer-review-binding")
-    count = historical_copilot_findings_count(body)
+    parsed_body, unreviewed = admitted_generated_exclusion(
+        body, review.get("body_html"), admitted_unreviewed_paths)
+    count = historical_copilot_findings_count(parsed_body)
     require(not copilot_rendered_has_missed_heading(review.get("body_html")),
             "producer-review-binding")
     targets: list[int] | None = None
@@ -1567,12 +1700,15 @@ def bind_copilot_review_findings(
                 targets.append(int(match.group(2)))
             require(len(targets) == count and len(set(targets)) == count,
                     "producer-review-thread-coverage")
-    return {
+    result = {
         "review_id": review["node_id"], "review_database_id": review["id"],
         "review_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "historical_findings_count": count,
         "finding_comment_ids": targets, "native_reviews": native_reviews,
     }
+    if unreviewed:
+        result["unreviewed_files"] = unreviewed
+    return result
 
 
 def validate_reported_file_coverage(body: str, changed_files: Any) -> None:
