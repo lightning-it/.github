@@ -377,3 +377,83 @@ It can only refresh the original independently selected native control; it does
 not admit its helper as a verifier or alter the previously accepted source that
 judges this update. Consumer calls to this source therefore use the same fixed
 helper without copying private configuration or control code downstream.
+
+### Exact owner-accepted Shared Assets PR 2658 generated lock
+
+This candidate contains one **owner-accepted, exact-subject descriptor** in
+`SOURCE_GENERATED_LOCK_ADMISSIONS`. It becomes effective only through a genuinely
+admitted protected Common source. The owner decision alone does not select a
+verifier or authorize merge/publication. Consumer metadata cannot register a case.
+The separately retained owner receipt has SHA256
+`bfeb42e955ad11fcf38313662515b968b4534a8efecdb87d82a7555f0a362f44`;
+the accepted qualification projection has canonical SHA256
+`c9bb5b0d12b29b09c3665b086b76f0c89791ce20af2998f463a8d674d299fea2`
+and file SHA256
+`e380856715f009caa1ab65662afad5d9b30f539d51870d0af102815a1e774c53`.
+The original human message is
+`chat:01a16039-c39f-77f0-9331-67822ff31eb3/01a1607a-a0da-7760-978a-b49759ef467a`.
+That decision accepted the evidence only; registration/publication require their
+own actual authority and the normal protections.
+
+The separate proposed Source case binds repository
+`lightning-it/shared-assets-lit`, PR `2658`, head
+`965a9d188af3212fa556644ac2fb54fe15a3a3ff`, base
+`b500e5ded3c4117b53516d97e385e4e8147b2ebc`, whole Git tree
+`ae6b8b7c79cc26a23f4c05c5c2a4063895d3891e`, and only
+`container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml`.
+The lock is regular mode `100644`, blob
+`a347fcd4fe10e9a9debaefeac852fa56e2e2b033`, 205506 bytes, SHA256
+`3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf`.
+All five manifest/workspace/lock/build/Renovate inputs and all seven actual
+changed paths remain bound. Other repositories, PRs, branches, identities,
+versions, input bytes, additional exclusions and successor heads are ineligible.
+The existing Devtools consumer admission is separate and unchanged.
+
+The original trusted review `5606349606` and service `39677277582` remain bound,
+including raw-body SHA256
+`4fddbee83d801df5000924042edec0f4322d4e727b1a1b124c5ea1985f016229`.
+Its lock remains **not reviewed by Copilot**. A future separately qualified
+artifact supplement may describe only that exact exclusion; it never invents
+complete Copilot coverage, edits the review or reserves another funded request.
+Ordinary findings, conversations, current quality/security checks and authority
+remain required. Source artifact coverage is recorded separately from Devtools
+coverage, and receives current quality evidence only from the normal finalizer.
+
+The one authorized isolated proof, plan SHA256
+`72e555fc811c2c242e01b9bd68a8f7fa7fb23b42a3d71ed1c30df7373849fc30`,
+completed with one container and one generation, no retries. Node 24.19.0 and
+pnpm 11.23.0 in the pinned v1.18.0 tooling EE regenerated from the protected
+b500 baseline lock and final manifest/workspace. Output was byte-identical to
+this lock. Registry metadata, declared SRI and actual tarball SHA512 matched for
+markdown-it 14.3.3, markdown-it 15.0.3 and argparse 3.0.3. Input hashes stayed
+unchanged and owned scratch/container cleanup completed. Original receipt SHA256
+`7d0f3f45b39ba8f1dcd77428309780e9c08acc831819ecc65e474e671ca18172`,
+execution log SHA256
+`21c6ed822100c78609c3895525e63bb50dbeefa9059c52e8baaac9768ff24a9b`,
+and host envelope SHA256
+`5f53c1e5a6e2cd3b09aca1220cc3bae3e198bae990b83d5dcb1fcd50c4e5b1ed`
+remain with the authorized private reader. These are local proof facts, not a
+published runtime, native policy approval or all-architecture acceptance.
+
+This exact descriptor records the independently inspected, exact-schema
+projection and the separately verified explicit owner acceptance of its digest.
+The acceptance reference is an externally verified owner fact retained in the
+protected Common source; it is not candidate-controlled JSON, a PR label, a
+runtime permission engine or a claim that a native human approval occurred.
+The descriptor-binding unit test checks the literal registry entry against the
+accepted digest. Native API behavior fixtures are synthetic. The separate local
+composition harness uses the unchanged literal entry, saved original review and
+five original input byte streams; its HTTP/native-run/job/approval metadata are
+still offline fixtures. Test counts, exact target hashes and results belong in
+the versioned execution receipt, not an inferred native acceptance. A technical
+PASS alone never authorizes registration. Failed, missing or incomplete proof,
+or mismatched subject/input/plan bindings, cannot qualify this case. "Stale" here
+means a binding mismatch; the qualifier implements no general wall-clock TTL.
+
+Activation/publication is outside this local grant. It still needs a real
+protected Common publication satisfying its actual Main requirements, an exact
+separately authorized Management source-selection plan for Source rule
+`25310560`, compatible delivery-receiver admission and an actual supported
+native evaluation. An AI-free policy-publication route has not been established.
+Old failed runs remain failed; no manual rerun or fake check is introduced.
+Main/release holds and the consumed one-review budget remain unchanged.
