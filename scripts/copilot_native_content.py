@@ -1502,8 +1502,44 @@ def sha(value: Any, label: str) -> str:
     return result
 
 
+def admitted_generated_exclusion(body: str, body_html: Any, allowed: frozenset[str]) -> tuple[str, list[JSON]]:
+    """Recognize only the observed native single generated-file exclusion.
+
+    This is parsing, not authority: every existing caller rejects by default.
+    The controller alone supplies paths from independently selected source.
+    """
+    if not allowed or "not reviewed" not in body:
+        return body, []
+    section = (r"<details>\n<summary><strong>1 file not reviewed</strong></summary>\n"
+               r"<ul>\n<li><strong><code>([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
+               r"</code></strong>: Generated file</li>\n</ul>\n</details>")
+    matches = list(re.finditer(section, body))
+    require(len(matches) == 1 and body.count("not reviewed") == 1,
+            "producer-generated-exclusion-shape")
+    match = matches[0]
+    path = match.group(1)
+    require(path in allowed and all(part not in {".", ".."} for part in path.split("/")),
+            "producer-generated-exclusion-not-admitted")
+    # Only the actual observed zero-issue rendering and top-level position are
+    # admitted. Never strip a quoted/fenced/nested fragment from an owned block.
+    require(body[:match.start()].rstrip().endswith("**No open issues** 🎉")
+            and body[match.end():].lstrip().startswith((
+                "<details>\n<summary><strong>What changed in this PR</strong></summary>",
+                "<sub>Review effort: Balanced</sub>")), "producer-generated-exclusion-position")
+    rendered = text(body_html, "producer-review-rendered-body")
+    require(len(rendered.encode("utf-8")) <= MAX_API_BYTES, "producer-review-rendered-body-too-large")
+    # GitHub may add only its renderer-owned dir attribute to these raw tags.
+    rendered = re.sub(r' dir="auto"', '', rendered)
+    rendered_matches = list(re.finditer(section.replace(r"\n", r"\s*"), rendered))
+    require(len(rendered_matches) == 1 and len(re.findall(r"not\s+reviewed", rendered, re.IGNORECASE)) == 1
+            and rendered_matches[0].group(1) == path, "producer-generated-exclusion-rendered")
+    return body[:match.start()] + body[match.end():], [
+        {"path": path, "reason": "Generated file", "reviewed_by_copilot": False}]
+
+
 def bind_copilot_review_findings(
-    pages: list[Any], *, repository: str, pull_number: int, head_sha: str
+    pages: list[Any], *, repository: str, pull_number: int, head_sha: str,
+    admitted_unreviewed_paths: frozenset[str] = frozenset(),
 ) -> JSON:
     """Retain native findings across both producer association routes."""
     native_reviews: dict[str, JSON] = {}
@@ -1535,7 +1571,9 @@ def bind_copilot_review_findings(
             and not any(marker in normalized_review_text(body)
                         for marker in COPILOT_REVIEW_FAILURE_MARKERS),
             "producer-review-binding")
-    count = historical_copilot_findings_count(body)
+    parsed_body, unreviewed = admitted_generated_exclusion(
+        body, review.get("body_html"), admitted_unreviewed_paths)
+    count = historical_copilot_findings_count(parsed_body)
     require(not copilot_rendered_has_missed_heading(review.get("body_html")),
             "producer-review-binding")
     targets: list[int] | None = None
@@ -1567,12 +1605,15 @@ def bind_copilot_review_findings(
                 targets.append(int(match.group(2)))
             require(len(targets) == count and len(set(targets)) == count,
                     "producer-review-thread-coverage")
-    return {
+    result = {
         "review_id": review["node_id"], "review_database_id": review["id"],
         "review_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
         "historical_findings_count": count,
         "finding_comment_ids": targets, "native_reviews": native_reviews,
     }
+    if unreviewed:
+        result["unreviewed_files"] = unreviewed
+    return result
 
 
 def validate_reported_file_coverage(body: str, changed_files: Any) -> None:

@@ -362,6 +362,172 @@ def associated_delivery(run, pull):
             and matches[0].get("base", {}).get("sha") == pull["base"]["sha"])
 
 
+# This exact source-owned admission requires independent native source selection.
+# Consumer inputs cannot populate or override the protected registry.
+GENERATED_LOCK_ADMISSIONS = (
+    {
+        "version": 1,
+        "id": "devtools-v1-52-3-generated-lock",
+        "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
+        "excluded_file": {
+            "path": "container-toolchain/pnpm-lock.yaml",
+            "native_reason": "Generated file",
+            "coverage": "not-reviewed-by-copilot"
+        },
+        "canonical_unit": [
+            {
+                "path": "Dockerfile",
+                "mode": "100644",
+                "git_blob": "5eef2bb1e42c9d73dcd69b7e87ff6bccd5d35c34",
+                "bytes": 37192,
+                "sha256": "9e729624d5f4bc5e6aaf2ee97240100dc4f4e07f1b109fdb8d056fcbbb6bef0a"
+            },
+            {
+                "path": "container-toolchain/package.json",
+                "mode": "100644",
+                "git_blob": "416e941045ef461a902c20135de8844efd90ea2d",
+                "bytes": 519,
+                "sha256": "3d9c77719e23d8f76611009148c767a19b09debdb45fc4bfd43c36acde426ed8"
+            },
+            {
+                "path": "container-toolchain/pnpm-lock.yaml",
+                "mode": "100644",
+                "git_blob": "8deb8b47372a147701caa1dbb5b26329cd8b3327",
+                "bytes": 205480,
+                "sha256": "62ae5fc96a9740cb1f68eb1108e84a393a1652b58db16a3e7919d3ba14401848"
+            },
+            {
+                "path": "container-toolchain/pnpm-workspace.yaml",
+                "mode": "100644",
+                "git_blob": "8038672e7539f88c5df189f57341ee5771a09294",
+                "bytes": 770,
+                "sha256": "b295289c5fbc9eb002c83ebe36effb78c95362884615fa7eafcfd5f8f60b284b"
+            },
+            {
+                "path": "renovate.json",
+                "mode": "100644",
+                "git_blob": "66144cdfb30ff34631d6a9790c1385c355e52e75",
+                "bytes": 16210,
+                "sha256": "7a5955644b8cb6906a2147c6b4c696ac99a32cc0a596bd7035ec4edbc3458be1"
+            }
+        ],
+        "admitted_target_tree": "4d854bf005cde8d21c3837680653a10b97bd59ec",
+        "producer_provenance": {
+            "source_main": "74e4c31cce51da10feb2e578da66cbd44fb5baac",
+            "release": "v1.52.3",
+            "release_id": 419089540,
+            "publisher": {
+                "run": 39534671184,
+                "attempt": 1,
+                "job": 119008875915,
+                "conclusion": "success",
+                "cleanup": "success",
+                "token_revoked_at": "2026-10-21T02:47:18.5428841Z"
+            },
+            "canonical_manifest_sha256": "205b374d43f0ad12c8176846dcdd27372b6d153a96640cc3636bc39dc2ebb39d"
+        }
+    },
+)
+GENERATED_LOCK_REPOSITORY = "lightning-it/container-ee-wunder-devtools-ubi9"
+GENERATED_LOCK_PATH = "container-toolchain/pnpm-lock.yaml"
+GENERATED_UNIT_PATHS = {"Dockerfile", "renovate.json", "container-toolchain/package.json",
+                        "container-toolchain/pnpm-workspace.yaml", GENERATED_LOCK_PATH}
+GENERATED_QUALITY = {
+    (".github/workflows/semantic-release.yml", "Lint"),
+    (".github/workflows/semantic-release.yml", "Semantic Release (dry run)"),
+    (".github/workflows/container-ci.yml", "Validate container repository"),
+    (".github/workflows/container-trivy.yml", "Trivy"),
+}
+
+
+def generated_lock_descriptor(repo):
+    entries = [entry for entry in GENERATED_LOCK_ADMISSIONS if entry.get("repository") == repo]
+    require(len(entries) <= 1, "generated-admission-ambiguous")
+    if not entries:
+        return None
+    value = entries[0]
+    require(repo == GENERATED_LOCK_REPOSITORY and set(value) == {
+        "version", "id", "repository", "excluded_file", "canonical_unit",
+        "admitted_target_tree", "producer_provenance"}, "generated-admission-shape")
+    require(type(value["version"]) is int and value["version"] == 1
+            and type(value["id"]) is str and re.fullmatch(r"[a-z0-9-]{1,80}", value["id"]),
+            "generated-admission-shape")
+    sha(value["admitted_target_tree"])
+    require(value["excluded_file"] == {"path": GENERATED_LOCK_PATH, "native_reason": "Generated file",
+            "coverage": "not-reviewed-by-copilot"}, "generated-admission-exclusion")
+    unit = value["canonical_unit"]
+    require(type(unit) is list and len(unit) == len(GENERATED_UNIT_PATHS)
+            and all(type(item) is dict and set(item) == {"path", "mode", "git_blob", "bytes", "sha256"}
+                    for item in unit), "generated-admission-unit")
+    require({item["path"] for item in unit} == GENERATED_UNIT_PATHS, "generated-admission-unit")
+    for item in unit:
+        require(item["mode"] == "100644" and type(item["bytes"]) is int
+                and 0 < item["bytes"] <= 2 * 1024 * 1024
+                and type(item["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]),
+                "generated-admission-unit")
+        sha(item["git_blob"])
+    provenance = value["producer_provenance"]
+    require(type(provenance) is dict and set(provenance) == {
+        "source_main", "release", "release_id", "publisher", "canonical_manifest_sha256"},
+        "generated-admission-provenance")
+    sha(provenance["source_main"])
+    require(type(provenance["release"]) is str and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", provenance["release"])
+            and type(provenance["release_id"]) is int and provenance["release_id"] > 0
+            and provenance["canonical_manifest_sha256"] == digest(unit), "generated-admission-provenance")
+    producer = provenance["publisher"]
+    require(type(producer) is dict and set(producer) == {
+        "run", "attempt", "job", "conclusion", "cleanup", "token_revoked_at"}
+        and all(type(producer[key]) is int and producer[key] > 0 for key in ("run", "attempt", "job"))
+        and producer["conclusion"] == producer["cleanup"] == "success"
+        and type(producer["token_revoked_at"]) is str
+        and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z", producer["token_revoked_at"]),
+        "generated-admission-provenance")
+    return value
+
+
+def generated_lock_coverage(api, repo, pull, descriptor, unreviewed):
+    require(descriptor is not None and unreviewed == [{"path": GENERATED_LOCK_PATH,
+            "reason": "Generated file", "reviewed_by_copilot": False}], "generated-exclusion-not-admitted")
+    files = api.pages(f"repos/{repo}/pulls/{pull['number']}/files")
+    require(type(pull.get("changed_files")) is int and len(files) == pull["changed_files"]
+            and len({entry.get("filename") for entry in files}) == len(files), "generated-native-files")
+    excluded = [entry for entry in files if entry.get("filename") == GENERATED_LOCK_PATH]
+    require(len(excluded) == 1 and excluded[0].get("status") in {"added", "modified"}
+            and not excluded[0].get("previous_filename"), "generated-native-files")
+    head = sha(pull["head"]["sha"])
+    commit = api.call(f"repos/{repo}/git/commits/{head}")
+    require(commit.get("sha") == head and type(commit.get("tree")) is dict, "generated-native-commit")
+    tree_sha = sha(commit["tree"].get("sha"))
+    require(tree_sha != head and tree_sha == descriptor["admitted_target_tree"], "generated-native-tree")
+    tree = api.call(f"repos/{repo}/git/trees/{tree_sha}?recursive=1")
+    require(tree.get("sha") == tree_sha and tree.get("truncated") is False
+            and type(tree.get("tree")) is list, "generated-native-tree")
+    for item in descriptor["canonical_unit"]:
+        entries = [entry for entry in tree["tree"] if entry.get("path") == item["path"]]
+        require(len(entries) == 1 and entries[0].get("type") == "blob"
+                and entries[0].get("mode") == item["mode"]
+                and entries[0].get("sha") == item["git_blob"]
+                and entries[0].get("size") == item["bytes"], "generated-native-unit")
+        data = api.file(repo, item["path"], head)
+        require(type(data) is bytes and len(data) == item["bytes"]
+                and hashlib.sha256(data).hexdigest() == item["sha256"], "generated-native-unit")
+    return {"version": 1, "descriptor_id": descriptor["id"], "descriptor_sha256": digest(descriptor),
+            "target_tree": tree_sha, "unreviewed": unreviewed,
+            "canonical_unit_manifest_sha256": digest(descriptor["canonical_unit"])}
+
+
+def complete_generated_lock_quality(evidence, config, quality, pull):
+    coverage = evidence.get("generated_artifact_coverage")
+    if coverage is None:
+        return
+    require(GENERATED_QUALITY <= {(item["workflow"], item["job"]) for item in config["quality"]}
+            and len(quality) == len(config["quality"])
+            and all(item.get("base") == pull["base"]["sha"] and item.get("head") == pull["head"]["sha"]
+                    for item in quality), "generated-current-quality-required")
+    # These records come only from successful check_quality, never candidate JSON.
+    coverage["quality"] = quality
+
+
 def copilot_review(api, repo, pull):
     import copilot_native_content as content
     reviews = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews")
@@ -395,10 +561,12 @@ def copilot_review(api, repo, pull):
     # body-only finding checks. A native v2 frame does not assert a file count.
     # Never fabricate that metric or accept an unknown/partial text response.
     filtered = [r for r in reviews if r["commit_id"] != pull["head"]["sha"] or r["id"] == review["id"]]
+    descriptor = generated_lock_descriptor(repo)
     try:
         content.validate_reported_file_coverage(review.get("body") or "", pull.get("changed_files"))
         frame = content.bind_copilot_review_findings([filtered], repository=repo,
-                    pull_number=pull["number"], head_sha=pull["head"]["sha"])
+                    pull_number=pull["number"], head_sha=pull["head"]["sha"],
+                    admitted_unreviewed_paths=frozenset({GENERATED_LOCK_PATH}) if descriptor else frozenset())
     except content.EvidenceError as error:
         raise ControlError("copilot-native-frame-not-accepted") from error
     comments = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews/{review['id']}/comments")
@@ -423,9 +591,13 @@ def copilot_review(api, repo, pull):
                 and type(comment.get("body")) is str and bool(comment["body"].strip()), "copilot-native-finding-origin")
         require(not any(marker in content.normalized_review_text(comment.get("body") or "")
                         for marker in content.COPILOT_REVIEW_FAILURE_MARKERS), "copilot-provider-failure")
-    return {"id": review["id"], "head": review["commit_id"], "state": review["state"],
+    result = {"id": review["id"], "head": review["commit_id"], "state": review["state"],
             "service_run": producer["id"], "frame": {k: v for k, v in frame.items() if k != "native_reviews"},
             "finding_comment_ids": sorted(needed)}
+    if frame.get("unreviewed_files"):
+        result["generated_artifact_coverage"] = generated_lock_coverage(
+            api, repo, pull, descriptor, frame["unreviewed_files"])
+    return result
 
 
 def copilot_delivery_pending(api, repo, pull):
@@ -914,7 +1086,7 @@ def main():
     for observation in range(80):
         live_pull(api, repo, number, expected)
         try:
-            check_quality(api, repo, pull, config)
+            quality_proof = check_quality(api, repo, pull, config)
             break
         except ControlError as error:
             if str(error) not in {"quality-check-missing-or-ambiguous", "quality-pending"} or observation == 79:
@@ -924,6 +1096,8 @@ def main():
     validate_signal(api, repo, current)
     conversation_guard = native_conversation_guard(api, repo, current)
     evidence = verify_existing_route(api, repo, current, config, route)
+    if route == "copilot":
+        complete_generated_lock_quality(evidence, config, quality_proof, current)
     live_pull(api, repo, number, expected)
     if security_summary is not None:
         from workflow_security_profile import authorize

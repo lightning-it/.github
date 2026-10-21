@@ -1097,3 +1097,184 @@ class ControlTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Synthetic generated-unit authority: never consumer configuration or real private data.
+GENERATED_REPO = 'lightning-it/container-ee-wunder-devtools-ubi9'
+GENERATED_PATH = 'container-toolchain/pnpm-lock.yaml'
+GENERATED_SECTION = ('<details>\n<summary><strong>1 file not reviewed</strong></summary>\n'
+                     '<ul>\n<li><strong><code>' + GENERATED_PATH + '</code></strong>: Generated file</li>\n'
+                     '</ul>\n</details>')
+GENERATED_BODY = (NATIVE_BODY.replace('**0 open findings**', '**No open issues** 🎉')
+                  .replace('🧠 **Review effort:** Balanced',
+                           GENERATED_SECTION + '\n<sub>Review effort: Balanced</sub>'))
+
+
+def generated_fixture():
+    import hashlib
+    paths = ['Dockerfile', 'renovate.json', 'container-toolchain/package.json',
+             'container-toolchain/pnpm-workspace.yaml', GENERATED_PATH]
+    contents = {path: ('synthetic ' + path).encode() for path in paths}
+    unit = [{'path': path, 'mode': '100644', 'git_blob': hashlib.sha1(
+                b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest(),
+             'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+            for path, data in contents.items()]
+    descriptor = {'version': 1, 'id': 'synthetic-generated-unit', 'repository': GENERATED_REPO,
+                  'excluded_file': {'path': GENERATED_PATH, 'native_reason': 'Generated file',
+                                    'coverage': 'not-reviewed-by-copilot'},
+                  'canonical_unit': unit, 'admitted_target_tree': 'd' * 40,
+                  'producer_provenance': {'source_main': 'e' * 40, 'release': 'v0.0.1',
+                    'release_id': 1, 'publisher': {'run': 2, 'attempt': 1, 'job': 3,
+                    'conclusion': 'success', 'cleanup': 'success',
+                    'token_revoked_at': '2026-01-01T00:00:00Z'},
+                    'canonical_manifest_sha256': control.digest(unit)}}
+    value = pull(changed_files=5)
+    value['base']['repo']['full_name'] = GENERATED_REPO
+    value['head']['repo']['full_name'] = GENERATED_REPO
+    review = native_review(body=GENERATED_BODY, body_html=GENERATED_SECTION)
+    api = Mock()
+    api.pages.side_effect = [[review], [delivery()], [],
+        [{'filename': path, 'status': 'modified'} for path in paths]]
+    api.file.side_effect = lambda repo, path, head: contents[path]
+    commit = {'sha': HEAD, 'tree': {'sha': descriptor['admitted_target_tree']}}
+    tree = {'sha': descriptor['admitted_target_tree'], 'truncated': False,
+            'tree': [{'path': x['path'], 'mode': x['mode'], 'sha': x['git_blob'],
+                      'size': x['bytes'], 'type': 'blob'} for x in unit]}
+    api.call.side_effect = lambda path: commit if '/git/commits/' in path else tree
+    return api, value, descriptor, commit, tree, contents
+
+
+class GeneratedLockTests(unittest.TestCase):
+    def test_explicit_protected_admission_recognizes_native_exclusion(self):
+        api, value, descriptor, *_ = generated_fixture()
+        with patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,), create=True):
+            result = control.copilot_review(api, GENERATED_REPO, value)
+        self.assertEqual([{'path': GENERATED_PATH, 'reason': 'Generated file',
+                           'reviewed_by_copilot': False}], result['generated_artifact_coverage']['unreviewed'])
+        self.assertNotIn('quality', result['generated_artifact_coverage'])
+
+    def test_candidate_inputs_cannot_register_an_admission(self):
+        api, value, descriptor, *_ = generated_fixture()
+        value['body'] = json.dumps(descriptor)
+        value['labels'] = [{'name': 'allow-generated-lock'}]
+        with patch.object(control, 'GENERATED_LOCK_ADMISSIONS', ()), \
+                self.assertRaisesRegex(control.ControlError, 'copilot-native-frame-not-accepted'):
+            control.copilot_review(api, GENERATED_REPO, value)
+        api.file.assert_not_called()
+        self.assertIsNone(control.generated_lock_descriptor(REPO))
+
+    def test_registered_source_descriptor_cannot_be_replaced_by_candidate_metadata(self):
+        self.assertEqual(1, len(control.GENERATED_LOCK_ADMISSIONS))
+        registered = control.generated_lock_descriptor(GENERATED_REPO)
+        self.assertEqual('4d854bf005cde8d21c3837680653a10b97bd59ec', registered['admitted_target_tree'])
+        self.assertEqual('74e4c31cce51da10feb2e578da66cbd44fb5baac',
+                         registered['producer_provenance']['source_main'])
+        api, value, candidate, *_ = generated_fixture()
+        value['body'] = json.dumps(candidate)
+        value['labels'] = [{'name': 'allow-generated-lock'}]
+        with self.assertRaisesRegex(control.ControlError, 'generated-native-tree'):
+            control.copilot_review(api, GENERATED_REPO, value)
+        api.file.assert_not_called()
+
+    def test_changed_tree_commit_identity_and_partial_tree_fail_closed(self):
+        for change in ('commit-as-tree', 'wrong-tree', 'wrong-commit', 'truncated', 'wrong-tree-object'):
+            api, value, descriptor, commit, tree, _ = generated_fixture()
+            if change == 'commit-as-tree':
+                descriptor['admitted_target_tree'] = HEAD
+                commit['tree']['sha'] = HEAD
+            elif change == 'wrong-tree': commit['tree']['sha'] = 'f' * 40
+            elif change == 'wrong-commit': commit['sha'] = 'f' * 40
+            elif change == 'truncated': tree['truncated'] = True
+            else: tree['sha'] = HEAD
+            with self.subTest(change=change), patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)), \
+                    self.assertRaisesRegex(control.ControlError, 'generated-native-'):
+                control.copilot_review(api, GENERATED_REPO, value)
+
+    def test_exact_complete_unit_modes_blobs_sizes_and_contents_required(self):
+        for change in ('symlink', 'mode', 'blob', 'size', 'missing', 'duplicate', 'bytes'):
+            api, value, descriptor, _, tree, contents = generated_fixture()
+            entry = tree['tree'][-1]
+            if change == 'symlink': entry['mode'] = '120000'
+            elif change == 'mode': entry['mode'] = '100755'
+            elif change == 'blob': entry['sha'] = 'f' * 40
+            elif change == 'size': entry['size'] += 1
+            elif change == 'missing': tree['tree'].pop()
+            elif change == 'duplicate': tree['tree'].append(entry.copy())
+            else: contents[GENERATED_PATH] = b'x' * len(contents[GENERATED_PATH])
+            with self.subTest(change=change), patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)), \
+                    self.assertRaisesRegex(control.ControlError, 'generated-native-unit'):
+                control.copilot_review(api, GENERATED_REPO, value)
+
+    def test_changed_file_inventory_and_rename_cannot_supply_exclusion(self):
+        for change in ('missing-list', 'duplicate', 'renamed', 'unchanged'):
+            api, value, descriptor, *_ = generated_fixture()
+            files = [{'filename': x['path'], 'status': 'modified'} for x in descriptor['canonical_unit']]
+            if change == 'missing-list': files.pop()
+            elif change == 'duplicate': files[-1] = files[0].copy()
+            elif change == 'renamed': files[-1]['previous_filename'] = 'other.lock'
+            else: files[-1]['status'] = 'unchanged'
+            api.pages.side_effect = [[native_review(body=GENERATED_BODY, body_html=GENERATED_SECTION)],
+                                      [delivery()], [], files]
+            with self.subTest(change=change), patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)), \
+                    self.assertRaisesRegex(control.ControlError, 'generated-native-files'):
+                control.copilot_review(api, GENERATED_REPO, value)
+
+    def test_protected_descriptor_is_exact_and_cannot_admit_other_repositories(self):
+        for change in ('duplicate', 'path', 'unit', 'provenance', 'digest', 'other-repo'):
+            _, _, descriptor, *_ = generated_fixture()
+            entries = (descriptor,)
+            repo = GENERATED_REPO
+            if change == 'duplicate': entries = (descriptor, descriptor)
+            elif change == 'path': descriptor['excluded_file']['path'] = 'other.lock'
+            elif change == 'unit': descriptor['canonical_unit'].pop()
+            elif change == 'provenance': descriptor['producer_provenance']['publisher']['cleanup'] = 'failure'
+            elif change == 'digest': descriptor['producer_provenance']['canonical_manifest_sha256'] = '0' * 64
+            else: repo = REPO; descriptor['repository'] = REPO
+            with self.subTest(change=change), patch.object(control, 'GENERATED_LOCK_ADMISSIONS', entries), \
+                    self.assertRaises(control.ControlError):
+                control.generated_lock_descriptor(repo)
+
+    def test_final_generated_proof_requires_all_current_quality_including_trivy(self):
+        api, value, descriptor, *_ = generated_fixture()
+        with patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)):
+            result = control.copilot_review(api, GENERATED_REPO, value)
+        config = {'quality': [{'workflow': wf, 'job': job} for wf, job in sorted(control.GENERATED_QUALITY)]}
+        quality = [{'check': i+1, 'run': i+10, 'attempt': 1, 'base': BASE, 'head': HEAD}
+                   for i in range(len(config['quality']))]
+        for invalid_config, invalid_quality in (
+                ({'quality': config['quality'][:-1]}, quality[:-1]), (config, quality[:-1]),
+                (config, [item | {'head': 'f' * 40} for item in quality]),
+                (config, [item | {'base': 'f' * 40} for item in quality])):
+            with self.assertRaisesRegex(control.ControlError, 'generated-current-quality-required'):
+                control.complete_generated_lock_quality(result, invalid_config, invalid_quality, value)
+        control.complete_generated_lock_quality(result, config, quality, value)
+        self.assertEqual(quality, result['generated_artifact_coverage']['quality'])
+        legacy = {'id': 9, 'head': HEAD}
+        control.complete_generated_lock_quality(legacy, {}, [], value)
+        self.assertEqual({'id': 9, 'head': HEAD}, legacy)
+
+    def test_failed_or_pending_trivy_cannot_produce_quality_for_final_admission(self):
+        value = pull(changed_files=5)
+        for status, conclusion in (('in_progress', None), ('completed', 'failure')):
+            native = run() | {'path': '.github/workflows/container-trivy.yml', 'event': 'pull_request'}
+            check = {'name': 'Trivy', 'app': {'id': 15368}, 'id': 7, 'status': status,
+                     'conclusion': conclusion,
+                     'details_url': f'https://github.com/{REPO}/actions/runs/10/job/11'}
+            api = Mock(); api.pages.return_value = [check]; api.call.return_value = native
+            with self.subTest(status=status), self.assertRaisesRegex(control.ControlError, 'quality-'):
+                control.check_quality(api, REPO, value, {'quality': [
+                    {'workflow': '.github/workflows/container-trivy.yml', 'job': 'Trivy'}]})
+
+    def test_legacy_and_additive_proofs_reuse_unchanged_native_ingress_consumer(self):
+        for extra in ({}, {'generated_artifact_coverage': {'descriptor_sha256': 'd' * 64,
+                           'unreviewed': [{'path': GENERATED_PATH, 'reviewed_by_copilot': False}]}}):
+            record = {'version': 1, 'source_sha': SOURCE, 'binding': control.binding(pull()),
+                      'route': 'copilot', 'evidence': {'id': 9} | extra}
+            source_run = run() | {'status': 'completed', 'conclusion': 'success'}
+            api = Mock(); api.call.return_value = source_run
+            api.pages.side_effect = [[source_run], [{'id': 100, 'run_id': 10,
+                'name': 'Current revision review', 'conclusion': 'success'}], [source_run], [source_run]]
+            with self.subTest(additive=bool(extra)), patch.object(control, 'artifact_record', return_value=record):
+                result = control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})
+            self.assertEqual('copilot', result['route'])
+            self.assertEqual(control.digest(record), result['proof_sha256'])
