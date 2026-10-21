@@ -1531,7 +1531,23 @@ def admitted_generated_exclusion(body: str, body_html: Any, allowed: frozenset[s
     # GitHub may add only its renderer-owned dir attribute to these raw tags.
     rendered = re.sub(r' dir="auto"', '', rendered)
     rendered_matches = list(re.finditer(section.replace(r"\n", r"\s*"), rendered))
-    require(len(rendered_matches) == 1 and len(re.findall(r"not\s+reviewed", rendered, re.IGNORECASE)) == 1
+
+    class RenderedExclusionText(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.parts: list[str] = []
+
+        def handle_data(self, data: str) -> None:
+            self.parts.append(data)
+
+    # Count browser-visible text, including character references and inline
+    # formatting. Keep the admitted section's raw markup check independent so
+    # escaped HTML cannot manufacture the one required native section.
+    parser = RenderedExclusionText()
+    parser.feed(rendered)
+    parser.close()
+    visible = ASSESSMENT_IGNORABLE.sub("", "".join(parser.parts))
+    require(len(rendered_matches) == 1 and len(re.findall(r"not\s+reviewed", visible, re.IGNORECASE)) == 1
             and rendered_matches[0].group(1) == path, "producer-generated-exclusion-rendered")
     return body[:match.start()] + body[match.end():], [
         {"path": path, "reason": "Generated file", "reviewed_by_copilot": False}]

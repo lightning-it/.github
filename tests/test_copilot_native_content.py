@@ -493,6 +493,19 @@ class GeneratedExclusionFrameTests(unittest.TestCase):
             with self.subTest(rendered=rendered), self.assertRaises(MODULE.EvidenceError):
                 self.bind(original | {'body_html': rendered})
 
+    def test_rendered_encoded_or_inline_formatted_duplicate_exclusions_fail(self):
+        original = self.review()
+        for heading in ('not&#32;reviewed', 'not&#x20;reviewed', 'not&nbsp;reviewed',
+                        'n&#111;t reviewed', 'n\u200bot reviewed', 'not <em>reviewed</em>'):
+            extra = self.section.replace(self.path, 'other.lock').replace('not reviewed', heading)
+            with self.subTest(heading=heading), self.assertRaises(MODULE.EvidenceError):
+                self.bind(original | {'body_html': self.section + extra})
+
+    def test_escaped_markup_cannot_supply_the_rendered_admitted_section(self):
+        escaped = self.section.replace('<', '&lt;').replace('>', '&gt;')
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(self.review(rendered=escaped))
+
     def test_owned_section_cannot_be_quoted_nested_or_relocated(self):
         original = self.review()
         for body in (original['body'].replace(self.section, '<details>\n' + self.section + '\n</details>'),
