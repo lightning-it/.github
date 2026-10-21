@@ -161,6 +161,39 @@ The [Copilot service excludes some file types](https://docs.github.com/en/copilo
 security checks still cover their applicable functions. Complete materialized
 Codex input remains its separate protected review contract.
 
+The source-owned generated-lock registry contains exactly one descriptor for
+`lightning-it/container-ee-wunder-devtools-ubi9`. It binds published Shared Assets
+`v1.52.3` (`74e4c31cce51da10feb2e578da66cbd44fb5baac`) and Target tree
+`4d854bf005cde8d21c3837680653a10b97bd59ec`. Its canonical SHA256 is
+`07179263eaf59e685fd206ec77514f3462905d3a68788093a0b0660eda28f9db`. This declaration
+becomes effective only after the reviewed Common commit is independently
+selected through native Management. All other targets and exclusions remain
+rejected. Candidate labels, comments, environment values and consumer
+configuration cannot register or override these hashes.
+
+The narrow protocol records the named lock as **not reviewed by Copilot**; it
+never invents complete file coverage. Its source-owned descriptor binds the
+whole Target Git tree and every canonical package/lock/workspace/build input's
+mode, Git blob, size and SHA256. The controller resolves the head commit's actual
+`tree.sha`; a commit ID is not a tree ID. Any changed tree needs a newly reviewed
+descriptor. Source authenticity is an externally reviewed admission fact, not a
+claim of runtime private-repository access. Private evidence stays with its
+existing authorized reader; public source retains only permitted immutable
+metadata/hashes and sanitized fixtures, with no new cross-repository credential.
+
+The observed native exclusion rendering is parsed strictly and retained in the
+ordinary version1 `copilot` proof's additive `evidence` member. Unknown paths,
+reasons, counts, duplicate sections, malformed or contradictory native frames and
+findings still block. Before final acceptance, the existing current-PR/base/head
+native product checks must all succeed, including the complete frozen-install
+container build and Trivy. The exact admitted product tree binds pinned pnpm,
+package/workspace integrity configuration and execution seams; Common does not
+introduce a second generic lock/SRI validator. A descriptor is neither a review
+budget reset nor release/architecture qualification. Legacy proof envelopes and
+promotion ingress consumers retain their existing source/binding/route checks
+and whole-proof digest. No workflow or provider retry is added; source publication
+alone does not activate the descriptor in a consumer.
+
 GitHub's active native PR rule enforces resolved conversations directly at
 merge time. This handles resolve and unresolve without a missing Actions thread
 event, a custom human permission engine or a new repair/polling chain. The

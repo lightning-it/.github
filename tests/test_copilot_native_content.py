@@ -439,3 +439,131 @@ class NativeFrameTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeneratedExclusionFrameTests(unittest.TestCase):
+    path = 'container-toolchain/pnpm-lock.yaml'
+    section = ('<details>\n<summary><strong>1 file not reviewed</strong></summary>\n<ul>\n'
+               '<li><strong><code>' + path + '</code></strong>: Generated file</li>\n</ul>\n</details>')
+
+    def review(self, body=None, rendered=None):
+        body = (CURRENT_COPILOT_OVERVIEW.replace('**0 open findings**', '**No open issues** 🎉')
+                .replace('🧠 **Review effort:** Balanced', '<sub>Review effort: Balanced</sub>')) if body is None else body
+        if self.section not in body:
+            body = body.replace('<details>\n<summary><strong>What changed',
+                                self.section + '\n<details>\n<summary><strong>What changed', 1)
+        return {'id': 5, 'node_id': 'PRR_synthetic5', 'commit_id': 'a' * 40,
+                'user': {'login': MODULE.COPILOT_REVIEWER_LOGIN, 'id': MODULE.COPILOT_REVIEWER_ID, 'type': 'Bot'},
+                'state': 'COMMENTED', 'submitted_at': '2026-01-01T00:00:00Z',
+                'body': body, 'body_html': self.section if rendered is None else rendered}
+
+    def bind(self, review, allowed=True):
+        return MODULE.bind_copilot_review_findings([[review]], repository='example/repository',
+            pull_number=1, head_sha='a' * 40,
+            admitted_unreviewed_paths=frozenset({self.path}) if allowed else frozenset())
+
+    def test_explicit_section_is_honestly_unreviewed_and_original_body_digest_retained(self):
+        import hashlib
+        review = self.review()
+        result = self.bind(review)
+        self.assertEqual(0, result['historical_findings_count'])
+        self.assertEqual([{'path': self.path, 'reason': 'Generated file', 'reviewed_by_copilot': False}],
+                         result['unreviewed_files'])
+        self.assertEqual(hashlib.sha256(review['body'].encode()).hexdigest(), result['review_body_sha256'])
+        with self.assertRaises(MODULE.EvidenceError): self.bind(review, allowed=False)
+        with self.assertRaises(MODULE.EvidenceError): MODULE.historical_copilot_findings_count(review['body'])
+
+    def test_exclusion_count_reason_unknown_path_and_duplicate_fail(self):
+        original = self.review()
+        variants = [original['body'].replace('1 file not reviewed', '2 files not reviewed'),
+                    original['body'].replace('Generated file', 'Too large'),
+                    original['body'].replace(self.path, 'other.lock'),
+                    original['body'].replace(self.path, '../pnpm-lock.yaml'),
+                    original['body'].replace(self.path, self.path + '\u200b'),
+                    original['body'].replace(self.section, self.section + '\n' + self.section),
+                    original['body'].replace('</ul>', '<li>Uncounted finding</li>\n</ul>')]
+        for body in variants:
+            with self.subTest(body=body), self.assertRaises(MODULE.EvidenceError):
+                self.bind(original | {'body': body})
+
+    def test_rendered_raw_mismatch_and_missing_rendered_section_fail(self):
+        original = self.review()
+        for rendered in ('<p>No excluded files</p>', self.section.replace(self.path, 'other.lock'),
+                         self.section + self.section, self.section.replace('Generated file', 'Unknown')):
+            with self.subTest(rendered=rendered), self.assertRaises(MODULE.EvidenceError):
+                self.bind(original | {'body_html': rendered})
+
+    def test_rendered_encoded_or_inline_formatted_duplicate_exclusions_fail(self):
+        original = self.review()
+        for heading in ('not&#32;reviewed', 'not&#x20;reviewed', 'not&nbsp;reviewed',
+                        'n&#111;t reviewed', 'n\u200bot reviewed', 'not <em>reviewed</em>'):
+            extra = self.section.replace(self.path, 'other.lock').replace('not reviewed', heading)
+            with self.subTest(heading=heading), self.assertRaises(MODULE.EvidenceError):
+                self.bind(original | {'body_html': self.section + extra})
+
+    def test_escaped_markup_cannot_supply_the_rendered_admitted_section(self):
+        escaped = self.section.replace('<', '&lt;').replace('>', '&gt;')
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(self.review(rendered=escaped))
+
+    def test_actual_github_renderer_attributes_preserve_the_admitted_path(self):
+        rendered = self.section.replace('<ul>', '<ul dir="auto">').replace(
+            '<code>', '<code class="notranslate">')
+        result = self.bind(self.review(rendered=rendered))
+        self.assertEqual([{'path': self.path, 'reason': 'Generated file',
+                           'reviewed_by_copilot': False}], result['unreviewed_files'])
+
+    def test_commented_admission_cannot_bind_another_visible_exclusion(self):
+        other = self.section.replace(self.path, 'other.lock').replace('not reviewed', 'not&#32;reviewed')
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(self.review(rendered='<!--' + self.section + '-->' + other))
+
+    def test_rendered_line_and_block_boundaries_cannot_hide_duplicate_exclusions(self):
+        for heading in ('not<br>reviewed', 'not<br/>reviewed', 'not<div>reviewed</div>',
+                        'not<p>reviewed</p>', 'not<section>reviewed</section>', 'ｎｏｔ reviewed'):
+            other = self.section.replace(self.path, 'other.lock').replace('not reviewed', heading)
+            with self.subTest(heading=heading), self.assertRaises(MODULE.EvidenceError):
+                self.bind(self.review(rendered=self.section + other))
+
+    def test_admitted_rendered_section_must_be_top_level_and_unambiguous(self):
+        for rendered in ('<div hidden>' + self.section + '</div>',
+                         '<details><summary>Wrapper</summary>' + self.section + '</details>',
+                         self.section.replace('<details>', '<details hidden>'),
+                         self.section.replace('<code>', '<code class="unknown">'),
+                         self.section.replace('<code>', '<code dir="auto" dir="auto">'),
+                         self.section.replace('<ul>', '<!-- ignored -->' + '<ul>')):
+            with self.subTest(rendered=rendered), self.assertRaises(MODULE.EvidenceError):
+                self.bind(self.review(rendered=rendered))
+
+    def test_native_raw_blank_line_and_crlf_preserve_the_original_body_digest(self):
+        import hashlib
+        original = self.review()
+        spaced = original['body'].replace('</summary>\n<ul>', '</summary>\n\n<ul>', 1)
+        for body in (spaced, spaced.replace('\n', '\r\n')):
+            with self.subTest(body=body):
+                result = self.bind(original | {'body': body})
+                self.assertEqual(1, len(result['unreviewed_files']))
+                self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), result['review_body_sha256'])
+
+    def test_owned_section_cannot_be_quoted_nested_or_relocated(self):
+        original = self.review()
+        for body in (original['body'].replace(self.section, '<details>\n' + self.section + '\n</details>'),
+                     original['body'].replace(self.section, '```html\n' + self.section + '\n```'),
+                     original['body'].replace(self.section, '<!--\n' + self.section + '\n-->'),
+                     original['body'].replace(self.section, '').replace('<sub>', self.section + '\n<sub>')):
+            with self.subTest(body=body), self.assertRaises(MODULE.EvidenceError):
+                self.bind(original | {'body': body})
+
+    def test_missed_findings_and_partial_counts_remain_blocked(self):
+        original = self.review()
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(original | {'body': original['body'].replace('<sub>', COPILOT_PREVIOUSLY_MISSED_HISTORY + '<sub>')})
+        partial = original['body'].replace('Final confidence', 'Copilot reviewed 1 out of 2 changed files. Final confidence')
+        with self.assertRaisesRegex(MODULE.EvidenceError, 'coverage-incomplete'):
+            MODULE.validate_reported_file_coverage(partial, 2)
+
+    def test_rendered_additional_case_variant_exclusion_is_not_ignored(self):
+        original = self.review()
+        extra = self.section.replace('1 file not reviewed', '1 FILE NOT REVIEWED')
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(original | {'body_html': self.section + extra})
