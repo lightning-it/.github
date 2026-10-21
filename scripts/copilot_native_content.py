@@ -1510,7 +1510,10 @@ def admitted_generated_exclusion(body: str, body_html: Any, allowed: frozenset[s
     """
     if not allowed or "not reviewed" not in body:
         return body, []
-    section = (r"<details>\n<summary><strong>1 file not reviewed</strong></summary>\n"
+    # Native bodies may use CRLF or a blank line before the generated-file list.
+    # Normalize only this working copy; the caller retains the original digest.
+    body = body.replace("\r\n", "\n")
+    section = (r"<details>\n<summary><strong>1 file not reviewed</strong></summary>\n\n?"
                r"<ul>\n<li><strong><code>([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
                r"</code></strong>: Generated file</li>\n</ul>\n</details>")
     matches = list(re.finditer(section, body))
@@ -1528,27 +1531,103 @@ def admitted_generated_exclusion(body: str, body_html: Any, allowed: frozenset[s
                 "<sub>Review effort: Balanced</sub>")), "producer-generated-exclusion-position")
     rendered = text(body_html, "producer-review-rendered-body")
     require(len(rendered.encode("utf-8")) <= MAX_API_BYTES, "producer-review-rendered-body-too-large")
-    # GitHub may add only its renderer-owned dir attribute to these raw tags.
-    rendered = re.sub(r' dir="auto"', '', rendered)
-    rendered_matches = list(re.finditer(section.replace(r"\n", r"\s*"), rendered))
+    expected = (
+        ("start", "details"), ("start", "summary"), ("start", "strong"),
+        ("data", "1 file not reviewed"), ("end", "strong"), ("end", "summary"),
+        ("start", "ul"), ("start", "li"), ("start", "strong"), ("start", "code"),
+        ("data", path), ("end", "code"), ("end", "strong"),
+        ("data", ": Generated file"), ("end", "li"), ("end", "ul"), ("end", "details"),
+    )
 
-    class RenderedExclusionText(HTMLParser):
+    class RenderedGeneratedExclusion(HTMLParser):
+        voids: ClassVar[set[str]] = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                                    "link", "meta", "param", "source", "track", "wbr"}
+        blocks: ClassVar[set[str]] = {"summary", "details", "p", "div", "li", "ul", "ol", "table",
+                                     "tr", "td", "th", "thead", "tbody", "tfoot", "caption",
+                                     "blockquote", "hr", "pre", "section", "article", "header",
+                                     "footer", "main", "nav", "aside", "dl", "dt", "dd",
+                                     "h1", "h2", "h3", "h4", "h5", "h6"}
+
         def __init__(self) -> None:
             super().__init__(convert_charrefs=True)
+            self.stack: list[str] = []
             self.parts: list[str] = []
+            self.capture = False
+            self.valid = False
+            self.position = 0
+            self.matches = 0
+
+        def token(self, kind: str, value: str) -> None:
+            if self.capture and self.valid:
+                if self.position >= len(expected) or expected[self.position] != (kind, value):
+                    self.valid = False
+                else:
+                    self.position += 1
+
+        def boundary(self, tag: str) -> None:
+            if tag == "br" or tag in self.blocks:
+                self.parts.append("\n")
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag == "details" and not self.stack:
+                self.capture, self.valid, self.position = True, True, 0
+            if self.capture:
+                # Only actual GitHub renderer attributes may decorate the
+                # admitted element path; comments and text never create nodes.
+                allowed = {"dir": "auto"} | ({"class": "notranslate"} if tag == "code" else {})
+                if len({key for key, _ in attrs}) != len(attrs) or any(
+                        key not in allowed or value != allowed[key] for key, value in attrs):
+                    self.valid = False
+            self.token("start", tag)
+            self.boundary(tag)
+            if tag not in self.voids:
+                self.stack.append(tag)
+
+        def handle_endtag(self, tag: str) -> None:
+            require(bool(self.stack) and self.stack[-1] == tag, "producer-generated-exclusion-rendered")
+            self.token("end", tag)
+            self.stack.pop()
+            self.boundary(tag)
+            if self.capture and not self.stack:
+                if self.valid and self.position == len(expected):
+                    self.matches += 1
+                self.capture = False
+
+        def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            self.handle_starttag(tag, attrs)
+            if tag not in self.voids:
+                self.handle_endtag(tag)
 
         def handle_data(self, data: str) -> None:
             self.parts.append(data)
+            if data.strip():
+                self.token("data", data)
 
-    # Count browser-visible text, including character references and inline
-    # formatting. Keep the admitted section's raw markup check independent so
-    # escaped HTML cannot manufacture the one required native section.
-    parser = RenderedExclusionText()
-    parser.feed(rendered)
-    parser.close()
-    visible = ASSESSMENT_IGNORABLE.sub("", "".join(parser.parts))
-    require(len(rendered_matches) == 1 and len(re.findall(r"not\s+reviewed", visible, re.IGNORECASE)) == 1
-            and rendered_matches[0].group(1) == path, "producer-generated-exclusion-rendered")
+        def handle_comment(self, data: str) -> None:
+            if self.capture:
+                self.valid = False
+
+        def handle_decl(self, decl: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+        def unknown_decl(self, data: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+        def handle_pi(self, data: str) -> None:
+            require(False, "producer-generated-exclusion-rendered")
+
+    parser = RenderedGeneratedExclusion()
+    try:
+        parser.feed(rendered)
+        parser.close()
+    except (ValueError, AssertionError) as error:
+        if isinstance(error, EvidenceError):
+            raise
+        raise EvidenceError("producer-generated-exclusion-rendered") from error
+    visible = ASSESSMENT_IGNORABLE.sub("", unicodedata.normalize("NFKC", "".join(parser.parts)))
+    require(not parser.stack and not parser.rawdata and parser.matches == 1
+            and normalized_review_text(visible).count("notreviewed") == 1,
+            "producer-generated-exclusion-rendered")
     return body[:match.start()] + body[match.end():], [
         {"path": path, "reason": "Generated file", "reviewed_by_copilot": False}]
 

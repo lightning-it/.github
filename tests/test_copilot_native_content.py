@@ -506,6 +506,45 @@ class GeneratedExclusionFrameTests(unittest.TestCase):
         with self.assertRaises(MODULE.EvidenceError):
             self.bind(self.review(rendered=escaped))
 
+    def test_actual_github_renderer_attributes_preserve_the_admitted_path(self):
+        rendered = self.section.replace('<ul>', '<ul dir="auto">').replace(
+            '<code>', '<code class="notranslate">')
+        result = self.bind(self.review(rendered=rendered))
+        self.assertEqual([{'path': self.path, 'reason': 'Generated file',
+                           'reviewed_by_copilot': False}], result['unreviewed_files'])
+
+    def test_commented_admission_cannot_bind_another_visible_exclusion(self):
+        other = self.section.replace(self.path, 'other.lock').replace('not reviewed', 'not&#32;reviewed')
+        with self.assertRaises(MODULE.EvidenceError):
+            self.bind(self.review(rendered='<!--' + self.section + '-->' + other))
+
+    def test_rendered_line_and_block_boundaries_cannot_hide_duplicate_exclusions(self):
+        for heading in ('not<br>reviewed', 'not<br/>reviewed', 'not<div>reviewed</div>',
+                        'not<p>reviewed</p>', 'not<section>reviewed</section>', 'ｎｏｔ reviewed'):
+            other = self.section.replace(self.path, 'other.lock').replace('not reviewed', heading)
+            with self.subTest(heading=heading), self.assertRaises(MODULE.EvidenceError):
+                self.bind(self.review(rendered=self.section + other))
+
+    def test_admitted_rendered_section_must_be_top_level_and_unambiguous(self):
+        for rendered in ('<div hidden>' + self.section + '</div>',
+                         '<details><summary>Wrapper</summary>' + self.section + '</details>',
+                         self.section.replace('<details>', '<details hidden>'),
+                         self.section.replace('<code>', '<code class="unknown">'),
+                         self.section.replace('<code>', '<code dir="auto" dir="auto">'),
+                         self.section.replace('<ul>', '<!-- ignored -->' + '<ul>')):
+            with self.subTest(rendered=rendered), self.assertRaises(MODULE.EvidenceError):
+                self.bind(self.review(rendered=rendered))
+
+    def test_native_raw_blank_line_and_crlf_preserve_the_original_body_digest(self):
+        import hashlib
+        original = self.review()
+        spaced = original['body'].replace('</summary>\n<ul>', '</summary>\n\n<ul>', 1)
+        for body in (spaced, spaced.replace('\n', '\r\n')):
+            with self.subTest(body=body):
+                result = self.bind(original | {'body': body})
+                self.assertEqual(1, len(result['unreviewed_files']))
+                self.assertEqual(hashlib.sha256(body.encode()).hexdigest(), result['review_body_sha256'])
+
     def test_owned_section_cannot_be_quoted_nested_or_relocated(self):
         original = self.review()
         for body in (original['body'].replace(self.section, '<details>\n' + self.section + '\n</details>'),
