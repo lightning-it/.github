@@ -1278,3 +1278,282 @@ class GeneratedLockTests(unittest.TestCase):
                 result = control.check_native_control(api, REPO, pull(), {'accepted_sources': [SOURCE]})
             self.assertEqual('copilot', result['route'])
             self.assertEqual(control.digest(record), result['proof_sha256'])
+
+
+# Only synthetic native APIs register a Source admission in these tests. The
+# registered owner-accepted entry is separate from candidate-supplied metadata.
+def source_qualification_fixture(unit=None, *, actual_metadata=False):
+    value = {
+        'version': 1, 'proof_plan_sha256': control.SOURCE_GENERATED_PLAN,
+        'subject': control.SOURCE_GENERATED_SUBJECT.copy(),
+        'unit_manifest_sha256': control.digest(unit or control.SOURCE_GENERATED_UNIT),
+        'toolchain': control.SOURCE_GENERATED_TOOLCHAIN.copy(),
+        'baseline_lock_sha256': '62ae5fc96a9740cb1f68eb1108e84a393a1652b58db16a3e7919d3ba14401848',
+        'registry_integrities': control.SOURCE_GENERATED_REGISTRY_INTEGRITIES.copy(),
+        'checks': {key: True for key in control.SOURCE_GENERATED_CHECKS},
+        'exit_code': 0, 'generation_invocations': 1, 'container_invocations': 1,
+        'output_lock_sha256': next(item['sha256'] for item in (unit or control.SOURCE_GENERATED_UNIT)
+                                  if item['path'] == control.SOURCE_GENERATED_SUBJECT['path']),
+        'raw_receipt_sha256': 'a' * 64, 'raw_log_sha256': 'b' * 64,
+    }
+    if actual_metadata:
+        # Actual one-proof5953 metadata, not an activation/owner-acceptance claim.
+        value['raw_receipt_sha256'] = '7d0f3f45b39ba8f1dcd77428309780e9c08acc831819ecc65e474e671ca18172'
+        value['raw_log_sha256'] = '21c6ed822100c78609c3895525e63bb50dbeefa9059c52e8baaac9768ff24a9b'
+    return value
+
+
+def source_generated_fixture():
+    import hashlib
+    subject = control.SOURCE_GENERATED_SUBJECT
+    repo, head, base = subject['repository'], subject['head'], subject['base']
+    contents = {item['path']: ('synthetic Source unit ' + item['path']).encode()
+                for item in control.SOURCE_GENERATED_UNIT}
+    unit = [{'path': path, 'mode': '100644', 'git_blob': hashlib.sha1(
+                b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest(),
+             'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+            for path, data in contents.items()]
+    qualification = source_qualification_fixture(unit)
+    body = GENERATED_BODY.replace(GENERATED_PATH, subject['path'])
+    rendered = GENERATED_SECTION.replace(GENERATED_PATH, subject['path'])
+    native = native_review(id=control.SOURCE_GENERATED_REVIEW['id'], commit_id=head,
+                           body=body, body_html=rendered)
+    review_binding = control.SOURCE_GENERATED_REVIEW | {'body_sha256': hashlib.sha256(body.encode()).hexdigest()}
+    value = pull(number=subject['pr'], changed_files=len(control.SOURCE_GENERATED_CHANGED_PATHS))
+    value['base'] = {'sha': base, 'ref': 'develop', 'repo': {'full_name': repo, 'id': 1120841013}}
+    value['head'] = {'sha': head, 'ref': 'fix/devtools-security-truststores',
+                     'repo': {'full_name': repo, 'id': 1120841013}}
+    producer = delivery(id=control.SOURCE_GENERATED_REVIEW['service_run'], head_sha=head,
+        pull_requests=[{'number': subject['pr'], 'base': {'sha': base}, 'head': {'sha': head}}])
+    entry = {'version': 1, 'id': 'source-2658-generated-lock', 'subject': subject.copy(),
+             'unit': unit, 'review': review_binding, 'qualification': qualification,
+             'owner_acceptance': {'scope': 'source-2658-generated-lock-only',
+               'receipt_sha256': control.digest(qualification),
+               'decision_reference': 'chat:00000000-0000-0000-0000-000000000001/00000000-0000-0000-0000-000000000002'}}
+    files = [{'filename': path, 'status': 'modified'} for path in control.SOURCE_GENERATED_CHANGED_PATHS]
+    tree = {'sha': subject['tree'], 'truncated': False,
+            'tree': [{'path': x['path'], 'mode': x['mode'], 'sha': x['git_blob'],
+                      'size': x['bytes'], 'type': 'blob'} for x in unit]}
+    api = Mock()
+    def pages(path, key=None):
+        if path.endswith('/reviews'): return [native]
+        if '/actions/runs?' in path: return [producer]
+        if path.endswith('/comments'): return []
+        if path.endswith('/files'): return files
+        raise AssertionError(path)
+    api.pages.side_effect = pages
+    api.file.side_effect = lambda repository, path, revision: contents[path]
+    api.call.side_effect = lambda path: ({'sha': head, 'tree': {'sha': subject['tree']}}
+                                        if '/git/commits/' in path else tree)
+    return api, value, entry, unit, review_binding, native, producer, files, tree, contents
+
+
+class SourceGeneratedLockTests(unittest.TestCase):
+    def registered(self, fixture):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch.object(control, 'SOURCE_GENERATED_LOCK_ADMISSIONS', (fixture[2],)))
+        stack.enter_context(patch.object(control, 'SOURCE_GENERATED_UNIT', fixture[3]))
+        stack.enter_context(patch.object(control, 'SOURCE_GENERATED_REVIEW', fixture[4]))
+        return stack
+
+    def test_actual_passed_proof_metadata_is_not_an_admission(self):
+        receipt = source_qualification_fixture(actual_metadata=True)
+        self.assertEqual(control.digest(receipt), control.source_generated_qualification(receipt))
+        fixture = source_generated_fixture()
+        fixture[1]['body'] = json.dumps(fixture[2])
+        fixture[1]['labels'] = [{'name': 'accept-generated-source'}]
+        with patch.object(control, 'SOURCE_GENERATED_LOCK_ADMISSIONS', ()), \
+                self.assertRaisesRegex(control.ControlError, 'copilot-native-frame-not-accepted'):
+            control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        fixture[0].file.assert_not_called()
+
+    def test_registered_exact_owner_fact_binds_the_actual_qualification(self):
+        fixture = source_generated_fixture()
+        descriptor = control.source_generated_descriptor(
+            control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        self.assertEqual(1, len(control.SOURCE_GENERATED_LOCK_ADMISSIONS))
+        self.assertIs(descriptor, control.SOURCE_GENERATED_LOCK_ADMISSIONS[0])
+        self.assertEqual('c9bb5b0d12b29b09c3665b086b76f0c89791ce20af2998f463a8d674d299fea2',
+                         control.source_generated_qualification(descriptor['qualification']))
+        self.assertEqual('chat:01a16039-c39f-77f0-9331-67822ff31eb3/01a1607a-a0da-7760-978a-b49759ef467a',
+                         descriptor['owner_acceptance']['decision_reference'])
+        self.assertEqual('source-2658-generated-lock-only', descriptor['owner_acceptance']['scope'])
+        fixture[0].file.assert_not_called()
+
+    def test_exact_source_case_keeps_native_exclusion_and_separate_quality(self):
+        fixture = source_generated_fixture()
+        with self.registered(fixture):
+            proof = control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        coverage = proof['source_generated_artifact_coverage']
+        self.assertEqual([{'path': control.SOURCE_GENERATED_SUBJECT['path'], 'reason': 'Generated file',
+                           'reviewed_by_copilot': False}], coverage['unreviewed'])
+        self.assertNotIn('quality', coverage)
+        self.assertNotIn('generated_artifact_coverage', proof)
+        self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET'
+                            for call in fixture[0].call.call_args_list))
+
+    def test_wrong_subject_fork_branch_or_actor_stops_before_file_reads(self):
+        mutations = [('head', 'sha', 'e' * 40), ('base', 'sha', 'e' * 40),
+                     ('head', 'ref', 'another-feature'), ('base', 'ref', 'main')]
+        for side, key, value in mutations:
+            fixture = source_generated_fixture(); fixture[1][side][key] = value
+            with self.subTest(side=side, key=key), self.registered(fixture), self.assertRaises(control.ControlError):
+                control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+            fixture[0].file.assert_not_called()
+        for change in ('fork', 'actor', 'closed', 'draft'):
+            fixture = source_generated_fixture()
+            if change == 'fork': fixture[1]['head']['repo']['id'] = 123
+            if change == 'actor': fixture[1]['user']['id'] = 123
+            if change == 'closed': fixture[1]['state'] = 'closed'
+            if change == 'draft': fixture[1]['draft'] = True
+            with self.subTest(change=change), self.registered(fixture), self.assertRaises(control.ControlError):
+                control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+    def test_unqualified_failed_stale_or_repeated_proof_cannot_be_registered(self):
+        import copy
+        for field, value in [('exit_code', 1), ('generation_invocations', 2), ('container_invocations', True),
+                             ('proof_plan_sha256', '0' * 64), ('output_lock_sha256', '0' * 64),
+                             ('baseline_lock_sha256', '0' * 64), ('raw_receipt_sha256', '')]:
+            receipt = copy.deepcopy(source_qualification_fixture())
+            receipt[field] = value
+            with self.subTest(field=field), self.assertRaises(control.ControlError):
+                control.source_generated_qualification(receipt)
+        for key in control.SOURCE_GENERATED_CHECKS:
+            receipt = source_qualification_fixture(); receipt['checks'][key] = False
+            with self.subTest(check=key), self.assertRaisesRegex(control.ControlError, 'proof-not-successful'):
+                control.source_generated_qualification(receipt)
+        for field in ['subject', 'toolchain', 'registry_integrities']:
+            receipt = source_qualification_fixture(); receipt[field] = {}
+            with self.subTest(field=field), self.assertRaises(control.ControlError):
+                control.source_generated_qualification(receipt)
+
+    def test_owner_acceptance_cannot_be_implied_by_technical_pass(self):
+        for approval in [None, {}, {'scope': 'all-source-locks', 'receipt_sha256': '0' * 64,
+                                    'decision_reference': 'candidate-label'}]:
+            fixture = source_generated_fixture(); fixture[2]['owner_acceptance'] = approval
+            with self.registered(fixture), self.assertRaisesRegex(control.ControlError, 'owner-acceptance'):
+                control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+    def test_native_input_inventory_modes_tree_and_bytes_remain_strict(self):
+        for damage in ['extra-path', 'rename', 'truncated', 'symlink', 'blob', 'size', 'bytes']:
+            fixture = source_generated_fixture()
+            if damage == 'extra-path': fixture[7].append({'filename': 'unreviewed.py', 'status': 'modified'})
+            if damage == 'rename': fixture[7][0]['previous_filename'] = 'different'
+            if damage == 'truncated': fixture[8]['truncated'] = True
+            if damage == 'symlink': fixture[8]['tree'][0]['mode'] = '120000'
+            if damage == 'blob': fixture[8]['tree'][0]['sha'] = 'e' * 40
+            if damage == 'size': fixture[8]['tree'][0]['size'] += 1
+            if damage == 'bytes': fixture[9][fixture[3][0]['path']] += b'changed'
+            with self.subTest(damage=damage), self.registered(fixture), self.assertRaisesRegex(control.ControlError, 'source-generated-native'):
+                control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+    def test_review_or_provider_drift_does_not_reuse_the_admission(self):
+        for field, value in [('id', 99), ('body', NATIVE_BODY), ('state', 'DISMISSED')]:
+            fixture = source_generated_fixture(); fixture[5][field] = value
+            with self.subTest(field=field), self.registered(fixture), self.assertRaises(control.ControlError):
+                control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        fixture = source_generated_fixture(); fixture[6]['id'] = 99
+        with self.registered(fixture), self.assertRaisesRegex(control.ControlError, 'review-binding'):
+            control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+    def test_extra_exclusion_or_wrong_reason_remains_rejected(self):
+        import hashlib
+        for body in [GENERATED_BODY.replace(GENERATED_PATH, 'another-generated.yaml'),
+                     GENERATED_BODY.replace(GENERATED_PATH, control.SOURCE_GENERATED_SUBJECT['path'])
+                         .replace('Generated file', 'Binary file'),
+                     GENERATED_BODY.replace(GENERATED_PATH, control.SOURCE_GENERATED_SUBJECT['path'])
+                         .replace('1 file not reviewed', '2 files not reviewed')]:
+            fixture = source_generated_fixture(); fixture[5]['body'] = body
+            fixture[4]['body_sha256'] = hashlib.sha256(body.encode()).hexdigest()
+            with self.registered(fixture), self.assertRaisesRegex(control.ControlError, 'copilot-native-frame-not-accepted'):
+                control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+    def test_current_quality_is_still_required_before_final_acceptance(self):
+        fixture = source_generated_fixture()
+        with self.registered(fixture):
+            proof = control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        config = {'quality': [{'workflow': '.github/workflows/repository-quality.yml', 'job': 'repository / quality'}]}
+        quality = [{'check': 1, 'run': 2, 'attempt': 1, 'base': fixture[1]['base']['sha'], 'head': fixture[1]['head']['sha']}]
+        for cfg, records in [({'quality': []}, []), (config, []),
+                             (config, [quality[0] | {'head': 'e' * 40}]),
+                             (config, [quality[0] | {'base': 'e' * 40}])]:
+            with self.subTest(records=records), self.assertRaisesRegex(control.ControlError, 'current-quality-required'):
+                control.complete_generated_lock_quality(proof, cfg, records, fixture[1])
+        control.complete_generated_lock_quality(proof, config, quality, fixture[1])
+        self.assertEqual(quality, proof['source_generated_artifact_coverage']['quality'])
+
+    def test_repeated_native_observation_never_spends_another_slot(self):
+        fixture = source_generated_fixture()
+        with self.registered(fixture):
+            first = control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+            second = control.copilot_review(fixture[0], control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+        self.assertEqual(first, second)
+        self.assertTrue(all(call.kwargs.get('method', 'GET') == 'GET'
+                            for call in fixture[0].call.call_args_list))
+
+    def test_wrong_source_pr_or_candidate_metadata_cannot_select_a_case(self):
+        fixture = source_generated_fixture(); fixture[1]['number'] += 1
+        with self.registered(fixture):
+            self.assertIsNone(control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1]))
+        fixture = source_generated_fixture(); fixture[2]['subject'] = fixture[2]['subject'] | {'pr': 123}
+        with self.registered(fixture), self.assertRaisesRegex(control.ControlError, 'admission-shape'):
+            control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'], fixture[1])
+
+
+class SourceLiteralRegistryTests(unittest.TestCase):
+    """Mutate the actual registered entry, never its matching control constants."""
+    def subject(self):
+        return source_generated_fixture()[1]
+
+    def mutation_rejects(self, mutate, reason):
+        import copy
+        entries=copy.deepcopy(control.SOURCE_GENERATED_LOCK_ADMISSIONS)
+        mutate(entries[0])
+        with patch.object(control,'SOURCE_GENERATED_LOCK_ADMISSIONS',entries), \
+                self.assertRaisesRegex(control.ControlError,'^'+reason+'$'):
+            control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'],self.subject())
+
+    def test_literal_owner_qualification_digest_and_scope_mutations(self):
+        self.mutation_rejects(lambda e:e['owner_acceptance'].__setitem__('receipt_sha256','0'*64),
+                              'source-generated-owner-acceptance')
+        self.mutation_rejects(lambda e:e['owner_acceptance'].__setitem__('scope','all-generated-files'),
+                              'source-generated-owner-acceptance')
+
+    def test_literal_review_binding_mutations_reach_descriptor_guard(self):
+        for key,value in [('id',99),('service_run',99),('body_sha256','0'*64)]:
+            with self.subTest(key=key):
+                self.mutation_rejects(lambda e:e['review'].__setitem__(key,value),
+                                      'source-generated-admission-shape')
+
+    def test_literal_input_or_qualification_hash_mutations(self):
+        self.mutation_rejects(lambda e:e['unit'][0].__setitem__('sha256','0'*64),
+                              'source-generated-admission-shape')
+        self.mutation_rejects(lambda e:e['qualification'].__setitem__('unit_manifest_sha256','0'*64),
+                              'source-generated-receipt-binding')
+        self.mutation_rejects(lambda e:e['qualification'].__setitem__('output_lock_sha256','0'*64),
+                              'source-generated-proof-not-successful')
+
+    def test_literal_duplicate_registry_is_ambiguous(self):
+        entry=control.SOURCE_GENERATED_LOCK_ADMISSIONS[0]
+        with patch.object(control,'SOURCE_GENERATED_LOCK_ADMISSIONS',(entry,entry)), \
+                self.assertRaisesRegex(control.ControlError,'^source-generated-admission-ambiguous$'):
+            control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'],self.subject())
+
+    def test_literal_unknown_schema_fields_reject_at_own_boundary(self):
+        self.mutation_rejects(lambda e:e.__setitem__('wildcard',True),'source-generated-admission-shape')
+        self.mutation_rejects(lambda e:e['qualification'].__setitem__('ttl',999),'source-generated-receipt-shape')
+        self.mutation_rejects(lambda e:e['owner_acceptance'].__setitem__('all_heads',True),
+                              'source-generated-owner-acceptance')
+
+    def test_other_pr_review_is_identical_with_populated_source_registry(self):
+        def evaluate():
+            api=Mock();api.pages.side_effect=[[native_review()],[delivery()],[]]
+            result=control.copilot_review(api,REPO,pull())
+            self.assertTrue(all(c.kwargs.get('method','GET')=='GET' for c in api.call.call_args_list))
+            return result
+        self.assertEqual(1,len(control.SOURCE_GENERATED_LOCK_ADMISSIONS));registered=evaluate()
+        with patch.object(control,'SOURCE_GENERATED_LOCK_ADMISSIONS',()):unregistered=evaluate()
+        self.assertEqual(registered,unregistered);self.assertEqual(9,registered['id'])
+        other=self.subject();other['number']+=1
+        self.assertIsNone(control.source_generated_descriptor(control.SOURCE_GENERATED_SUBJECT['repository'],other))
