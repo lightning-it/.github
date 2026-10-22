@@ -367,7 +367,7 @@ def associated_delivery(run, pull):
 GENERATED_LOCK_ADMISSIONS = (
     {
         "version": 1,
-        "id": "devtools-v1-52-3-generated-lock",
+        "id": "devtools-v1-52-5-generated-lock",
         "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
         "excluded_file": {
             "path": "container-toolchain/pnpm-lock.yaml",
@@ -378,9 +378,9 @@ GENERATED_LOCK_ADMISSIONS = (
             {
                 "path": "Dockerfile",
                 "mode": "100644",
-                "git_blob": "5eef2bb1e42c9d73dcd69b7e87ff6bccd5d35c34",
-                "bytes": 37192,
-                "sha256": "9e729624d5f4bc5e6aaf2ee97240100dc4f4e07f1b109fdb8d056fcbbb6bef0a"
+                "git_blob": "ac3486e1e2973d24e65b0c805e97af1dd3ff7cd3",
+                "bytes": 37750,
+                "sha256": "e6abbc13ee2d77ffce1cb0eb18cc22f3d369e93e3d8d4927fed26ca469c417d4"
             },
             {
                 "path": "container-toolchain/package.json",
@@ -392,39 +392,39 @@ GENERATED_LOCK_ADMISSIONS = (
             {
                 "path": "container-toolchain/pnpm-lock.yaml",
                 "mode": "100644",
-                "git_blob": "8deb8b47372a147701caa1dbb5b26329cd8b3327",
-                "bytes": 205480,
-                "sha256": "62ae5fc96a9740cb1f68eb1108e84a393a1652b58db16a3e7919d3ba14401848"
+                "git_blob": "a347fcd4fe10e9a9debaefeac852fa56e2e2b033",
+                "bytes": 205506,
+                "sha256": "3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf"
             },
             {
                 "path": "container-toolchain/pnpm-workspace.yaml",
                 "mode": "100644",
-                "git_blob": "8038672e7539f88c5df189f57341ee5771a09294",
-                "bytes": 770,
-                "sha256": "b295289c5fbc9eb002c83ebe36effb78c95362884615fa7eafcfd5f8f60b284b"
+                "git_blob": "bf1bad02bf29fe25831d92672dd2c4cc39479960",
+                "bytes": 798,
+                "sha256": "e0b5e7ddf01889b29f44b724d960e4c4995855b29c4f018574a238ad819a02e3"
             },
             {
                 "path": "renovate.json",
                 "mode": "100644",
-                "git_blob": "66144cdfb30ff34631d6a9790c1385c355e52e75",
-                "bytes": 16210,
-                "sha256": "7a5955644b8cb6906a2147c6b4c696ac99a32cc0a596bd7035ec4edbc3458be1"
+                "git_blob": "9cb9d3dd6285099169921048eddebddf7650a663",
+                "bytes": 16774,
+                "sha256": "0500d74e92608a29e460a42a4f82ec1507d7f5840edc10d314166c167fda47b1"
             }
         ],
-        "admitted_target_tree": "4d854bf005cde8d21c3837680653a10b97bd59ec",
+        "admitted_target_tree": "dca77eb5067263307ba830a2c4e53d36046e0760",
         "producer_provenance": {
-            "source_main": "74e4c31cce51da10feb2e578da66cbd44fb5baac",
-            "release": "v1.52.3",
-            "release_id": 419089540,
+            "source_main": "6c14231ff7a484cae8def33d3d2ac4a9b4733473",
+            "release": "v1.52.5",
+            "release_id": 421034097,
             "publisher": {
-                "run": 39534671184,
+                "run": 39827027296,
                 "attempt": 1,
-                "job": 119008875915,
+                "job": 119993610488,
                 "conclusion": "success",
                 "cleanup": "success",
-                "token_revoked_at": "2026-10-21T02:47:18.5428841Z"
+                "token_revoked_at": "2026-10-22T17:59:17.0716867Z"
             },
-            "canonical_manifest_sha256": "205b374d43f0ad12c8176846dcdd27372b6d153a96640cc3636bc39dc2ebb39d"
+            "canonical_manifest_sha256": "e0256a9a1fb2ad8eb47c5f02fcf68647e040d47910aa2b7c14796270dccbfeb8"
         }
     },
 )
