@@ -1108,6 +1108,15 @@ GENERATED_SECTION = ('<details>\n<summary><strong>1 file not reviewed</strong></
 GENERATED_BODY = (NATIVE_BODY.replace('**0 open findings**', '**No open issues** 🎉')
                   .replace('🧠 **Review effort:** Balanced',
                            GENERATED_SECTION + '\n<sub>Review effort: Balanced</sub>'))
+CURRENT_TARGET_PATHS = (
+    'Dockerfile', 'collections/offline-requirements.lock.yml',
+    'container-toolchain/package.json', GENERATED_PATH,
+    'container-toolchain/pnpm-workspace.yaml', 'renovate.json',
+    'requirements.lock', 'requirements.txt', 'scripts/devtools-container-ci.sh',
+    'scripts/download_go_modules.py', 'scripts/verify_devtools_collection_python.py',
+    'tests/test_container_toolchain_contract.py', 'tests/test_devtools_collection_inventory.py',
+    'tests/test_devtools_collection_python.py', 'tests/test_go_download_retry.py',
+)
 
 
 def generated_fixture():
@@ -1153,6 +1162,38 @@ class GeneratedLockTests(unittest.TestCase):
                            'reviewed_by_copilot': False}], result['generated_artifact_coverage']['unreviewed'])
         self.assertNotIn('quality', result['generated_artifact_coverage'])
 
+    def test_complete_current_target_inventory_keeps_the_single_exclusion(self):
+        api, value, descriptor, *_ = generated_fixture()
+        files = [{'filename': path, 'status': 'modified'} for path in CURRENT_TARGET_PATHS]
+        value['changed_files'] = len(files)
+        api.pages.side_effect = [[native_review(body=GENERATED_BODY, body_html=GENERATED_SECTION)],
+                                  [delivery()], [], files]
+        with patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)):
+            result = control.copilot_review(api, GENERATED_REPO, value)
+        coverage = result['generated_artifact_coverage']
+        self.assertEqual(descriptor['admitted_target_tree'], coverage['target_tree'])
+        self.assertEqual([{'path': GENERATED_PATH, 'reason': 'Generated file',
+                           'reviewed_by_copilot': False}], coverage['unreviewed'])
+
+    def test_other_generated_target_locks_remain_blocked_before_content_reads(self):
+        for path in ('collections/offline-requirements.lock.yml', 'requirements.lock'):
+            api, value, descriptor, *_ = generated_fixture()
+            value['changed_files'] = len(CURRENT_TARGET_PATHS)
+            api.pages.side_effect = [[native_review(
+                body=GENERATED_BODY.replace(GENERATED_PATH, path),
+                body_html=GENERATED_SECTION.replace(GENERATED_PATH, path))], [delivery()]]
+            with self.subTest(path=path), patch.object(control, 'GENERATED_LOCK_ADMISSIONS', (descriptor,)), \
+                    self.assertRaisesRegex(control.ControlError, 'copilot-native-frame-not-accepted'):
+                control.copilot_review(api, GENERATED_REPO, value)
+            api.file.assert_not_called()
+
+    def test_previous_target_tree_cannot_reuse_the_current_registered_admission(self):
+        api, value, _, commit, *_ = generated_fixture()
+        commit['tree']['sha'] = '4d854bf005cde8d21c3837680653a10b97bd59ec'
+        with self.assertRaisesRegex(control.ControlError, 'generated-native-tree'):
+            control.copilot_review(api, GENERATED_REPO, value)
+        api.file.assert_not_called()
+
     def test_candidate_inputs_cannot_register_an_admission(self):
         api, value, descriptor, *_ = generated_fixture()
         value['body'] = json.dumps(descriptor)
@@ -1166,8 +1207,8 @@ class GeneratedLockTests(unittest.TestCase):
     def test_registered_source_descriptor_cannot_be_replaced_by_candidate_metadata(self):
         self.assertEqual(1, len(control.GENERATED_LOCK_ADMISSIONS))
         registered = control.generated_lock_descriptor(GENERATED_REPO)
-        self.assertEqual('4d854bf005cde8d21c3837680653a10b97bd59ec', registered['admitted_target_tree'])
-        self.assertEqual('74e4c31cce51da10feb2e578da66cbd44fb5baac',
+        self.assertEqual('dca77eb5067263307ba830a2c4e53d36046e0760', registered['admitted_target_tree'])
+        self.assertEqual('6c14231ff7a484cae8def33d3d2ac4a9b4733473',
                          registered['producer_provenance']['source_main'])
         api, value, candidate, *_ = generated_fixture()
         value['body'] = json.dumps(candidate)
