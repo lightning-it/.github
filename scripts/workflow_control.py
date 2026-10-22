@@ -516,7 +516,255 @@ def generated_lock_coverage(api, repo, pull, descriptor, unreviewed):
             "canonical_unit_manifest_sha256": digest(descriptor["canonical_unit"])}
 
 
+# Inactive local draft. A successful reproduction is not owner acceptance or
+# native activation. Never populate this registry from consumer JSON or a label.
+SOURCE_GENERATED_LOCK_ADMISSIONS = (
+{'version': 1,
+ 'id': 'source-2658-generated-lock',
+ 'subject': {'base': 'b500e5ded3c4117b53516d97e385e4e8147b2ebc',
+             'head': '965a9d188af3212fa556644ac2fb54fe15a3a3ff',
+             'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml',
+             'pr': 2658,
+             'repository': 'lightning-it/shared-assets-lit',
+             'tree': 'ae6b8b7c79cc26a23f4c05c5c2a4063895d3891e'},
+ 'unit': [{'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/package.json',
+           'mode': '100644',
+           'git_blob': '416e941045ef461a902c20135de8844efd90ea2d',
+           'bytes': 519,
+           'sha256': '3d9c77719e23d8f76611009148c767a19b09debdb45fc4bfd43c36acde426ed8'},
+          {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-workspace.yaml',
+           'mode': '100644',
+           'git_blob': 'bf1bad02bf29fe25831d92672dd2c4cc39479960',
+           'bytes': 798,
+           'sha256': 'e0b5e7ddf01889b29f44b724d960e4c4995855b29c4f018574a238ad819a02e3'},
+          {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml',
+           'mode': '100644',
+           'git_blob': 'a347fcd4fe10e9a9debaefeac852fa56e2e2b033',
+           'bytes': 205506,
+           'sha256': '3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf'},
+          {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/Dockerfile',
+           'mode': '100644',
+           'git_blob': 'fd72d1a0346d68cea7702c39a2192d58c3c649c6',
+           'bytes': 37193,
+           'sha256': '0a4554e3d7f1465224a9070db82a9b0c2fd3a5b1d35139827dd511fbfeaaee21'},
+          {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/renovate.json',
+           'mode': '100644',
+           'git_blob': '9cb9d3dd6285099169921048eddebddf7650a663',
+           'bytes': 16774,
+           'sha256': '0500d74e92608a29e460a42a4f82ec1507d7f5840edc10d314166c167fda47b1'}],
+ 'review': {'id': 5606349606,
+            'service_run': 39677277582,
+            'body_sha256': '4fddbee83d801df5000924042edec0f4322d4e727b1a1b124c5ea1985f016229'},
+ 'qualification': {'baseline_lock_sha256': '62ae5fc96a9740cb1f68eb1108e84a393a1652b58db16a3e7919d3ba14401848',
+                   'checks': {'baseline_regeneration_bytes_equal': True,
+                              'input_hashes_unchanged': True,
+                              'no_candidate_checkout_or_socket': True,
+                              'no_credentials_or_lifecycle_execution': True,
+                              'owned_cleanup_complete': True,
+                              'registry_metadata_integrity_equal': True,
+                              'registry_tarballs_integrity_equal': True,
+                              'workspace_security_policy_preserved': True},
+                   'container_invocations': 1,
+                   'exit_code': 0,
+                   'generation_invocations': 1,
+                   'output_lock_sha256': '3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf',
+                   'proof_plan_sha256': '72e555fc811c2c242e01b9bd68a8f7fa7fb23b42a3d71ed1c30df7373849fc30',
+                   'raw_log_sha256': '21c6ed822100c78609c3895525e63bb50dbeefa9059c52e8baaac9768ff24a9b',
+                   'raw_receipt_sha256': '7d0f3f45b39ba8f1dcd77428309780e9c08acc831819ecc65e474e671ca18172',
+                   'registry_integrities': {'argparse@3.0.3': 'sha512-Sn98ftV3KfsO8xfLPHG6oT8y+b0yvbrLgZjgPDXsharNY15tTAjqIsIju4S32nl6/iEUNNE4v+yL2Zhm8ooP3w==',
+                                            'markdown-it@14.3.3': 'sha512-L//tDAkjTjJCU6pBUSBTgs3Kg4InVaZuUZog/b6V12UKhcDQ7S78877ibbCanRExwPuYP1CZD7Gd2dxSy1GXRg==',
+                                            'markdown-it@15.0.3': 'sha512-+Az7Ojz3iRGu8KYMvJ6xVhvrxP3eE+vEtJX75Ow88XBpcQNV/0lGX5ZynIIBftREo4DC2jsveAMDaeltmm8QvQ=='},
+                   'subject': {'base': 'b500e5ded3c4117b53516d97e385e4e8147b2ebc',
+                               'head': '965a9d188af3212fa556644ac2fb54fe15a3a3ff',
+                               'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml',
+                               'pr': 2658,
+                               'repository': 'lightning-it/shared-assets-lit',
+                               'tree': 'ae6b8b7c79cc26a23f4c05c5c2a4063895d3891e'},
+                   'toolchain': {'image': 'quay.io/l-it/ee-wunder-devtools-ubi9:v1.18.0@sha256:3174f45c1f8c769d9309612382758b8599cedf892e81b796d7e5b2d8cf24d4db',
+                                 'lockfile_format': '9.0',
+                                 'node': '24.19.0',
+                                 'pnpm': '11.23.0'},
+                   'unit_manifest_sha256': 'c350520f5a6d5c3b37c3e58d6d8f9ad2f9820a056f87dec2d7787cb5f74eccdb',
+                   'version': 1},
+ 'owner_acceptance': {'scope': 'source-2658-generated-lock-only',
+                      'receipt_sha256': 'c9bb5b0d12b29b09c3665b086b76f0c89791ce20af2998f463a8d674d299fea2',
+                      'decision_reference': 'chat:01a16039-c39f-77f0-9331-67822ff31eb3/01a1607a-a0da-7760-978a-b49759ef467a'}}
+,)
+SOURCE_GENERATED_SUBJECT = {'pr': 2658,
+ 'head': '965a9d188af3212fa556644ac2fb54fe15a3a3ff',
+ 'base': 'b500e5ded3c4117b53516d97e385e4e8147b2ebc',
+ 'tree': 'ae6b8b7c79cc26a23f4c05c5c2a4063895d3891e',
+ 'repository': 'lightning-it/shared-assets-lit',
+ 'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml'}
+SOURCE_GENERATED_UNIT = [{'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/package.json',
+  'mode': '100644',
+  'git_blob': '416e941045ef461a902c20135de8844efd90ea2d',
+  'bytes': 519,
+  'sha256': '3d9c77719e23d8f76611009148c767a19b09debdb45fc4bfd43c36acde426ed8'},
+ {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-workspace.yaml',
+  'mode': '100644',
+  'git_blob': 'bf1bad02bf29fe25831d92672dd2c4cc39479960',
+  'bytes': 798,
+  'sha256': 'e0b5e7ddf01889b29f44b724d960e4c4995855b29c4f018574a238ad819a02e3'},
+ {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml',
+  'mode': '100644',
+  'git_blob': 'a347fcd4fe10e9a9debaefeac852fa56e2e2b033',
+  'bytes': 205506,
+  'sha256': '3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf'},
+ {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/Dockerfile',
+  'mode': '100644',
+  'git_blob': 'fd72d1a0346d68cea7702c39a2192d58c3c649c6',
+  'bytes': 37193,
+  'sha256': '0a4554e3d7f1465224a9070db82a9b0c2fd3a5b1d35139827dd511fbfeaaee21'},
+ {'path': 'container/overrides/container-ee-wunder-devtools-ubi9/renovate.json',
+  'mode': '100644',
+  'git_blob': '9cb9d3dd6285099169921048eddebddf7650a663',
+  'bytes': 16774,
+  'sha256': '0500d74e92608a29e460a42a4f82ec1507d7f5840edc10d314166c167fda47b1'}]
+SOURCE_GENERATED_CHANGED_PATHS = ['container/overrides/container-ee-wunder-devtools-ubi9/Dockerfile',
+ 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-lock.yaml',
+ 'container/overrides/container-ee-wunder-devtools-ubi9/container-toolchain/pnpm-workspace.yaml',
+ 'container/overrides/container-ee-wunder-devtools-ubi9/renovate.json',
+ 'container/overrides/container-ee-wunder-devtools-ubi9/requirements.lock',
+ 'container/overrides/container-ee-wunder-devtools-ubi9/requirements.txt',
+ 'tests/test_container_devtools_policy.py']
+SOURCE_GENERATED_REGISTRY_INTEGRITIES = {'markdown-it@14.3.3': 'sha512-L//tDAkjTjJCU6pBUSBTgs3Kg4InVaZuUZog/b6V12UKhcDQ7S78877ibbCanRExwPuYP1CZD7Gd2dxSy1GXRg==',
+ 'markdown-it@15.0.3': 'sha512-+Az7Ojz3iRGu8KYMvJ6xVhvrxP3eE+vEtJX75Ow88XBpcQNV/0lGX5ZynIIBftREo4DC2jsveAMDaeltmm8QvQ==',
+ 'argparse@3.0.3': 'sha512-Sn98ftV3KfsO8xfLPHG6oT8y+b0yvbrLgZjgPDXsharNY15tTAjqIsIju4S32nl6/iEUNNE4v+yL2Zhm8ooP3w=='}
+SOURCE_GENERATED_REVIEW = {
+    "id": 5606349606, "service_run": 39677277582,
+    "body_sha256": "4fddbee83d801df5000924042edec0f4322d4e727b1a1b124c5ea1985f016229",
+}
+SOURCE_GENERATED_PLAN = "72e555fc811c2c242e01b9bd68a8f7fa7fb23b42a3d71ed1c30df7373849fc30"
+SOURCE_GENERATED_TOOLCHAIN = {
+    "image": "quay.io/l-it/ee-wunder-devtools-ubi9:v1.18.0@sha256:3174f45c1f8c769d9309612382758b8599cedf892e81b796d7e5b2d8cf24d4db",
+    "node": "24.19.0", "pnpm": "11.23.0", "lockfile_format": "9.0",
+}
+SOURCE_GENERATED_CHECKS = {
+    "baseline_regeneration_bytes_equal", "registry_metadata_integrity_equal",
+    "registry_tarballs_integrity_equal", "workspace_security_policy_preserved",
+    "input_hashes_unchanged", "owned_cleanup_complete",
+    "no_candidate_checkout_or_socket", "no_credentials_or_lifecycle_execution",
+}
+
+
+def source_generated_qualification(receipt):
+    """Validate the protected owner's projection, not candidate self-attestation.
+
+    Raw receipts/logs remain with their authorized reader. Registration requires
+    independent inspection and owner acceptance of this exact projection digest.
+    """
+    require(type(receipt) is dict and set(receipt) == {
+        "version", "proof_plan_sha256", "subject", "unit_manifest_sha256", "toolchain",
+        "baseline_lock_sha256", "registry_integrities", "checks", "exit_code",
+        "generation_invocations", "container_invocations", "output_lock_sha256",
+        "raw_receipt_sha256", "raw_log_sha256"}, "source-generated-receipt-shape")
+    require(type(receipt["version"]) is int and receipt["version"] == 1
+            and receipt["proof_plan_sha256"] == SOURCE_GENERATED_PLAN
+            and receipt["subject"] == SOURCE_GENERATED_SUBJECT
+            and receipt["unit_manifest_sha256"] == digest(SOURCE_GENERATED_UNIT)
+            and receipt["toolchain"] == SOURCE_GENERATED_TOOLCHAIN
+            and receipt["baseline_lock_sha256"] == "62ae5fc96a9740cb1f68eb1108e84a393a1652b58db16a3e7919d3ba14401848"
+            and receipt["registry_integrities"] == SOURCE_GENERATED_REGISTRY_INTEGRITIES,
+            "source-generated-receipt-binding")
+    require(type(receipt["checks"]) is dict and set(receipt["checks"]) == SOURCE_GENERATED_CHECKS
+            and all(value is True for value in receipt["checks"].values())
+            and all(type(receipt[key]) is int and receipt[key] == expected for key, expected in (
+                ("exit_code", 0), ("generation_invocations", 1), ("container_invocations", 1)))
+            and receipt["output_lock_sha256"] == next(item["sha256"] for item in SOURCE_GENERATED_UNIT
+                if item["path"] == SOURCE_GENERATED_SUBJECT["path"]), "source-generated-proof-not-successful")
+    require(all(type(receipt[key]) is str and re.fullmatch(r"[0-9a-f]{64}", receipt[key])
+                for key in ("raw_receipt_sha256", "raw_log_sha256"))
+            and len(canonical(receipt)) <= MAX_OPERATION_BYTES, "source-generated-receipt-artifacts")
+    return digest(receipt)
+
+
+def source_generated_subject(repo, pull):
+    subject = SOURCE_GENERATED_SUBJECT
+    require(repo == subject["repository"] and type(pull.get("number")) is int
+            and pull["number"] == subject["pr"] and pull.get("state") == "open"
+            and pull.get("draft") is False and pull["base"].get("ref") == "develop"
+            and pull["base"].get("sha") == subject["base"]
+            and pull["head"].get("sha") == subject["head"]
+            and pull["head"].get("ref") == "fix/devtools-security-truststores"
+            and all(pull[side].get("repo", {}).get("full_name") == repo
+                    and pull[side]["repo"].get("id") == 1120841013 for side in ("base", "head"))
+            and identity(pull["user"]) == ("litroc", 76040632, "User"), "source-generated-subject")
+
+
+def source_generated_descriptor(repo, pull):
+    if repo != SOURCE_GENERATED_SUBJECT["repository"] or pull.get("number") != SOURCE_GENERATED_SUBJECT["pr"]:
+        return None
+    entries = SOURCE_GENERATED_LOCK_ADMISSIONS
+    require(type(entries) is tuple and len(entries) <= 1, "source-generated-admission-ambiguous")
+    if not entries:
+        return None
+    value = entries[0]
+    require(type(value) is dict and set(value) == {
+        "version", "id", "subject", "unit", "review", "qualification", "owner_acceptance"}
+        and type(value["version"]) is int and value["version"] == 1
+        and value["id"] == "source-2658-generated-lock"
+        and value["subject"] == SOURCE_GENERATED_SUBJECT and value["unit"] == SOURCE_GENERATED_UNIT
+        and value["review"] == SOURCE_GENERATED_REVIEW, "source-generated-admission-shape")
+    source_generated_subject(repo, pull)
+    receipt_sha = source_generated_qualification(value["qualification"])
+    approval = value["owner_acceptance"]
+    require(type(approval) is dict and set(approval) == {"scope", "receipt_sha256", "decision_reference"}
+            and approval["scope"] == "source-2658-generated-lock-only"
+            and approval["receipt_sha256"] == receipt_sha
+            and type(approval["decision_reference"]) is str
+            and re.fullmatch(r"chat:[0-9a-f-]{36}/[0-9a-f-]{36}", approval["decision_reference"]),
+            "source-generated-owner-acceptance")
+    return value
+
+
+def source_generated_coverage(api, repo, pull, descriptor, review, producer, unreviewed):
+    subject = SOURCE_GENERATED_SUBJECT
+    require(unreviewed == [{"path": subject["path"], "reason": "Generated file",
+                            "reviewed_by_copilot": False}], "source-generated-exclusion")
+    require(review["id"] == SOURCE_GENERATED_REVIEW["id"]
+            and producer["id"] == SOURCE_GENERATED_REVIEW["service_run"]
+            and hashlib.sha256(review["body"].encode()).hexdigest() == SOURCE_GENERATED_REVIEW["body_sha256"],
+            "source-generated-review-binding")
+    files = api.pages(f"repos/{repo}/pulls/{pull['number']}/files")
+    require(type(files) is list and type(pull.get("changed_files")) is int
+            and len(files) == pull["changed_files"] == len(SOURCE_GENERATED_CHANGED_PATHS)
+            and sorted(entry.get("filename", "") for entry in files) == SOURCE_GENERATED_CHANGED_PATHS
+            and all(entry.get("status") == "modified" and not entry.get("previous_filename") for entry in files),
+            "source-generated-native-files")
+    commit = api.call(f"repos/{repo}/git/commits/{subject['head']}")
+    require(commit.get("sha") == subject["head"] and commit.get("tree", {}).get("sha") == subject["tree"],
+            "source-generated-native-tree")
+    tree = api.call(f"repos/{repo}/git/trees/{subject['tree']}?recursive=1")
+    require(tree.get("sha") == subject["tree"] and tree.get("truncated") is False
+            and type(tree.get("tree")) is list, "source-generated-native-tree")
+    for item in descriptor["unit"]:
+        matches = [entry for entry in tree["tree"] if entry.get("path") == item["path"]]
+        require(len(matches) == 1 and matches[0].get("type") == "blob"
+                and matches[0].get("mode") == item["mode"] == "100644"
+                and matches[0].get("sha") == item["git_blob"]
+                and matches[0].get("size") == item["bytes"], "source-generated-native-unit")
+        data = api.file(repo, item["path"], subject["head"])
+        require(type(data) is bytes and len(data) == item["bytes"]
+                and hashlib.sha256(data).hexdigest() == item["sha256"], "source-generated-native-unit")
+    return {"version": 1, "descriptor_id": descriptor["id"], "subject": subject.copy(),
+            "descriptor_sha256": digest(descriptor), "unreviewed": unreviewed,
+            "qualification_sha256": digest(descriptor["qualification"]),
+            "owner_acceptance_sha256": digest(descriptor["owner_acceptance"])}
+
+
 def complete_generated_lock_quality(evidence, config, quality, pull):
+    source_coverage = evidence.get("source_generated_artifact_coverage")
+    if source_coverage is not None:
+        source_generated_subject(SOURCE_GENERATED_SUBJECT["repository"], pull)
+        require(source_coverage.get("subject") == SOURCE_GENERATED_SUBJECT
+                and (".github/workflows/repository-quality.yml", "repository / quality")
+                    in {(item["workflow"], item["job"]) for item in config["quality"]}
+                and len(quality) == len(config["quality"]) > 0
+                and all(item.get("base") == pull["base"]["sha"]
+                        and item.get("head") == pull["head"]["sha"] for item in quality),
+                "source-generated-current-quality-required")
+        source_coverage["quality"] = quality
     coverage = evidence.get("generated_artifact_coverage")
     if coverage is None:
         return
@@ -530,6 +778,7 @@ def complete_generated_lock_quality(evidence, config, quality, pull):
 
 def copilot_review(api, repo, pull):
     import copilot_native_content as content
+    source_descriptor = source_generated_descriptor(repo, pull)
     reviews = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews")
     current = [r for r in reviews if r.get("commit_id") == pull["head"]["sha"]
                and r.get("user", {}).get("id") == 175728472
@@ -562,11 +811,18 @@ def copilot_review(api, repo, pull):
     # Never fabricate that metric or accept an unknown/partial text response.
     filtered = [r for r in reviews if r["commit_id"] != pull["head"]["sha"] or r["id"] == review["id"]]
     descriptor = generated_lock_descriptor(repo)
+    if source_descriptor:
+        require(review["id"] == SOURCE_GENERATED_REVIEW["id"]
+                and producer["id"] == SOURCE_GENERATED_REVIEW["service_run"]
+                and hashlib.sha256(review["body"].encode()).hexdigest() == SOURCE_GENERATED_REVIEW["body_sha256"],
+                "source-generated-review-binding")
+    admitted = (frozenset({SOURCE_GENERATED_SUBJECT["path"]}) if source_descriptor else
+                frozenset({GENERATED_LOCK_PATH}) if descriptor else frozenset())
     try:
         content.validate_reported_file_coverage(review.get("body") or "", pull.get("changed_files"))
         frame = content.bind_copilot_review_findings([filtered], repository=repo,
                     pull_number=pull["number"], head_sha=pull["head"]["sha"],
-                    admitted_unreviewed_paths=frozenset({GENERATED_LOCK_PATH}) if descriptor else frozenset())
+                    admitted_unreviewed_paths=admitted)
     except content.EvidenceError as error:
         raise ControlError("copilot-native-frame-not-accepted") from error
     comments = api.pages(f"repos/{repo}/pulls/{pull['number']}/reviews/{review['id']}/comments")
@@ -595,8 +851,12 @@ def copilot_review(api, repo, pull):
             "service_run": producer["id"], "frame": {k: v for k, v in frame.items() if k != "native_reviews"},
             "finding_comment_ids": sorted(needed)}
     if frame.get("unreviewed_files"):
-        result["generated_artifact_coverage"] = generated_lock_coverage(
-            api, repo, pull, descriptor, frame["unreviewed_files"])
+        if source_descriptor:
+            result["source_generated_artifact_coverage"] = source_generated_coverage(
+                api, repo, pull, source_descriptor, review, producer, frame["unreviewed_files"])
+        else:
+            result["generated_artifact_coverage"] = generated_lock_coverage(
+                api, repo, pull, descriptor, frame["unreviewed_files"])
     return result
 
 
