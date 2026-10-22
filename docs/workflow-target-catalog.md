@@ -163,9 +163,11 @@ Codex input remains its separate protected review contract.
 
 The source-owned generated-lock registry contains exactly one descriptor for
 `lightning-it/container-ee-wunder-devtools-ubi9`. It binds published Shared Assets
-`v1.52.3` (`74e4c31cce51da10feb2e578da66cbd44fb5baac`) and Target tree
-`4d854bf005cde8d21c3837680653a10b97bd59ec`. Its canonical SHA256 is
-`07179263eaf59e685fd206ec77514f3462905d3a68788093a0b0660eda28f9db`. This declaration
+`v1.52.5` (`6c14231ff7a484cae8def33d3d2ac4a9b4733473`) and Target tree
+`dca77eb5067263307ba830a2c4e53d36046e0760`. Its descriptor SHA256 is
+`941118bdf54271158df6cfb2972934b68328fe6cd8b95f4a3b29c812236b6b60`.
+The canonical five-file manifest is
+`e0256a9a1fb2ad8eb47c5f02fcf68647e040d47910aa2b7c14796270dccbfeb8`. This declaration
 becomes effective only after the reviewed Common commit is independently
 selected through native Management. All other targets and exclusions remain
 rejected. Candidate labels, comments, environment values and consumer
