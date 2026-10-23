@@ -24,6 +24,7 @@ MAINE12 = "e12de1cf5ee830f1d389681711c004c58fffe171"
 MAINA092 = "a092c321e38680223024eb0e60e7c9ce16479abb"
 MAINA513 = "a51399a5d84e1e1b06f24f8b2f944b00958401a5"
 MAINC3 = "066b62a2a9e49d3fdba014068266664f930315bd"
+MAIN5B72 = "5b72a68a352bd926620b0487b867f80bba774a2f"
 # The reader parameter models a future independent native selection. Neither
 # this test nor the lineage file admits this actual, currently unselected commit.
 CANDIDATE = "4dbd1a7d63a3ffae5ada5e6e0127a847585a051d"
@@ -59,7 +60,7 @@ class AdoptedLineageTests(unittest.TestCase):
         value = json.loads((ROOT / ".lit/workflow-source-lineage.json").read_bytes())
         # Exact sequence catches deletion, duplication, replacement, unknown or
         # forward/self additions without adding a production validator/framework.
-        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652, MAINE12, MAINA092, MAINA513, MAINC3]}, value)
+        self.assertEqual({"version": 1, "accepted_predecessors": [*PREDECESSORS, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652, MAINE12, MAINA092, MAINA513, MAINC3, MAIN5B72]}, value)
         policy = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         self.assertEqual([], policy["accepted_sources"])
         self.assertNotIn(CANDIDATE, value["accepted_predecessors"])
@@ -67,7 +68,7 @@ class AdoptedLineageTests(unittest.TestCase):
     def test_real_policy_retains_bb1_and_old_pins_but_consumer_cannot_admit_unknown(self):
         api = Mock()
         value = self.policy(api)
-        self.assertEqual({CANDIDATE, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652, MAINE12, MAINA092, MAINA513, MAINC3, *PREDECESSORS}, set(value["accepted_sources"]))
+        self.assertEqual({CANDIDATE, BB1, MAIN678, MAIN4F12, MAINB634, MAIN1E48, MAIN652, MAINE12, MAINA092, MAINA513, MAINC3, MAIN5B72, *PREDECESSORS}, set(value["accepted_sources"]))
         consumer = json.loads((ROOT / ".lit/workflow-control.json").read_bytes())
         api.file.return_value = json.dumps(consumer | {"accepted_sources": ["e" * 40]}).encode()
         with self.assertRaisesRegex(control.ControlError, "consumer-cannot-admit-central-source"):
@@ -110,6 +111,9 @@ class AdoptedLineageTests(unittest.TestCase):
 
     def test_actual_native_ingress_reader_retains_published_shared_source_a513(self):
         self.assertEqual(MAINA513, self.ingress(source=MAINA513)["source_sha"])
+
+    def test_actual_native_ingress_reader_retains_current_devtools_source_5b72(self):
+        self.assertEqual(MAIN5B72, self.ingress(source=MAIN5B72)["source_sha"])
 
     def test_unknown_source_wrong_native_origin_or_tuple_are_still_rejected(self):
         for defect in ("source", "native", "tuple", "pending"):
