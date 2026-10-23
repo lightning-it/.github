@@ -142,6 +142,63 @@ class NativeAPIReadTests(unittest.TestCase):
             self.assertEqual(3, command.call_count)
             self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
 
+    def test_api_plain_status_obeys_read_and_mutation_boundaries(self):
+        # The upstream CLI's non-JSON gateway fixture emits this bare form.
+        for code in (502, 503, 504, 401, 403, 404, 429, 500):
+            for method in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE'):
+                with self.subTest(code=code, method=method), patch.object(control.subprocess, 'run') as command, \
+                        patch.object(control.time, 'sleep') as wait:
+                    command.side_effect = [self.response(1, stderr=f'gh: HTTP {code}\n'.encode()),
+                                           self.response(stdout=b'{"id":791}')]
+                    if method == 'GET' and code in (502, 503, 504):
+                        self.assertEqual({'id': 791}, control.API().call(self.PATH))
+                        self.assertEqual(2, command.call_count)
+                        wait.assert_called_once_with(1)
+                    else:
+                        with self.assertRaisesRegex(control.ControlError, f'http{code}.*attempts1'):
+                            control.API().call(self.PATH, method=method)
+                        command.assert_called_once()
+                        wait.assert_not_called()
+
+    def test_api_plain_transient_exhausts_the_same_bounded_read_budget(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stdout=b'private gateway response', stderr=b'gh: HTTP 503\r\n')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'http503.*attempts3.*locator-') as caught:
+                control.API().call(self.PATH)
+            self.assertNotIn('private gateway response', str(caught.exception))
+            self.assertEqual(3, command.call_count)
+            self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
+
+    def test_api_mixed_and_duplicate_status_formats_never_grant_a_read(self):
+        for message in (b'gh: unavailable (HTTP 502)\ngh: HTTP 403\n',
+                        b'gh: HTTP 403\ngh: unavailable (HTTP 502)\n',
+                        b'gh: HTTP 503\ngh: unavailable (HTTP 503)\n',
+                        b'gh: HTTP 503\ngh: HTTP 503\n',
+                        b'gh: upstream HTTP 403, unavailable (HTTP 502)\n',
+                        b'gh: HTTP 502\nupstream (HTTP 403)\n'):
+            with self.subTest(message=message), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=message)) as command, patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'httpunknown'):
+                    control.API().call(self.PATH)
+                command.assert_called_once()
+                wait.assert_not_called()
+
+    def test_api_unrecognized_status_lines_and_payload_get_never_retry(self):
+        for message in (b'HTTP 503\n', b'gh: HTTP503\n', b'gh: HTTP 503 private suffix\n', b'gh: HTTP 5030\n'):
+            with self.subTest(message=message), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=message)) as command, patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'httpunknown'):
+                    control.API().call(self.PATH)
+                command.assert_called_once()
+                wait.assert_not_called()
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stderr=b'gh: HTTP 503\n')) as command, patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'http503.*attempts1'):
+                control.API().call(self.PATH, data={'unexpected': True})
+            command.assert_called_once()
+            wait.assert_not_called()
+
     def test_api_auth_missing_rate_limit_and_unknown_errors_never_retry(self):
         for code in (401, 403, 404, 429, 500):
             with self.subTest(code=code), patch.object(control.subprocess, 'run', return_value=self.response(

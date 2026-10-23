@@ -87,7 +87,11 @@ class API:
             if result.returncode == 0:
                 break
             statuses = re.findall(rb"(?m)^gh: [^\r\n]*\(HTTP ([1-5][0-9]{2})\)\r?$", result.stderr)
-            hints = re.findall(rb"\(HTTP ([1-5][0-9]{2})\)", result.stderr)
+            statuses += re.findall(rb"(?m)^gh: HTTP ([1-5][0-9]{2})\r?$", result.stderr)
+            # gh uses a bare status for non-JSON gateway responses. Count all
+            # claims across both forms, including hints inside provider text,
+            # before either exact CLI line can authorize an idempotent read.
+            hints = re.findall(rb"\bHTTP ([1-5][0-9]{2})\b", result.stderr)
             status = int(statuses[0]) if len(statuses) == len(hints) == 1 else None
             # Only explicit transient gateway/service responses grant another
             # idempotent read. Auth, missing data, rate limits, unknown CLI
