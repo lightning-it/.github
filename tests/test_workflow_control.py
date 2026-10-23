@@ -1188,11 +1188,14 @@ class GeneratedLockTests(unittest.TestCase):
             api.file.assert_not_called()
 
     def test_previous_target_tree_cannot_reuse_the_current_registered_admission(self):
-        api, value, _, commit, *_ = generated_fixture()
-        commit['tree']['sha'] = '4d854bf005cde8d21c3837680653a10b97bd59ec'
-        with self.assertRaisesRegex(control.ControlError, 'generated-native-tree'):
-            control.copilot_review(api, GENERATED_REPO, value)
-        api.file.assert_not_called()
+        for previous in ('4d854bf005cde8d21c3837680653a10b97bd59ec',
+                         'dca77eb5067263307ba830a2c4e53d36046e0760'):
+            api, value, _, commit, *_ = generated_fixture()
+            commit['tree']['sha'] = previous
+            with self.subTest(previous=previous), \
+                    self.assertRaisesRegex(control.ControlError, 'generated-native-tree'):
+                control.copilot_review(api, GENERATED_REPO, value)
+            api.file.assert_not_called()
 
     def test_candidate_inputs_cannot_register_an_admission(self):
         api, value, descriptor, *_ = generated_fixture()
@@ -1207,8 +1210,8 @@ class GeneratedLockTests(unittest.TestCase):
     def test_registered_source_descriptor_cannot_be_replaced_by_candidate_metadata(self):
         self.assertEqual(1, len(control.GENERATED_LOCK_ADMISSIONS))
         registered = control.generated_lock_descriptor(GENERATED_REPO)
-        self.assertEqual('dca77eb5067263307ba830a2c4e53d36046e0760', registered['admitted_target_tree'])
-        self.assertEqual('6c14231ff7a484cae8def33d3d2ac4a9b4733473',
+        self.assertEqual('c36a9ead2cb6bdbe887e95fde4d6b60773754f52', registered['admitted_target_tree'])
+        self.assertEqual('3b917d5281766050731a61bb5d5005da61e25f81',
                          registered['producer_provenance']['source_main'])
         api, value, candidate, *_ = generated_fixture()
         value['body'] = json.dumps(candidate)
