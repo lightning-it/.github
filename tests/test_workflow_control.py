@@ -1,6 +1,7 @@
 """Trust boundaries and paid-effect admission; no live credentials or model calls."""
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -115,7 +116,194 @@ def delivery(**changes):
             'pull_requests': run()['pull_requests']} | changes
 
 
+class NativeAPIReadTests(unittest.TestCase):
+    PATH = 'repos/lightning-it/private-example/pulls/791?private=value'
+
+    @staticmethod
+    def response(status=0, stdout=b'{}', stderr=b''):
+        return subprocess.CompletedProcess(['gh'], status, stdout, stderr)
+
+    def test_api_transient_get_recovers_without_repeating_a_write(self):
+        for code in (502, 503, 504):
+            with self.subTest(code=code), patch.object(control.subprocess, 'run') as command, \
+                    patch.object(control.time, 'sleep') as wait:
+                command.side_effect = [self.response(1, stderr=f'gh: unavailable (HTTP {code})\n'.encode()),
+                                       self.response(stdout=b'{"id":791}')]
+                self.assertEqual({'id': 791}, control.API().call(self.PATH))
+                self.assertEqual(2, command.call_count)
+                wait.assert_called_once_with(1)
+
+    def test_api_transient_get_exhausts_one_bounded_read_budget(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stderr=b'gh: private vendor text (HTTP 503)\n')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'http503.*attempts3.*locator-'):
+                control.API().call(self.PATH)
+            self.assertEqual(3, command.call_count)
+            self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
+
+    def test_api_plain_status_obeys_read_and_mutation_boundaries(self):
+        # The upstream CLI's non-JSON gateway fixture emits this bare form.
+        for code in (502, 503, 504, 401, 403, 404, 429, 500):
+            for method in ('GET', 'POST', 'PATCH', 'PUT', 'DELETE'):
+                with self.subTest(code=code, method=method), patch.object(control.subprocess, 'run') as command, \
+                        patch.object(control.time, 'sleep') as wait:
+                    command.side_effect = [self.response(1, stderr=f'gh: HTTP {code}\n'.encode()),
+                                           self.response(stdout=b'{"id":791}')]
+                    if method == 'GET' and code in (502, 503, 504):
+                        self.assertEqual({'id': 791}, control.API().call(self.PATH))
+                        self.assertEqual(2, command.call_count)
+                        wait.assert_called_once_with(1)
+                    else:
+                        with self.assertRaisesRegex(control.ControlError, f'http{code}.*attempts1'):
+                            control.API().call(self.PATH, method=method)
+                        command.assert_called_once()
+                        wait.assert_not_called()
+
+    def test_api_plain_transient_exhausts_the_same_bounded_read_budget(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stdout=b'private gateway response', stderr=b'gh: HTTP 503\r\n')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'http503.*attempts3.*locator-') as caught:
+                control.API().call(self.PATH)
+            self.assertNotIn('private gateway response', str(caught.exception))
+            self.assertEqual(3, command.call_count)
+            self.assertEqual([unittest.mock.call(1), unittest.mock.call(2)], wait.call_args_list)
+
+    def test_api_mixed_and_duplicate_status_formats_never_grant_a_read(self):
+        for message in (b'gh: unavailable (HTTP 502)\ngh: HTTP 403\n',
+                        b'gh: HTTP 403\ngh: unavailable (HTTP 502)\n',
+                        b'gh: HTTP 503\ngh: unavailable (HTTP 503)\n',
+                        b'gh: HTTP 503\ngh: HTTP 503\n',
+                        b'gh: upstream HTTP 403, unavailable (HTTP 502)\n',
+                        b'gh: HTTP 502\nupstream (HTTP 403)\n'):
+            with self.subTest(message=message), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=message)) as command, patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'httpunknown'):
+                    control.API().call(self.PATH)
+                command.assert_called_once()
+                wait.assert_not_called()
+
+    def test_api_unrecognized_status_lines_and_payload_get_never_retry(self):
+        for message in (b'HTTP 503\n', b'gh: HTTP503\n', b'gh: HTTP 503 private suffix\n', b'gh: HTTP 5030\n'):
+            with self.subTest(message=message), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=message)) as command, patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'httpunknown'):
+                    control.API().call(self.PATH)
+                command.assert_called_once()
+                wait.assert_not_called()
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stderr=b'gh: HTTP 503\n')) as command, patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'http503.*attempts1'):
+                control.API().call(self.PATH, data={'unexpected': True})
+            command.assert_called_once()
+            wait.assert_not_called()
+
+    def test_api_auth_missing_rate_limit_and_unknown_errors_never_retry(self):
+        for code in (401, 403, 404, 429, 500):
+            with self.subTest(code=code), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=f'gh: rejected (HTTP {code})\n'.encode())) as command, \
+                    patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, f'http{code}.*attempts1'):
+                    control.API().call(self.PATH)
+                command.assert_called_once()
+                wait.assert_not_called()
+
+    def test_api_unknown_error_is_private_and_not_retried(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stdout=b'private response', stderr=b'gh: private-token and private-path')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaises(control.ControlError) as caught:
+                control.API().call(self.PATH)
+            message = str(caught.exception)
+            self.assertIn('httpunknown', message)
+            self.assertIn('locator-', message)
+            for private in ('private-token', 'private-path', 'private response', self.PATH, 'private=value'):
+                self.assertNotIn(private, message)
+            command.assert_called_once()
+            wait.assert_not_called()
+
+    def test_api_mutations_never_retry_even_a_known_transient_http_error(self):
+        for method in ('POST', 'PATCH', 'PUT', 'DELETE'):
+            with self.subTest(method=method), patch.object(control.subprocess, 'run', return_value=self.response(
+                    1, stderr=b'gh: unavailable (HTTP 503)\n')) as command, \
+                    patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'http503.*attempts1'):
+                    control.API().call(self.PATH, method=method, data={'id': 791})
+                command.assert_called_once()
+                self.assertEqual(b'{"id":791}', command.call_args.kwargs['input'])
+                wait.assert_not_called()
+
+    def test_api_read_with_a_payload_has_no_retry_authority(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stderr=b'gh: unavailable (HTTP 503)\n')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaises(control.ControlError):
+                control.API().call(self.PATH, data={'unexpected': True})
+            command.assert_called_once()
+            wait.assert_not_called()
+
+    def test_api_timeout_is_classified_without_replaying_an_unknown_outcome(self):
+        for method in ('GET', 'POST'):
+            with self.subTest(method=method), patch.object(control.subprocess, 'run', side_effect=
+                    subprocess.TimeoutExpired(['gh', 'private-token'], 60, stderr=b'private response')) as command, \
+                    patch.object(control.time, 'sleep') as wait:
+                with self.assertRaisesRegex(control.ControlError, 'timeout.*attempts1') as caught:
+                    control.API().call(self.PATH, method=method)
+                self.assertNotIn('private-token', str(caught.exception))
+                command.assert_called_once()
+                wait.assert_not_called()
+
+    def test_api_malformed_success_never_retries_or_exposes_the_body(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(stdout=b'private malformed')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'native-api-malformed'):
+                control.API().call(self.PATH)
+            command.assert_called_once()
+            wait.assert_not_called()
+
+    def test_api_ambiguous_status_claims_do_not_grant_another_read(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(
+                1, stderr=b'gh: upstream says (HTTP 503), rejected (HTTP 403)\n')) as command, \
+                patch.object(control.time, 'sleep') as wait:
+            with self.assertRaisesRegex(control.ControlError, 'httpunknown'):
+                control.API().call(self.PATH)
+            command.assert_called_once()
+            wait.assert_not_called()
+
+    def test_api_auth_failure_after_a_transient_read_stops_immediately(self):
+        with patch.object(control.subprocess, 'run') as command, patch.object(control.time, 'sleep') as wait:
+            command.side_effect = [self.response(1, stderr=b'gh: unavailable (HTTP 503)\n'),
+                                   self.response(1, stderr=b'gh: forbidden (HTTP 403)\n')]
+            with self.assertRaisesRegex(control.ControlError, 'http403.*attempts2'):
+                control.API().call(self.PATH)
+            self.assertEqual(2, command.call_count)
+            wait.assert_called_once_with(1)
+
+    def test_api_success_and_empty_mutation_responses_keep_their_existing_contract(self):
+        with patch.object(control.subprocess, 'run', return_value=self.response(stdout=b'{"id":791}')) as command:
+            self.assertEqual({'id': 791}, control.API().call(self.PATH))
+            command.assert_called_once()
+        with patch.object(control.subprocess, 'run', return_value=self.response(stdout=b'')) as command:
+            self.assertEqual({}, control.API().call(self.PATH, method='POST'))
+            command.assert_called_once()
+
+
 class ControlTests(unittest.TestCase):
+    def test_new_source_retains_current_native_ingress_without_consumer_self_admission(self):
+        current = '5b72a68a352bd926620b0487b867f80bba774a2f'
+        value = {'version': 1, 'repository': REPO, 'mode': 'reference',
+                 'quality': [{'workflow': '.github/workflows/repository-quality.yml',
+                              'job': 'repository / quality'}],
+                 'accepted_sources': [current]}
+        # Use the actual centrally owned registry. A new selected source must
+        # retain the genuine ingress accepted under the current source.
+        accepted = control.policy_value(value, REPO, SOURCE)
+        self.assertIn(current, accepted['accepted_sources'])
+        self.assertIn(SOURCE, accepted['accepted_sources'])
+        with self.assertRaisesRegex(control.ControlError, 'consumer-cannot-admit-central-source'):
+            control.policy_value(value | {'accepted_sources': ['f' * 40]}, REPO, SOURCE)
+
     def test_old_selected_source_accepts_new_consumer_base_during_cutover(self):
         config = (Path(__file__).resolve().parents[1] / '.lit/workflow-control.json').read_bytes()
         api = Mock(); api.file.return_value = config
