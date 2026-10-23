@@ -14,6 +14,7 @@ from workflow_control import (
 )
 
 FINAL_STEP = "Enforce native review and quality on the still-current tuple"
+CLASSIFY_STEP = "Classify protected current revision"
 CLOSED = "Protected control blocked: ControlError: pull-not-reviewable"
 
 
@@ -44,6 +45,29 @@ def merged_lifecycle(api, repo, pull, attempt):
         closed.append(event["id"])
     require(len(closed) == 1, "ingress-native-merge-closure-required")
     return {"merge_event": merge["id"], "closed_event": closed[0]}
+
+
+def paired_closure_jobs(jobs):
+    """Admit only the observed classifier/finalizer closure topology."""
+    expected = {"Protected current revision": "failure", "Source common quality": "success",
+                "Current revision review": "failure", "Approve exact main promotion": "skipped"}
+    require(len(jobs) == len(expected)
+            and {job.get("name"): job.get("conclusion") for job in jobs} == expected,
+            "ingress-failure-topology")
+    protected = next(job for job in jobs if job["name"] == "Protected current revision")
+    steps = protected.get("steps", [])
+    names = [step.get("name") for step in steps]
+    require(len(names) == len(set(names)) and names.count(CLASSIFY_STEP) == 1,
+            "ingress-closure-classification-unavailable")
+    following = steps[names.index(CLASSIFY_STEP) + 1:]
+    required = {"Persist protected operation binding", "Request current Copilot review",
+                "Reserve protected Codex request", "Protected exact-revision Codex review"}
+    require(required <= {step.get("name") for step in following}
+            and all(step.get("status") == "completed"
+                    and (step.get("conclusion") in {"success", "skipped"}
+                         if step.get("name") in {"Post Load immutable common source", "Complete job"}
+                         else step.get("conclusion") == "skipped") for step in following),
+            "ingress-closure-classification-effects")
 
 
 def merged_attempt(api, repo, pull, latest):
@@ -86,20 +110,26 @@ def merged_attempt(api, repo, pull, latest):
                 "ingress-semantic-failure-before-merge")
         jobs = native_jobs(api, repo, attempt)
         failures = [job for job in jobs if job.get("conclusion") == "failure"]
-        require(len(failures) == 1 and failures[0].get("name") == "Current revision review"
-                and all(job.get("status") == "completed" and job.get("conclusion") in {"success", "skipped", "failure"}
-                        for job in jobs), "ingress-failure-topology")
-        gate = failures[0]
-        bad_steps = [step for step in gate.get("steps", []) if step.get("conclusion") == "failure"]
-        require(gate.get("run_attempt") == version and len(bad_steps) == 1
-                and bad_steps[0].get("name") == FINAL_STEP
-                and instant(gate.get("completed_at")) >= merged, "ingress-failure-step")
-        log = api.native_job_log(repo, gate["id"])
-        errors = [line for line in log.splitlines() if "Protected control blocked:" in line]
-        require(len(errors) == 1, "ingress-closure-error-unavailable")
-        match = re.fullmatch(r"(\S+Z) " + re.escape(CLOSED), errors[0])
-        require(match is not None and instant(match[1]) >= after_merge, "ingress-not-closure-only")
+        if len(failures) == 2:
+            paired_closure_jobs(jobs)
+        else:
+            require(len(failures) == 1 and failures[0].get("name") == "Current revision review",
+                    "ingress-failure-topology")
+        require(all(job.get("status") == "completed"
+                    and job.get("conclusion") in {"success", "skipped", "failure"} for job in jobs),
+                "ingress-failure-topology")
+        for gate in failures:
+            expected_step = CLASSIFY_STEP if gate["name"] == "Protected current revision" else FINAL_STEP
+            bad_steps = [step for step in gate.get("steps", []) if step.get("conclusion") == "failure"]
+            require(gate.get("run_id") == attempt["id"] and gate.get("run_attempt") == version
+                    and len(bad_steps) == 1 and bad_steps[0].get("name") == expected_step
+                    and instant(gate.get("completed_at")) >= merged, "ingress-failure-step")
+            log = api.native_job_log(repo, gate["id"])
+            errors = [line for line in log.splitlines() if "Protected control blocked:" in line]
+            require(len(errors) == 1, "ingress-closure-error-unavailable")
+            match = re.fullmatch(r"(\S+Z) " + re.escape(CLOSED), errors[0])
+            require(match is not None and instant(match[1]) >= after_merge, "ingress-not-closure-only")
+            ignored.append({"attempt": version, "job": gate["id"], "conclusion": "failure",
+                            "reason": "pull-not-reviewable-after-merge", "completed_at": gate["completed_at"]})
         operations.append(digest(operation_record(api, repo, attempt)))
-        ignored.append({"attempt": version, "job": gate["id"], "conclusion": "failure",
-                        "reason": "pull-not-reviewable-after-merge", "completed_at": gate["completed_at"]})
     raise ValueError("ingress-successful-native-attempt-missing")
