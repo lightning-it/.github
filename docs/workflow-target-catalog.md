@@ -163,14 +163,16 @@ Codex input remains its separate protected review contract.
 
 The source-owned generated-lock registry contains exactly one descriptor for
 `lightning-it/container-ee-wunder-devtools-ubi9`. It binds published Shared Assets
-`v1.52.5` (`6c14231ff7a484cae8def33d3d2ac4a9b4733473`) and Target tree
-`dca77eb5067263307ba830a2c4e53d36046e0760`. Its descriptor SHA256 is
-`941118bdf54271158df6cfb2972934b68328fe6cd8b95f4a3b29c812236b6b60`.
+`v1.52.6` (`3b917d5281766050731a61bb5d5005da61e25f81`) and Target tree
+`c36a9ead2cb6bdbe887e95fde4d6b60773754f52`. Its descriptor SHA256 is
+`5af4da75cf69d7eda07df33b1dc2031a96907f99b688aa7bc8f717da3a690de2`.
 The canonical five-file manifest is
-`e0256a9a1fb2ad8eb47c5f02fcf68647e040d47910aa2b7c14796270dccbfeb8`. This declaration
+`761e7d2b2d52af090726c3fe3963381c8f44a6b7be70310434c7d949b370f686`. This declaration
 becomes effective only after the reviewed Common commit is independently
-selected through native Management. All other targets and exclusions remain
-rejected. Candidate labels, comments, environment values and consumer
+selected through native Management. The previous selected Common source
+`066b62a2a9e49d3fdba014068266664f930315bd` remains an accepted ingress
+predecessor, while its older Target tree cannot reuse the new lock admission.
+All other targets and exclusions remain rejected. Candidate labels, comments, environment values and consumer
 configuration cannot register or override these hashes.
 
 The narrow protocol records the named lock as **not reviewed by Copilot**; it
