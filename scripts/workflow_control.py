@@ -1019,6 +1019,15 @@ def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operati
                 # A later PR may replace GitHub's mutable reused-branch locator.
                 # Warm its exact snapshot before the final no-I/O generation read;
                 # an unknown/changed locator is never accepted from cached run ID.
+                operation_key = (*key, "historical-operation")
+                if operation_key not in bindings:
+                    require(read_operations, "ingress-generation-binding-unavailable")
+                    operation = operation_record(api, repo, run)
+                    bindings[operation_key] = (operation["source_sha"] in sources
+                                              and same_immutable_tuple(operation["binding"], binding(pull)))
+                if not bindings[operation_key]:
+                    bindings[key] = False
+                    continue
                 locator_key = (*key, "reused-branch", digest(run["pull_requests"]))
                 if read_operations:
                     from workflow_ingress import reused_branch_locator
@@ -1027,6 +1036,7 @@ def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operati
                 else:
                     require(bindings.get(locator_key) is True,
                             "ingress-generation-locator-unavailable")
+                bindings[key] = True
             if key not in bindings:
                 require(read_operations, "ingress-generation-binding-unavailable")
                 operation = operation_record(api, repo, run)

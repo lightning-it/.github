@@ -156,6 +156,62 @@ class ReusedBranchIngressTests(unittest.TestCase):
             selected = control.ingress_candidates(api, REPO, original, [SOURCE], [native, newer], {})
         self.assertEqual([newer], selected)
 
+    def direct_then_alias(self, api, original, native, *, missing_operation=False):
+        direct = native | {'pull_requests': [{'number': original['number'],
+                            'base': original['base'], 'head': original['head']}]}
+        pages = api.pages.side_effect
+        reads = {'count': 0}
+        def snapshots(path, key=None):
+            if '/runs?head_sha=' in path:
+                reads['count'] += 1
+                return [direct if reads['count'] == 1 else native]
+            if missing_operation and path.endswith('/artifacts'):
+                return []
+            return pages(path, key)
+        api.pages.side_effect = snapshots
+
+    def test_warm_alias_authenticates_operation_independently_of_direct_binding_cache(self):
+        api, original, _, native, operation, proof = self.fixture()
+        self.direct_then_alias(api, original, native)
+        with self.artifacts(operation, proof) as transport, \
+                patch.object(control, 'native_jobs', return_value=[
+                    {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]):
+            self.assertEqual(10, control.check_native_control(
+                api, REPO, original, {'accepted_sources': [SOURCE]})['run'])
+        self.assertEqual(1, sum(c.args[-1] == 'control-operation.json'
+                                for c in transport.call_args_list))
+
+    def test_warm_alias_cannot_use_direct_binding_cache_when_operation_is_missing(self):
+        api, original, _, native, operation, proof = self.fixture()
+        self.direct_then_alias(api, original, native, missing_operation=True)
+        with self.artifacts(operation, proof), \
+                patch.object(control, 'native_jobs', return_value=[
+                    {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]), \
+                self.assertRaisesRegex(control.ControlError, 'protected-operation-missing'):
+            control.check_native_control(api, REPO, original, {'accepted_sources': [SOURCE]})
+
+    def test_demonstrably_foreign_operation_is_skipped_before_its_alias_is_validated(self):
+        api, original, later, native, operation, proof = self.fixture()
+        unrelated = native | {'id': 20}
+        foreign = operation | {'binding': operation['binding'] | {'number': 99}}
+        pages = api.pages.side_effect
+        api.pages.side_effect = lambda path, key=None: [native, unrelated] if '/runs?head_sha=' in path else pages(path, key)
+        # This foreign run cannot explain the original subject. Its locator's
+        # author would be rejected if it were used as that subject's evidence.
+        foreign_locator = copy.deepcopy(later)
+        foreign_locator['user']['id'] += 1
+        unrelated['pull_requests'] = [copy.deepcopy(native['pull_requests'][0]) | {'number': 5}]
+        call = api.call.side_effect
+        api.call.side_effect = lambda path: foreign_locator if path.endswith('/pulls/5') else call(path)
+        with self.artifacts(operation, proof), \
+                patch.object(control, 'operation_record', side_effect=lambda _api, _repo, run:
+                             foreign if run['id'] == 20 else operation), \
+                patch.object(control, 'native_jobs', return_value=[
+                    {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]):
+            self.assertEqual(10, control.check_native_control(
+                api, REPO, original, {'accepted_sources': [SOURCE]})['run'])
+        self.assertFalse(any(c.args[0].endswith('/pulls/5') for c in api.call.call_args_list))
+
 
 if __name__ == '__main__':
     unittest.main()
