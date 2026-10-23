@@ -57,6 +57,17 @@ def sha(value):
 
 class API:
     """No mutation retry; errors never echo provider bodies or private paths."""
+
+    @staticmethod
+    def failure(path, method, attempt, reason):
+        # A digest identifies the failed request without exposing repository
+        # paths, query values, stderr, response bodies or credentials.
+        locator = hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
+        verb = method if method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "other"
+        return ControlError(
+            f"native-api-unavailable-{verb}-{reason}-attempts{attempt}-locator-{locator}"
+        )
+
     def call(self, path, *, method="GET", data=None):
         require(not path.startswith(("/", "http")), "api-path")
         command = ["gh", "api", "--method", method, path]
@@ -64,9 +75,28 @@ class API:
             command += ["--header", "Accept: application/vnd.github-commitcomment.full+json"]
         if data is not None:
             command += ["--input", "-"]
-        result = subprocess.run(command, input=canonical(data) if data is not None else None,
-                                capture_output=True, timeout=60, check=False)
-        require(result.returncode == 0, "native-api-unavailable")
+        maximum = 3 if method == "GET" and data is None else 1
+        for attempt in range(1, maximum + 1):
+            try:
+                result = subprocess.run(command, input=canonical(data) if data is not None else None,
+                                        capture_output=True, timeout=60, check=False)
+            except subprocess.TimeoutExpired:
+                # A timeout does not establish a transient HTTP response. In
+                # particular, never replay a possibly completed mutation.
+                raise self.failure(path, method, attempt, "timeout") from None
+            if result.returncode == 0:
+                break
+            statuses = re.findall(rb"(?m)^gh: [^\r\n]*\(HTTP ([1-5][0-9]{2})\)\r?$", result.stderr)
+            hints = re.findall(rb"\(HTTP ([1-5][0-9]{2})\)", result.stderr)
+            status = int(statuses[0]) if len(statuses) == len(hints) == 1 else None
+            # Only explicit transient gateway/service responses grant another
+            # idempotent read. Auth, missing data, rate limits, unknown CLI
+            # failures and every mutating request remain fail-closed.
+            if status in {502, 503, 504} and attempt < maximum:
+                time.sleep(attempt)
+                continue
+            reason = f"http{status}" if status is not None else "httpunknown"
+            raise self.failure(path, method, attempt, reason)
         if method != "GET" and not result.stdout.strip():
             return {}
         try:
