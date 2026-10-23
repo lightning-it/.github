@@ -233,6 +233,20 @@ class NativeAPIReadTests(unittest.TestCase):
 
 
 class ControlTests(unittest.TestCase):
+    def test_new_source_retains_current_native_ingress_without_consumer_self_admission(self):
+        current = '5b72a68a352bd926620b0487b867f80bba774a2f'
+        value = {'version': 1, 'repository': REPO, 'mode': 'reference',
+                 'quality': [{'workflow': '.github/workflows/repository-quality.yml',
+                              'job': 'repository / quality'}],
+                 'accepted_sources': [current]}
+        # Use the actual centrally owned registry. A new selected source must
+        # retain the genuine ingress accepted under the current source.
+        accepted = control.policy_value(value, REPO, SOURCE)
+        self.assertIn(current, accepted['accepted_sources'])
+        self.assertIn(SOURCE, accepted['accepted_sources'])
+        with self.assertRaisesRegex(control.ControlError, 'consumer-cannot-admit-central-source'):
+            control.policy_value(value | {'accepted_sources': ['f' * 40]}, REPO, SOURCE)
+
     def test_old_selected_source_accepts_new_consumer_base_during_cutover(self):
         config = (Path(__file__).resolve().parents[1] / '.lit/workflow-control.json').read_bytes()
         api = Mock(); api.file.return_value = config
