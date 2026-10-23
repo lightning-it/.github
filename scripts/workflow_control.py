@@ -367,7 +367,7 @@ def associated_delivery(run, pull):
 GENERATED_LOCK_ADMISSIONS = (
     {
         "version": 1,
-        "id": "devtools-v1-52-5-generated-lock",
+        "id": "devtools-v1-52-6-generated-lock",
         "repository": "lightning-it/container-ee-wunder-devtools-ubi9",
         "excluded_file": {
             "path": "container-toolchain/pnpm-lock.yaml",
@@ -378,53 +378,53 @@ GENERATED_LOCK_ADMISSIONS = (
             {
                 "path": "Dockerfile",
                 "mode": "100644",
-                "git_blob": "ac3486e1e2973d24e65b0c805e97af1dd3ff7cd3",
-                "bytes": 37750,
-                "sha256": "e6abbc13ee2d77ffce1cb0eb18cc22f3d369e93e3d8d4927fed26ca469c417d4"
+                "git_blob": "27fbf7c9e0a22ecacc97a1792c70dd76615327df",
+                "bytes": 37747,
+                "sha256": "41f46959c2a98af691ed4dc46a9fe1097c807bc2c2c4e5a09f07af4757c41114"
             },
             {
                 "path": "container-toolchain/package.json",
                 "mode": "100644",
-                "git_blob": "416e941045ef461a902c20135de8844efd90ea2d",
+                "git_blob": "c210b9119878f35cfedbd95dbf2136d8f78d8239",
                 "bytes": 519,
-                "sha256": "3d9c77719e23d8f76611009148c767a19b09debdb45fc4bfd43c36acde426ed8"
+                "sha256": "e86f0e519a0aa548a2b073956bc371c7a7dbf906b12f6e4b6a8568fa15f73744"
             },
             {
                 "path": "container-toolchain/pnpm-lock.yaml",
                 "mode": "100644",
-                "git_blob": "a347fcd4fe10e9a9debaefeac852fa56e2e2b033",
+                "git_blob": "7870f2fbf716238d50480f75cb8018f1389a9043",
                 "bytes": 205506,
-                "sha256": "3a665ed8f2b2780823664a4cac84d8c236b5e147cc21970ae667124cd1fa0ecf"
+                "sha256": "8c70669f26e97f8bd4ee10c0c099880f48d4ed7d3be43ad601ebb39b4db0a0b1"
             },
             {
                 "path": "container-toolchain/pnpm-workspace.yaml",
                 "mode": "100644",
-                "git_blob": "bf1bad02bf29fe25831d92672dd2c4cc39479960",
-                "bytes": 798,
-                "sha256": "e0b5e7ddf01889b29f44b724d960e4c4995855b29c4f018574a238ad819a02e3"
+                "git_blob": "292a996cff51555f79bafb7fc47048329bcb0702",
+                "bytes": 818,
+                "sha256": "90b597d9bf425e3cfc4237c4483ce07313d0d602250229cba90748996df0a963"
             },
             {
                 "path": "renovate.json",
                 "mode": "100644",
-                "git_blob": "9cb9d3dd6285099169921048eddebddf7650a663",
-                "bytes": 16774,
-                "sha256": "0500d74e92608a29e460a42a4f82ec1507d7f5840edc10d314166c167fda47b1"
+                "git_blob": "7a486b92cfd7ef4dbef3f62c2ac005de7b28919c",
+                "bytes": 17029,
+                "sha256": "eef4ebbe5dc9b3d1a73114e1935aa50d5066dc6aba7bb6a15d1df37bbff645f4"
             }
         ],
-        "admitted_target_tree": "dca77eb5067263307ba830a2c4e53d36046e0760",
+        "admitted_target_tree": "c36a9ead2cb6bdbe887e95fde4d6b60773754f52",
         "producer_provenance": {
-            "source_main": "6c14231ff7a484cae8def33d3d2ac4a9b4733473",
-            "release": "v1.52.5",
-            "release_id": 421034097,
+            "source_main": "3b917d5281766050731a61bb5d5005da61e25f81",
+            "release": "v1.52.6",
+            "release_id": 421314767,
             "publisher": {
-                "run": 39827027296,
+                "run": 39874917419,
                 "attempt": 1,
-                "job": 119993610488,
+                "job": 120158544792,
                 "conclusion": "success",
                 "cleanup": "success",
-                "token_revoked_at": "2026-10-22T17:59:17.0716867Z"
+                "token_revoked_at": "2026-10-22T23:58:14.5432533Z"
             },
-            "canonical_manifest_sha256": "e0256a9a1fb2ad8eb47c5f02fcf68647e040d47910aa2b7c14796270dccbfeb8"
+            "canonical_manifest_sha256": "761e7d2b2d52af090726c3fe3963381c8f44a6b7be70310434c7d949b370f686"
         }
     },
 )
