@@ -50,6 +50,87 @@ class HistoricalIngressTests(unittest.TestCase):
                            'completed_at': '2026-10-15T12:01:03Z', 'merge_event': 200, 'closed_event': 201}], failures)
         self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
 
+    def paired_fixture(self):
+        api, subject, accepted, failed, final, operation = self.fixture()
+        steps = [{'name': ingress.CLASSIFY_STEP, 'status': 'completed', 'conclusion': 'failure'}]
+        steps += [{'name': name, 'status': 'completed', 'conclusion': 'skipped'} for name in (
+            'Persist protected operation binding', 'Request current Copilot review',
+            'Reserve protected Codex request', 'Protected exact-revision Codex review')]
+        steps += [{'name': 'Post Load immutable common source', 'status': 'completed', 'conclusion': 'success'}]
+        protected = final | {'id': 100, 'name': 'Protected current revision', 'steps': steps}
+        jobs = [protected, final | {'id': 102, 'name': 'Source common quality', 'conclusion': 'success', 'steps': []},
+                final, final | {'id': 103, 'name': 'Approve exact main promotion', 'conclusion': 'skipped', 'steps': []}]
+        api.pages.return_value = jobs
+        return api, subject, accepted, failed, jobs, operation
+
+    def test_both_postmerge_closure_errors_preserve_the_real_premerge_acceptance(self):
+        api, subject, accepted, failed, _, operation = self.paired_fixture()
+        with patch.object(ingress, 'operation_record', return_value=operation):
+            result, excluded = ingress.merged_attempt(api, REPO, subject, failed)
+        self.assertEqual(accepted, result)
+        self.assertEqual([100, 101], [item['job'] for item in excluded])
+        self.assertTrue(all(item['conclusion'] == 'failure' and item['attempt'] == 2
+                            and item['merge_event'] == 200 and item['closed_event'] == 201 for item in excluded))
+        self.assertEqual([(REPO, 100), (REPO, 101)], [call.args for call in api.native_job_log.call_args_list])
+        self.assertTrue(all(not call.kwargs for call in api.call.call_args_list))
+
+    def test_paired_closure_never_hides_funding_or_unknown_failed_jobs(self):
+        for change in ('funded', 'unknown-effect', 'missing-request', 'missing-reservation',
+                       'wrong-step', 'quality-failed', 'extra-job', 'wrong-run', 'pending-effect'):
+            api, subject, _, failed, jobs, operation = self.paired_fixture()
+            if change == 'funded':
+                jobs[0]['steps'][2]['conclusion'] = 'success'
+            elif change == 'unknown-effect':
+                jobs[0]['steps'].append({'name': 'Unknown provider request', 'status': 'completed', 'conclusion': 'success'})
+            elif change == 'missing-request':
+                jobs[0]['steps'] = [step for step in jobs[0]['steps'] if step['name'] != 'Request current Copilot review']
+            elif change == 'missing-reservation':
+                jobs[0]['steps'] = [step for step in jobs[0]['steps'] if step['name'] != 'Reserve protected Codex request']
+            elif change == 'wrong-step':
+                jobs[0]['steps'][0]['name'] = 'Verify applicable native review or governed exemption'
+            elif change == 'quality-failed':
+                jobs[1]['conclusion'] = 'failure'
+            elif change == 'extra-job':
+                jobs.append(jobs[1] | {'id': 104, 'name': 'Unknown extra job'})
+            elif change == 'wrong-run':
+                jobs[0]['run_id'] = 999
+            else:
+                jobs[0]['steps'][2]['status'] = 'in_progress'
+            with self.subTest(change=change), patch.object(ingress, 'operation_record', return_value=operation), \
+                    self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, subject, failed)
+
+    def test_paired_closure_requires_independent_exact_aftermerge_error_from_both_jobs(self):
+        good = '2026-10-15T12:01:02.1234567Z ' + ingress.CLOSED + '\n'
+        for job in (100, 101):
+            for error in ('2026-10-15T12:00:59Z ' + ingress.CLOSED,
+                          '2026-10-15T12:01:00.9999999Z ' + ingress.CLOSED,
+                          '2026-10-15T12:01:02Z Protected control blocked: ControlError: provider-failed',
+                          good + good, ''):
+                api, subject, _, failed, _, operation = self.paired_fixture()
+                api.native_job_log.side_effect = lambda _repo, identifier, job=job, error=error: error if identifier == job else good
+                with self.subTest(job=job, error=error), patch.object(ingress, 'operation_record', return_value=operation), \
+                        self.assertRaises(control.ControlError):
+                    ingress.merged_attempt(api, REPO, subject, failed)
+
+    def test_paired_closure_still_rejects_changed_operation_and_ambiguous_lifecycle(self):
+        for change in ('metadata', 'operation', 'draft', 'closed-before-merge', 'success-after-merge'):
+            api, subject, accepted, failed, _, operation = self.paired_fixture()
+            changed = copy.deepcopy(operation)
+            if change == 'metadata':
+                subject['title'] = 'Changed after the accepted revision'
+            elif change == 'operation':
+                changed['binding']['body'] = 'Different failed-attempt operation'
+            elif change == 'draft':
+                api.lifecycle.insert(0, {'id': 199, 'event': 'converted_to_draft', 'created_at': '2026-10-15T12:00:30Z'})
+            elif change == 'closed-before-merge':
+                api.lifecycle[1]['id'] = 199
+            else:
+                api.call.side_effect = [failed, accepted | {'updated_at': '2026-10-15T12:01:02Z'}]
+            with self.subTest(change=change), patch.object(ingress, 'operation_record', side_effect=[changed, operation]), \
+                    self.assertRaises(control.ControlError):
+                ingress.merged_attempt(api, REPO, subject, failed)
+
     def test_open_unmerged_pending_or_single_failed_attempt_cannot_fall_back(self):
         for change in ({'state': 'open'}, {'merged': False}, {'merge_commit_sha': None}):
             api, pull, _, failed, _, _ = self.fixture()
