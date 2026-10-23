@@ -7,10 +7,12 @@ from datetime import datetime, timedelta
 from workflow_control import (
     binding,
     digest,
+    identity,
     native_jobs,
     native_required,
     operation_record,
     require,
+    sha,
 )
 
 FINAL_STEP = "Enforce native review and quality on the still-current tuple"
@@ -21,6 +23,40 @@ CLOSED = "Protected control blocked: ControlError: pull-not-reviewable"
 def instant(value):
     require(type(value) is str and value.endswith("Z"), "ingress-timestamp-unavailable")
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def reused_branch_locator(api, repo, pull, associations):
+    """Authenticate a later branch alias; it never authenticates the old run.
+
+    GitHub can replace a merged run's PR locator when Renovate reuses a branch.
+    Only the original native operation and proof may bind that historical run.
+    """
+    require(pull.get("state") == "closed" and pull.get("merged") is True
+            and pull.get("merge_commit_sha") and len(associations) == 1,
+            "ingress-reused-branch-history-required")
+    locator = associations[0]
+    number = locator.get("number")
+    require(type(number) is int and number > pull["number"],
+            "ingress-reused-branch-locator")
+    later = api.call(f"repos/{repo}/pulls/{number}")
+    require(later.get("number") == number
+            and identity(later.get("user", {})) == identity(pull["user"])
+            and instant(later.get("created_at")) > instant(pull.get("merged_at")) + timedelta(seconds=1),
+            "ingress-reused-branch-origin")
+    for side in ("base", "head"):
+        original, current, associated = pull[side], later.get(side, {}), locator.get(side, {})
+        repository = current.get("repo") or {}
+        sha(current.get("sha"))
+        require((original.get("repo") or {}).get("full_name") == repo
+                and repository.get("full_name") == repo
+                and type(repository.get("id")) is int and repository["id"] > 0
+                and (associated.get("repo") or {}).get("id") == repository["id"]
+                and type(current.get("ref")) is str and current["ref"]
+                and current["ref"] == original.get("ref") == associated.get("ref")
+                and current.get("sha") == associated.get("sha"),
+                "ingress-reused-branch-tuple")
+    require(later["head"]["sha"] != pull["head"]["sha"],
+            "ingress-reused-branch-distinct-head")
 
 
 def merged_lifecycle(api, repo, pull, attempt):
