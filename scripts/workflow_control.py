@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -387,6 +388,21 @@ def native_conversation_guard(api, repo, pull):
 
 
 def associated_delivery(run, pull):
+    # A native service run created before this PR existed cannot reserve its
+    # review budget, even when branch deletion removed the old run's locator.
+    # Only strict native second-resolution UTC timestamps establish exclusion;
+    # missing, invalid or equal timestamps retain the existing fail-closed path.
+    times = [run.get("created_at"), pull.get("created_at")]
+    if (run.get("event") == "dynamic" and run.get("head_sha") == pull["head"]["sha"]
+            and all(type(value) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value)
+                    for value in times)):
+        try:
+            created, opened = (datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ") for value in times)
+        except ValueError:
+            pass
+        else:
+            if created < opened:
+                return False
     require(type(run.get("pull_requests")) is list and run["pull_requests"], "native-copilot-pr-association-unavailable")
     matches = [p for p in run["pull_requests"] if p.get("number") == pull["number"]]
     require(len(matches) <= 1, "native-copilot-pr-association-ambiguous")
