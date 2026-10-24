@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -387,6 +388,21 @@ def native_conversation_guard(api, repo, pull):
 
 
 def associated_delivery(run, pull):
+    # A native service run created before this PR existed cannot reserve its
+    # review budget, even when branch deletion removed the old run's locator.
+    # Only strict native second-resolution UTC timestamps establish exclusion;
+    # missing, invalid or equal timestamps retain the existing fail-closed path.
+    times = [run.get("created_at"), pull.get("created_at")]
+    if (run.get("event") == "dynamic" and run.get("head_sha") == pull["head"]["sha"]
+            and all(type(value) is str and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value)
+                    for value in times)):
+        try:
+            created, opened = (datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ") for value in times)
+        except ValueError:
+            pass
+        else:
+            if created < opened:
+                return False
     require(type(run.get("pull_requests")) is list and run["pull_requests"], "native-copilot-pr-association-unavailable")
     matches = [p for p in run["pull_requests"] if p.get("number") == pull["number"]]
     require(len(matches) <= 1, "native-copilot-pr-association-ambiguous")
@@ -1009,10 +1025,34 @@ def ingress_candidates(api, repo, pull, sources, runs, bindings, *, read_operati
                 bindings[key] = False
                 continue
             bindings[key] = True
-        elif run.get("pull_requests"):
-            bindings[key] = False
-            continue
         elif pull.get("merged") is True and pull.get("merge_commit_sha"):
+            if run.get("pull_requests"):
+                if (len(run["pull_requests"]) == 1
+                        and run["pull_requests"][0].get("head", {}).get("sha") == run["head_sha"]):
+                    # A foreign PR genuinely on this head is not branch reuse.
+                    bindings[key] = False
+                    continue
+                # A later PR may replace GitHub's mutable reused-branch locator.
+                # Warm its exact snapshot before the final no-I/O generation read;
+                # an unknown/changed locator is never accepted from cached run ID.
+                operation_key = (*key, "historical-operation")
+                if operation_key not in bindings:
+                    require(read_operations, "ingress-generation-binding-unavailable")
+                    operation = operation_record(api, repo, run)
+                    bindings[operation_key] = (operation["source_sha"] in sources
+                                              and same_immutable_tuple(operation["binding"], binding(pull)))
+                if not bindings[operation_key]:
+                    bindings[key] = False
+                    continue
+                locator_key = (*key, "reused-branch", digest(run["pull_requests"]))
+                if read_operations:
+                    from workflow_ingress import reused_branch_locator
+                    reused_branch_locator(api, repo, pull, run["pull_requests"])
+                    bindings[locator_key] = True
+                else:
+                    require(bindings.get(locator_key) is True,
+                            "ingress-generation-locator-unavailable")
+                bindings[key] = True
             if key not in bindings:
                 require(read_operations, "ingress-generation-binding-unavailable")
                 operation = operation_record(api, repo, run)
