@@ -69,6 +69,27 @@ class ReusedBranchIngressTests(unittest.TestCase):
             self.assertEqual([], control.ingress_candidates(api, REPO, original, [SOURCE], [native], {}))
         api.call.assert_not_called()
 
+    def test_cutover_retains_only_the_independently_admitted_d820_predecessor(self):
+        predecessor = 'd82074e0e1719490bcd9c75d8a2ffe4b461bf938'
+        # This is an explicit predecessor-proof unit fixture, not a retagged
+        # archived A513 proof or a claim that a D820 native run took place.
+        for source in (predecessor, 'f' * 40):
+            api, original, _, _, operation, proof = self.fixture()
+            operation['source_sha'] = source
+            proof['source_sha'] = source
+            policy = control.policy_value({'version': 1, 'repository': REPO, 'mode': 'enforce',
+                'quality': [{'workflow': '.github/workflows/repository-quality.yml',
+                             'job': 'repository / quality'}], 'accepted_sources': []}, REPO, SOURCE)
+            with self.subTest(source=source), self.artifacts(operation, proof), \
+                    patch.object(control, 'native_jobs', return_value=[
+                        {'id': 103, 'name': 'Current revision review', 'conclusion': 'success'}]):
+                if source == predecessor:
+                    result = control.check_native_control(api, REPO, original, policy)
+                    self.assertEqual(predecessor, result['source_sha'])
+                else:
+                    with self.assertRaisesRegex(control.ControlError, 'ingress-protected-run-missing'):
+                        control.check_native_control(api, REPO, original, policy)
+
     def test_ambiguous_or_nonlater_locator_is_rejected(self):
         for change in ('multiple', 'original-number', 'missing-number', 'boolean-number'):
             api, original, _, native, operation, proof = self.fixture()
